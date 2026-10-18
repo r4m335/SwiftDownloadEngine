@@ -70,8 +70,10 @@ final class DownloadQueueManagerTests: XCTestCase {
 
     override func setUp() async throws {
         try await super.setUp()
-        #if os(Linux)
-        signal(SIGPIPE, SIG_IGN)
+        #if canImport(Glibc)
+        Glibc.signal(SIGPIPE, SIG_IGN)
+        #elseif canImport(Darwin)
+        Darwin.signal(SIGPIPE, SIG_IGN)
         #endif
 
         server = LocalHTTPRangeServer()

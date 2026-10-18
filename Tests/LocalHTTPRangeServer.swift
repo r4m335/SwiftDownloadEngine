@@ -178,9 +178,12 @@ public final class LocalHTTPRangeServer: @unchecked Sendable {
         defer { lock.unlock() }
         guard !isRunning else { return }
 
-        #if os(Linux)
-        signal(SIGPIPE, SIG_IGN)
+        #if canImport(Glibc)
+        Glibc.signal(SIGPIPE, SIG_IGN)
         let sock = socket(AF_INET, Int32(SOCK_STREAM.rawValue), 0)
+        #elseif canImport(Darwin)
+        Darwin.signal(SIGPIPE, SIG_IGN)
+        let sock = socket(AF_INET, SOCK_STREAM, 0)
         #else
         let sock = socket(AF_INET, SOCK_STREAM, 0)
         #endif
@@ -274,6 +277,11 @@ public final class LocalHTTPRangeServer: @unchecked Sendable {
                 if !running { break }
                 continue
             }
+
+            #if canImport(Darwin)
+            var nosigpipe: Int32 = 1
+            setsockopt(clientSock, SOL_SOCKET, SO_NOSIGPIPE, &nosigpipe, socklen_t(MemoryLayout<Int32>.size))
+            #endif
 
             DispatchQueue.global(qos: .userInitiated).async { [weak self] in
                 self?.handleClient(clientSock: clientSock)

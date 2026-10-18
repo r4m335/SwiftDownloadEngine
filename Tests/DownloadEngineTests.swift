@@ -52,8 +52,10 @@ final class DownloadEngineTests: XCTestCase {
 
     override func setUp() async throws {
         try await super.setUp()
-        #if os(Linux)
-        signal(SIGPIPE, SIG_IGN)
+        #if canImport(Glibc)
+        Glibc.signal(SIGPIPE, SIG_IGN)
+        #elseif canImport(Darwin)
+        Darwin.signal(SIGPIPE, SIG_IGN)
         #endif
 
         server = LocalHTTPRangeServer()
@@ -568,18 +570,19 @@ final class DownloadEngineTests: XCTestCase {
         _ = try await engine.addDownload(req, autoStart: true)
 
         // Rapid concurrent operations from multiple concurrent Tasks
+        let engine = self.engine!
         await withTaskGroup(of: Void.self) { group in
             group.addTask {
-                _ = await self.engine.snapshot(for: req.id)
+                _ = await engine.snapshot(for: req.id)
             }
             group.addTask {
-                _ = await self.engine.allSnapshots()
+                _ = await engine.allSnapshots()
             }
             group.addTask {
-                _ = await self.engine.speedMetrics(for: req.id)
+                _ = await engine.speedMetrics(for: req.id)
             }
             group.addTask {
-                _ = await self.engine.queueSnapshot()
+                _ = await engine.queueSnapshot()
             }
         }
 
