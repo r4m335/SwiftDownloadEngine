@@ -45,6 +45,7 @@ public enum DownloadFilter: String, CaseIterable, Sendable, Identifiable {
 /// - Authoritative Snapshot Sync: Keeps live snapshots without diverging from underlying queue/persistence.
 /// - Action Dispatching: Exposes pause, resume, cancel, retry, remove, and add operations.
 /// - Configurable Settings & Persistence: Manages dynamic concurrency limits, request budgets, and bandwidth throttling, persisted via `UserDefaults`.
+/// - Robust Edge-Case Handling: Validates input domains, sanitizes limits, manages stream lifecycle restarts, and surfaces user-facing errors.
 @MainActor
 public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendable {
     public let engine: DownloadEngine
@@ -129,6 +130,9 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
             for await event in stream {
                 guard !Task.isCancelled else { break }
                 self?.handleEngineEvent(event)
+            }
+            if !Task.isCancelled {
+                self?.isObserving = false
             }
         }
     }
@@ -257,8 +261,11 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
         autoStart: Bool = true
     ) async throws -> DownloadSnapshot {
         let trimmed = urlText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let url = URL(string: trimmed), let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https" else {
-            let error = "Invalid URL: must be an http or https address."
+        guard let url = URL(string: trimmed),
+              let scheme = url.scheme?.lowercased(),
+              (scheme == "http" || scheme == "https"),
+              let host = url.host, !host.isEmpty else {
+            let error = "Invalid URL: must be an http or https address with a valid host."
             self.errorMessage = error
             throw DownloadCoordinatorError.invalidRequest(reason: error)
         }
@@ -272,45 +279,76 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
         }
 
         let destURL = downloadsDirectoryURL.appendingPathComponent(resolvedFilename)
+        let sanitizedLimit: Int64? = (speedLimitBytesPerSecond != nil && speedLimitBytesPerSecond! > 0) ? speedLimitBytesPerSecond : nil
         let request = DownloadRequest(
             url: url,
             destinationURL: destURL,
             configuredThreadCount: max(1, min(32, threadCount)),
-            speedLimitBytesPerSecond: speedLimitBytesPerSecond
+            speedLimitBytesPerSecond: sanitizedLimit
         )
 
-        let snapshot = try await engine.addDownload(request, priority: .normal, autoStart: autoStart)
-        upsertSnapshot(snapshot)
-        return snapshot
+        do {
+            let snapshot = try await engine.addDownload(request, priority: .normal, autoStart: autoStart)
+            upsertSnapshot(snapshot)
+            return snapshot
+        } catch {
+            self.errorMessage = error.localizedDescription
+            throw error
+        }
     }
 
     /// Cooperatively pauses an active download.
     public func pauseDownload(id: DownloadID) async throws {
-        try await engine.pauseDownload(id: id)
+        do {
+            try await engine.pauseDownload(id: id)
+        } catch {
+            self.errorMessage = error.localizedDescription
+            throw error
+        }
     }
 
     /// Resumes a paused or interrupted download.
     public func resumeDownload(id: DownloadID) async throws {
-        try await engine.resumeDownload(id: id)
+        do {
+            try await engine.resumeDownload(id: id)
+        } catch {
+            self.errorMessage = error.localizedDescription
+            throw error
+        }
     }
 
     /// Cancels an in-progress or queued download.
     public func cancelDownload(id: DownloadID, deleteFile: Bool = false) async throws {
-        try await engine.cancelDownload(id: id, deleteFile: deleteFile)
+        do {
+            try await engine.cancelDownload(id: id, deleteFile: deleteFile)
+        } catch {
+            self.errorMessage = error.localizedDescription
+            throw error
+        }
     }
 
     /// Removes a download record from the queue.
     public func removeDownload(id: DownloadID, deleteFile: Bool = false) async throws {
-        try await engine.removeDownload(id: id, deleteFile: deleteFile)
-        downloads.removeAll { $0.id == id }
-        if selectedDownload?.id == id {
-            selectedDownload = nil
+        do {
+            try await engine.removeDownload(id: id, deleteFile: deleteFile)
+            downloads.removeAll { $0.id == id }
+            if selectedDownload?.id == id {
+                selectedDownload = nil
+            }
+        } catch {
+            self.errorMessage = error.localizedDescription
+            throw error
         }
     }
 
     /// Retries an eligible failed download.
     public func retryDownload(id: DownloadID) async throws {
-        try await engine.retryDownload(id: id)
+        do {
+            try await engine.retryDownload(id: id)
+        } catch {
+            self.errorMessage = error.localizedDescription
+            throw error
+        }
     }
 
     /// Bulk pauses all active downloads.
@@ -338,6 +376,11 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
         self.selectedDownload = nil
     }
 
+    /// Clears the current user-facing error message.
+    public func clearError() {
+        self.errorMessage = nil
+    }
+
     // MARK: - Settings Configuration & Persistence
 
     /// Updates the engine's configuration settings and persists them to UserDefaults.
@@ -346,21 +389,38 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
         maxGlobalRequests: Int,
         globalBandwidthLimit: Int64?
     ) async throws {
-        self.maxConcurrentDownloads = maxConcurrent
-        self.maxGlobalRequests = maxGlobalRequests
-        self.globalBandwidthLimitBytesPerSecond = globalBandwidthLimit
-
-        userDefaults.set(maxConcurrent, forKey: SettingsKeys.maxConcurrentDownloads)
-        userDefaults.set(maxGlobalRequests, forKey: SettingsKeys.maxGlobalRequests)
-        if let limit = globalBandwidthLimit {
-            userDefaults.set(limit, forKey: SettingsKeys.globalBandwidthLimit)
-        } else {
-            userDefaults.removeObject(forKey: SettingsKeys.globalBandwidthLimit)
+        guard maxConcurrent >= 1 else {
+            let error = "Maximum concurrent downloads must be at least 1."
+            self.errorMessage = error
+            throw DownloadCoordinatorError.invalidRequest(reason: error)
         }
+        guard maxGlobalRequests >= 1 else {
+            let error = "Global active HTTP request limit must be at least 1."
+            self.errorMessage = error
+            throw DownloadCoordinatorError.invalidRequest(reason: error)
+        }
+        let sanitizedBandwidth: Int64? = (globalBandwidthLimit != nil && globalBandwidthLimit! > 0) ? globalBandwidthLimit : nil
 
-        try await engine.setMaxConcurrentDownloads(maxConcurrent)
-        try await engine.setMaxGlobalRequests(maxGlobalRequests)
-        await engine.setGlobalSpeedLimit(globalBandwidthLimit)
+        do {
+            try await engine.setMaxConcurrentDownloads(maxConcurrent)
+            try await engine.setMaxGlobalRequests(maxGlobalRequests)
+            await engine.setGlobalSpeedLimit(sanitizedBandwidth)
+
+            self.maxConcurrentDownloads = maxConcurrent
+            self.maxGlobalRequests = maxGlobalRequests
+            self.globalBandwidthLimitBytesPerSecond = sanitizedBandwidth
+
+            userDefaults.set(maxConcurrent, forKey: SettingsKeys.maxConcurrentDownloads)
+            userDefaults.set(maxGlobalRequests, forKey: SettingsKeys.maxGlobalRequests)
+            if let limit = sanitizedBandwidth {
+                userDefaults.set(limit, forKey: SettingsKeys.globalBandwidthLimit)
+            } else {
+                userDefaults.removeObject(forKey: SettingsKeys.globalBandwidthLimit)
+            }
+        } catch {
+            self.errorMessage = error.localizedDescription
+            throw error
+        }
     }
 
     /// Applies configured/persisted settings to the underlying engine.
@@ -372,7 +432,12 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
 
     /// Restores persistent queue state from disk.
     public func restoreQueue(autoStart: Bool = false) async throws {
-        try await engine.restoreQueue(autoStart: autoStart)
-        await refreshSnapshots()
+        do {
+            try await engine.restoreQueue(autoStart: autoStart)
+            await refreshSnapshots()
+        } catch {
+            self.errorMessage = error.localizedDescription
+            throw error
+        }
     }
 }

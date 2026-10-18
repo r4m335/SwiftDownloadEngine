@@ -492,4 +492,156 @@ final class DownloadManagerViewModelTests: XCTestCase {
         let actualLimit = await queueManager.maxConcurrentDownloads
         XCTAssertEqual(actualLimit, 7)
     }
+
+    // MARK: - 13. URL and Input Validation Edge Cases
+
+    func testAddDownloadInvalidURLAndEdgeCases() async throws {
+        // Test 1: Empty / whitespace URL
+        do {
+            _ = try await viewModel.addDownload(urlText: "   ")
+            XCTFail("Expected error for empty URL")
+        } catch {
+            let errorMsg = await viewModel.errorMessage
+            XCTAssertNotNil(errorMsg)
+            XCTAssertTrue(errorMsg?.contains("Invalid URL") == true)
+        }
+
+        // Test 2: Scheme missing host
+        do {
+            _ = try await viewModel.addDownload(urlText: "http://")
+            XCTFail("Expected error for missing host")
+        } catch {
+            let errorMsg = await viewModel.errorMessage
+            XCTAssertNotNil(errorMsg)
+        }
+
+        // Test 3: Unsupported scheme
+        do {
+            _ = try await viewModel.addDownload(urlText: "ftp://example.com/file.zip")
+            XCTFail("Expected error for non-http/https scheme")
+        } catch {
+            let errorMsg = await viewModel.errorMessage
+            XCTAssertNotNil(errorMsg)
+        }
+
+        // Test 4: clearError works
+        await viewModel.clearError()
+        let cleared = await viewModel.errorMessage
+        XCTAssertNil(cleared)
+
+        // Test 5: Worker clamping and negative speed sanitization
+        let size = 16 * 1024
+        server.register(path: "/clamp_test.bin", data: makePayload(size: size))
+        let urlText = server.baseURL.appendingPathComponent("clamp_test.bin").absoluteString
+
+        let snap = try await viewModel.addDownload(
+            urlText: urlText,
+            filename: "clamped.bin",
+            threadCount: 99, // Should clamp to 32
+            speedLimitBytesPerSecond: -100, // Should sanitize to nil
+            autoStart: false
+        )
+        XCTAssertEqual(snap.destinationURL.lastPathComponent, "clamped.bin")
+    }
+
+    // MARK: - 14. Settings Validation Edge Cases
+
+    func testSettingsValidationAndEdgeCases() async throws {
+        // Record existing valid settings
+        let origConcurrent = await viewModel.maxConcurrentDownloads
+        let origRequests = await viewModel.maxGlobalRequests
+
+        // Test invalid maxConcurrent (< 1)
+        do {
+            try await viewModel.updateSettings(
+                maxConcurrent: 0,
+                maxGlobalRequests: 16,
+                globalBandwidthLimit: nil
+            )
+            XCTFail("Expected failure for maxConcurrent < 1")
+        } catch {
+            let errorMsg = await viewModel.errorMessage
+            XCTAssertNotNil(errorMsg)
+            // Stored property should not be corrupted
+            let current = await viewModel.maxConcurrentDownloads
+            XCTAssertEqual(current, origConcurrent)
+        }
+
+        // Test invalid maxGlobalRequests (< 1)
+        do {
+            try await viewModel.updateSettings(
+                maxConcurrent: 4,
+                maxGlobalRequests: -5,
+                globalBandwidthLimit: nil
+            )
+            XCTFail("Expected failure for maxGlobalRequests < 1")
+        } catch {
+            let errorMsg = await viewModel.errorMessage
+            XCTAssertNotNil(errorMsg)
+            let current = await viewModel.maxGlobalRequests
+            XCTAssertEqual(current, origRequests)
+        }
+
+        // Test negative bandwidth is sanitized to nil (unlimited)
+        try await viewModel.updateSettings(
+            maxConcurrent: 4,
+            maxGlobalRequests: 16,
+            globalBandwidthLimit: -500
+        )
+        let bandwidth = await viewModel.globalBandwidthLimitBytesPerSecond
+        XCTAssertNil(bandwidth)
+    }
+
+    // MARK: - 15. Event Stream Lifecycle Resilience
+
+    func testEventStreamLifecycleResilience() async throws {
+        // Call startObserving multiple times in succession
+        await viewModel.startObserving()
+        let isObs1 = await viewModel.isObserving
+        XCTAssertTrue(isObs1)
+
+        await viewModel.startObserving()
+        let isObs2 = await viewModel.isObserving
+        XCTAssertTrue(isObs2)
+
+        // Stop observing
+        await viewModel.stopObserving()
+        let isObs3 = await viewModel.isObserving
+        XCTAssertFalse(isObs3)
+
+        // Resume observing after stop
+        await viewModel.startObserving()
+        let isObs4 = await viewModel.isObserving
+        XCTAssertTrue(isObs4)
+
+        // Perform a download to confirm live event flow continues after restart
+        let payload = makePayload(size: 32 * 1024, byte: 0x77)
+        server.register(path: "/lifecycle.bin", data: payload)
+        let urlText = server.baseURL.appendingPathComponent("lifecycle.bin").absoluteString
+
+        let snap = try await viewModel.addDownload(
+            urlText: urlText,
+            filename: "lifecycle.bin",
+            threadCount: 2,
+            autoStart: true
+        )
+
+        // Wait for event to arrive
+        let exp = expectation(description: "Download completes after stream restart")
+        Task {
+            for _ in 0..<50 {
+                let current = await viewModel.downloads.first { $0.id == snap.id }
+                if current?.state == .completed {
+                    exp.fulfill()
+                    return
+                }
+                try? await Task.sleep(nanoseconds: 50_000_000)
+            }
+        }
+        await fulfillment(of: [exp], timeout: 5.0)
+
+        await viewModel.stopObserving()
+        let isObs5 = await viewModel.isObserving
+        XCTAssertFalse(isObs5)
+    }
 }

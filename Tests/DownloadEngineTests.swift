@@ -193,6 +193,7 @@ final class DownloadEngineTests: XCTestCase {
 
         _ = try await engine.addDownload(request, autoStart: true)
         try await engine.waitUntilIdle(timeoutSeconds: 10.0)
+        try? await Task.sleep(nanoseconds: 50_000_000)
 
         task.cancel()
 
@@ -515,6 +516,7 @@ final class DownloadEngineTests: XCTestCase {
         }
 
         try await engine.waitUntilIdle(timeoutSeconds: 15.0)
+        try? await Task.sleep(nanoseconds: 50_000_000)
         task.cancel()
 
         let hasCompleted = await collector.contains {
@@ -608,6 +610,7 @@ final class DownloadEngineTests: XCTestCase {
 
         _ = try await engine.addDownload(req, autoStart: true)
         try await engine.waitUntilIdle(timeoutSeconds: 10.0)
+        try? await Task.sleep(nanoseconds: 50_000_000)
         task.cancel()
 
         let failedEvent = await collector.first {
@@ -641,6 +644,7 @@ final class DownloadEngineTests: XCTestCase {
 
         _ = try await engine.addDownload(req, autoStart: true)
         try await engine.waitUntilIdle(timeoutSeconds: 10.0)
+        try? await Task.sleep(nanoseconds: 50_000_000)
         task.cancel()
 
         let completedCount = await collector.count {

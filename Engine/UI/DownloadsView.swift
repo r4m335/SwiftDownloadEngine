@@ -47,6 +47,31 @@ public struct DownloadsView: View {
                     QueueSummaryHeader(summary: summary)
                 }
 
+                // Error Banner
+                if let error = viewModel.errorMessage {
+                    HStack {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundColor(.white)
+                        Text(error)
+                            .font(.caption)
+                            .foregroundColor(.white)
+                            .lineLimit(2)
+                        Spacer()
+                        Button {
+                            viewModel.clearError()
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .foregroundColor(.white)
+                        }
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(Color.red)
+                    .cornerRadius(8)
+                    .padding(.horizontal)
+                    .padding(.top, 4)
+                }
+
                 // Filter Chips
                 FilterBar(selectedFilter: $viewModel.selectedFilter)
                     .padding(.vertical, 8)
