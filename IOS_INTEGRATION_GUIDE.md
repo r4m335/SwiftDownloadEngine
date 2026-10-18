@@ -96,4 +96,4 @@ Once opened in Xcode, perform validation across both the iOS Simulator and physi
 2. **Physical iPhone Validation:**
    * Connect an iPhone via USB or Wi-Fi, select the target device in Xcode, and choose **Product > Run**.
    * Observe device memory usage and thermal performance (memory usage remains minimal due to direct-seek file writing without buffering entire files in RAM).
-   * Open the **Files app > On My iPhone > Download Manager > Downloads** and verify completed files appear and open directly.
+   * Open the **Files app > On My iPhone > LID Download Manager > Downloads** and verify completed files appear and open directly.
