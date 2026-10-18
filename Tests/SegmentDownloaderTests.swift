@@ -52,13 +52,22 @@ final class SegmentDownloaderTests: XCTestCase {
         let writer = try DownloadFileWriter(destinationURL: fileURL, totalSize: totalSize)
         let downloader = SegmentDownloader(session: session, writer: writer)
         
-        var progressSnapshots: [SegmentDownloadSnapshot] = []
+        final class ProgressCollector: @unchecked Sendable {
+            private(set) var snapshots: [SegmentDownloadSnapshot] = []
+            private let lock = NSLock()
+            func record(_ snapshot: SegmentDownloadSnapshot) {
+                lock.lock()
+                defer { lock.unlock() }
+                snapshots.append(snapshot)
+            }
+        }
+        let collector = ProgressCollector()
         try await downloader.download(
             url: testURL,
             segment: segment,
             expectedTotalSize: totalSize
         ) { snapshot in
-            progressSnapshots.append(snapshot)
+            collector.record(snapshot)
         }
         
         try await writer.synchronize()
@@ -77,8 +86,8 @@ final class SegmentDownloaderTests: XCTestCase {
         XCTAssertEqual(sliceData, payload)
         
         // Progress was reported
-        XCTAssertFalse(progressSnapshots.isEmpty)
-        XCTAssertEqual(progressSnapshots.last?.bytesReceived, 100)
+        XCTAssertFalse(collector.snapshots.isEmpty)
+        XCTAssertEqual(collector.snapshots.last?.bytesReceived, 100)
     }
     
     // MARK: - 2. Ignored Range: Server Returns 200 OK

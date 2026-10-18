@@ -85,9 +85,18 @@ final class DownloadCoordinatorTests: XCTestCase {
             reserveDiskBytes: 1024
         )
 
-        var progressHistory: [CoordinatorProgress] = []
+        final class ProgressCollector: @unchecked Sendable {
+            private(set) var history: [CoordinatorProgress] = []
+            private let lock = NSLock()
+            func record(_ progress: CoordinatorProgress) {
+                lock.lock()
+                defer { lock.unlock() }
+                history.append(progress)
+            }
+        }
+        let collector = ProgressCollector()
         try await coordinator.start(request) { progress in
-            progressHistory.append(progress)
+            collector.record(progress)
         }
 
         // Verify output file
@@ -104,9 +113,9 @@ final class DownloadCoordinatorTests: XCTestCase {
         XCTAssertEqual(record?.completedBytes, totalSize)
 
         // Verify progress updates occurred
-        XCTAssertFalse(progressHistory.isEmpty)
-        XCTAssertEqual(progressHistory.last?.state, .completed)
-        XCTAssertEqual(progressHistory.last?.bytesReceived, totalSize)
+        XCTAssertFalse(collector.history.isEmpty)
+        XCTAssertEqual(collector.history.last?.state, .completed)
+        XCTAssertEqual(collector.history.last?.bytesReceived, totalSize)
     }
 
     // MARK: - 2. Safe Fallback on Ignored Range Request (200 OK)
@@ -407,8 +416,16 @@ final class DownloadCoordinatorTests: XCTestCase {
         )
         try await persistenceStore.save(initialRecord)
 
-        let lock = NSLock()
-        var seg1Attempts = 0
+        final class AttemptCounter: @unchecked Sendable {
+            private(set) var count = 0
+            private let lock = NSLock()
+            func increment() {
+                lock.lock()
+                defer { lock.unlock() }
+                count += 1
+            }
+        }
+        let seg1Attempts = AttemptCounter()
         MockURLProtocol.setHandler(for: testURL) { request in
             let range = request.value(forHTTPHeaderField: "Range") ?? ""
             if range == "bytes=0-" {
@@ -428,9 +445,7 @@ final class DownloadCoordinatorTests: XCTestCase {
                 let resp = HTTPURLResponse(url: testURL, statusCode: 206, httpVersion: "HTTP/1.1", headerFields: headers)!
                 return (resp, Data(repeating: 0x11, count: 1000))
             } else if range.contains("1000-1999") {
-                lock.lock()
-                seg1Attempts += 1
-                lock.unlock()
+                seg1Attempts.increment()
                 let resp = HTTPURLResponse(url: testURL, statusCode: 500, httpVersion: "HTTP/1.1", headerFields: [:])!
                 return (resp, Data())
             }
@@ -455,9 +470,7 @@ final class DownloadCoordinatorTests: XCTestCase {
         }
 
         // Verify that retry attempts were made
-        lock.lock()
-        let attempts = seg1Attempts
-        lock.unlock()
+        let attempts = seg1Attempts.count
         XCTAssertGreaterThanOrEqual(attempts, 2)
 
         // Verify persistence store state transitioned to .failed
