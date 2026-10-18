@@ -67,7 +67,7 @@ public struct DownloadDetailsView: View {
                         DetailRow(label: "Average Speed", value: UIFormatters.formatSpeed(download.averageBytesPerSecond))
                         DetailRow(label: "Time Remaining", value: UIFormatters.formatTimeInterval(download.estimatedTimeRemaining))
                         DetailRow(label: "Elapsed Time", value: UIFormatters.formatTimeInterval(download.elapsedTime))
-                        DetailRow(label: "Priority", value: download.priority.rawValue.capitalized)
+                        DetailRow(label: "Priority", value: priorityLabel(for: download.priority))
                     }
 
                     // Integrity & Checksums
@@ -123,9 +123,11 @@ public struct DownloadDetailsView: View {
                         }
                     }
                 }
+                #if os(iOS)
                 .listStyle(.insetGrouped)
-                .navigationTitle("Details")
                 .navigationBarTitleDisplayMode(.inline)
+                #endif
+                .navigationTitle("Details")
                 .alert("Remove Download", isPresented: $showingDeleteAlert) {
                     Button("Remove Entry Only", role: .none) {
                         Task { @MainActor in
@@ -154,6 +156,17 @@ public struct DownloadDetailsView: View {
                 }
                 .navigationTitle("Details")
             }
+        }
+    }
+
+    private func priorityLabel(for priority: DownloadPriority) -> String {
+        switch priority {
+        case .low:
+            return "Low"
+        case .normal:
+            return "Normal"
+        case .high:
+            return "High"
         }
     }
 

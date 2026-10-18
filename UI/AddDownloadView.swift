@@ -3,6 +3,8 @@ import SwiftUI
 
 #if canImport(UIKit)
 import UIKit
+#elseif canImport(AppKit)
+import AppKit
 #endif
 
 /// Screen 2: Add Download Screen enabling users to input URLs, customize filenames, configure segment workers, and start transfers.
@@ -29,8 +31,10 @@ public struct AddDownloadView: View {
                 Section(header: Text("Source URL")) {
                     HStack {
                         TextField("https://example.com/file.zip", text: $urlString)
+                        #if canImport(UIKit)
                             .keyboardType(.URL)
                             .autocapitalization(.none)
+                        #endif
                             .disableAutocorrection(true)
                             .onChange(of: urlString) { newURL in
                                 autoFillFilename(from: newURL)
@@ -39,6 +43,16 @@ public struct AddDownloadView: View {
                         #if canImport(UIKit)
                         Button {
                             if let pasteboard = UIPasteboard.general.string {
+                                urlString = pasteboard
+                                autoFillFilename(from: pasteboard)
+                            }
+                        } label: {
+                            Image(systemName: "doc.on.clipboard")
+                                .foregroundColor(.blue)
+                        }
+                        #elseif canImport(AppKit)
+                        Button {
+                            if let pasteboard = NSPasteboard.general.string(forType: .string) {
                                 urlString = pasteboard
                                 autoFillFilename(from: pasteboard)
                             }
@@ -59,7 +73,9 @@ public struct AddDownloadView: View {
                 // Section 2: Destination & File Settings
                 Section(header: Text("Destination & File")) {
                     TextField("Filename (optional)", text: $customFilename)
+                    #if canImport(UIKit)
                         .autocapitalization(.none)
+                    #endif
                         .disableAutocorrection(true)
 
                     HStack {
@@ -82,7 +98,9 @@ public struct AddDownloadView: View {
                         Text("Speed Limit (KB/s)")
                         Spacer()
                         TextField("Unlimited", text: $speedLimitKBps)
+                        #if canImport(UIKit)
                             .keyboardType(.numberPad)
+                        #endif
                             .multilineTextAlignment(.trailing)
                             .frame(maxWidth: 120)
                     }

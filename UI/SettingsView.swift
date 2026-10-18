@@ -1,6 +1,10 @@
 #if canImport(SwiftUI)
 import SwiftUI
 
+#if canImport(UIKit)
+import UIKit
+#endif
+
 /// Screen 4: Settings Screen exposing the engine's concurrency, request budget, and bandwidth limits.
 public struct SettingsView: View {
     @ObservedObject public var viewModel: DownloadManagerViewModel
@@ -47,7 +51,9 @@ public struct SettingsView: View {
                             Text("Speed Cap (KB/s)")
                             Spacer()
                             TextField("KB/s", text: $globalSpeedLimitKBps)
+                            #if canImport(UIKit)
                                 .keyboardType(.numberPad)
+                            #endif
                                 .multilineTextAlignment(.trailing)
                                 .frame(maxWidth: 120)
                         }

@@ -1,6 +1,12 @@
 #if canImport(SwiftUI)
 import SwiftUI
 
+#if canImport(UIKit)
+import UIKit
+#elseif canImport(AppKit)
+import AppKit
+#endif
+
 /// Formatter helpers for UI representation of byte counts, speeds, and times.
 public enum UIFormatters {
     public static func formatBytes(_ bytes: Int64) -> String {
@@ -34,6 +40,14 @@ public enum UIFormatters {
 public struct DownloadsView: View {
     @ObservedObject public var viewModel: DownloadManagerViewModel
     @State private var showingAddSheet = false
+
+    private var trailingToolbarPlacement: ToolbarItemPlacement {
+        #if os(iOS)
+        return .navigationBarTrailing
+        #else
+        return .primaryAction
+        #endif
+    }
 
     public init(viewModel: DownloadManagerViewModel) {
         self.viewModel = viewModel
@@ -127,7 +141,7 @@ public struct DownloadsView: View {
             .navigationTitle("Downloads")
             .searchable(text: $viewModel.filterText, prompt: "Search downloads...")
             .toolbar {
-                ToolbarItemGroup(placement: .navigationBarTrailing) {
+                ToolbarItemGroup(placement: trailingToolbarPlacement) {
                     Menu {
                         Button {
                             Task { @MainActor in await viewModel.pauseAll() }
@@ -330,7 +344,7 @@ public struct QueueSummaryHeader: View {
         }
         .padding(.horizontal)
         .padding(.vertical, 8)
-        .background(Color(.secondarySystemBackground))
+        .background(Color.platformSecondaryBackground)
     }
 }
 
@@ -368,7 +382,7 @@ public struct FilterBar: View {
                             .font(.caption.bold())
                             .padding(.horizontal, 12)
                             .padding(.vertical, 6)
-                            .background(selectedFilter == filter ? Color.blue : Color(.secondarySystemBackground))
+                            .background(selectedFilter == filter ? Color.blue : Color.platformSecondaryBackground)
                             .foregroundColor(selectedFilter == filter ? .white : .primary)
                             .cornerRadius(16)
                     }
@@ -400,6 +414,18 @@ public struct EmptyDownloadsState: View {
                 .padding(.horizontal)
             Spacer()
         }
+    }
+}
+
+private extension Color {
+    static var platformSecondaryBackground: Color {
+        #if canImport(UIKit)
+        return Color(uiColor: .secondarySystemBackground)
+        #elseif canImport(AppKit)
+        return Color(nsColor: .windowBackgroundColor)
+        #else
+        return Color.secondary.opacity(0.15)
+        #endif
     }
 }
 #endif
