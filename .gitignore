@@ -3,9 +3,10 @@
 .swiftpm/
 
 # Xcode & Apple OS
-*.xcodeproj
-*.xcworkspace
 xcuserdata/
+*.xcworkspace/xcuserdata/
+*.xcodeproj/xcuserdata/
+*.xcodeproj/project.xcworkspace/xcuserdata/
 DerivedData/
 .DS_Store
 

@@ -6,7 +6,7 @@ import DM_Reverse_engineering
 ///
 /// When opened in Xcode as an iOS App target (or built with xcodebuild), this entry point
 /// executes `SwiftDownloadEngineApp.main()`, bootstrapping the segmented engine, persistent queue,
-/// and full 4-screen SwiftUI interface.
+/// and full 3-tab SwiftUI interface (Downloads, Add, Settings, with detail inspection).
 @main
 struct iOSAppEntry {
     static func main() {

@@ -12,6 +12,7 @@ import SwiftUI
 public struct SwiftDownloadEngineApp: App {
     @StateObject private var viewModel: DownloadManagerViewModel
     @Environment(\.scenePhase) private var scenePhase
+    @State private var hasRestoredQueue = false
 
     /// Resolves the app's persistent storage URL for download manifests and segment states.
     public static func defaultStorageDirectory() -> URL {
@@ -76,7 +77,12 @@ public struct SwiftDownloadEngineApp: App {
             case .active:
                 Task { @MainActor in
                     await viewModel.startObserving()
-                    try? await viewModel.restoreQueue(autoStart: false)
+                    if !hasRestoredQueue {
+                        hasRestoredQueue = true
+                        try? await viewModel.restoreQueue(autoStart: false)
+                    } else {
+                        await viewModel.refreshSnapshots()
+                    }
                 }
             case .background:
                 Task { @MainActor in
