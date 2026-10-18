@@ -1,0 +1,519 @@
+import Foundation
+
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
+
+/// Unique identifier for downloads managed by `DownloadEngine`.
+public typealias DownloadID = String
+
+/// High-level, application-facing immutable snapshot of a download operation.
+public struct DownloadSnapshot: Sendable, Equatable, Identifiable, Codable {
+    public let id: DownloadID
+    public let url: URL
+    public let destinationURL: URL
+    public let state: DownloadState
+    public let priority: DownloadPriority
+    public let completedBytes: Int64
+    public let totalBytes: Int64?
+    public let progressFraction: Double
+    public let currentBytesPerSecond: Double
+    public let averageBytesPerSecond: Double
+    public let elapsedTime: TimeInterval
+    public let estimatedTimeRemaining: TimeInterval?
+    public let failureReason: String?
+    public let checksumOutcome: ChecksumOutcome
+    public let enqueuedAt: Date
+
+    public var isTerminal: Bool {
+        state.isTerminal
+    }
+
+    public var canResume: Bool {
+        state.canResume
+    }
+
+    public var isCompleted: Bool {
+        state == .completed
+    }
+
+    public var isFailed: Bool {
+        if case .failed = state { return true } else { return false }
+    }
+
+    public init(
+        id: DownloadID,
+        url: URL,
+        destinationURL: URL,
+        state: DownloadState,
+        priority: DownloadPriority = .normal,
+        completedBytes: Int64 = 0,
+        totalBytes: Int64? = nil,
+        progressFraction: Double = 0.0,
+        currentBytesPerSecond: Double = 0.0,
+        averageBytesPerSecond: Double = 0.0,
+        elapsedTime: TimeInterval = 0.0,
+        estimatedTimeRemaining: TimeInterval? = nil,
+        failureReason: String? = nil,
+        checksumOutcome: ChecksumOutcome = .notChecked,
+        enqueuedAt: Date = Date()
+    ) {
+        self.id = id
+        self.url = url
+        self.destinationURL = destinationURL
+        self.state = state
+        self.priority = priority
+        self.completedBytes = completedBytes
+        self.totalBytes = totalBytes
+        self.progressFraction = progressFraction
+        self.currentBytesPerSecond = currentBytesPerSecond
+        self.averageBytesPerSecond = averageBytesPerSecond
+        self.elapsedTime = elapsedTime
+        self.estimatedTimeRemaining = estimatedTimeRemaining
+        self.failureReason = failureReason
+        self.checksumOutcome = checksumOutcome
+        self.enqueuedAt = enqueuedAt
+    }
+}
+
+/// Structured asynchronous event emitted during download and queue lifecycle transitions.
+public enum DownloadEvent: Sendable, Equatable {
+    case added(DownloadSnapshot)
+    case queued(DownloadSnapshot)
+    case started(DownloadSnapshot)
+    case progressUpdated(DownloadSnapshot)
+    case paused(DownloadSnapshot)
+    case resumed(DownloadSnapshot)
+    case completed(DownloadSnapshot)
+    case failed(DownloadSnapshot, reason: String)
+    case cancelled(DownloadSnapshot)
+    case removed(id: DownloadID)
+    case integrityVerified(id: DownloadID, outcome: ChecksumOutcome)
+    case queueStateChanged(QueueSnapshot)
+
+    public var downloadID: DownloadID? {
+        switch self {
+        case .added(let snap),
+             .queued(let snap),
+             .started(let snap),
+             .progressUpdated(let snap),
+             .paused(let snap),
+             .resumed(let snap),
+             .completed(let snap),
+             .failed(let snap, _),
+             .cancelled(let snap):
+            return snap.id
+        case .removed(let id),
+             .integrityVerified(let id, _):
+            return id
+        case .queueStateChanged:
+            return nil
+        }
+    }
+}
+
+/// Unified, high-level public facade coordinating download queues, transfers, and real-time event streams.
+///
+/// Features:
+/// - Single Public Entry Point: Coordinates `DownloadQueueManager`, `DownloadCoordinator`, and `DownloadPersistenceStore`.
+/// - Asynchronous Event Streams: Exposes `AsyncStream<DownloadEvent>` with non-competing, broadcast fan-out to multiple observers.
+/// - Progress Event Coalescing: Throttles high-frequency progress emissions to avoid buffer overflow, while dispatching
+///   all lifecycle state changes immediately.
+/// - Authoritative State: Every snapshot reflects live engine and queue invariants without duplicating persisted storage.
+/// - Thread-Safe Lifecycle: Built as an actor to enforce structured concurrency and eliminate data races.
+public actor DownloadEngine {
+    public let queueManager: DownloadQueueManager
+    public let coordinator: DownloadCoordinator
+    public let persistenceStore: DownloadPersistenceStore
+
+    private var subscribers: [UUID: AsyncStream<DownloadEvent>.Continuation] = [:]
+    private var terminalEventsEmitted: Set<DownloadID> = []
+    private var lastProgressEmittedAt: [DownloadID: TimeInterval] = [:]
+    private var previousStates: [DownloadID: DownloadState] = [:]
+
+    /// Convenience initializer configuring engine with default storage and components.
+    public init(
+        storageDirectoryURL: URL? = nil,
+        maxConcurrentDownloads: Int = 3,
+        maxGlobalRequests: Int = 12,
+        globalBandwidthLimit: Int64? = nil,
+        session: URLSession = .shared
+    ) throws {
+        let persistence = try DownloadPersistenceStore(storageDirectoryURL: storageDirectoryURL)
+        let budget = SharedRequestBudget(maxGlobalRequests: maxGlobalRequests)
+        let limiter = BandwidthLimiter(bytesPerSecond: globalBandwidthLimit)
+        let coord = try DownloadCoordinator(
+            session: session,
+            persistenceStore: persistence,
+            requestBudget: budget,
+            globalBandwidthLimiter: limiter
+        )
+        let queue = DownloadQueueManager(
+            coordinator: coord,
+            persistenceStore: persistence,
+            maxConcurrentDownloads: maxConcurrentDownloads
+        )
+        self.queueManager = queue
+        self.coordinator = coord
+        self.persistenceStore = persistence
+
+        Task { [weak self] in
+            await self?.attachListeners()
+        }
+    }
+
+    /// Primary designated initializer accepting explicit engine components.
+    public init(
+        queueManager: DownloadQueueManager,
+        coordinator: DownloadCoordinator,
+        persistenceStore: DownloadPersistenceStore
+    ) {
+        self.queueManager = queueManager
+        self.coordinator = coordinator
+        self.persistenceStore = persistenceStore
+
+        Task { [weak self] in
+            await self?.attachListeners()
+        }
+    }
+
+    private var listenersAttached = false
+
+    /// Attaches internal listeners to `DownloadQueueManager` for automated event broadcasting.
+    public func attachListeners() async {
+        guard !listenersAttached else { return }
+        listenersAttached = true
+        await queueManager.setGlobalProgressHandler { [weak self] progress in
+            Task { [weak self] in
+                await self?.handleProgressUpdate(progress)
+            }
+        }
+        await queueManager.setQueueChangedHandler { [weak self] snapshot in
+            Task { [weak self] in
+                await self?.handleQueueChanged(snapshot)
+            }
+        }
+    }
+
+    // MARK: - Event Subscription
+
+    /// Subscribes to real-time download and queue lifecycle events via an `AsyncStream`.
+    ///
+    /// Each subscriber receives an independent, non-competing stream of broadcast events.
+    /// When the consuming task is cancelled or finishes, observer registration is automatically cleaned up.
+    public func events() -> AsyncStream<DownloadEvent> {
+        let (stream, continuation) = AsyncStream<DownloadEvent>.makeStream(bufferingPolicy: .bufferingNewest(200))
+        let subscriptionID = UUID()
+        continuation.onTermination = { [weak self] _ in
+            Task { [weak self] in
+                await self?.removeSubscriber(subscriptionID)
+            }
+        }
+        registerSubscriber(id: subscriptionID, continuation: continuation)
+        return stream
+    }
+
+    private func registerSubscriber(id: UUID, continuation: AsyncStream<DownloadEvent>.Continuation) {
+        subscribers[id] = continuation
+    }
+
+    private func removeSubscriber(_ id: UUID) {
+        subscribers.removeValue(forKey: id)
+    }
+
+    /// Number of active event-stream subscribers.
+    public var subscriberCount: Int {
+        subscribers.count
+    }
+
+    private func broadcast(_ event: DownloadEvent) {
+        for continuation in subscribers.values {
+            continuation.yield(event)
+        }
+    }
+
+    // MARK: - Download Lifecycle Operations
+
+    /// Enqueues a new download request through the engine pipeline.
+    ///
+    /// - Parameters:
+    ///   - request: Target download request configuration.
+    ///   - priority: Scheduling priority (.high, .normal, .low).
+    ///   - autoStart: If true, immediately triggers the queue scheduler.
+    /// - Returns: Initial immutable snapshot of the added download.
+    @discardableResult
+    public func addDownload(
+        _ request: DownloadRequest,
+        priority: DownloadPriority = .normal,
+        autoStart: Bool = true
+    ) async throws -> DownloadSnapshot {
+        await attachListeners()
+        let item = try await queueManager.add(request, priority: priority, autoStart: autoStart)
+        let snap = await makeSnapshot(from: item)
+        previousStates[request.id] = item.state
+        terminalEventsEmitted.remove(request.id)
+
+        broadcast(.added(snap))
+        if item.state == .pending {
+            broadcast(.queued(snap))
+        }
+        return snap
+    }
+
+    /// Enqueues multiple download requests in bulk.
+    @discardableResult
+    public func addDownloads(
+        _ requests: [DownloadRequest],
+        priority: DownloadPriority = .normal,
+        autoStart: Bool = true
+    ) async throws -> [DownloadSnapshot] {
+        await attachListeners()
+        var added: [DownloadSnapshot] = []
+        for req in requests {
+            let snap = try await addDownload(req, priority: priority, autoStart: false)
+            added.append(snap)
+        }
+        if autoStart {
+            _ = try await queueManager.add([], autoStart: true)
+        }
+        return added
+    }
+
+    /// Cooperatively pauses an active or queued download.
+    public func pauseDownload(id: DownloadID) async throws {
+        await attachListeners()
+        try await queueManager.pause(id: id)
+    }
+
+    /// Resumes an interrupted or paused download.
+    public func resumeDownload(id: DownloadID) async throws {
+        await attachListeners()
+        try await queueManager.resume(id: id)
+    }
+
+    /// Cancels a download, stopping active transfers and optionally deleting destination files.
+    public func cancelDownload(id: DownloadID, deleteFile: Bool = false) async throws {
+        try await queueManager.cancel(id: id, deleteDestinationFile: deleteFile)
+    }
+
+    /// Removes a download record from the queue.
+    ///
+    /// - Parameters:
+    ///   - id: Identifier of the download to remove.
+    ///   - deleteFile: If false (default), the partially or fully downloaded file is preserved on disk.
+    public func removeDownload(id: DownloadID, deleteFile: Bool = false) async throws {
+        try await queueManager.removeFromQueue(id: id, deleteDestinationFile: deleteFile)
+    }
+
+    /// Retries an eligible failed download.
+    public func retryDownload(id: DownloadID) async throws {
+        terminalEventsEmitted.remove(id)
+        try await queueManager.retry(id: id)
+    }
+
+    /// Pauses all active and queued downloads in bulk.
+    public func pauseAllDownloads() async {
+        await queueManager.pauseAll()
+    }
+
+    /// Resumes all paused downloads in bulk.
+    public func resumeAllDownloads() async {
+        await queueManager.resumeAll()
+    }
+
+    /// Cancels all active and queued downloads in bulk.
+    public func cancelAllDownloads(deleteFiles: Bool = false) async {
+        await queueManager.cancelAll(deleteDestinationFiles: deleteFiles)
+    }
+
+    // MARK: - State & Inspection APIs
+
+    /// Returns the authoritative snapshot for a specific download ID.
+    public func snapshot(for id: DownloadID) async -> DownloadSnapshot? {
+        guard let item = await queueManager.item(for: id) else { return nil }
+        return await makeSnapshot(from: item)
+    }
+
+    /// Returns snapshots of all downloads in priority and sequence order.
+    public func allSnapshots() async -> [DownloadSnapshot] {
+        let items = await queueManager.allItems()
+        var result: [DownloadSnapshot] = []
+        for item in items {
+            let snap = await makeSnapshot(from: item)
+            result.append(snap)
+        }
+        return result
+    }
+
+    /// Returns a high-level summary snapshot of the overall queue.
+    public func queueSnapshot() async -> QueueSnapshot {
+        await queueManager.snapshot()
+    }
+
+    /// Awaits until all pending and active downloads in the queue have settled or completed.
+    public func waitUntilIdle(timeoutSeconds: TimeInterval = 10.0) async throws {
+        try await queueManager.waitUntilIdle(timeoutSeconds: timeoutSeconds)
+    }
+
+    /// Restores the queue state from persistent disk storage after application or process launch.
+    public func restoreQueue(autoStart: Bool = true) async throws {
+        try await queueManager.restoreQueue(autoStart: autoStart)
+    }
+
+    // MARK: - Resource & Bandwidth Throttling Configuration
+
+    /// Updates the global in-flight HTTP request limit across all downloads.
+    public func setMaxGlobalRequests(_ limit: Int) async throws {
+        try await queueManager.setMaxGlobalRequests(limit)
+    }
+
+    /// Updates or removes the global bandwidth rate limit.
+    public func setGlobalSpeedLimit(_ bytesPerSecond: Int64?) async {
+        await queueManager.setGlobalSpeedLimit(bytesPerSecond)
+    }
+
+    /// Updates or removes an individual download's bandwidth rate limit.
+    public func setSpeedLimit(for id: DownloadID, bytesPerSecond: Int64?) async {
+        await queueManager.setSpeedLimit(for: id, bytesPerSecond: bytesPerSecond)
+    }
+
+    /// Updates maximum concurrent downloads allowed in the queue.
+    public func setMaxConcurrentDownloads(_ limit: Int) async throws {
+        try await queueManager.setMaxConcurrentDownloads(limit)
+    }
+
+    /// Retrieves current speed and ETA metrics for a download.
+    public func speedMetrics(for id: DownloadID) async -> SpeedMetrics? {
+        await queueManager.speedMetrics(for: id)
+    }
+
+    /// Retrieves the final checksum verification outcome for a completed download.
+    public func checksumOutcome(for id: DownloadID) async -> ChecksumOutcome {
+        await queueManager.checksumOutcome(for: id)
+    }
+
+    // MARK: - Internal Event Dispatching
+
+    private func handleProgressUpdate(_ progress: CoordinatorProgress) async {
+        guard let item = await queueManager.item(for: progress.downloadID) else { return }
+        let snap = await makeSnapshot(from: item, progress: progress)
+
+        // Coalesce high-frequency progress events (maximum 20 Hz / once per 50ms per download)
+        let now = ProcessInfo.processInfo.systemUptime
+        let last = lastProgressEmittedAt[progress.downloadID] ?? 0
+        if now - last >= 0.05 {
+            lastProgressEmittedAt[progress.downloadID] = now
+            broadcast(.progressUpdated(snap))
+        }
+    }
+
+    private func handleQueueChanged(_ queueSnap: QueueSnapshot) async {
+        for item in queueSnap.items {
+            let id = item.id
+            let prevState = previousStates[id]
+            let currState = item.state
+            previousStates[id] = currState
+
+            let snap = await makeSnapshot(from: item)
+
+            // Trigger lifecycle event only on real state transitions
+            if prevState != currState {
+                if prevState == .paused && (currState == .pending || currState == .downloading) {
+                    broadcast(.resumed(snap))
+                }
+
+                switch currState {
+                case .pending:
+                    if prevState != .paused && prevState != nil {
+                        broadcast(.queued(snap))
+                    }
+                case .downloading:
+                    terminalEventsEmitted.remove(id)
+                    broadcast(.started(snap))
+                case .paused:
+                    broadcast(.paused(snap))
+                case .completed:
+                    if !terminalEventsEmitted.contains(id) {
+                        terminalEventsEmitted.insert(id)
+                        broadcast(.completed(snap))
+                        let outcome = await coordinator.checksumOutcome(for: id)
+                        if outcome != .notChecked {
+                            broadcast(.integrityVerified(id: id, outcome: outcome))
+                        }
+                    }
+                case .failed(let reason):
+                    if !terminalEventsEmitted.contains(id) {
+                        terminalEventsEmitted.insert(id)
+                        broadcast(.failed(snap, reason: reason))
+                    }
+                case .cancelled:
+                    if !terminalEventsEmitted.contains(id) {
+                        terminalEventsEmitted.insert(id)
+                        broadcast(.cancelled(snap))
+                    }
+                case .probing:
+                    break
+                }
+            }
+        }
+
+        // Detect items removed from queue
+        let currentIDs = Set(queueSnap.items.map { $0.id })
+        for knownID in previousStates.keys where !currentIDs.contains(knownID) {
+            previousStates.removeValue(forKey: knownID)
+            terminalEventsEmitted.remove(knownID)
+            lastProgressEmittedAt.removeValue(forKey: knownID)
+            broadcast(.removed(id: knownID))
+        }
+
+        broadcast(.queueStateChanged(queueSnap))
+    }
+
+    private func makeSnapshot(from item: QueueItem, progress: CoordinatorProgress? = nil) async -> DownloadSnapshot {
+        let coordProg: CoordinatorProgress?
+        if let progress = progress {
+            coordProg = progress
+        } else {
+            coordProg = await coordinator.currentProgress(for: item.id)
+        }
+        let metrics = await coordinator.speedMetrics(for: item.id)
+        let outcome = await coordinator.checksumOutcome(for: item.id)
+
+        var failureReason: String? = nil
+        if case .failed(let reason) = item.state {
+            failureReason = reason
+        }
+
+        return DownloadSnapshot(
+            id: item.id,
+            url: item.request.url,
+            destinationURL: item.request.destinationURL,
+            state: item.state,
+            priority: item.priority,
+            completedBytes: item.completedBytes,
+            totalBytes: item.totalBytes,
+            progressFraction: item.fractionCompleted,
+            currentBytesPerSecond: metrics?.currentBytesPerSecond ?? coordProg?.currentBytesPerSecond ?? 0,
+            averageBytesPerSecond: metrics?.averageBytesPerSecond ?? coordProg?.averageBytesPerSecond ?? 0,
+            elapsedTime: metrics?.elapsedTime ?? coordProg?.elapsedTime ?? 0,
+            estimatedTimeRemaining: metrics?.estimatedTimeRemaining ?? coordProg?.estimatedTimeRemaining,
+            failureReason: failureReason,
+            checksumOutcome: outcome,
+            enqueuedAt: item.enqueuedAt
+        )
+    }
+
+    /// Closes all active event streams upon engine termination.
+    public func shutdown() {
+        for continuation in subscribers.values {
+            continuation.finish()
+        }
+        subscribers.removeAll()
+    }
+
+    deinit {
+        for continuation in subscribers.values {
+            continuation.finish()
+        }
+    }
+}

@@ -1,0 +1,22 @@
+# Swift Package Manager
+.build/
+.swiftpm/
+
+# Xcode & Apple OS
+*.xcodeproj
+*.xcworkspace
+xcuserdata/
+DerivedData/
+.DS_Store
+
+# Temporary, Raw Decompilations & Local Archives
+sources/
+resources/
+1dm_ios_engine_component*
+*.apk
+*.zip
+*.log
+*.tmp
+*.swp
+*~
+Thumbs.db
