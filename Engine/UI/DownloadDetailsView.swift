@@ -87,21 +87,21 @@ public struct DownloadDetailsView: View {
                     Section {
                         if download.state == .downloading {
                             Button {
-                                Task { try? await viewModel.pauseDownload(id: download.id) }
+                                Task { @MainActor in try? await viewModel.pauseDownload(id: download.id) }
                             } label: {
                                 Label("Pause Download", systemImage: "pause.fill")
                                     .foregroundColor(.orange)
                             }
                         } else if download.canResume {
                             Button {
-                                Task { try? await viewModel.resumeDownload(id: download.id) }
+                                Task { @MainActor in try? await viewModel.resumeDownload(id: download.id) }
                             } label: {
                                 Label("Resume Download", systemImage: "play.fill")
                                     .foregroundColor(.green)
                             }
                         } else if download.isFailed {
                             Button {
-                                Task { try? await viewModel.retryDownload(id: download.id) }
+                                Task { @MainActor in try? await viewModel.retryDownload(id: download.id) }
                             } label: {
                                 Label("Retry Download", systemImage: "arrow.clockwise")
                                     .foregroundColor(.blue)
@@ -110,7 +110,7 @@ public struct DownloadDetailsView: View {
 
                         if !download.isTerminal {
                             Button(role: .destructive) {
-                                Task { try? await viewModel.cancelDownload(id: download.id, deleteFile: false) }
+                                Task { @MainActor in try? await viewModel.cancelDownload(id: download.id, deleteFile: false) }
                             } label: {
                                 Label("Cancel Download", systemImage: "xmark.circle")
                             }
@@ -128,13 +128,13 @@ public struct DownloadDetailsView: View {
                 .navigationBarTitleDisplayMode(.inline)
                 .alert("Remove Download", isPresented: $showingDeleteAlert) {
                     Button("Remove Entry Only", role: .none) {
-                        Task {
+                        Task { @MainActor in
                             try? await viewModel.removeDownload(id: download.id, deleteFile: false)
                             presentationMode.wrappedValue.dismiss()
                         }
                     }
                     Button("Delete File from Disk", role: .destructive) {
-                        Task {
+                        Task { @MainActor in
                             try? await viewModel.removeDownload(id: download.id, deleteFile: true)
                             presentationMode.wrappedValue.dismiss()
                         }

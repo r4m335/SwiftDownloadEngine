@@ -6,6 +6,24 @@ import FoundationNetworking
 
 #if canImport(Combine)
 import Combine
+#else
+/// Cross-platform fallback for Combine's ObservableObject on non-Apple environments.
+public protocol ObservableObject: AnyObject {}
+
+/// Cross-platform fallback for Combine's @Published property wrapper on non-Apple environments.
+@propertyWrapper
+public struct Published<Value> {
+    public var wrappedValue: Value
+
+    public init(wrappedValue: Value) {
+        self.wrappedValue = wrappedValue
+    }
+
+    public var projectedValue: Published<Value> {
+        get { self }
+        set { self = newValue }
+    }
+}
 #endif
 
 /// UI filter options for the download manager list.
@@ -22,27 +40,35 @@ public enum DownloadFilter: String, CaseIterable, Sendable, Identifiable {
 /// Main-actor isolated view model bridging `DownloadEngine` to UI layers (SwiftUI / UIKit).
 ///
 /// Features:
-/// - Real-Time Observation: Subscribes to `engine.events()` via an `AsyncStream<DownloadEvent>` and updates UI state.
+/// - Real-Time Observation: Conforms directly to `ObservableObject` with `@Published` state properties for automatic SwiftUI view redraws.
+/// - Event Stream Subscription: Subscribes to `engine.events()` via an `AsyncStream<DownloadEvent>` and updates UI state.
 /// - Authoritative Snapshot Sync: Keeps live snapshots without diverging from underlying queue/persistence.
 /// - Action Dispatching: Exposes pause, resume, cancel, retry, remove, and add operations.
-/// - Configurable Settings: Manages dynamic concurrency limits, request budgets, and bandwidth throttling.
+/// - Configurable Settings & Persistence: Manages dynamic concurrency limits, request budgets, and bandwidth throttling, persisted via `UserDefaults`.
 @MainActor
-public final class DownloadManagerViewModel: @unchecked Sendable {
+public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendable {
     public let engine: DownloadEngine
     public let downloadsDirectoryURL: URL
+    private let userDefaults: UserDefaults
 
-    public var downloads: [DownloadSnapshot] = []
-    public var selectedDownload: DownloadSnapshot? = nil
-    public var queueSummary: QueueSnapshot? = nil
-    public var filterText: String = ""
-    public var selectedFilter: DownloadFilter = .all
+    public enum SettingsKeys {
+        public static let maxConcurrentDownloads = "SwiftDownloadEngine.maxConcurrentDownloads"
+        public static let maxGlobalRequests = "SwiftDownloadEngine.maxGlobalRequests"
+        public static let globalBandwidthLimit = "SwiftDownloadEngine.globalBandwidthLimit"
+    }
 
-    public var maxConcurrentDownloads: Int = 3
-    public var maxGlobalRequests: Int = 12
-    public var globalBandwidthLimitBytesPerSecond: Int64? = nil
+    @Published public var downloads: [DownloadSnapshot] = []
+    @Published public var selectedDownload: DownloadSnapshot? = nil
+    @Published public var queueSummary: QueueSnapshot? = nil
+    @Published public var filterText: String = ""
+    @Published public var selectedFilter: DownloadFilter = .all
 
-    public var errorMessage: String? = nil
-    public var isObserving: Bool = false
+    @Published public var maxConcurrentDownloads: Int = 3
+    @Published public var maxGlobalRequests: Int = 12
+    @Published public var globalBandwidthLimitBytesPerSecond: Int64? = nil
+
+    @Published public var errorMessage: String? = nil
+    @Published public var isObserving: Bool = false
 
     private var eventTask: Task<Void, Never>? = nil
 
@@ -59,9 +85,28 @@ public final class DownloadManagerViewModel: @unchecked Sendable {
         return baseDir
     }
 
-    public init(engine: DownloadEngine, downloadsDirectory: URL? = nil) {
+    public init(
+        engine: DownloadEngine,
+        downloadsDirectory: URL? = nil,
+        userDefaults: UserDefaults = .standard
+    ) {
         self.engine = engine
         self.downloadsDirectoryURL = downloadsDirectory ?? Self.defaultDownloadsDirectory()
+        self.userDefaults = userDefaults
+
+        let savedConcurrent = userDefaults.integer(forKey: SettingsKeys.maxConcurrentDownloads)
+        self.maxConcurrentDownloads = savedConcurrent > 0 ? savedConcurrent : 3
+
+        let savedRequests = userDefaults.integer(forKey: SettingsKeys.maxGlobalRequests)
+        self.maxGlobalRequests = savedRequests > 0 ? savedRequests : 12
+
+        if userDefaults.object(forKey: SettingsKeys.globalBandwidthLimit) != nil {
+            let savedLimit = userDefaults.object(forKey: SettingsKeys.globalBandwidthLimit) as? Int64
+                ?? Int64(userDefaults.integer(forKey: SettingsKeys.globalBandwidthLimit))
+            self.globalBandwidthLimitBytesPerSecond = savedLimit > 0 ? savedLimit : nil
+        } else {
+            self.globalBandwidthLimitBytesPerSecond = nil
+        }
     }
 
     // MARK: - Event Subscription & Synchronization
@@ -70,6 +115,9 @@ public final class DownloadManagerViewModel: @unchecked Sendable {
     public func startObserving() async {
         guard !isObserving else { return }
         isObserving = true
+
+        // Apply persisted settings to the underlying engine
+        try? await applyPersistedSettings()
 
         // Fetch authoritative initial snapshots
         await refreshSnapshots()
@@ -290,9 +338,9 @@ public final class DownloadManagerViewModel: @unchecked Sendable {
         self.selectedDownload = nil
     }
 
-    // MARK: - Settings Configuration
+    // MARK: - Settings Configuration & Persistence
 
-    /// Updates the engine's configuration settings.
+    /// Updates the engine's configuration settings and persists them to UserDefaults.
     public func updateSettings(
         maxConcurrent: Int,
         maxGlobalRequests: Int,
@@ -302,9 +350,24 @@ public final class DownloadManagerViewModel: @unchecked Sendable {
         self.maxGlobalRequests = maxGlobalRequests
         self.globalBandwidthLimitBytesPerSecond = globalBandwidthLimit
 
+        userDefaults.set(maxConcurrent, forKey: SettingsKeys.maxConcurrentDownloads)
+        userDefaults.set(maxGlobalRequests, forKey: SettingsKeys.maxGlobalRequests)
+        if let limit = globalBandwidthLimit {
+            userDefaults.set(limit, forKey: SettingsKeys.globalBandwidthLimit)
+        } else {
+            userDefaults.removeObject(forKey: SettingsKeys.globalBandwidthLimit)
+        }
+
         try await engine.setMaxConcurrentDownloads(maxConcurrent)
         try await engine.setMaxGlobalRequests(maxGlobalRequests)
         await engine.setGlobalSpeedLimit(globalBandwidthLimit)
+    }
+
+    /// Applies configured/persisted settings to the underlying engine.
+    public func applyPersistedSettings() async throws {
+        try await engine.setMaxConcurrentDownloads(maxConcurrentDownloads)
+        try await engine.setMaxGlobalRequests(maxGlobalRequests)
+        await engine.setGlobalSpeedLimit(globalBandwidthLimitBytesPerSecond)
     }
 
     /// Restores persistent queue state from disk.
@@ -313,7 +376,3 @@ public final class DownloadManagerViewModel: @unchecked Sendable {
         await refreshSnapshots()
     }
 }
-
-#if canImport(Combine)
-extension DownloadManagerViewModel: ObservableObject {}
-#endif

@@ -408,4 +408,88 @@ final class DownloadManagerViewModelTests: XCTestCase {
             XCTAssertNil(viewModel.selectedDownload)
         }
     }
+
+    // MARK: - 11. ObservableObject & Published Properties
+
+    func testViewModelObservableObjectAndPublishedProperties() async throws {
+        await MainActor.run {
+            // Confirm ObservableObject protocol conformance
+            let observable: any ObservableObject = viewModel
+            XCTAssertNotNil(observable)
+
+            // Verify mutations to @Published state properties
+            viewModel.filterText = "archive"
+            XCTAssertEqual(viewModel.filterText, "archive")
+
+            viewModel.selectedFilter = .paused
+            XCTAssertEqual(viewModel.selectedFilter, .paused)
+
+            let testSnapshot = DownloadSnapshot(
+                id: "obs_test",
+                url: URL(string: "https://example.com/obs.bin")!,
+                destinationURL: URL(fileURLWithPath: "/tmp/obs.bin"),
+                state: .paused
+            )
+            viewModel.downloads = [testSnapshot]
+            XCTAssertEqual(viewModel.downloads.count, 1)
+            XCTAssertEqual(viewModel.downloads.first?.id, "obs_test")
+        }
+    }
+
+    // MARK: - 12. Settings Persistence Across Instances
+
+    func testUISettingsPersistenceAcrossInstances() async throws {
+        let suiteName = "test_settings_\(UUID().uuidString)"
+        let testDefaults = UserDefaults(suiteName: suiteName)!
+        defer {
+            testDefaults.removePersistentDomain(forName: suiteName)
+        }
+
+        // Initialize first view model with custom UserDefaults suite
+        let vm1 = await DownloadManagerViewModel(
+            engine: engine,
+            downloadsDirectory: tempDirectory,
+            userDefaults: testDefaults
+        )
+
+        // Verify clean defaults
+        let initialConcurrent = await vm1.maxConcurrentDownloads
+        let initialRequests = await vm1.maxGlobalRequests
+        let initialLimit = await vm1.globalBandwidthLimitBytesPerSecond
+        XCTAssertEqual(initialConcurrent, 3)
+        XCTAssertEqual(initialRequests, 12)
+        XCTAssertNil(initialLimit)
+
+        // Update settings and verify persistence
+        try await vm1.updateSettings(
+            maxConcurrent: 7,
+            maxGlobalRequests: 28,
+            globalBandwidthLimit: 4_194_304 // 4 MB/s
+        )
+
+        // Verify values saved in UserDefaults
+        XCTAssertEqual(testDefaults.integer(forKey: DownloadManagerViewModel.SettingsKeys.maxConcurrentDownloads), 7)
+        XCTAssertEqual(testDefaults.integer(forKey: DownloadManagerViewModel.SettingsKeys.maxGlobalRequests), 28)
+
+        // Initialize a second ViewModel pointing to the same UserDefaults
+        let vm2 = await DownloadManagerViewModel(
+            engine: engine,
+            downloadsDirectory: tempDirectory,
+            userDefaults: testDefaults
+        )
+
+        // Assert that the persisted settings were loaded into vm2
+        let restoredConcurrent = await vm2.maxConcurrentDownloads
+        let restoredRequests = await vm2.maxGlobalRequests
+        let restoredLimit = await vm2.globalBandwidthLimitBytesPerSecond
+
+        XCTAssertEqual(restoredConcurrent, 7)
+        XCTAssertEqual(restoredRequests, 28)
+        XCTAssertEqual(restoredLimit, 4_194_304)
+
+        // Test applying persisted settings to engine
+        try await vm2.applyPersistedSettings()
+        let actualLimit = await queueManager.maxConcurrentDownloads
+        XCTAssertEqual(actualLimit, 7)
+    }
 }

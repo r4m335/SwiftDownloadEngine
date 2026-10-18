@@ -64,7 +64,7 @@ public struct DownloadsView: View {
                             }
                             .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                                 Button(role: .destructive) {
-                                    Task {
+                                    Task { @MainActor in
                                         try? await viewModel.removeDownload(id: download.id, deleteFile: false)
                                     }
                                 } label: {
@@ -73,7 +73,7 @@ public struct DownloadsView: View {
 
                                 if download.state.canResume {
                                     Button {
-                                        Task {
+                                        Task { @MainActor in
                                             try? await viewModel.resumeDownload(id: download.id)
                                         }
                                     } label: {
@@ -82,7 +82,7 @@ public struct DownloadsView: View {
                                     .tint(.green)
                                 } else if download.state == .downloading {
                                     Button {
-                                        Task {
+                                        Task { @MainActor in
                                             try? await viewModel.pauseDownload(id: download.id)
                                         }
                                     } label: {
@@ -105,13 +105,13 @@ public struct DownloadsView: View {
                 ToolbarItemGroup(placement: .navigationBarTrailing) {
                     Menu {
                         Button {
-                            Task { await viewModel.pauseAll() }
+                            Task { @MainActor in await viewModel.pauseAll() }
                         } label: {
                             Label("Pause All", systemImage: "pause.circle")
                         }
 
                         Button {
-                            Task { await viewModel.resumeAll() }
+                            Task { @MainActor in await viewModel.resumeAll() }
                         } label: {
                             Label("Resume All", systemImage: "play.circle")
                         }
@@ -119,7 +119,7 @@ public struct DownloadsView: View {
                         Divider()
 
                         Button(role: .destructive) {
-                            Task { await viewModel.cancelAll(deleteFiles: false) }
+                            Task { @MainActor in await viewModel.cancelAll(deleteFiles: false) }
                         } label: {
                             Label("Cancel All", systemImage: "stop.circle")
                         }
@@ -193,7 +193,7 @@ public struct DownloadRowView: View {
             HStack(spacing: 12) {
                 if download.state == .downloading {
                     Button {
-                        Task { try? await viewModel.pauseDownload(id: download.id) }
+                        Task { @MainActor in try? await viewModel.pauseDownload(id: download.id) }
                     } label: {
                         Label("Pause", systemImage: "pause.fill")
                             .font(.caption2)
@@ -202,7 +202,7 @@ public struct DownloadRowView: View {
                     .tint(.orange)
                 } else if download.canResume {
                     Button {
-                        Task { try? await viewModel.resumeDownload(id: download.id) }
+                        Task { @MainActor in try? await viewModel.resumeDownload(id: download.id) }
                     } label: {
                         Label("Resume", systemImage: "play.fill")
                             .font(.caption2)
@@ -211,7 +211,7 @@ public struct DownloadRowView: View {
                     .tint(.green)
                 } else if download.isFailed {
                     Button {
-                        Task { try? await viewModel.retryDownload(id: download.id) }
+                        Task { @MainActor in try? await viewModel.retryDownload(id: download.id) }
                     } label: {
                         Label("Retry", systemImage: "arrow.clockwise")
                             .font(.caption2)
@@ -222,7 +222,7 @@ public struct DownloadRowView: View {
 
                 if !download.isTerminal {
                     Button(role: .destructive) {
-                        Task { try? await viewModel.cancelDownload(id: download.id, deleteFile: false) }
+                        Task { @MainActor in try? await viewModel.cancelDownload(id: download.id, deleteFile: false) }
                     } label: {
                         Label("Cancel", systemImage: "xmark")
                             .font(.caption2)

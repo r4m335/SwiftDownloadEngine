@@ -139,7 +139,7 @@ public struct AddDownloadView: View {
             limit = nil
         }
 
-        Task {
+        Task { @MainActor in
             do {
                 _ = try await viewModel.addDownload(
                     urlText: urlString,

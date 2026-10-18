@@ -66,7 +66,7 @@ public struct SettingsView: View {
                     }
 
                     Button {
-                        Task {
+                        Task { @MainActor in
                             do {
                                 try await viewModel.restoreQueue(autoStart: false)
                                 statusMessage = "Queue successfully restored from disk."
@@ -131,7 +131,7 @@ public struct SettingsView: View {
             limit = nil
         }
 
-        Task {
+        Task { @MainActor in
             try? await viewModel.updateSettings(
                 maxConcurrent: maxConcurrent,
                 maxGlobalRequests: maxGlobalRequests,
