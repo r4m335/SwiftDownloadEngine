@@ -48,6 +48,16 @@ If integrating into an existing iOS workspace or container:
 3. Replace the template `*App.swift` with [iOSApp/iOSAppEntry.swift](file:///c:/mini%20project/DM%20Reverse%20engineering/iOSApp/iOSAppEntry.swift).
 4. Set the build setting **Info.plist File** (`INFOPLIST_FILE`) to `iOSApp/Info.plist`.
 
+### Method C: Automated Cloud Build & Artifact Packaging (GitHub Actions)
+
+If developing without local macOS hardware, the repository includes an automated GitHub Actions cloud workflow: [`.github/workflows/ios-build.yml`](file:///c:/mini%20project/DM%20Reverse%20engineering/.github/workflows/ios-build.yml).
+
+1. Runs on GitHub's hosted macOS runner (`macos-14`, Apple Silicon with Xcode 15/16).
+2. Executes `swift test` on native Darwin runtime to validate package tests against Apple's Foundation framework.
+3. Compiles the iOS application target (`SwiftDownloadEngine.app`) using `xcodebuild` targeting `generic/platform=iOS Simulator` with ad-hoc signing (`CODE_SIGNING_ALLOWED=NO`).
+4. Compresses and uploads the resulting application bundle (`SwiftDownloadEngine.app`) as a downloadable zip artifact (`SwiftDownloadEngine-iOS-Simulator`) directly from the GitHub repository **Actions** tab.
+5. Triggered automatically on push to `main` or manually via the **Run workflow** button.
+
 ---
 
 ## 3. Sandboxing & iOS Capabilities

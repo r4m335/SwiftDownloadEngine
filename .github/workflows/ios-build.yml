@@ -1,0 +1,59 @@
+name: iOS App Build & Test
+
+'on':
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build-and-test:
+    name: Build iOS App & Run Tests
+    runs-on: macos-14
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Select Xcode Version
+        run: |
+          if [ -d "/Applications/Xcode_15.4.app" ]; then
+            sudo xcode-select -s /Applications/Xcode_15.4.app
+          elif [ -d "/Applications/Xcode_16.0.app" ]; then
+            sudo xcode-select -s /Applications/Xcode_16.0.app
+          else
+            sudo xcode-select -s /Applications/Xcode.app
+          fi
+          xcodebuild -version
+          swift --version
+
+      - name: Run Swift Package Tests (macOS)
+        run: |
+          swift test
+
+      - name: Build iOS Application Target (Simulator)
+        run: |
+          xcodebuild \
+            -project SwiftDownloadEngine.xcodeproj \
+            -scheme SwiftDownloadEngine \
+            -destination 'generic/platform=iOS Simulator' \
+            -configuration Debug \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build
+
+      - name: Package Simulator App Bundle
+        run: |
+          cd build/Build/Products/Debug-iphonesimulator
+          zip -r -y SwiftDownloadEngine-Simulator.zip SwiftDownloadEngine.app
+          ls -lh SwiftDownloadEngine-Simulator.zip
+
+      - name: Upload Build Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SwiftDownloadEngine-iOS-Simulator
+          path: build/Build/Products/Debug-iphonesimulator/SwiftDownloadEngine-Simulator.zip
+          retention-days: 14
