@@ -393,8 +393,8 @@ final class DownloadQueueManagerTests: XCTestCase {
     func test9_PauseOneDownload() async throws {
         try await queueManager.setMaxConcurrentDownloads(1)
 
-        let size = 40 * 1024
-        server.register(path: "/pause1_a.bin", data: makePayload(size: size, seed: 1), chunkDelayMs: 4)
+        let size = 200 * 1024
+        server.register(path: "/pause1_a.bin", data: makePayload(size: size, seed: 1), chunkDelayMs: 15)
         server.register(path: "/pause1_b.bin", data: makePayload(size: 10 * 1024, seed: 2), chunkDelayMs: 0)
 
         let rA = makeRequest(id: "pause-a", path: "/pause1_a.bin")
