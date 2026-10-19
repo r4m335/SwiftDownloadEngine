@@ -1,0 +1,5 @@
+framework module LibTorrent {
+    umbrella header "LibTorrent.h"
+    export *
+    module * { export * }
+}

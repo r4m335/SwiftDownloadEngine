@@ -32,6 +32,117 @@ jobs:
         run: |
           swift test
 
+  milestone1-torrent-build:
+    name: Milestone 1 — libtorrent 2.0 iOS Native Build & Bridge Test
+    runs-on: macos-14
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Select Xcode Version
+        run: |
+          if [ -d "/Applications/Xcode_15.4.app" ]; then
+            sudo xcode-select -s /Applications/Xcode_15.4.app
+          elif [ -d "/Applications/Xcode_16.0.app" ]; then
+            sudo xcode-select -s /Applications/Xcode_16.0.app
+          else
+            sudo xcode-select -s /Applications/Xcode.app
+          fi
+          xcodebuild -version
+
+      - name: Ensure Boost Headers
+        run: |
+          BOOST_DIR=$(brew --prefix boost 2>/dev/null || true)
+          if [ -z "$BOOST_DIR" ] || [ ! -d "$BOOST_DIR/include/boost" ]; then
+            echo "Installing Boost..."
+            brew install boost
+          else
+            echo "Boost available at: $BOOST_DIR"
+          fi
+
+      - name: Compile libtorrent 2.0 and Objective-C++ Bridge
+        run: |
+          chmod +x scripts/build_libtorrent_ios.sh
+          ./scripts/build_libtorrent_ios.sh
+
+      - name: Verify Architecture Slices and Headers
+        run: |
+          echo "=== Inspecting Framework Structure ==="
+          ls -la Frameworks/LibTorrent.xcframework
+          echo "=== Device Slice Architecture ==="
+          lipo -info Frameworks/LibTorrent.xcframework/ios-arm64/*.a
+          echo "=== Simulator Slice Architectures ==="
+          lipo -info Frameworks/LibTorrent.xcframework/ios-arm64_x86_64-simulator/*.a
+          echo "=== Exported Headers ==="
+          ls -la Frameworks/LibTorrent.xcframework/ios-arm64/Headers
+
+      - name: Test Session Creation and Teardown on iOS Simulator
+        run: |
+          SIM_SDK=$(xcrun --sdk iphonesimulator --show-sdk-path)
+          cat << 'EOF' > test_session_lifecycle.swift
+          import Foundation
+          import LibTorrent
+
+          print("--- Milestone 1 Verification Test ---")
+          let ver = TorrentSessionBridge.libtorrentVersion()
+          print("libtorrent version reported: \(ver)")
+          guard ver.hasPrefix("2.0.") else {
+              print("FAIL: Expected version prefix '2.0.', got '\(ver)'")
+              exit(1)
+          }
+
+          let tempDir = NSTemporaryDirectory() + "m1_test_" + UUID().uuidString
+          try FileManager.default.createDirectory(atPath: tempDir, withIntermediateDirectories: true)
+          defer { try? FileManager.default.removeItem(atPath: tempDir) }
+
+          let bridge = TorrentSessionBridge(storagePath: tempDir, portStart: 6881, portEnd: 6891)
+          print("Storage path: \(bridge.storagePath)")
+          assert(!bridge.isListening, "Session should not be listening before start")
+          assert(bridge.listenPort == 0, "Listen port should be 0 before start")
+
+          var error: NSError?
+          let started = bridge.startSession(&error)
+          if !started {
+              print("FAIL: Failed to start session: \(String(describing: error))")
+              exit(2)
+          }
+
+          print("Session successfully started!")
+          print("isListening: \(bridge.isListening)")
+          print("listenPort: \(bridge.listenPort)")
+          assert(bridge.isListening, "Session should report isListening == true")
+          assert(bridge.listenPort > 0, "Listen port should be non-zero")
+
+          bridge.stopSession()
+          print("Session stopped cleanly!")
+          assert(!bridge.isListening, "Session should report isListening == false after stop")
+          print("--- Milestone 1 SUCCESS: Native Build & Session Lifecycle Verified ---")
+          EOF
+
+          xcrun --sdk iphonesimulator swiftc \
+            -target arm64-apple-ios15.0-simulator \
+            -sdk "$SIM_SDK" \
+            -F Frameworks \
+            -framework LibTorrent \
+            -Xlinker -lc++ \
+            -Xlinker -liconv \
+            test_session_lifecycle.swift \
+            -o test_session_lifecycle_sim
+
+          SIM_NAME=$(xcrun simctl list devices available | grep -E "iPhone 15|iPhone 14|iPhone 16|iPhone" | head -n 1 | sed -E 's/^[[:space:]]+//; s/ \([A-F0-9-]+\)//')
+          SIM_ID=$(xcrun simctl list devices available | grep -E "iPhone 15|iPhone 14|iPhone 16|iPhone" | head -n 1 | sed -E 's/.* \(([A-F0-9-]+)\).*/\1/')
+          echo "Booting simulator: $SIM_NAME ($SIM_ID)..."
+          xcrun simctl boot "$SIM_ID" || true
+          xcrun simctl spawn "$SIM_ID" ./test_session_lifecycle_sim
+
+      - name: Upload LibTorrent XCFramework
+        uses: actions/upload-artifact@v4
+        with:
+          name: LibTorrent-iOS-XCFramework
+          path: Frameworks/LibTorrent.xcframework
+          retention-days: 14
+
   build-simulator:
     name: iOS Simulator Build
     runs-on: macos-14
