@@ -11,4 +11,4 @@ FOUNDATION_EXPORT double LibTorrentVersionNumber;
 //! Project version string for LibTorrent.
 FOUNDATION_EXPORT const unsigned char LibTorrentVersionString[];
 
-#import <LibTorrent/TorrentSessionBridge.h>
+#import "TorrentSessionBridge.h"

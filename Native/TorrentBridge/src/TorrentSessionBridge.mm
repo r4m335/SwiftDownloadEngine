@@ -55,7 +55,7 @@
         sp.set_str(libtorrent::settings_pack::listen_interfaces, listenInterfaces);
 
         // Bounded resources for mobile (iPhone / iOS memory efficiency)
-        sp.set_int(libtorrent::settings_pack::alert_queue_limit, 2000);
+        sp.set_int(libtorrent::settings_pack::alert_queue_size, 2000);
         sp.set_int(libtorrent::settings_pack::connections_limit, 100);
         sp.set_int(libtorrent::settings_pack::connection_speed, 20);
         sp.set_bool(libtorrent::settings_pack::enable_dht, true);
@@ -95,7 +95,7 @@
         return;
     }
     // Cleanly abort all transfers and shut down threads
-    _session->abort();
+    auto proxy = _session->abort();
     _session.reset();
 }
 

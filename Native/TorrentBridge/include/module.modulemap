@@ -1,4 +1,4 @@
-framework module LibTorrent {
+module LibTorrent [system] {
     umbrella header "LibTorrent.h"
     export *
     module * { export * }

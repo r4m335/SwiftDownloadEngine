@@ -120,13 +120,18 @@ jobs:
           print("--- Milestone 1 SUCCESS: Native Build & Session Lifecycle Verified ---")
           EOF
 
+          SIM_HEADERS="$(pwd)/Frameworks/LibTorrent.xcframework/ios-arm64_x86_64-simulator/Headers"
+          SIM_ARCHIVE="$(pwd)/Frameworks/LibTorrent.xcframework/ios-arm64_x86_64-simulator/libLibTorrent-sim.a"
+
           xcrun --sdk iphonesimulator swiftc \
             -target arm64-apple-ios15.0-simulator \
             -sdk "$SIM_SDK" \
-            -F Frameworks \
-            -framework LibTorrent \
+            -I "$SIM_HEADERS" \
+            "$SIM_ARCHIVE" \
             -Xlinker -lc++ \
             -Xlinker -liconv \
+            -Xlinker -framework -Xlinker Security \
+            -Xlinker -framework -Xlinker SystemConfiguration \
             test_session_lifecycle.swift \
             -o test_session_lifecycle_sim
 
