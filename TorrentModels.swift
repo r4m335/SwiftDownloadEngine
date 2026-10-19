@@ -23,6 +23,72 @@ public enum TorrentPriority: Int, Codable, Comparable, CaseIterable, Sendable {
     }
 }
 
+/// Download priority for individual files within a torrent.
+public enum TorrentFilePriority: UInt8, Codable, CaseIterable, Sendable {
+    case doNotDownload = 0
+    case normal = 4
+    case high = 7
+
+    public var title: String {
+        switch self {
+        case .doNotDownload: return "Don't Download"
+        case .normal: return "Normal"
+        case .high: return "High"
+        }
+    }
+}
+
+/// Metadata and download state for an individual file within a torrent.
+public struct TorrentFileInfo: Identifiable, Codable, Equatable, Sendable {
+    public var id: Int { index }
+    public let index: Int
+    public let path: String
+    public let name: String
+    public let size: Int64
+    public var priority: TorrentFilePriority
+    public let progressFraction: Double
+
+    public init(
+        index: Int,
+        path: String,
+        size: Int64,
+        priority: TorrentFilePriority = .normal,
+        progressFraction: Double = 0.0
+    ) {
+        self.index = index
+        self.path = path
+        self.name = (path as NSString).lastPathComponent
+        self.size = max(0, size)
+        self.priority = priority
+        self.progressFraction = min(1.0, max(0.0, progressFraction))
+    }
+}
+
+/// Configurable seeding mode for finished torrents.
+public enum SeedingMode: String, Codable, CaseIterable, Sendable, Identifiable {
+    case doNotSeed = "Stop upon Completion"
+    case ratio = "Stop at Ratio"
+    case duration = "Stop after Duration"
+    case indefinitely = "Seed Indefinitely"
+
+    public var id: String { rawValue }
+}
+
+/// User preference and enforcement rules for post-download seeding.
+public struct SeedingPreference: Codable, Equatable, Sendable {
+    public var mode: SeedingMode
+    public var targetRatio: Double
+    public var targetDurationSeconds: TimeInterval
+
+    public static let `default` = SeedingPreference(mode: .doNotSeed, targetRatio: 1.0, targetDurationSeconds: 3600)
+
+    public init(mode: SeedingMode = .doNotSeed, targetRatio: Double = 1.0, targetDurationSeconds: TimeInterval = 3600) {
+        self.mode = mode
+        self.targetRatio = targetRatio
+        self.targetDurationSeconds = targetDurationSeconds
+    }
+}
+
 /// Immutable UI-facing progress snapshot for a torrent task.
 public struct TorrentProgress: Codable, Equatable, Sendable {
     public let bytesDownloaded: Int64
@@ -65,6 +131,8 @@ public struct TorrentTask: Identifiable, Codable, Equatable, Sendable {
     public let infoHash: String
     public var priority: TorrentPriority
     public var isExplicitlyPaused: Bool
+    public var filePriorities: [Int: TorrentFilePriority]?
+    public var seedingPreference: SeedingPreference?
 
     public init(
         id: UUID = UUID(),
@@ -77,7 +145,9 @@ public struct TorrentTask: Identifiable, Codable, Equatable, Sendable {
         createdAt: Date = Date(),
         infoHash: String = "",
         priority: TorrentPriority = .normal,
-        isExplicitlyPaused: Bool = false
+        isExplicitlyPaused: Bool = false,
+        filePriorities: [Int: TorrentFilePriority]? = nil,
+        seedingPreference: SeedingPreference? = nil
     ) {
         self.id = id
         self.source = source
@@ -90,6 +160,8 @@ public struct TorrentTask: Identifiable, Codable, Equatable, Sendable {
         self.infoHash = infoHash.lowercased()
         self.priority = priority
         self.isExplicitlyPaused = isExplicitlyPaused
+        self.filePriorities = filePriorities
+        self.seedingPreference = seedingPreference
     }
 }
 
@@ -111,6 +183,8 @@ public struct TorrentRecord: Identifiable, Codable, Equatable, Sendable {
     public var isExplicitlyPaused: Bool
     public var seedRatioLimit: Double?
     public var fastResumeFileName: String?
+    public var filePriorities: [Int: TorrentFilePriority]?
+    public var seedingPreference: SeedingPreference?
     public var schemaVersion: Int
     public var errorMessage: String?
 
@@ -129,6 +203,8 @@ public struct TorrentRecord: Identifiable, Codable, Equatable, Sendable {
         isExplicitlyPaused: Bool = false,
         seedRatioLimit: Double? = nil,
         fastResumeFileName: String? = nil,
+        filePriorities: [Int: TorrentFilePriority]? = nil,
+        seedingPreference: SeedingPreference? = nil,
         schemaVersion: Int = TorrentRecord.currentSchemaVersion,
         errorMessage: String? = nil
     ) {
@@ -146,6 +222,8 @@ public struct TorrentRecord: Identifiable, Codable, Equatable, Sendable {
         self.isExplicitlyPaused = isExplicitlyPaused
         self.seedRatioLimit = seedRatioLimit
         self.fastResumeFileName = fastResumeFileName
+        self.filePriorities = filePriorities
+        self.seedingPreference = seedingPreference
         self.schemaVersion = schemaVersion
         self.errorMessage = errorMessage
     }
@@ -210,12 +288,20 @@ public struct TorrentSessionStatus: Equatable, Sendable {
     public let isRunning: Bool
     public let isListening: Bool
     public let listenPort: UInt
+    public let portRange: ClosedRange<UInt>
     public let libtorrentVersion: String
 
-    public init(isRunning: Bool, isListening: Bool, listenPort: UInt, libtorrentVersion: String) {
+    public init(
+        isRunning: Bool,
+        isListening: Bool,
+        listenPort: UInt,
+        portRange: ClosedRange<UInt> = 6881...6891,
+        libtorrentVersion: String
+    ) {
         self.isRunning = isRunning
         self.isListening = isListening
         self.listenPort = listenPort
+        self.portRange = portRange
         self.libtorrentVersion = libtorrentVersion
     }
 }

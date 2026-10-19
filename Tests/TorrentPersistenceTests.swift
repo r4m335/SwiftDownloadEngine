@@ -208,4 +208,49 @@ final class TorrentPersistenceTests: XCTestCase {
             XCTAssertEqual(item?.name, "BatchItem_\(idx)")
         }
     }
+
+    func testSaveAndReloadFilePriorities() async throws {
+        let store = try TorrentPersistenceStore(storageDirectoryURL: tempDirectoryURL)
+        let hash = "abcdef0123456789abcdef0123456789abcdef01"
+        let record = TorrentRecord(
+            infoHash: hash,
+            source: "magnet:?xt=urn:btih:\(hash)&dn=MultiFile",
+            name: "MultiFile",
+            savePath: tempDirectoryURL,
+            sequenceIndex: 1,
+            filePriorities: [0: .normal, 1: .doNotDownload, 2: .high]
+        )
+
+        try await store.saveRecord(record)
+
+        // Read from fresh store instance
+        let freshStore = try TorrentPersistenceStore(storageDirectoryURL: tempDirectoryURL)
+        let loaded = await freshStore.loadRecord(infoHash: hash)
+        XCTAssertNotNil(loaded)
+        XCTAssertEqual(loaded?.filePriorities?[0], .normal)
+        XCTAssertEqual(loaded?.filePriorities?[1], .doNotDownload)
+        XCTAssertEqual(loaded?.filePriorities?[2], .high)
+    }
+
+    func testSaveAndReloadSeedingPreference() async throws {
+        let store = try TorrentPersistenceStore(storageDirectoryURL: tempDirectoryURL)
+        let hash = "fedcba9876543210fedcba9876543210fedcba98"
+        let pref = SeedingPreference(mode: .ratio, targetRatio: 2.5)
+        let record = TorrentRecord(
+            infoHash: hash,
+            source: "magnet:?xt=urn:btih:\(hash)&dn=SeedingItem",
+            name: "SeedingItem",
+            savePath: tempDirectoryURL,
+            sequenceIndex: 2,
+            seedingPreference: pref
+        )
+
+        try await store.saveRecord(record)
+
+        let freshStore = try TorrentPersistenceStore(storageDirectoryURL: tempDirectoryURL)
+        let loaded = await freshStore.loadRecord(infoHash: hash)
+        XCTAssertNotNil(loaded)
+        XCTAssertEqual(loaded?.seedingPreference?.mode, .ratio)
+        XCTAssertEqual(loaded?.seedingPreference?.targetRatio, 2.5)
+    }
 }

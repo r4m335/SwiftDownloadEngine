@@ -54,6 +54,27 @@ NS_SWIFT_NAME(TorrentBridgeStatus)
 
 @end
 
+/// Information regarding an individual file within a torrent.
+NS_SWIFT_NAME(TorrentBridgeFileInfo)
+@interface TorrentBridgeFileInfo : NSObject
+
+@property (nonatomic, readonly) NSInteger index;
+@property (nonatomic, readonly, copy) NSString *path;
+@property (nonatomic, readonly) int64_t size;
+@property (nonatomic, readonly) uint8_t priority;
+@property (nonatomic, readonly) float progress;
+
+- (instancetype)initWithIndex:(NSInteger)index
+                         path:(NSString *)path
+                         size:(int64_t)size
+                     priority:(uint8_t)priority
+                     progress:(float)progress NS_DESIGNATED_INITIALIZER;
+
+- (instancetype)init NS_UNAVAILABLE;
++ (instancetype)new NS_UNAVAILABLE;
+
+@end
+
 /// Objective-C bridge wrapping libtorrent 2.0.x session lifecycle and transfer operations.
 /// Exposes clean, pure Objective-C types to Swift without leaking C++ symbols into Swift layers.
 NS_SWIFT_NAME(TorrentSessionBridge)
@@ -89,6 +110,12 @@ NS_SWIFT_NAME(TorrentSessionBridge)
 
 /// The root storage path configured for this session.
 @property (nonatomic, readonly, copy) NSString *storagePath;
+
+/// The lower bound of the configured port range.
+@property (nonatomic, readonly) NSUInteger portStart;
+
+/// The upper bound of the configured port range.
+@property (nonatomic, readonly) NSUInteger portEnd;
 
 // MARK: - Milestone 3: Core Torrent Transfer Operations
 
@@ -140,6 +167,32 @@ NS_SWIFT_NAME(TorrentSessionBridge)
 
 /// Drains session alerts and updates internal status caches.
 - (void)pollAlerts NS_SWIFT_NAME(pollAlerts());
+
+// MARK: - Milestone 6: Per-File Priority & Management
+
+/// Returns the list of individual files for a torrent, or nil if metadata is not yet resolved.
+/// @param infoHash Lowercase hexadecimal info-hash of the target torrent.
+- (nullable NSArray<TorrentBridgeFileInfo *> *)filesForTorrentWithHash:(NSString *)infoHash NS_SWIFT_NAME(files(forTorrentWithHash:));
+
+/// Sets the download priority for a specific file index (0 = do not download, 1-6 = normal, 7 = high).
+/// @param priority Numerical priority value.
+/// @param fileIndex 0-based index of the target file.
+/// @param infoHash Lowercase hexadecimal info-hash of the target torrent.
+/// @param error Populated if setting the priority fails.
+/// @return YES if the priority was applied, NO otherwise.
+- (BOOL)setPriority:(uint8_t)priority
+      forFileAtIndex:(NSInteger)fileIndex
+   inTorrentWithHash:(NSString *)infoHash
+               error:(NSError * _Nullable * _Nullable)error NS_SWIFT_NAME(setPriority(_:forFileAtIndex:inTorrentWithHash:));
+
+/// Sets download priorities for all files within a torrent simultaneously.
+/// @param priorities Array of NSNumber priorities matching file indices.
+/// @param infoHash Lowercase hexadecimal info-hash of the target torrent.
+/// @param error Populated if setting priorities fails.
+/// @return YES if all priorities were applied, NO otherwise.
+- (BOOL)setFilePriorities:(NSArray<NSNumber *> *)priorities
+        inTorrentWithHash:(NSString *)infoHash
+                    error:(NSError * _Nullable * _Nullable)error NS_SWIFT_NAME(setFilePriorities(_:inTorrentWithHash:));
 
 // MARK: - Milestone 4: Fast-Resume & State Persistence
 

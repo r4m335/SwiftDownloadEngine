@@ -248,6 +248,60 @@ jobs:
 
                   await freshEngine.stop()
                   print("--- Milestone 4 SUCCESS: Persistence, Fast-Resume & Queue Recovery Verified ---")
+
+                  print("--- Milestone 6 Verification Test: Port Range, Selective Download & Seeding Controls ---")
+                  let m6Dir = NSTemporaryDirectory() + "m6_test_" + UUID().uuidString
+                  try FileManager.default.createDirectory(atPath: m6Dir, withIntermediateDirectories: true)
+                  defer { try? FileManager.default.removeItem(atPath: m6Dir) }
+
+                  let m6Engine = try TorrentEngine(
+                      storageDirectoryURL: URL(fileURLWithPath: m6Dir),
+                      portStart: 6881,
+                      portEnd: 6891,
+                      maxConcurrentTorrents: 3
+                  )
+                  try await m6Engine.start()
+                  let m6Status = await m6Engine.sessionStatus()
+                  assert(m6Status?.portRange == 6881...6891, "Port range must match 6881...6891")
+                  assert(m6Status?.listenPort != nil && m6Status!.listenPort >= 6881, "Listen port must be >= 6881")
+                  print("Port range and active listen port verified: range=\(m6Status?.portRange?.description ?? "nil"), activePort=\(m6Status?.listenPort ?? 0)")
+
+                  let m6Mag = "magnet:?xt=urn:btih:4444444444444444444444444444444444444444&dn=Milestone6Torrent"
+                  let m6Task = try await m6Engine.addTorrent(magnetURI: m6Mag, priority: .normal)
+                  
+                  // Verify file priority configuration
+                  try await m6Engine.setFilePriority(0, priority: .doNotDownload, for: m6Task.infoHash)
+                  try await m6Engine.setFilePriorities([.doNotDownload, .high, .normal], for: m6Task.infoHash)
+                  let taskWithFiles = await m6Engine.task(for: m6Task.infoHash)
+                  assert(taskWithFiles?.filePriorities == [.doNotDownload, .high, .normal], "File priorities must match updated priorities")
+                  print("Per-file priority selection verified!")
+
+                  // Verify seeding controls
+                  let customSeeding = SeedingPreference(mode: .ratio, targetRatio: 2.5, targetDurationSeconds: 7200)
+                  try await m6Engine.setSeedingPreference(customSeeding, for: m6Task.infoHash)
+                  let taskWithSeeding = await m6Engine.task(for: m6Task.infoHash)
+                  assert(taskWithSeeding?.seedingPreference.mode == .ratio, "Seeding mode must be ratio")
+                  assert(taskWithSeeding?.seedingPreference.targetRatio == 2.5, "Target ratio must be 2.5")
+                  print("Seeding preference configuration verified!")
+
+                  // Stop and restart to verify persistence
+                  await m6Engine.stop(timeoutSeconds: 2.0)
+                  let m6RestartEngine = try TorrentEngine(
+                      storageDirectoryURL: URL(fileURLWithPath: m6Dir),
+                      portStart: 6881,
+                      portEnd: 6891,
+                      maxConcurrentTorrents: 3
+                  )
+                  try await m6RestartEngine.start()
+                  let restoredM6Task = await m6RestartEngine.task(for: m6Task.infoHash)
+                  assert(restoredM6Task != nil, "Task must be restored upon restart")
+                  assert(restoredM6Task?.filePriorities == [.doNotDownload, .high, .normal], "File priorities must persist across restarts")
+                  assert(restoredM6Task?.seedingPreference.mode == .ratio, "Seeding preference must persist across restarts")
+                  assert(restoredM6Task?.seedingPreference.targetRatio == 2.5, "Target ratio must persist across restarts")
+                  print("Milestone 6 persistence and restoration verified!")
+
+                  await m6RestartEngine.stop()
+                  print("--- Milestone 6 SUCCESS: Port Range, Selective Download & Seeding Controls Verified ---")
               }
           }
           EOF

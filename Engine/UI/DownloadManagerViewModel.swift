@@ -60,6 +60,9 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
         public static let globalBandwidthLimit = "SwiftDownloadEngine.globalBandwidthLimit"
         public static let maxConcurrentTorrents = "SwiftDownloadEngine.maxConcurrentTorrents"
         public static let defaultTorrentPriority = "SwiftDownloadEngine.defaultTorrentPriority"
+        public static let defaultSeedingMode = "SwiftDownloadEngine.defaultSeedingMode"
+        public static let defaultSeedingRatio = "SwiftDownloadEngine.defaultSeedingRatio"
+        public static let defaultSeedingDuration = "SwiftDownloadEngine.defaultSeedingDuration"
     }
 
     // HTTP-specific published properties (backward compatible)
@@ -70,6 +73,8 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
     // Torrent-specific published properties
     @Published public var torrentTasks: [TorrentTask] = []
     @Published public var torrentQueueSummary: TorrentQueueSnapshot? = nil
+    @Published public var torrentSessionStatus: TorrentSessionStatus? = nil
+    @Published public var torrentFilesCache: [String: [TorrentFileInfo]] = [:]
 
     // Unified presentation properties
     @Published public var unifiedTransfers: [UnifiedTransfer] = []
@@ -86,6 +91,23 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
     // Torrent Settings
     @Published public var maxConcurrentTorrents: Int = 3
     @Published public var defaultTorrentPriority: TorrentPriority = .normal
+    @Published public var defaultSeedingPreference: SeedingPreference = SeedingPreference(mode: .ratio, targetRatio: 1.0)
+
+    /// Dynamic active listening port string formatted for UI inspection.
+    public var torrentActivePortString: String {
+        guard let status = torrentSessionStatus, status.isListening else {
+            return "Inactive"
+        }
+        return "\(status.listenPort) (TCP/UDP)"
+    }
+
+    /// Configured listening port range string for UI display.
+    public var torrentPortRangeString: String {
+        if let status = torrentSessionStatus {
+            return "\(status.portRange.lowerBound) – \(status.portRange.upperBound) (TCP/UDP)"
+        }
+        return "6881 – 6891 (TCP/UDP)"
+    }
 
     @Published public var errorMessage: String? = nil
     @Published public var userNotificationMessage: String? = nil
@@ -140,6 +162,19 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
             self.defaultTorrentPriority = prio
         } else {
             self.defaultTorrentPriority = .normal
+        }
+
+        if let savedModeStr = userDefaults.string(forKey: SettingsKeys.defaultSeedingMode),
+           let savedMode = SeedingMode(rawValue: savedModeStr) {
+            let savedRatio = userDefaults.double(forKey: SettingsKeys.defaultSeedingRatio)
+            let savedDuration = userDefaults.double(forKey: SettingsKeys.defaultSeedingDuration)
+            self.defaultSeedingPreference = SeedingPreference(
+                mode: savedMode,
+                targetRatio: savedRatio > 0 ? savedRatio : 1.0,
+                targetDurationSeconds: savedDuration > 0 ? savedDuration : 3600
+            )
+        } else {
+            self.defaultSeedingPreference = SeedingPreference(mode: .ratio, targetRatio: 1.0, targetDurationSeconds: 3600)
         }
     }
 
@@ -232,6 +267,7 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
         if let te = torrentEngine {
             self.torrentTasks = await te.allTasks()
             self.torrentQueueSummary = await te.queueSnapshot()
+            self.torrentSessionStatus = await te.status()
         }
 
         rebuildUnifiedTransfers()
@@ -242,6 +278,7 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
         guard let te = torrentEngine else { return }
         self.torrentTasks = await te.allTasks()
         self.torrentQueueSummary = await te.queueSnapshot()
+        self.torrentSessionStatus = await te.status()
         rebuildUnifiedTransfers()
     }
 
@@ -527,6 +564,7 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
                 saveDirectoryURL: saveDirectoryURL ?? downloadsDirectoryURL,
                 priority: resolvedPriority
             )
+            try? await te.setSeedingPreference(defaultSeedingPreference, for: task.infoHash)
             await refreshTorrentSnapshots()
             let transfer = UnifiedTransfer(from: task)
             showNotification("Torrent added successfully: \(task.name)")
@@ -565,6 +603,7 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
                 saveDirectoryURL: saveDirectoryURL ?? downloadsDirectoryURL,
                 priority: resolvedPriority
             )
+            try? await te.setSeedingPreference(defaultSeedingPreference, for: task.infoHash)
             await refreshTorrentSnapshots()
             let transfer = UnifiedTransfer(from: task)
             showNotification("Torrent added successfully: \(task.name)")
@@ -596,6 +635,7 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
                 saveDirectoryURL: saveDirectoryURL ?? downloadsDirectoryURL,
                 priority: resolvedPriority
             )
+            try? await te.setSeedingPreference(defaultSeedingPreference, for: task.infoHash)
             await refreshTorrentSnapshots()
             let transfer = UnifiedTransfer(from: task)
             showNotification("Torrent added successfully: \(task.name)")
@@ -654,7 +694,67 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
         }
     }
 
-    public func updateTorrentSettings(maxConcurrentTorrents: Int, defaultPriority: TorrentPriority) async throws {
+    /// Fetches all files for a given torrent info-hash, updating internal cache.
+    public func fetchTorrentFiles(for infoHash: String) async -> [TorrentFileInfo] {
+        guard let te = torrentEngine else { return [] }
+        let files = (await te.files(for: infoHash)) ?? []
+        torrentFilesCache[infoHash] = files
+        return files
+    }
+
+    /// Updates the download priority for a single file within a multi-file torrent.
+    public func setTorrentFilePriority(infoHash: String, fileIndex: Int, priority: TorrentFilePriority) async throws {
+        guard let te = torrentEngine else { return }
+        do {
+            try await te.setFilePriority(priority, forFileAt: fileIndex, in: infoHash)
+            let updatedFiles = (await te.files(for: infoHash)) ?? []
+            torrentFilesCache[infoHash] = updatedFiles
+            await refreshTorrentSnapshots()
+        } catch {
+            self.errorMessage = error.localizedDescription
+            throw error
+        }
+    }
+
+    /// Updates download priorities for multiple files within a multi-file torrent in batch.
+    public func setTorrentFilePriorities(infoHash: String, priorities: [Int: TorrentFilePriority]) async throws {
+        guard let te = torrentEngine else { return }
+        do {
+            try await te.setFilePriorities(priorities, for: infoHash)
+            let updatedFiles = (await te.files(for: infoHash)) ?? []
+            torrentFilesCache[infoHash] = updatedFiles
+            await refreshTorrentSnapshots()
+        } catch {
+            self.errorMessage = error.localizedDescription
+            throw error
+        }
+    }
+
+    /// Sets the seeding preference policy for a specific torrent.
+    public func setSeedingPreference(infoHash: String, preference: SeedingPreference) async throws {
+        guard let te = torrentEngine else { return }
+        do {
+            try await te.setSeedingPreference(preference, for: infoHash)
+            await refreshTorrentSnapshots()
+        } catch {
+            self.errorMessage = error.localizedDescription
+            throw error
+        }
+    }
+
+    /// Configures and persists the default seeding preference for new torrents.
+    public func updateSeedingSettings(defaultPreference: SeedingPreference) {
+        self.defaultSeedingPreference = defaultPreference
+        userDefaults.set(defaultPreference.mode.rawValue, forKey: SettingsKeys.defaultSeedingMode)
+        userDefaults.set(defaultPreference.targetRatio, forKey: SettingsKeys.defaultSeedingRatio)
+        userDefaults.set(defaultPreference.targetDurationSeconds, forKey: SettingsKeys.defaultSeedingDuration)
+    }
+
+    public func updateTorrentSettings(
+        maxConcurrentTorrents: Int,
+        defaultPriority: TorrentPriority,
+        seedingPreference: SeedingPreference? = nil
+    ) async throws {
         guard maxConcurrentTorrents >= 1 else {
             let error = "Max concurrent torrents must be at least 1."
             self.errorMessage = error
@@ -667,13 +767,17 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
         userDefaults.set(maxConcurrentTorrents, forKey: SettingsKeys.maxConcurrentTorrents)
         userDefaults.set(defaultPriority.rawValue, forKey: SettingsKeys.defaultTorrentPriority)
 
+        if let pref = seedingPreference {
+            updateSeedingSettings(defaultPreference: pref)
+        }
+
         if let te = torrentEngine {
             try? await te.setMaxConcurrentTorrents(maxConcurrentTorrents)
         }
     }
 
     public func updateTorrentSettings(maxConcurrent: Int, defaultPriority: TorrentPriority) async throws {
-        try await updateTorrentSettings(maxConcurrentTorrents: maxConcurrent, defaultPriority: defaultPriority)
+        try await updateTorrentSettings(maxConcurrentTorrents: maxConcurrent, defaultPriority: defaultPriority, seedingPreference: nil)
     }
 
     // MARK: - Unified Dispatch Actions

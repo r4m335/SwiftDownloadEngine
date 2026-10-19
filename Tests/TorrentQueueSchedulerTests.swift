@@ -210,4 +210,57 @@ final class TorrentQueueSchedulerTests: XCTestCase {
             XCTFail("Unexpected error: \(error)")
         }
     }
+
+    func testFilePrioritiesUpdatingAndPersistence() async throws {
+        let scheduler = try await TorrentQueueScheduler(persistenceStore: store, maxConcurrentTorrents: 2)
+        let hash = "ffff1111ffff1111ffff1111ffff1111ffff1111"
+
+        _ = try await scheduler.enqueue(infoHash: hash, source: "src", name: "MultiItem", savePath: tempDirectoryURL)
+
+        try await scheduler.setFilePriorities([0: .doNotDownload, 1: .high], for: hash)
+
+        let record = await scheduler.record(for: hash)
+        XCTAssertEqual(record?.filePriorities?[0], .doNotDownload)
+        XCTAssertEqual(record?.filePriorities?[1], .high)
+
+        // Verify stored in persistence
+        let freshStoreRecord = await store.loadRecord(infoHash: hash)
+        XCTAssertEqual(freshStoreRecord?.filePriorities?[0], .doNotDownload)
+        XCTAssertEqual(freshStoreRecord?.filePriorities?[1], .high)
+    }
+
+    func testSeedingPolicyCalculation() async throws {
+        let scheduler = try await TorrentQueueScheduler(persistenceStore: store, maxConcurrentTorrents: 2)
+        let hash = "eeee2222eeee2222eeee2222eeee2222eeee2222"
+
+        _ = try await scheduler.enqueue(infoHash: hash, source: "src", name: "SeedingItem", savePath: tempDirectoryURL)
+
+        // 1. Ratio-based policy
+        try await scheduler.setSeedingPreference(SeedingPreference(mode: .ratio, targetRatio: 1.5), for: hash)
+        // Ratio < 1.5: should not stop
+        var stop = await scheduler.shouldStopSeeding(infoHash: hash, totalUploaded: 1400, totalDownloaded: 1000, elapsedSeedingSeconds: 60)
+        XCTAssertFalse(stop)
+        // Ratio >= 1.5: should stop
+        stop = await scheduler.shouldStopSeeding(infoHash: hash, totalUploaded: 1500, totalDownloaded: 1000, elapsedSeedingSeconds: 60)
+        XCTAssertTrue(stop)
+
+        // 2. Duration-based policy
+        try await scheduler.setSeedingPreference(SeedingPreference(mode: .duration, targetDurationSeconds: 1800), for: hash)
+        // Elapsed < 1800s: should not stop
+        stop = await scheduler.shouldStopSeeding(infoHash: hash, totalUploaded: 500, totalDownloaded: 1000, elapsedSeedingSeconds: 1200)
+        XCTAssertFalse(stop)
+        // Elapsed >= 1800s: should stop
+        stop = await scheduler.shouldStopSeeding(infoHash: hash, totalUploaded: 500, totalDownloaded: 1000, elapsedSeedingSeconds: 1800)
+        XCTAssertTrue(stop)
+
+        // 3. Do not seed policy: stop immediately
+        try await scheduler.setSeedingPreference(SeedingPreference(mode: .doNotSeed), for: hash)
+        stop = await scheduler.shouldStopSeeding(infoHash: hash, totalUploaded: 0, totalDownloaded: 1000, elapsedSeedingSeconds: 0)
+        XCTAssertTrue(stop)
+
+        // 4. Indefinite policy: never stop automatically
+        try await scheduler.setSeedingPreference(SeedingPreference(mode: .indefinitely), for: hash)
+        stop = await scheduler.shouldStopSeeding(infoHash: hash, totalUploaded: 999999, totalDownloaded: 1000, elapsedSeedingSeconds: 999999)
+        XCTAssertFalse(stop)
+    }
 }

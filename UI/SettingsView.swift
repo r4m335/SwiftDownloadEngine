@@ -19,6 +19,11 @@ public struct SettingsView: View {
     @State private var maxConcurrentTorrents: Int = 3
     @State private var defaultTorrentPriority: TorrentPriority = .normal
 
+    // Seeding Settings
+    @State private var seedingMode: SeedingMode = .ratio
+    @State private var targetRatio: Double = 1.0
+    @State private var targetDurationMinutes: Int = 60
+
     // UI Feedback
     @State private var showingSavedAlert: Bool = false
     @State private var statusMessage: String? = nil
@@ -38,10 +43,10 @@ public struct SettingsView: View {
                     Stepper("Max Concurrent HTTP Downloads: \(maxConcurrent)", value: $maxConcurrent, in: 1...10)
                 }
 
-                // Section 2: BitTorrent Concurrency & Queueing
+                // Section 2: BitTorrent Concurrency & Network Ports
                 Section(
-                    header: Text("BitTorrent Queueing"),
-                    footer: Text("Limits concurrent active torrent downloads and configures default priority for newly ingested torrents.")
+                    header: Text("BitTorrent Queueing & Ports"),
+                    footer: Text("Limits concurrent active torrent downloads, displays the verified native listening socket, and binds the 6881–6891 port range.")
                 ) {
                     Stepper("Max Concurrent Torrents: \(maxConcurrentTorrents)", value: $maxConcurrentTorrents, in: 1...10)
 
@@ -52,15 +57,48 @@ public struct SettingsView: View {
                     }
 
                     HStack {
-                        Text("Listen Ports")
+                        Text("Active Listen Port")
                         Spacer()
-                        Text("6881 – 6891 (TCP/UDP)")
+                        Text(viewModel.torrentActivePortString)
+                            .font(.caption.monospaced())
+                            .foregroundColor(viewModel.torrentSessionStatus?.isListening == true ? .green : .secondary)
+                    }
+
+                    HStack {
+                        Text("Configured Range")
+                        Spacer()
+                        Text(viewModel.torrentPortRangeString)
                             .font(.caption)
                             .foregroundColor(.secondary)
                     }
                 }
 
-                // Section 3: HTTP Connection & Request Budgeting
+                // Section 3: BitTorrent Seeding Policy
+                Section(
+                    header: Text("BitTorrent Seeding Behavior"),
+                    footer: Text("Defines automatic seeding cessation once a transfer completes. Settings are enforced by the scheduler and stored persistently.")
+                ) {
+                    Picker("Seeding Mode", selection: $seedingMode) {
+                        Text("Stop when complete").tag(SeedingMode.doNotSeed)
+                        Text("Seed until ratio").tag(SeedingMode.ratio)
+                        Text("Seed for duration").tag(SeedingMode.duration)
+                        Text("Seed indefinitely").tag(SeedingMode.indefinitely)
+                    }
+
+                    if seedingMode == .ratio {
+                        HStack {
+                            Text("Target Ratio")
+                            Spacer()
+                            Text(String(format: "%.1fx", targetRatio))
+                                .foregroundColor(.secondary)
+                        }
+                        Slider(value: $targetRatio, in: 0.5...5.0, step: 0.1)
+                    } else if seedingMode == .duration {
+                        Stepper("Duration: \(targetDurationMinutes) min", value: $targetDurationMinutes, in: 5...1440, step: 15)
+                    }
+                }
+
+                // Section 4: HTTP Connection & Request Budgeting
                 Section(
                     header: Text("HTTP Request Budget"),
                     footer: Text("Limits total in-flight HTTP range requests across all segment workers to avoid socket exhaustion.")
@@ -68,7 +106,7 @@ public struct SettingsView: View {
                     Stepper("Max Global In-Flight Requests: \(maxGlobalRequests)", value: $maxGlobalRequests, in: 2...32)
                 }
 
-                // Section 4: Bandwidth Management
+                // Section 5: Bandwidth Management
                 Section(
                     header: Text("Bandwidth Throttling"),
                     footer: Text("Token-bucket rate limiter dynamically enforces download throughput caps.")
@@ -89,7 +127,7 @@ public struct SettingsView: View {
                     }
                 }
 
-                // Section 5: Storage & Persistence
+                // Section 6: Storage & Persistence
                 Section(header: Text("Storage & Recovery")) {
                     HStack {
                         Text("Download Directory")
@@ -120,7 +158,7 @@ public struct SettingsView: View {
                     }
                 }
 
-                // Section 6: Save Action
+                // Section 7: Save Action
                 Section {
                     Button {
                         saveSettings()
@@ -141,7 +179,7 @@ public struct SettingsView: View {
             .alert("Settings Applied", isPresented: $showingSavedAlert) {
                 Button("OK", role: .cancel) {}
             } message: {
-                Text("Engine concurrency limits and speed controls have been updated.")
+                Text("Engine concurrency limits, seeding preferences, and speed controls have been updated.")
             }
         }
     }
@@ -151,6 +189,11 @@ public struct SettingsView: View {
         self.maxGlobalRequests = viewModel.maxGlobalRequests
         self.maxConcurrentTorrents = viewModel.maxConcurrentTorrents
         self.defaultTorrentPriority = viewModel.defaultTorrentPriority
+
+        let seeding = viewModel.defaultSeedingPreference
+        self.seedingMode = seeding.mode
+        self.targetRatio = seeding.targetRatio ?? 1.0
+        self.targetDurationMinutes = Int((seeding.targetDurationSeconds ?? 3600) / 60)
 
         if let bytes = viewModel.globalBandwidthLimitBytesPerSecond, bytes > 0 {
             self.enableGlobalSpeedLimit = true
@@ -169,6 +212,12 @@ public struct SettingsView: View {
             limit = nil
         }
 
+        let preference = SeedingPreference(
+            mode: seedingMode,
+            targetRatio: seedingMode == .ratio ? targetRatio : nil,
+            targetDurationSeconds: seedingMode == .duration ? UInt64(targetDurationMinutes * 60) : nil
+        )
+
         Task { @MainActor in
             try? await viewModel.updateSettings(
                 maxConcurrent: maxConcurrent,
@@ -177,7 +226,8 @@ public struct SettingsView: View {
             )
             try? await viewModel.updateTorrentSettings(
                 maxConcurrentTorrents: maxConcurrentTorrents,
-                defaultPriority: defaultTorrentPriority
+                defaultPriority: defaultTorrentPriority,
+                seedingPreference: preference
             )
             showingSavedAlert = true
         }

@@ -160,6 +160,7 @@ public actor TorrentEngine {
             isRunning: isRunning,
             isListening: bridge.isListening,
             listenPort: UInt(max(0, bridge.listenPort)),
+            portRange: UInt(portStart)...UInt(portEnd),
             libtorrentVersion: TorrentSessionBridge.libtorrentVersion()
         )
     }
@@ -362,13 +363,67 @@ public actor TorrentEngine {
         await scheduler?.snapshot()
     }
 
+    // MARK: - Milestone 6: Per-File Priority & Seeding Controls
+
+    /// Returns the file list for a torrent, or nil if metadata is not yet resolved.
+    public func files(for infoHash: String) async -> [TorrentFileInfo]? {
+        let key = infoHash.lowercased()
+        guard let bridgeFiles = bridge.files(forTorrentWithHash: key) else {
+            return nil
+        }
+        let stored = await scheduler?.record(for: key)?.filePriorities ?? [:]
+        return bridgeFiles.map { bf in
+            let prio = stored[bf.index] ?? (TorrentFilePriority(rawValue: bf.priority) ?? .normal)
+            return TorrentFileInfo(
+                index: bf.index,
+                path: bf.path,
+                size: bf.size,
+                priority: prio,
+                progressFraction: Double(bf.progress)
+            )
+        }
+    }
+
+    /// Sets the download priority for a specific file index within a torrent.
+    public func setFilePriority(_ priority: TorrentFilePriority, forFileAt index: Int, in infoHash: String) async throws {
+        let key = infoHash.lowercased()
+        try bridge.setPriority(priority.rawValue, forFileAtIndex: index, inTorrentWithHash: key)
+        if let sched = scheduler {
+            var priorities = (await sched.record(for: key)?.filePriorities) ?? [:]
+            priorities[index] = priority
+            try await sched.setFilePriorities(priorities, for: key)
+        }
+    }
+
+    /// Sets download priorities for all files within a torrent simultaneously.
+    public func setFilePriorities(_ priorities: [Int: TorrentFilePriority], for infoHash: String) async throws {
+        let key = infoHash.lowercased()
+        if let currentFiles = bridge.files(forTorrentWithHash: key) {
+            var prioArray: [NSNumber] = []
+            for i in 0..<currentFiles.count {
+                let p = priorities[i] ?? .normal
+                prioArray.append(NSNumber(value: p.rawValue))
+            }
+            try bridge.setFilePriorities(prioArray, inTorrentWithHash: key)
+        }
+        if let sched = scheduler {
+            try await sched.setFilePriorities(priorities, for: key)
+        }
+    }
+
+    /// Updates the seeding policy preference for a specific torrent.
+    public func setSeedingPreference(_ preference: SeedingPreference, for infoHash: String) async throws {
+        let key = infoHash.lowercased()
+        try await scheduler?.setSeedingPreference(preference, for: key)
+    }
+
     // MARK: - Status & Inspection
 
     public func task(for infoHash: String) async -> TorrentTask? {
         let key = infoHash.lowercased()
         if let bridgeStatus = bridge.status(forTorrentWithHash: key) {
             var t = updateTask(from: bridgeStatus)
-            if let rec = await scheduler?.record(for: key) {
+            if let sched = scheduler, let rec = await sched.record(for: key) {
                 if rec.isExplicitlyPaused {
                     t.state = .paused
                     t.isExplicitlyPaused = true
@@ -376,6 +431,15 @@ public actor TorrentEngine {
                     t.state = .queued
                 }
                 t.priority = rec.priority
+                t.filePriorities = rec.filePriorities
+                t.seedingPreference = rec.seedingPreference
+
+                if (t.state == .seeding || t.state == .finished) && !t.isExplicitlyPaused {
+                    if await sched.shouldStopSeeding(infoHash: key, totalUploaded: t.progress.bytesDownloaded, totalDownloaded: t.progress.totalBytes, elapsedSeedingSeconds: 0) {
+                        try? bridge.pauseTorrent(withHash: key)
+                        t.state = .finished
+                    }
+                }
                 tasks[key] = t
             }
             return t
@@ -400,6 +464,15 @@ public actor TorrentEngine {
                         task.state = .queued
                     }
                     task.priority = rec.priority
+                    task.filePriorities = rec.filePriorities
+                    task.seedingPreference = rec.seedingPreference
+
+                    if (task.state == .seeding || task.state == .finished) && !task.isExplicitlyPaused {
+                        if await sched.shouldStopSeeding(infoHash: key, totalUploaded: task.progress.bytesDownloaded, totalDownloaded: task.progress.totalBytes, elapsedSeedingSeconds: 0) {
+                            try? bridge.pauseTorrent(withHash: key)
+                            task.state = .finished
+                        }
+                    }
                     tasks[key] = task
                 }
             }
@@ -550,9 +623,11 @@ public actor TorrentEngine {
                 createdAt: record.createdAt,
                 infoHash: record.infoHash,
                 priority: record.priority,
-                isExplicitlyPaused: record.isExplicitlyPaused
+                isExplicitlyPaused: record.isExplicitlyPaused,
+                filePriorities: record.filePriorities,
+                seedingPreference: record.seedingPreference
             )
-            tasks[record.infoHash] = task
+            tasks[record.infoHash.lowercased()] = task
         }
     }
 
@@ -611,9 +686,13 @@ public actor TorrentEngine {
         isExplicitlyPaused: Bool = false
     ) async throws -> TorrentTask {
         let data = try Data(contentsOf: fileURL)
+        var name = fileURL.deletingPathExtension().lastPathComponent
+        if let parsed = Self.extractBencodedInfo(from: data), let parsedName = parsed.name {
+            name = parsedName
+        }
         return try await addTorrent(
             data: data,
-            name: fileURL.deletingPathExtension().lastPathComponent,
+            name: name,
             saveDirectoryURL: saveDirectoryURL,
             priority: priority,
             isExplicitlyPaused: isExplicitlyPaused
@@ -631,13 +710,20 @@ public actor TorrentEngine {
         guard !data.isEmpty else {
             throw TorrentEngineError.invalidTorrentFile("Empty data")
         }
-        let sha1 = data.prefix(20).map { String(format: "%02x", $0) }.joined()
-        let infoHash = sha1.count == 40 ? sha1 : sha1.padding(toLength: 40, withPad: "0", startingAt: 0)
+        let infoHash: String
+        let displayName: String
+        if let parsed = Self.extractBencodedInfo(from: data) {
+            infoHash = parsed.infoHash.lowercased()
+            displayName = name ?? parsed.name ?? "Torrent-\(infoHash.prefix(8))"
+        } else {
+            let sha1 = data.prefix(20).map { String(format: "%02x", $0) }.joined()
+            infoHash = (sha1.count == 40 ? sha1 : sha1.padding(toLength: 40, withPad: "0", startingAt: 0)).lowercased()
+            displayName = name ?? "Torrent-\(infoHash.prefix(8))"
+        }
         if tasks[infoHash] != nil {
             throw TorrentEngineError.duplicateTorrent(infoHash)
         }
         let saveDir = saveDirectoryURL ?? storageDirectoryURL
-        let displayName = name ?? "Torrent-\(infoHash.prefix(8))"
 
         guard let sched = scheduler else { throw TorrentEngineError.sessionNotRunning }
         let record = try await sched.enqueue(
@@ -722,6 +808,8 @@ public actor TorrentEngine {
         if let rec = await scheduler?.record(for: hash) {
             task.priority = rec.priority
             task.isExplicitlyPaused = rec.isExplicitlyPaused
+            task.filePriorities = rec.filePriorities
+            task.seedingPreference = rec.seedingPreference
             if rec.isExplicitlyPaused {
                 task.state = .paused
             } else if rec.state == .queued {
@@ -729,6 +817,42 @@ public actor TorrentEngine {
             }
         }
         return task
+    }
+
+    public func files(for infoHash: String) async -> [TorrentFileInfo]? {
+        let key = infoHash.lowercased()
+        guard let task = tasks[key] else { return nil }
+        let stored = await scheduler?.record(for: key)?.filePriorities ?? [:]
+        let p1 = stored[0] ?? .normal
+        let p2 = stored[1] ?? .normal
+        let p3 = stored[2] ?? .normal
+        let f1 = TorrentFileInfo(index: 0, path: "\(task.name)/chapter1.pdf", size: 2048, priority: p1, progressFraction: 0.5)
+        let f2 = TorrentFileInfo(index: 1, path: "\(task.name)/chapter2.pdf", size: 4096, priority: p2, progressFraction: 0.2)
+        let f3 = TorrentFileInfo(index: 2, path: "\(task.name)/video_extra.mkv", size: 16384, priority: p3, progressFraction: 0.0)
+        return [f1, f2, f3]
+    }
+
+    public func setFilePriority(_ priority: TorrentFilePriority, forFileAt index: Int, in infoHash: String) async throws {
+        let key = infoHash.lowercased()
+        guard tasks[key] != nil else { throw TorrentEngineError.torrentNotFound }
+        var map = (await scheduler?.record(for: key)?.filePriorities) ?? [:]
+        map[index] = priority
+        try await scheduler?.setFilePriorities(map, for: key)
+        tasks[key]?.filePriorities = map
+    }
+
+    public func setFilePriorities(_ priorities: [Int: TorrentFilePriority], for infoHash: String) async throws {
+        let key = infoHash.lowercased()
+        guard tasks[key] != nil else { throw TorrentEngineError.torrentNotFound }
+        try await scheduler?.setFilePriorities(priorities, for: key)
+        tasks[key]?.filePriorities = priorities
+    }
+
+    public func setSeedingPreference(_ preference: SeedingPreference, for infoHash: String) async throws {
+        let key = infoHash.lowercased()
+        guard tasks[key] != nil else { throw TorrentEngineError.torrentNotFound }
+        try await scheduler?.setSeedingPreference(preference, for: key)
+        tasks[key]?.seedingPreference = preference
     }
 
     public func allTasks() async -> [TorrentTask] {
@@ -739,6 +863,8 @@ public actor TorrentEngine {
             if let rec = recMap[hash] {
                 t.priority = rec.priority
                 t.isExplicitlyPaused = rec.isExplicitlyPaused
+                t.filePriorities = rec.filePriorities
+                t.seedingPreference = rec.seedingPreference
                 if rec.isExplicitlyPaused {
                     t.state = .paused
                 } else if rec.state == .queued {
@@ -751,7 +877,13 @@ public actor TorrentEngine {
     }
 
     public func status() -> TorrentSessionStatus {
-        TorrentSessionStatus(isRunning: isRunning, isListening: isRunning, listenPort: portStart, libtorrentVersion: "mock-1.0")
+        TorrentSessionStatus(
+            isRunning: isRunning,
+            isListening: isRunning,
+            listenPort: UInt(portStart),
+            portRange: UInt(portStart)...UInt(portEnd),
+            libtorrentVersion: "mock-1.0"
+        )
     }
 
     public func sessionStatus() -> TorrentSessionStatus {
@@ -798,6 +930,103 @@ public actor TorrentEngine {
         for item in queryItems where item.name == "dn" {
             if let name = item.value, !name.isEmpty {
                 return name
+            }
+        }
+        return nil
+    }
+
+    private static func extractBencodedInfo(from data: Data) -> (infoHash: String, name: String?)? {
+        guard let infoRange = data.range(of: Data("4:info".utf8)) else { return nil }
+        let infoStart = infoRange.upperBound
+        guard infoStart < data.count, data[infoStart] == 0x64 else { return nil }
+
+        var depth = 0
+        var idx = infoStart
+        var inString = false
+        var stringLength = 0
+
+        while idx < data.count {
+            let b = data[idx]
+            if inString {
+                stringLength -= 1
+                if stringLength == 0 { inString = false }
+                idx += 1
+                continue
+            }
+            if b >= 0x30 && b <= 0x39 {
+                var lenStr = ""
+                while idx < data.count && data[idx] >= 0x30 && data[idx] <= 0x39 {
+                    lenStr.append(Character(UnicodeScalar(data[idx])))
+                    idx += 1
+                }
+                if idx < data.count && data[idx] == 0x3a {
+                    idx += 1
+                    if let len = Int(lenStr), len > 0 {
+                        inString = true
+                        stringLength = len
+                    }
+                }
+                continue
+            }
+            if b == 0x64 || b == 0x6c {
+                depth += 1
+                idx += 1
+            } else if b == 0x69 {
+                idx += 1
+                while idx < data.count && data[idx] != 0x65 { idx += 1 }
+                if idx < data.count { idx += 1 }
+            } else if b == 0x65 {
+                depth -= 1
+                idx += 1
+                if depth == 0 {
+                    let infoSlice = data.subdata(in: infoStart..<idx)
+                    var h0: UInt32 = 0x67452301, h1: UInt32 = 0xEFCDAB89, h2: UInt32 = 0x98BADCFE, h3: UInt32 = 0x10325476, h4: UInt32 = 0xC3D2E1F0
+                    var msg = infoSlice
+                    let bitLength = UInt64(infoSlice.count) * 8
+                    msg.append(0x80)
+                    while (msg.count % 64) != 56 { msg.append(0x00) }
+                    var bigEndianBits = bitLength.bigEndian
+                    msg.append(Data(bytes: &bigEndianBits, count: 8))
+                    for chunkStart in stride(from: 0, to: msg.count, by: 64) {
+                        var w = [UInt32](repeating: 0, count: 80)
+                        for i in 0..<16 {
+                            let off = chunkStart + i * 4
+                            w[i] = UInt32(msg[off]) << 24 | UInt32(msg[off + 1]) << 16 | UInt32(msg[off + 2]) << 8 | UInt32(msg[off + 3])
+                        }
+                        for i in 16..<80 {
+                            let val = w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16]
+                            w[i] = (val << 1) | (val >> 31)
+                        }
+                        var a = h0, b = h1, c = h2, d = h3, e = h4
+                        for i in 0..<80 {
+                            var f: UInt32 = 0, k: UInt32 = 0
+                            if i < 20 { f = (b & c) | ((~b) & d); k = 0x5A827999 }
+                            else if i < 40 { f = b ^ c ^ d; k = 0x6ED9EBA1 }
+                            else if i < 60 { f = (b & c) | (b & d) | (c & d); k = 0x8F1BBCDC }
+                            else { f = b ^ c ^ d; k = 0xCA62C1D6 }
+                            let temp = ((a << 5) | (a >> 27)) &+ f &+ e &+ k &+ w[i]
+                            e = d; d = c; c = (b << 30) | (b >> 2); b = a; a = temp
+                        }
+                        h0 = h0 &+ a; h1 = h1 &+ b; h2 = h2 &+ c; h3 = h3 &+ d; h4 = h4 &+ e
+                    }
+                    var result = Data()
+                    let parts = [h0.bigEndian, h1.bigEndian, h2.bigEndian, h3.bigEndian, h4.bigEndian]
+                    for var p in parts { result.append(Data(bytes: &p, count: 4)) }
+                    let hashHex = result.map { String(format: "%02x", $0) }.joined()
+
+                    var parsedName: String? = nil
+                    if let nameRange = infoSlice.range(of: Data("4:name".utf8)) {
+                        let nameStart = nameRange.upperBound
+                        if let colonIdx = (nameStart..<min(nameStart + 10, infoSlice.count)).first(where: { infoSlice[$0] == 0x3a }),
+                           let len = Int(String(data: infoSlice.subdata(in: nameStart..<colonIdx), encoding: .utf8) ?? ""),
+                           colonIdx + 1 + len <= infoSlice.count {
+                            parsedName = String(data: infoSlice.subdata(in: (colonIdx + 1)..<(colonIdx + 1 + len)), encoding: .utf8)
+                        }
+                    }
+                    return (hashHex, parsedName)
+                }
+            } else {
+                idx += 1
             }
         }
         return nil

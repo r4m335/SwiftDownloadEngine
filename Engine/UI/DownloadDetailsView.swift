@@ -23,6 +23,8 @@ public struct DownloadDetailsView: View {
     @State private var calculatedHash: String? = nil
     @State private var hashError: String? = nil
     @State private var quickLookURL: URL? = nil
+    @State private var torrentFiles: [TorrentFileInfo] = []
+    @State private var isLoadingFiles: Bool = false
 
     public init(viewModel: DownloadManagerViewModel, transfer: UnifiedTransfer) {
         self.viewModel = viewModel
@@ -166,6 +168,130 @@ public struct DownloadDetailsView: View {
                 }
             }
 
+            // Files & Selective Download (Phase 5)
+            Section(
+                header: Text("Files & Selective Download"),
+                footer: Text(transfer.totalBytes == nil ? "Metadata is downloading from swarm peers. Individual files will be selectable once metadata resolves." : "Customize which files to download or skip.")
+            ) {
+                if let hash = transfer.infoHash {
+                    if transfer.totalBytes == nil {
+                        HStack(spacing: 8) {
+                            Image(systemName: "clock.arrow.circlepath")
+                                .foregroundColor(.orange)
+                            Text("Metadata pending from peers...")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                        .padding(.vertical, 4)
+                    } else if torrentFiles.isEmpty {
+                        if isLoadingFiles {
+                            HStack {
+                                ProgressView()
+                                    .padding(.trailing, 6)
+                                Text("Loading file list...")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                            .padding(.vertical, 4)
+                        } else {
+                            Button {
+                                loadFiles(for: hash)
+                            } label: {
+                                Label("Fetch File List", systemImage: "arrow.clockwise")
+                                    .font(.caption)
+                            }
+                        }
+                    } else {
+                        ForEach(torrentFiles) { file in
+                            VStack(alignment: .leading, spacing: 4) {
+                                HStack(alignment: .top) {
+                                    Image(systemName: file.priority == .doNotDownload ? "xmark.circle" : "doc.fill")
+                                        .foregroundColor(file.priority == .doNotDownload ? .secondary : (file.priority == .high ? .orange : .blue))
+                                        .padding(.top, 2)
+
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(file.name)
+                                            .font(.subheadline)
+                                            .lineLimit(2)
+                                            .strikethrough(file.priority == .doNotDownload)
+                                            .foregroundColor(file.priority == .doNotDownload ? .secondary : .primary)
+
+                                        HStack(spacing: 8) {
+                                            Text(UIFormatters.formatBytes(file.size))
+                                                .font(.caption2)
+                                                .foregroundColor(.secondary)
+
+                                            if file.progressFraction > 0 {
+                                                Text("\(Int(file.progressFraction * 100))%")
+                                                    .font(.caption2)
+                                                    .foregroundColor(.secondary)
+                                            }
+                                        }
+                                    }
+
+                                    Spacer()
+
+                                    Picker("", selection: Binding(
+                                        get: { file.priority },
+                                        set: { newPrio in
+                                            Task { @MainActor in
+                                                try? await viewModel.setTorrentFilePriority(
+                                                    infoHash: hash,
+                                                    fileIndex: file.index,
+                                                    priority: newPrio
+                                                )
+                                                if let idx = torrentFiles.firstIndex(where: { $0.index == file.index }) {
+                                                    torrentFiles[idx].priority = newPrio
+                                                }
+                                            }
+                                        }
+                                    )) {
+                                        Text("Skip").tag(TorrentFilePriority.doNotDownload)
+                                        Text("Normal").tag(TorrentFilePriority.normal)
+                                        Text("High").tag(TorrentFilePriority.high)
+                                    }
+                                    .pickerStyle(MenuPickerStyle())
+                                    .frame(maxWidth: 90)
+                                }
+
+                                if file.progressFraction > 0 && file.progressFraction < 1.0 {
+                                    ProgressView(value: file.progressFraction)
+                                        .progressViewStyle(LinearProgressViewStyle())
+                                }
+                            }
+                            .padding(.vertical, 4)
+                        }
+                    }
+                }
+            }
+
+            // Seeding Controls Section (Phase 6)
+            Section(
+                header: Text("Seeding Behavior"),
+                footer: Text("Controls when this torrent will stop seeding after completion.")
+            ) {
+                if let hash = transfer.infoHash {
+                    Picker("Seeding Policy", selection: Binding(
+                        get: { transfer.seedingPreference?.mode ?? viewModel.defaultSeedingPreference.mode },
+                        set: { newMode in
+                            Task { @MainActor in
+                                let pref = SeedingPreference(
+                                    mode: newMode,
+                                    targetRatio: newMode == .ratio ? 1.0 : nil,
+                                    targetDurationSeconds: newMode == .duration ? 3600 : nil
+                                )
+                                try? await viewModel.setSeedingPreference(infoHash: hash, preference: pref)
+                            }
+                        }
+                    )) {
+                        Text("Stop when complete").tag(SeedingMode.doNotSeed)
+                        Text("Seed until ratio (1.0x)").tag(SeedingMode.ratio)
+                        Text("Seed for 1 hour").tag(SeedingMode.duration)
+                        Text("Seed indefinitely").tag(SeedingMode.indefinitely)
+                    }
+                }
+            }
+
             // Identity & File Details
             Section(header: Text("Torrent Identity")) {
                 if let hash = transfer.infoHash {
@@ -232,6 +358,11 @@ public struct DownloadDetailsView: View {
         .navigationBarTitleDisplayMode(.inline)
         #endif
         .navigationTitle("Torrent Details")
+        .onAppear {
+            if let hash = transfer.infoHash, transfer.totalBytes != nil {
+                loadFiles(for: hash)
+            }
+        }
         .alert("Remove Torrent", isPresented: $showingDeleteAlert) {
             Button("Remove Task Only", role: .none) {
                 Task { @MainActor in
@@ -468,6 +599,15 @@ public struct DownloadDetailsView: View {
                     self.isCalculatingHash = false
                 }
             }
+        }
+    }
+
+    private func loadFiles(for infoHash: String) {
+        isLoadingFiles = true
+        Task { @MainActor in
+            let fetched = await viewModel.fetchTorrentFiles(for: infoHash)
+            self.torrentFiles = fetched
+            self.isLoadingFiles = false
         }
     }
 }

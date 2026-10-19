@@ -1,6 +1,10 @@
 #if canImport(SwiftUI)
 import SwiftUI
 
+#if canImport(UIKit)
+import UIKit
+#endif
+
 /// Top-level native SwiftUI application coordinator for iOS/macOS.
 ///
 /// Features:
@@ -98,10 +102,27 @@ public struct SwiftDownloadEngineApp: App {
                     }
                 }
             case .background:
+                #if canImport(UIKit) && !os(watchOS)
+                var bgTaskID: UIBackgroundTaskIdentifier = .invalid
+                bgTaskID = UIApplication.shared.beginBackgroundTask(withName: "SwiftDownloadEngine.saveState") {
+                    if bgTaskID != .invalid {
+                        UIApplication.shared.endBackgroundTask(bgTaskID)
+                        bgTaskID = .invalid
+                    }
+                }
+                #endif
+
                 Task { @MainActor in
                     await viewModel.refreshSnapshots()
                     await viewModel.refreshTorrentSnapshots()
                     try? await viewModel.stopTorrentEngine()
+
+                    #if canImport(UIKit) && !os(watchOS)
+                    if bgTaskID != .invalid {
+                        UIApplication.shared.endBackgroundTask(bgTaskID)
+                        bgTaskID = .invalid
+                    }
+                    #endif
                 }
             case .inactive:
                 break

@@ -80,6 +80,26 @@ static std::string infoHashToHex(const libtorrent::info_hash_t &ih) {
 
 @end
 
+@implementation TorrentBridgeFileInfo
+
+- (instancetype)initWithIndex:(NSInteger)index
+                         path:(NSString *)path
+                         size:(int64_t)size
+                     priority:(uint8_t)priority
+                     progress:(float)progress {
+    self = [super init];
+    if (self) {
+        _index = index;
+        _path = [path copy];
+        _size = size;
+        _priority = priority;
+        _progress = progress;
+    }
+    return self;
+}
+
+@end
+
 @interface TorrentSessionBridge () {
     std::unique_ptr<libtorrent::session> _session;
     std::mutex _sessionMutex;
@@ -120,8 +140,15 @@ static std::string infoHashToHex(const libtorrent::info_hash_t &ih) {
     try {
         libtorrent::settings_pack sp;
 
-        // Configure network interfaces and ports
-        std::string listenInterfaces = "0.0.0.0:" + std::to_string(_portStart);
+        // Configure network interfaces and ports with full range support
+        std::string listenInterfaces;
+        if (_portEnd > _portStart) {
+            listenInterfaces = "0.0.0.0:" + std::to_string(_portStart) + "-" + std::to_string(_portEnd)
+                             + ",[::]:" + std::to_string(_portStart) + "-" + std::to_string(_portEnd);
+        } else {
+            listenInterfaces = "0.0.0.0:" + std::to_string(_portStart)
+                             + ",[::]:" + std::to_string(_portStart);
+        }
         sp.set_str(libtorrent::settings_pack::listen_interfaces, listenInterfaces);
 
         // Bounded resources for mobile (iPhone / iOS memory efficiency)
@@ -186,6 +213,14 @@ static std::string infoHashToHex(const libtorrent::info_hash_t &ih) {
         return 0;
     }
     return static_cast<NSUInteger>(_session->listen_port());
+}
+
+- (NSUInteger)portStart {
+    return _portStart;
+}
+
+- (NSUInteger)portEnd {
+    return _portEnd;
 }
 
 // MARK: - Internal Alert Processing
@@ -576,6 +611,103 @@ static std::string infoHashToHex(const libtorrent::info_hash_t &ih) {
         }
     }
     return [list copy];
+}
+
+// MARK: - Milestone 6: Per-File Priority & Management
+
+- (nullable NSArray<TorrentBridgeFileInfo *> *)filesForTorrentWithHash:(NSString *)infoHash {
+    std::lock_guard<std::mutex> lock(_sessionMutex);
+    std::string hex = [infoHash.lowercaseString UTF8String];
+    auto it = _torrents.find(hex);
+    if (it == _torrents.end() || !it->second.is_valid()) {
+        return nil;
+    }
+
+    libtorrent::torrent_handle &handle = it->second;
+    std::shared_ptr<const libtorrent::torrent_info> ti = handle.torrent_file();
+    if (!ti) {
+        // Metadata not yet resolved (e.g. magnet link in early discovery)
+        return nil;
+    }
+
+    libtorrent::file_storage const &files = ti->files();
+    int const numFiles = files.num_files();
+    std::vector<libtorrent::download_priority_t> prios = handle.get_file_priorities();
+
+    // Query file download progress
+    std::vector<std::int64_t> fileProgress;
+    handle.file_progress(fileProgress, libtorrent::torrent_handle::piece_granularity);
+
+    NSMutableArray<TorrentBridgeFileInfo *> *result = [NSMutableArray arrayWithCapacity:numFiles];
+    for (int i = 0; i < numFiles; ++i) {
+        libtorrent::file_index_t const idx(i);
+        NSString *filePath = [NSString stringWithUTF8String:files.file_path(idx).c_str()];
+        int64_t fileSize = files.file_size(idx);
+        uint8_t priority = i < prios.size() ? static_cast<uint8_t>(prios[i]) : 4;
+
+        float prog = 0.0f;
+        if (i < fileProgress.size() && fileSize > 0) {
+            prog = static_cast<float>(static_cast<double>(fileProgress[i]) / static_cast<double>(fileSize));
+            if (prog > 1.0f) prog = 1.0f;
+            if (prog < 0.0f) prog = 0.0f;
+        }
+
+        TorrentBridgeFileInfo *info = [[TorrentBridgeFileInfo alloc] initWithIndex:i
+                                                                              path:filePath
+                                                                              size:fileSize
+                                                                          priority:priority
+                                                                          progress:prog];
+        [result addObject:info];
+    }
+    return [result copy];
+}
+
+- (BOOL)setPriority:(uint8_t)priority
+      forFileAtIndex:(NSInteger)fileIndex
+   inTorrentWithHash:(NSString *)infoHash
+               error:(NSError * _Nullable * _Nullable)error {
+    std::lock_guard<std::mutex> lock(_sessionMutex);
+    std::string hex = [infoHash.lowercaseString UTF8String];
+    auto it = _torrents.find(hex);
+    if (it == _torrents.end() || !it->second.is_valid()) {
+        if (error) {
+            *error = [NSError errorWithDomain:@"com.r4m335.TorrentSessionBridge"
+                                         code:2007
+                                     userInfo:@{NSLocalizedDescriptionKey: @"Torrent not found"}];
+        }
+        return NO;
+    }
+
+    libtorrent::torrent_handle &handle = it->second;
+    handle.file_priority(libtorrent::file_index_t(static_cast<int>(fileIndex)),
+                         libtorrent::download_priority_t(priority));
+    return YES;
+}
+
+- (BOOL)setFilePriorities:(NSArray<NSNumber *> *)priorities
+        inTorrentWithHash:(NSString *)infoHash
+                    error:(NSError * _Nullable * _Nullable)error {
+    std::lock_guard<std::mutex> lock(_sessionMutex);
+    std::string hex = [infoHash.lowercaseString UTF8String];
+    auto it = _torrents.find(hex);
+    if (it == _torrents.end() || !it->second.is_valid()) {
+        if (error) {
+            *error = [NSError errorWithDomain:@"com.r4m335.TorrentSessionBridge"
+                                         code:2007
+                                     userInfo:@{NSLocalizedDescriptionKey: @"Torrent not found"}];
+        }
+        return NO;
+    }
+
+    std::vector<libtorrent::download_priority_t> prioVec;
+    prioVec.reserve(priorities.count);
+    for (NSNumber *num in priorities) {
+        prioVec.push_back(libtorrent::download_priority_t(num.unsignedCharValue));
+    }
+
+    libtorrent::torrent_handle &handle = it->second;
+    handle.prioritize_files(prioVec);
+    return YES;
 }
 
 // MARK: - Milestone 4: Fast-Resume & State Persistence

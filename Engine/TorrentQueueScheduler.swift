@@ -163,6 +163,50 @@ public actor TorrentQueueScheduler {
         return await pumpQueue()
     }
 
+    /// Updates and persists per-file download priorities for a torrent.
+    public func setFilePriorities(_ priorities: [Int: TorrentFilePriority], for infoHash: String) async throws {
+        let key = infoHash.lowercased()
+        guard var record = records[key] else {
+            throw TorrentEngineError.torrentNotFound
+        }
+        record.filePriorities = priorities
+        record.updatedAt = Date()
+        records[key] = record
+        try await persistenceStore.saveRecord(record)
+    }
+
+    /// Updates and persists the seeding policy preference for a torrent.
+    public func setSeedingPreference(_ preference: SeedingPreference, for infoHash: String) async throws {
+        let key = infoHash.lowercased()
+        guard var record = records[key] else {
+            throw TorrentEngineError.torrentNotFound
+        }
+        record.seedingPreference = preference
+        record.updatedAt = Date()
+        records[key] = record
+        try await persistenceStore.saveRecord(record)
+    }
+
+    /// Evaluates whether an active seeding torrent has fulfilled its configured ratio or duration limit.
+    public func shouldStopSeeding(infoHash: String, totalUploaded: Int64, totalDownloaded: Int64, elapsedSeedingSeconds: TimeInterval) -> Bool {
+        let key = infoHash.lowercased()
+        guard let record = records[key] else { return false }
+        let pref = record.seedingPreference ?? (record.seedRatioLimit.map { SeedingPreference(mode: .ratio, targetRatio: $0) }) ?? SeedingPreference.default
+
+        switch pref.mode {
+        case .doNotSeed:
+            return true
+        case .ratio:
+            let dl = max(1, totalDownloaded)
+            let currentRatio = Double(totalUploaded) / Double(dl)
+            return currentRatio >= pref.targetRatio
+        case .duration:
+            return elapsedSeedingSeconds >= pref.targetDurationSeconds
+        case .indefinitely:
+            return false
+        }
+    }
+
     // MARK: - Progress & State Transitions
 
     /// Updates the progress and optionally the state of a torrent.

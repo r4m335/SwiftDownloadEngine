@@ -87,6 +87,8 @@ public struct UnifiedTransfer: Identifiable, Sendable, Equatable {
     public let connectedSeeds: Int?
     public let torrentPriority: TorrentPriority?
     public let isExplicitlyPaused: Bool
+    public let seedingPreference: SeedingPreference?
+    public let filePriorities: [Int: TorrentFilePriority]?
 
     // MARK: - Initializer for HTTP DownloadSnapshot
     public init(from snapshot: DownloadSnapshot) {
@@ -125,6 +127,8 @@ public struct UnifiedTransfer: Identifiable, Sendable, Equatable {
         self.connectedSeeds = nil
         self.torrentPriority = nil
         self.isExplicitlyPaused = false
+        self.seedingPreference = nil
+        self.filePriorities = nil
     }
 
     // MARK: - Initializer for TorrentTask
@@ -166,6 +170,8 @@ public struct UnifiedTransfer: Identifiable, Sendable, Equatable {
         self.connectedSeeds = task.progress.activeSeeds
         self.torrentPriority = task.priority
         self.isExplicitlyPaused = task.isExplicitlyPaused
+        self.seedingPreference = task.seedingPreference
+        self.filePriorities = task.filePriorities
     }
 
     // MARK: - Explicit Initializer (for testing and previews)
@@ -188,7 +194,9 @@ public struct UnifiedTransfer: Identifiable, Sendable, Equatable {
         connectedPeers: Int? = nil,
         connectedSeeds: Int? = nil,
         torrentPriority: TorrentPriority? = nil,
-        isExplicitlyPaused: Bool = false
+        isExplicitlyPaused: Bool = false,
+        seedingPreference: SeedingPreference? = nil,
+        filePriorities: [Int: TorrentFilePriority]? = nil
     ) {
         self.id = id
         self.name = name
@@ -209,6 +217,8 @@ public struct UnifiedTransfer: Identifiable, Sendable, Equatable {
         self.connectedSeeds = connectedSeeds
         self.torrentPriority = torrentPriority
         self.isExplicitlyPaused = isExplicitlyPaused
+        self.seedingPreference = seedingPreference
+        self.filePriorities = filePriorities
     }
 
     // MARK: - Helper Predicates
