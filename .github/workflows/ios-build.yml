@@ -33,7 +33,7 @@ jobs:
           swift test
 
   milestone1-torrent-build:
-    name: Milestone 1 — libtorrent 2.0 iOS Native Build & Bridge Test
+    name: Milestone 1-3 — libtorrent 2.0 iOS Native Build, Bridge & Transfer Engine Test
     runs-on: macos-14
 
     steps:
@@ -153,6 +153,46 @@ jobs:
                   assert(!status.isRunning, "Engine should report isRunning == false after stop")
                   assert(!status.isListening, "Engine should report isListening == false after stop")
                   print("--- Milestone 2 SUCCESS: TorrentEngine Actor Lifecycle Verified ---")
+
+                  print("--- Milestone 3 Verification Test: Magnet Ingestion & Transfer Controls ---")
+                  let m3Dir = NSTemporaryDirectory() + "m3_test_" + UUID().uuidString
+                  try FileManager.default.createDirectory(atPath: m3Dir, withIntermediateDirectories: true)
+                  defer { try? FileManager.default.removeItem(atPath: m3Dir) }
+
+                  let m3Engine = TorrentEngine(storageDirectoryURL: URL(fileURLWithPath: m3Dir), portStart: 6883, portEnd: 6893)
+                  try await m3Engine.start()
+
+                  let magnet = "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567&dn=UbuntuDemo"
+                  let task = try await m3Engine.addTorrent(magnetURI: magnet)
+                  print("Added magnet torrent with info-hash: \(task.infoHash), name: \(task.name)")
+                  assert(task.infoHash == "0123456789abcdef0123456789abcdef01234567", "Info-hash must match magnet")
+                  assert(task.name == "UbuntuDemo", "Task name must match magnet display name")
+
+                  let fetchedTask = await m3Engine.task(for: task.infoHash)
+                  assert(fetchedTask != nil, "Task must be retrievable by infoHash")
+                  assert(fetchedTask?.infoHash == task.infoHash, "Retrieved task infoHash must match")
+
+                  let allTasks = await m3Engine.allTasks()
+                  assert(allTasks.count == 1, "allTasks should return exactly 1 task")
+
+                  try await m3Engine.pause(infoHash: task.infoHash)
+                  let paused = await m3Engine.task(for: task.infoHash)
+                  assert(paused?.state == .paused, "Task state should be paused after pause()")
+                  print("Torrent transfer paused successfully!")
+
+                  try await m3Engine.resume(infoHash: task.infoHash)
+                  let resumed = await m3Engine.task(for: task.infoHash)
+                  assert(resumed?.state != .paused, "Task state should no longer be paused after resume()")
+                  print("Torrent transfer resumed successfully!")
+
+                  try await m3Engine.remove(infoHash: task.infoHash, deleteFiles: false)
+                  let afterRemove = await m3Engine.task(for: task.infoHash)
+                  assert(afterRemove == nil, "Task should be nil after removal")
+                  assert(await m3Engine.allTasks().count == 0, "allTasks should be empty after removal")
+                  print("Torrent transfer removed successfully!")
+
+                  await m3Engine.stop()
+                  print("--- Milestone 3 SUCCESS: Core Torrent Downloads & Controls Verified ---")
               }
           }
           EOF

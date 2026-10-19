@@ -45,12 +45,13 @@ public struct TorrentProgress: Codable, Equatable, Sendable {
 public struct TorrentTask: Identifiable, Codable, Equatable, Sendable {
     public let id: UUID
     public let source: String
-    public let name: String
+    public var name: String
     public let savePath: URL
     public var state: TorrentState
     public var progress: TorrentProgress
     public var errorMessage: String?
     public let createdAt: Date
+    public let infoHash: String
 
     public init(
         id: UUID = UUID(),
@@ -60,7 +61,8 @@ public struct TorrentTask: Identifiable, Codable, Equatable, Sendable {
         state: TorrentState = .queued,
         progress: TorrentProgress = TorrentProgress(),
         errorMessage: String? = nil,
-        createdAt: Date = Date()
+        createdAt: Date = Date(),
+        infoHash: String = ""
     ) {
         self.id = id
         self.source = source
@@ -70,6 +72,7 @@ public struct TorrentTask: Identifiable, Codable, Equatable, Sendable {
         self.progress = progress
         self.errorMessage = errorMessage
         self.createdAt = createdAt
+        self.infoHash = infoHash
     }
 }
 
@@ -85,5 +88,23 @@ public struct TorrentSessionStatus: Equatable, Sendable {
         self.isListening = isListening
         self.listenPort = listenPort
         self.libtorrentVersion = libtorrentVersion
+    }
+}
+
+/// Errors produced by torrent management and transfer operations.
+public enum TorrentEngineError: LocalizedError, Equatable, Sendable {
+    case sessionNotRunning
+    case torrentNotFound
+    case bridgeError(String)
+
+    public var errorDescription: String? {
+        switch self {
+        case .sessionNotRunning:
+            return "The torrent engine session is not running."
+        case .torrentNotFound:
+            return "The specified torrent was not found."
+        case .bridgeError(let msg):
+            return msg
+        }
     }
 }

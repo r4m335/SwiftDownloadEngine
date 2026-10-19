@@ -28,12 +28,14 @@ final class TorrentModelsTests: XCTestCase {
             name: "Example",
             savePath: URL(fileURLWithPath: "/tmp/example"),
             state: .paused,
-            progress: TorrentProgress(bytesDownloaded: 50, totalBytes: 100, progressFraction: 0.5)
+            progress: TorrentProgress(bytesDownloaded: 50, totalBytes: 100, progressFraction: 0.5),
+            infoHash: "0123456789abcdef0123456789abcdef01234567"
         )
 
         let data = try JSONEncoder().encode(task)
         let decoded = try JSONDecoder().decode(TorrentTask.self, from: data)
         XCTAssertEqual(decoded, task)
+        XCTAssertEqual(decoded.infoHash, "0123456789abcdef0123456789abcdef01234567")
     }
 
     func testSessionStatusCapturesHealth() {
@@ -48,5 +50,27 @@ final class TorrentModelsTests: XCTestCase {
         XCTAssertTrue(status.isListening)
         XCTAssertEqual(status.listenPort, 6881)
         XCTAssertEqual(status.libtorrentVersion, "2.0.10.0")
+    }
+
+    func testTorrentEngineErrors() {
+        let notRunning = TorrentEngineError.sessionNotRunning
+        XCTAssertEqual(notRunning.localizedDescription, "The torrent engine session is not running.")
+
+        let notFound = TorrentEngineError.torrentNotFound
+        XCTAssertEqual(notFound.localizedDescription, "The specified torrent was not found.")
+
+        let bridgeErr = TorrentEngineError.bridgeError("Custom error message")
+        XCTAssertEqual(bridgeErr.localizedDescription, "Custom error message")
+    }
+
+    func testTorrentStateRawValues() {
+        XCTAssertEqual(TorrentState.queued.rawValue, "queued")
+        XCTAssertEqual(TorrentState.checking.rawValue, "checking")
+        XCTAssertEqual(TorrentState.downloading.rawValue, "downloading")
+        XCTAssertEqual(TorrentState.finished.rawValue, "finished")
+        XCTAssertEqual(TorrentState.seeding.rawValue, "seeding")
+        XCTAssertEqual(TorrentState.paused.rawValue, "paused")
+        XCTAssertEqual(TorrentState.error.rawValue, "error")
+        XCTAssertEqual(TorrentState.removed.rawValue, "removed")
     }
 }
