@@ -344,17 +344,7 @@ static std::string infoHashToHex(const libtorrent::info_hash_t &ih) {
     }
 
     try {
-        libtorrent::error_code ec;
-        libtorrent::load_torrent_limits limits;
-        libtorrent::add_torrent_params atp = libtorrent::load_torrent_file([filePath UTF8String], limits, ec);
-        if (ec) {
-            if (error) {
-                *error = [NSError errorWithDomain:@"com.r4m335.TorrentSessionBridge"
-                                             code:2002
-                                         userInfo:@{NSLocalizedDescriptionKey: [NSString stringWithUTF8String:ec.message().c_str()]}];
-            }
-            return nil;
-        }
+        libtorrent::add_torrent_params atp = libtorrent::load_torrent_file([filePath UTF8String]);
 
         NSString *effectiveSavePath = (savePath.length > 0) ? savePath : _storagePath;
         [[NSFileManager defaultManager] createDirectoryAtPath:effectiveSavePath
@@ -363,6 +353,7 @@ static std::string infoHashToHex(const libtorrent::info_hash_t &ih) {
                                                         error:nil];
         atp.save_path = [effectiveSavePath UTF8String];
 
+        libtorrent::error_code ec;
         libtorrent::torrent_handle handle = _session->add_torrent(atp, ec);
         if (ec || !handle.is_valid()) {
             if (error) {
@@ -420,17 +411,7 @@ static std::string infoHashToHex(const libtorrent::info_hash_t &ih) {
 
     try {
         libtorrent::span<char const> buffer(reinterpret_cast<char const *>(data.bytes), data.length);
-        libtorrent::error_code ec;
-        libtorrent::load_torrent_limits limits;
-        libtorrent::add_torrent_params atp = libtorrent::load_torrent_buffer(buffer, limits, ec);
-        if (ec) {
-            if (error) {
-                *error = [NSError errorWithDomain:@"com.r4m335.TorrentSessionBridge"
-                                             code:2002
-                                         userInfo:@{NSLocalizedDescriptionKey: [NSString stringWithUTF8String:ec.message().c_str()]}];
-            }
-            return nil;
-        }
+        libtorrent::add_torrent_params atp = libtorrent::load_torrent_buffer(buffer);
 
         NSString *effectiveSavePath = (savePath.length > 0) ? savePath : _storagePath;
         [[NSFileManager defaultManager] createDirectoryAtPath:effectiveSavePath
@@ -439,6 +420,7 @@ static std::string infoHashToHex(const libtorrent::info_hash_t &ih) {
                                                         error:nil];
         atp.save_path = [effectiveSavePath UTF8String];
 
+        libtorrent::error_code ec;
         libtorrent::torrent_handle handle = _session->add_torrent(atp, ec);
         if (ec || !handle.is_valid()) {
             if (error) {
