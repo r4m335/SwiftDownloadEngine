@@ -39,6 +39,7 @@ jobs:
           xcodebuild \
             -project SwiftDownloadEngine.xcodeproj \
             -scheme SwiftDownloadEngine \
+            -sdk iphonesimulator \
             -destination "platform=iOS Simulator,name=${SIM_NAME:-iPhone 15}" \
             -configuration Debug \
             -derivedDataPath build \
@@ -59,13 +60,23 @@ jobs:
 
       - name: Package Simulator App Bundle
         run: |
-          cd build/Build/Products/Debug-iphonesimulator
+          APP_PATH=$(find build/Build/Products -name "SwiftDownloadEngine.app" -type d | head -n 1)
+          if [ -z "$APP_PATH" ]; then
+            echo "Error: SwiftDownloadEngine.app not found!"
+            find build/Build/Products -maxdepth 3
+            exit 1
+          fi
+          echo "Found app bundle at: $APP_PATH"
+          APP_DIR=$(dirname "$APP_PATH")
+          cd "$APP_DIR"
           zip -r -y SwiftDownloadEngine-Simulator.zip SwiftDownloadEngine.app
           ls -lh SwiftDownloadEngine-Simulator.zip
+          mkdir -p "$GITHUB_WORKSPACE/artifact"
+          cp SwiftDownloadEngine-Simulator.zip "$GITHUB_WORKSPACE/artifact/"
 
       - name: Upload Build Artifact
         uses: actions/upload-artifact@v4
         with:
           name: SwiftDownloadEngine-iOS-Simulator
-          path: build/Build/Products/Debug-iphonesimulator/SwiftDownloadEngine-Simulator.zip
+          path: artifact/SwiftDownloadEngine-Simulator.zip
           retention-days: 14
