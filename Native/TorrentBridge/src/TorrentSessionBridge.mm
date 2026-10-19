@@ -345,7 +345,8 @@ static std::string infoHashToHex(const libtorrent::info_hash_t &ih) {
 
     try {
         libtorrent::error_code ec;
-        libtorrent::add_torrent_params atp = libtorrent::load_torrent_file([filePath UTF8String], ec);
+        libtorrent::load_torrent_limits limits;
+        libtorrent::add_torrent_params atp = libtorrent::load_torrent_file([filePath UTF8String], limits, ec);
         if (ec) {
             if (error) {
                 *error = [NSError errorWithDomain:@"com.r4m335.TorrentSessionBridge"
@@ -420,7 +421,8 @@ static std::string infoHashToHex(const libtorrent::info_hash_t &ih) {
     try {
         libtorrent::span<char const> buffer(reinterpret_cast<char const *>(data.bytes), data.length);
         libtorrent::error_code ec;
-        libtorrent::add_torrent_params atp = libtorrent::load_torrent_buffer(buffer, ec);
+        libtorrent::load_torrent_limits limits;
+        libtorrent::add_torrent_params atp = libtorrent::load_torrent_buffer(buffer, limits, ec);
         if (ec) {
             if (error) {
                 *error = [NSError errorWithDomain:@"com.r4m335.TorrentSessionBridge"
