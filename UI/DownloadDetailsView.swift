@@ -247,10 +247,9 @@ public struct DownloadDetailsView: View {
 
                 VStack(alignment: .leading, spacing: 2) {
                     if file.priority == .doNotDownload {
-                        Text(file.name)
+                        Text("\(file.name) (Skipped)")
                             .font(.subheadline)
                             .lineLimit(2)
-                            .strikethrough()
                             .foregroundColor(.secondary)
                     } else {
                         Text(file.name)
