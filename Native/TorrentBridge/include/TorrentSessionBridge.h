@@ -99,7 +99,7 @@ NS_SWIFT_NAME(TorrentSessionBridge)
 /// @return Lowercase hexadecimal info-hash of the added torrent, or nil on failure.
 - (nullable NSString *)addTorrentWithMagnetURI:(NSString *)magnetURI
                                      savePath:(nullable NSString *)savePath
-                                        error:(NSError * _Nullable * _Nullable)error;
+                                        error:(NSError * _Nullable * _Nullable)error NS_SWIFT_NAME(addTorrent(withMagnetURI:savePath:));
 
 /// Adds a torrent from a local .torrent file path.
 /// @param filePath Path to the .torrent file on disk.
@@ -108,7 +108,7 @@ NS_SWIFT_NAME(TorrentSessionBridge)
 /// @return Lowercase hexadecimal info-hash of the added torrent, or nil on failure.
 - (nullable NSString *)addTorrentWithFilePath:(NSString *)filePath
                                     savePath:(nullable NSString *)savePath
-                                       error:(NSError * _Nullable * _Nullable)error;
+                                       error:(NSError * _Nullable * _Nullable)error NS_SWIFT_NAME(addTorrent(withFilePath:savePath:));
 
 /// Adds a torrent from raw .torrent file bytes.
 /// @param data NSData containing bencoded torrent file.
@@ -117,29 +117,29 @@ NS_SWIFT_NAME(TorrentSessionBridge)
 /// @return Lowercase hexadecimal info-hash of the added torrent, or nil on failure.
 - (nullable NSString *)addTorrentWithData:(NSData *)data
                                  savePath:(nullable NSString *)savePath
-                                    error:(NSError * _Nullable * _Nullable)error;
+                                    error:(NSError * _Nullable * _Nullable)error NS_SWIFT_NAME(addTorrent(with:savePath:));
 
 /// Pauses an active torrent transfer.
 - (BOOL)pauseTorrentWithHash:(NSString *)infoHash
-                       error:(NSError * _Nullable * _Nullable)error;
+                       error:(NSError * _Nullable * _Nullable)error NS_SWIFT_NAME(pauseTorrent(withHash:));
 
 /// Resumes a paused torrent transfer.
 - (BOOL)resumeTorrentWithHash:(NSString *)infoHash
-                        error:(NSError * _Nullable * _Nullable)error;
+                        error:(NSError * _Nullable * _Nullable)error NS_SWIFT_NAME(resumeTorrent(withHash:));
 
 /// Removes a torrent from the session, optionally deleting downloaded payload files.
 - (BOOL)removeTorrentWithHash:(NSString *)infoHash
                   deleteFiles:(BOOL)deleteFiles
-                        error:(NSError * _Nullable * _Nullable)error;
+                        error:(NSError * _Nullable * _Nullable)error NS_SWIFT_NAME(removeTorrent(withHash:deleteFiles:));
 
 /// Returns the current transfer status for a specific torrent.
-- (nullable TorrentBridgeStatus *)statusForTorrentWithHash:(NSString *)infoHash;
+- (nullable TorrentBridgeStatus *)statusForTorrentWithHash:(NSString *)infoHash NS_SWIFT_NAME(status(forTorrentWithHash:));
 
 /// Returns the statuses of all active torrents currently tracked by this session.
-- (NSArray<TorrentBridgeStatus *> *)allTorrentStatuses;
+- (NSArray<TorrentBridgeStatus *> *)allTorrentStatuses NS_SWIFT_NAME(allTorrentStatuses());
 
 /// Drains session alerts and updates internal status caches.
-- (void)pollAlerts;
+- (void)pollAlerts NS_SWIFT_NAME(pollAlerts());
 
 @end
 
