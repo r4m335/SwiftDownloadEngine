@@ -1,6 +1,6 @@
 name: iOS App Build & Test
 
-'on':
+on:
   push:
     branches: [ main ]
   pull_request:
@@ -8,8 +8,8 @@ name: iOS App Build & Test
   workflow_dispatch:
 
 jobs:
-  build-and-test:
-    name: Build iOS App & Run Tests
+  package-tests:
+    name: Swift Package Tests
     runs-on: macos-14
 
     steps:
@@ -31,6 +31,24 @@ jobs:
       - name: Run Swift Package Tests (macOS)
         run: |
           swift test
+
+  build-simulator:
+    name: iOS Simulator Build
+    runs-on: macos-14
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Select Xcode Version
+        run: |
+          if [ -d "/Applications/Xcode_15.4.app" ]; then
+            sudo xcode-select -s /Applications/Xcode_15.4.app
+          elif [ -d "/Applications/Xcode_16.0.app" ]; then
+            sudo xcode-select -s /Applications/Xcode_16.0.app
+          else
+            sudo xcode-select -s /Applications/Xcode.app
+          fi
 
       - name: Build iOS Application Target (Simulator)
         run: |
@@ -71,12 +89,87 @@ jobs:
           cd "$APP_DIR"
           zip -r -y SwiftDownloadEngine-Simulator.zip SwiftDownloadEngine.app
           ls -lh SwiftDownloadEngine-Simulator.zip
-          mkdir -p "$GITHUB_WORKSPACE/artifact"
-          cp SwiftDownloadEngine-Simulator.zip "$GITHUB_WORKSPACE/artifact/"
+          mkdir -p "$GITHUB_WORKSPACE/artifact-simulator"
+          cp SwiftDownloadEngine-Simulator.zip "$GITHUB_WORKSPACE/artifact-simulator/"
 
-      - name: Upload Build Artifact
+      - name: Upload Simulator Build Artifact
         uses: actions/upload-artifact@v4
         with:
           name: SwiftDownloadEngine-iOS-Simulator
-          path: artifact/SwiftDownloadEngine-Simulator.zip
+          path: artifact-simulator/SwiftDownloadEngine-Simulator.zip
+          retention-days: 14
+
+  build-device:
+    name: iOS Device Build
+    runs-on: macos-14
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Select Xcode Version
+        run: |
+          if [ -d "/Applications/Xcode_15.4.app" ]; then
+            sudo xcode-select -s /Applications/Xcode_15.4.app
+          elif [ -d "/Applications/Xcode_16.0.app" ]; then
+            sudo xcode-select -s /Applications/Xcode_16.0.app
+          else
+            sudo xcode-select -s /Applications/Xcode.app
+          fi
+
+      - name: Build iOS Application Target (Device - Unsigned)
+        run: |
+          xcodebuild \
+            -project SwiftDownloadEngine.xcodeproj \
+            -scheme SwiftDownloadEngine \
+            -sdk iphoneos \
+            -destination "generic/platform=iOS" \
+            -configuration Debug \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build
+
+      - name: Dump Diagnostic Reports on Failure
+        if: failure()
+        run: |
+          for f in ~/Library/Logs/DiagnosticReports/*; do
+            if [ -f "$f" ]; then
+              echo "=== Diagnostic Report: $f ==="
+              head -n 60 "$f"
+            fi
+          done
+
+      - name: Package Device App Bundle and IPA
+        run: |
+          APP_PATH=$(find build/Build/Products -name "SwiftDownloadEngine.app" -type d | head -n 1)
+          if [ -z "$APP_PATH" ]; then
+            echo "Error: SwiftDownloadEngine.app not found!"
+            find build/Build/Products -maxdepth 3
+            exit 1
+          fi
+          echo "Found device app bundle at: $APP_PATH"
+          APP_DIR=$(dirname "$APP_PATH")
+          cd "$APP_DIR"
+
+          # 1. Package raw app bundle
+          zip -r -y SwiftDownloadEngine-Device.zip SwiftDownloadEngine.app
+
+          # 2. Package standard .ipa payload for sideloading
+          mkdir -p Payload
+          cp -r SwiftDownloadEngine.app Payload/
+          zip -r -y SwiftDownloadEngine-Unsigned.ipa Payload
+          rm -rf Payload
+
+          ls -lh SwiftDownloadEngine-Device.zip SwiftDownloadEngine-Unsigned.ipa
+          mkdir -p "$GITHUB_WORKSPACE/artifact-device"
+          cp SwiftDownloadEngine-Device.zip "$GITHUB_WORKSPACE/artifact-device/"
+          cp SwiftDownloadEngine-Unsigned.ipa "$GITHUB_WORKSPACE/artifact-device/"
+
+      - name: Upload Device Build Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SwiftDownloadEngine-iOS-Device
+          path: artifact-device/*
           retention-days: 14

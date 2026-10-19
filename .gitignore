@@ -16,6 +16,9 @@ resources/
 1dm_ios_engine_component*
 *.apk
 *.zip
+*.ipa
+*.app/
+SwiftDownloadEngine-Simulator/
 *.log
 *.tmp
 *.swp
