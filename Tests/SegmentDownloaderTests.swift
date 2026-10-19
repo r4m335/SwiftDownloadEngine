@@ -488,4 +488,47 @@ final class SegmentDownloaderTests: XCTestCase {
         let expectedData = Data((0..<Int(fileSize)).map { UInt8($0 % 256) })
         XCTAssertEqual(finalData, expectedData)
     }
+
+    // MARK: - 11. HTML Error Page Detection
+
+    func testHtmlErrorPageReceivedThrowsError() async throws {
+        let testURL = URL(string: "https://example.com/binary.bin")!
+        let fileURL = tempDirectory.appendingPathComponent("test_html_error.bin")
+        let totalSize: Int64 = 1_000_000
+
+        let segment = DownloadSegment(id: 0, startOffset: 0, endOffset: 499_999, length: 500_000)
+        let htmlPayload = "<html><body><h1>403 Forbidden / Login Required</h1></body></html>".data(using: .utf8)!
+
+        MockURLProtocol.setHandler(for: testURL) { _ in
+            let headers = [
+                "Content-Type": "text/html; charset=utf-8",
+                "Content-Length": String(htmlPayload.count),
+                "Content-Range": "bytes 0-499999/1000000"
+            ]
+            let response = HTTPURLResponse(url: testURL, statusCode: 206, httpVersion: "HTTP/1.1", headerFields: headers)!
+            return (response, htmlPayload)
+        }
+
+        let writer = try DownloadFileWriter(destinationURL: fileURL, totalSize: totalSize)
+        let downloader = SegmentDownloader(session: session, writer: writer)
+
+        do {
+            try await downloader.download(
+                url: testURL,
+                segment: segment,
+                expectedTotalSize: totalSize
+            )
+            XCTFail("Expected htmlErrorPageReceived error")
+        } catch let error as SegmentDownloaderError {
+            if case .htmlErrorPageReceived(let type) = error {
+                XCTAssertTrue(type.contains("text/html"))
+            } else {
+                XCTFail("Unexpected SegmentDownloaderError case: \(error)")
+            }
+        } catch {
+            XCTFail("Unexpected error type: \(error)")
+        }
+
+        try await writer.close()
+    }
 }

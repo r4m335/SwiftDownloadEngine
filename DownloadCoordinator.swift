@@ -138,10 +138,15 @@ public enum DownloadCoordinatorError: Error, LocalizedError, Equatable, Sendable
 private actor ProgressAccumulator {
     private let segmentsByID: [Int: DownloadSegment]
     private var completedByID: [Int: Int64]
+    private var lastFlushedBytesByID: [Int: Int64] = [:]
+    private var lastFlushedTimeByID: [Int: Date] = [:]
 
     init(segments: [DownloadSegment], initialCompletedBytes: [Int: Int64]) {
         self.segmentsByID = Dictionary(uniqueKeysWithValues: segments.map { ($0.id, $0) })
         self.completedByID = initialCompletedBytes
+        self.lastFlushedBytesByID = initialCompletedBytes
+        let now = Date()
+        self.lastFlushedTimeByID = Dictionary(uniqueKeysWithValues: segments.map { ($0.id, now) })
     }
 
     func update(
@@ -166,6 +171,20 @@ private actor ProgressAccumulator {
             (completedByID[$0.id] ?? 0) >= $0.length
         }.count
         return (total, finished)
+    }
+
+    func shouldCheckpoint(segmentID: Int, completedBytes: Int64) -> Bool {
+        let lastBytes = lastFlushedBytesByID[segmentID] ?? 0
+        let lastTime = lastFlushedTimeByID[segmentID] ?? .distantPast
+        let bytesDelta = completedBytes - lastBytes
+        let timeDelta = Date().timeIntervalSince(lastTime)
+
+        if bytesDelta >= 256 * 1024 || timeDelta >= 1.0 {
+            lastFlushedBytesByID[segmentID] = completedBytes
+            lastFlushedTimeByID[segmentID] = Date()
+            return true
+        }
+        return false
     }
 
     func getCompletedBytes() -> [Int: Int64] {
@@ -510,8 +529,15 @@ public actor DownloadCoordinator {
                     )
                     switch validation {
                     case .valid:
+                        let reconciled = Self.reconcilePartialFile(
+                            destinationURL: request.destinationURL,
+                            record: existing
+                        )
+                        if reconciled != existing {
+                            try await persistenceStore.save(reconciled)
+                        }
                         isResume = true
-                        record = existing
+                        record = reconciled
                     case .sizeMismatch, .validatorMismatch:
                         isResume = false
                         if FileManager.default.fileExists(atPath: request.destinationURL.path) {
@@ -731,6 +757,20 @@ public actor DownloadCoordinator {
                                                 eta: metrics.estimatedTimeRemaining,
                                                 handler: handler
                                             )
+
+                                            let needsCheckpoint = await progressAccumulator.shouldCheckpoint(
+                                                segmentID: segment.id,
+                                                completedBytes: snapshot.bytesReceived
+                                            )
+                                            if needsCheckpoint {
+                                                // Guarantee partial file is safely flushed to disk before committing checkpoint
+                                                try? await writer.synchronize()
+                                                _ = try? await self.persistenceStore.updateSegmentProgress(
+                                                    tag: request.id,
+                                                    segmentID: segment.id,
+                                                    completedBytes: snapshot.bytesReceived
+                                                )
+                                            }
                                         }
                                     }
                                 )
@@ -861,6 +901,11 @@ public actor DownloadCoordinator {
         }
 
         // 9. MANDATORY INVARIANT: Verify all segments completed in persistence store
+        let finalCompletedMap = await progressAccumulator.getCompletedBytes()
+        for (segID, bytes) in finalCompletedMap {
+            _ = try? await persistenceStore.updateSegmentProgress(tag: request.id, segmentID: segID, completedBytes: bytes)
+        }
+
         guard let finalRecord = try await persistenceStore.fetch(tag: request.id),
               finalRecord.isAllSegmentsCompleted else {
             let error = DownloadCoordinatorError.segmentLayoutInvalid(reason: "Not all segments reported completed")
@@ -1019,6 +1064,8 @@ public actor DownloadCoordinator {
             var buffer = Data()
             buffer.reserveCapacity(64 * 1024)
             var totalWritten: Int64 = 0
+            var lastFlushedSingleStreamBytes: Int64 = 0
+            var lastFlushedSingleStreamTime = Date()
 
             do {
                 for try await byte in bytes {
@@ -1049,6 +1096,18 @@ public actor DownloadCoordinator {
                             eta: metrics.estimatedTimeRemaining,
                             handler: handler
                         )
+
+                        if totalWritten - lastFlushedSingleStreamBytes >= 256 * 1024 ||
+                            Date().timeIntervalSince(lastFlushedSingleStreamTime) >= 1.0 {
+                            lastFlushedSingleStreamBytes = totalWritten
+                            lastFlushedSingleStreamTime = Date()
+                            try? fileHandle.synchronize()
+                            _ = try? await persistenceStore.updateSegmentProgress(
+                                tag: request.id,
+                                segmentID: 0,
+                                completedBytes: totalWritten
+                            )
+                        }
                     }
                 }
 
@@ -1244,6 +1303,71 @@ public actor DownloadCoordinator {
         )
         progressByID[downloadID] = snapshot
         handler?(snapshot)
+    }
+
+    // MARK: - Disk Reconciliation
+
+    /// Reconciles the partial destination file on disk with persisted segment metadata before resumption.
+    /// Ensures the partial file, persisted byte offset, and subsequent HTTP Range request all agree.
+    public static func reconcilePartialFile(
+        destinationURL: URL,
+        record: DownloadRecord
+    ) -> DownloadRecord {
+        var reconciled = record
+        let fileManager = FileManager.default
+
+        guard fileManager.fileExists(atPath: destinationURL.path) else {
+            // Destination file is missing: reset all segments to byte 0
+            reconciled.segments = record.segments.map { seg in
+                var s = seg
+                s.completedBytes = 0
+                return s
+            }
+            return reconciled
+        }
+
+        guard let attrs = try? fileManager.attributesOfItem(atPath: destinationURL.path),
+              let fileSize = attrs[.size] as? Int64 else {
+            return reconciled
+        }
+
+        if record.storageMode == .directSeek {
+            // Direct seek files are preallocated to totalSize
+            let total = record.totalSize
+            if total > 0 {
+                if fileSize < total {
+                    // File on disk is smaller than expected totalSize: re-truncate or reset
+                    if let handle = try? FileHandle(forWritingTo: destinationURL) {
+                        try? handle.truncate(atOffset: UInt64(total))
+                        try? handle.close()
+                    } else {
+                        reconciled.segments = record.segments.map { seg in
+                            var s = seg
+                            s.completedBytes = 0
+                            return s
+                        }
+                    }
+                }
+            }
+        } else {
+            // Linear single-stream mode
+            let savedCompleted = record.completedBytes
+            if fileSize > savedCompleted {
+                // File contains more data than saved checkpoint (e.g. 90 MB on disk vs 25 MB checkpointed)
+                // Truncate to saved checkpoint so subsequent HTTP Range request and disk file align perfectly
+                if let handle = try? FileHandle(forWritingTo: destinationURL) {
+                    try? handle.truncate(atOffset: UInt64(savedCompleted))
+                    try? handle.close()
+                }
+            } else if fileSize < savedCompleted {
+                // Disk file has fewer bytes than checkpoint: clamp completedBytes to actual disk size
+                if !reconciled.segments.isEmpty {
+                    reconciled.segments[0].completedBytes = max(0, fileSize)
+                }
+            }
+        }
+
+        return reconciled
     }
 }
 

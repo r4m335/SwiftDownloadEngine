@@ -1044,4 +1044,100 @@ final class DownloadQueueManagerTests: XCTestCase {
         XCTAssertEqual(items.first?.completedBytes, 1000)
         XCTAssertEqual(items.first?.totalBytes, 2000)
     }
+
+    // MARK: - 28. Force-Close Recovery at 90% Preserves Latest Checkpoint
+
+    func test28_ForceCloseRecoveryAt90PercentPreservesLatestCheckpoint() async throws {
+        let manifestURL = tempDirectory.appendingPathComponent("forceclose_manifest.json")
+        let destURL = tempDirectory.appendingPathComponent("forceclose_file.bin")
+        let totalSize: Int64 = 10_000_000 // 10 MB
+        let ninetyPercent: Int64 = 9_000_000 // 9 MB (90%)
+
+        FileManager.default.createFile(atPath: destURL.path, contents: nil)
+        let handle = try FileHandle(forWritingTo: destURL)
+        try handle.truncate(atOffset: UInt64(totalSize))
+        try handle.close()
+
+        // 4 segments of 2.5 MB each.
+        // Segments 0, 1, 2 are 100% done (7.5 MB total).
+        // Segment 3 is 60% done (1.5 MB out of 2.5 MB).
+        // Total completed: 7.5 MB + 1.5 MB = 9.0 MB (90% of 10 MB).
+        let seg0 = SegmentRecord(id: 0, startOffset: 0, endOffset: 2_499_999, length: 2_500_000, completedBytes: 2_500_000)
+        let seg1 = SegmentRecord(id: 1, startOffset: 2_500_000, endOffset: 4_999_999, length: 2_500_000, completedBytes: 2_500_000)
+        let seg2 = SegmentRecord(id: 2, startOffset: 5_000_000, endOffset: 7_499_999, length: 2_500_000, completedBytes: 2_500_000)
+        let seg3 = SegmentRecord(id: 3, startOffset: 7_500_000, endOffset: 9_999_999, length: 2_500_000, completedBytes: 1_500_000)
+
+        let record = DownloadRecord(
+            id: "force-close-90",
+            originalURL: URL(string: "https://example.com/10mb.bin")!,
+            destinationURL: destURL,
+            totalSize: totalSize,
+            state: .downloading, // downloading when force-closed
+            storageMode: .directSeek,
+            segments: [seg0, seg1, seg2, seg3]
+        )
+        try await persistenceStore.save(record)
+
+        // Create manager and simulate app boot recovery
+        let manager = DownloadQueueManager(
+            coordinator: coordinator,
+            persistenceStore: persistenceStore,
+            queueStoreURL: manifestURL,
+            maxConcurrentDownloads: 2
+        )
+        try await manager.restoreQueue(autoStart: false)
+
+        let items = await manager.allItems()
+        XCTAssertEqual(items.count, 1)
+        guard let restored = items.first else {
+            XCTFail("Failed to restore item")
+            return
+        }
+
+        XCTAssertEqual(restored.id, "force-close-90")
+        XCTAssertEqual(restored.state, .paused, "Active download at crash must be restored as paused")
+        XCTAssertEqual(restored.completedBytes, ninetyPercent, "Confirmed bytes must recover at 90% (9 MB), NOT fall back to 25% (2.5 MB)")
+        XCTAssertEqual(restored.totalBytes, totalSize)
+        XCTAssertEqual(restored.fractionCompleted, 0.9, accuracy: 0.001)
+    }
+
+    // MARK: - 29. File Size Mismatch Reconciliation With Checkpoint
+
+    func test29_FileSizeMismatchReconciliationWithCheckpoint() async throws {
+        // Case A: Linear file contains 900 KB on disk, but durable checkpoint was 250 KB
+        let destURL = tempDirectory.appendingPathComponent("mismatch_file.bin")
+        let diskPayload = Data(count: 900_000)
+        try diskPayload.write(to: destURL)
+
+        let recordA = DownloadRecord(
+            id: "mismatch-dl",
+            originalURL: URL(string: "https://example.com/file.bin")!,
+            destinationURL: destURL,
+            totalSize: 1_000_000,
+            state: .paused,
+            storageMode: .partFiles, // non-directSeek sequential
+            segments: [SegmentRecord(id: 0, startOffset: 0, endOffset: 999_999, length: 1_000_000, completedBytes: 250_000)]
+        )
+
+        let reconciledA = DownloadCoordinator.reconcilePartialFile(destinationURL: destURL, record: recordA)
+        XCTAssertEqual(reconciledA.completedBytes, 250_000)
+
+        // Verify the file on disk was truncated to 250 KB so resume Range request starts at 250 KB without duplicate data
+        let diskAttrsA = try FileManager.default.attributesOfItem(atPath: destURL.path)
+        let diskSizeA = diskAttrsA[.size] as? Int64
+        XCTAssertEqual(diskSizeA, 250_000, "Disk file must be truncated to saved checkpoint to agree with resume offset")
+
+        // Case B: Disk file has 250 KB, but checkpoint claims 500 KB (missing bytes on disk)
+        let recordB = DownloadRecord(
+            id: "mismatch-b",
+            originalURL: URL(string: "https://example.com/file.bin")!,
+            destinationURL: destURL,
+            totalSize: 1_000_000,
+            state: .paused,
+            storageMode: .partFiles,
+            segments: [SegmentRecord(id: 0, startOffset: 0, endOffset: 999_999, length: 1_000_000, completedBytes: 500_000)]
+        )
+        let reconciledB = DownloadCoordinator.reconcilePartialFile(destinationURL: destURL, record: recordB)
+        XCTAssertEqual(reconciledB.completedBytes, 250_000, "Checkpoint must be clamped down to physical disk size if disk is smaller")
+    }
 }

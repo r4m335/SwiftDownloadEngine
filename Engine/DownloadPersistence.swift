@@ -376,7 +376,7 @@ public actor DownloadPersistenceStore {
             )
         }
 
-        record.segments[segmentIndex].completedBytes = max(0, completedBytes)
+        record.segments[segmentIndex].completedBytes = max(record.segments[segmentIndex].completedBytes, max(0, completedBytes))
         record.updatedAt = Date()
 
         if record.isAllSegmentsCompleted && record.state == .downloading {

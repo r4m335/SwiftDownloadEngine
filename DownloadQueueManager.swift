@@ -155,6 +155,8 @@ public actor DownloadQueueManager {
     private var progressHandlers: [String: @Sendable (CoordinatorProgress) -> Void] = [:]
     private var globalProgressHandler: (@Sendable (CoordinatorProgress) -> Void)?
     private var onQueueChanged: (@Sendable (QueueSnapshot) -> Void)?
+    private var lastQueuePersistTimes: [String: Date] = [:]
+    private var lastQueuePersistBytes: [String: Int64] = [:]
 
     public init(
         coordinator: DownloadCoordinator,
@@ -519,7 +521,16 @@ public actor DownloadQueueManager {
 
         // 2. Reconcile with persistence store records (source of truth for disk data & segments)
         if let storedRecords = try? await persistenceStore.fetchAll() {
-            for record in storedRecords {
+            for rawRecord in storedRecords {
+                // Reconcile saved checkpoint with physical partial file on disk
+                let record = DownloadCoordinator.reconcilePartialFile(
+                    destinationURL: rawRecord.destinationURL,
+                    record: rawRecord
+                )
+                if record != rawRecord {
+                    _ = try? await persistenceStore.save(record)
+                }
+
                 if var existing = self.items[record.id] {
                     // Update progress from disk record
                     existing.completedBytes = max(existing.completedBytes, record.completedBytes)
@@ -675,6 +686,17 @@ public actor DownloadQueueManager {
             }
             progressHandlers[progress.downloadID]?(progress)
             globalProgressHandler?(progress)
+
+            let lastTime = lastQueuePersistTimes[progress.downloadID] ?? .distantPast
+            let lastBytes = lastQueuePersistBytes[progress.downloadID] ?? 0
+            let bytesDelta = abs(progress.bytesReceived - lastBytes)
+            let timeDelta = Date().timeIntervalSince(lastTime)
+
+            if bytesDelta >= 256 * 1024 || timeDelta >= 1.0 {
+                lastQueuePersistTimes[progress.downloadID] = Date()
+                lastQueuePersistBytes[progress.downloadID] = progress.bytesReceived
+                persistQueue()
+            }
         }
     }
 

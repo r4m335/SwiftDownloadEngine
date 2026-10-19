@@ -46,6 +46,7 @@ public enum SegmentDownloaderError: Error, LocalizedError, Equatable, Sendable {
     case totalSizeMismatch(expected: Int64, actual: Int64)
     case bodyLengthMismatch(expected: Int64, actual: Int64)
     case rateLimited(retryAfterSeconds: Double?)
+    case htmlErrorPageReceived(contentType: String)
     case cancelled
 
     public var errorDescription: String? {
@@ -68,6 +69,8 @@ public enum SegmentDownloaderError: Error, LocalizedError, Equatable, Sendable {
             } else {
                 return "Server rate limit exceeded (HTTP 429). Please wait before retrying."
             }
+        case .htmlErrorPageReceived(let contentType):
+            return "Server returned HTML error or login page instead of binary content (\(contentType))"
         case .cancelled:
             return "Segment download task was cancelled"
         }
@@ -235,6 +238,15 @@ public final class SegmentDownloader: Sendable {
         // Strict 206 Partial Content enforcement (C1569kI.java:L126 & e.java:L5649)
         guard httpResponse.statusCode == 206 else {
             throw SegmentDownloaderError.unexpectedStatus(expected: 206, actual: httpResponse.statusCode)
+        }
+
+        // Validate Content-Type: reject HTML error/captive portal pages when downloading binary data
+        if let contentType = httpResponse.value(forHTTPHeaderField: "Content-Type")?.lowercased() {
+            if contentType.contains("text/html") || contentType.contains("application/xhtml+xml") {
+                if (expectedTotalSize ?? 0) > 64 * 1024 || (expectedTotalSize == nil && segment.length > 64 * 1024) {
+                    throw SegmentDownloaderError.htmlErrorPageReceived(contentType: contentType)
+                }
+            }
         }
 
         // Validate Content-Range boundaries and total file size

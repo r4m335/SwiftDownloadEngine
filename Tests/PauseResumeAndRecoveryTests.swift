@@ -784,6 +784,53 @@ final class PauseResumeAndRecoveryTests: XCTestCase {
         XCTAssertEqual(finalData, payload)
     }
 
+    func testServerReturns200DuringResumeRefusesToAppendAndReportsCannotResume() async throws {
+        let size = 100 * 1024
+        let payload = makePayload(size: size, seed: 0x99)
+        let path = "/ignore_range_resume.bin"
+
+        // Server registered with ignoresRange = true (returns 200 OK for any request)
+        server.register(path: path, data: payload, eTag: "\"etag-same\"", ignoresRange: true)
+        let destURL = tempDirectory.appendingPathComponent("ignore_range_resume.bin")
+
+        // Write 30 KB partial file
+        let partialPayload = payload.prefix(30 * 1024)
+        try partialPayload.write(to: destURL)
+
+        let record = DownloadRecord(
+            id: "resume-200-test",
+            originalURL: server.url(for: path),
+            destinationURL: destURL,
+            totalSize: Int64(size),
+            state: .paused,
+            eTag: "\"etag-same\"",
+            segments: [SegmentRecord(id: 0, startOffset: 0, endOffset: Int64(size - 1), length: Int64(size), completedBytes: 30 * 1024)]
+        )
+        try await persistenceStore.save(record)
+
+        let request = DownloadRequest(
+            id: "resume-200-test",
+            url: server.url(for: path),
+            destinationURL: destURL
+        )
+
+        do {
+            try await coordinator.resume(request)
+            XCTFail("Resuming against a server that ignores range and sends 200 must throw cannotResume")
+        } catch let error as DownloadCoordinatorError {
+            if case .cannotResume(let reason) = error {
+                XCTAssertTrue(reason.contains("Resume unavailable"), "Expected clear diagnostic reason")
+            } else {
+                XCTFail("Unexpected error case: \(error)")
+            }
+        }
+
+        // Verify partial file was NOT inflated or corrupted by appending 200 OK body
+        let onDiskData = try Data(contentsOf: destURL)
+        XCTAssertEqual(onDiskData.count, 30 * 1024, "Engine must not append 200 OK data to existing partial file")
+        XCTAssertEqual(onDiskData, partialPayload)
+    }
+
     // MARK: - Phase 2D: Interrupted Connections & Bounded Retries
 
     func testTransientServerErrorRecoversViaExponentialBackoff() async throws {
