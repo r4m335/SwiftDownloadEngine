@@ -69,6 +69,7 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
     @Published public var globalBandwidthLimitBytesPerSecond: Int64? = nil
 
     @Published public var errorMessage: String? = nil
+    @Published public var userNotificationMessage: String? = nil
     @Published public var isObserving: Bool = false
 
     private var eventTask: Task<Void, Never>? = nil
@@ -379,6 +380,25 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
     /// Clears the current user-facing error message.
     public func clearError() {
         self.errorMessage = nil
+    }
+
+    /// Displays a user-facing success or status notification banner.
+    public func showNotification(_ message: String, autoDismissSeconds: Double = 3.5) {
+        self.userNotificationMessage = message
+        if autoDismissSeconds > 0 {
+            Task { @MainActor [weak self] in
+                let ns = UInt64(autoDismissSeconds * 1_000_000_000)
+                try? await Task.sleep(nanoseconds: ns)
+                if self?.userNotificationMessage == message {
+                    self?.userNotificationMessage = nil
+                }
+            }
+        }
+    }
+
+    /// Clears any currently active user notification banner.
+    public func clearNotification() {
+        self.userNotificationMessage = nil
     }
 
     // MARK: - Settings Configuration & Persistence

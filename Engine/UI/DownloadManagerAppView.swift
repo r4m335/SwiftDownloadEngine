@@ -25,7 +25,9 @@ public struct DownloadManagerAppView: View {
                 }
                 .tag(0)
 
-            AddDownloadView(viewModel: viewModel)
+            AddDownloadView(viewModel: viewModel, onDownloadAdded: {
+                selectedTab = 0
+            })
                 .tabItem {
                     Label("Add", systemImage: "plus.circle")
                 }

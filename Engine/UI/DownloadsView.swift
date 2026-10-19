@@ -86,6 +86,32 @@ public struct DownloadsView: View {
                     .padding(.top, 4)
                 }
 
+                // Notification / Success Banner
+                if let notification = viewModel.userNotificationMessage {
+                    HStack {
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundColor(.white)
+                        Text(notification)
+                            .font(.caption)
+                            .bold()
+                            .foregroundColor(.white)
+                            .lineLimit(2)
+                        Spacer()
+                        Button {
+                            viewModel.clearNotification()
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .foregroundColor(.white)
+                        }
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(Color.green)
+                    .cornerRadius(8)
+                    .padding(.horizontal)
+                    .padding(.top, 4)
+                }
+
                 // Filter Chips
                 FilterBar(selectedFilter: $viewModel.selectedFilter)
                     .padding(.vertical, 8)

@@ -11,6 +11,7 @@ import AppKit
 public struct AddDownloadView: View {
     @ObservedObject public var viewModel: DownloadManagerViewModel
     @Environment(\.presentationMode) private var presentationMode
+    public var onDownloadAdded: (() -> Void)? = nil
 
     @State private var urlString = ""
     @State private var customFilename = ""
@@ -19,9 +20,11 @@ public struct AddDownloadView: View {
     @State private var speedLimitKBps = ""
     @State private var isSubmitting = false
     @State private var errorMessage: String? = nil
+    @State private var successMessage: String? = nil
 
-    public init(viewModel: DownloadManagerViewModel) {
+    public init(viewModel: DownloadManagerViewModel, onDownloadAdded: (() -> Void)? = nil) {
         self.viewModel = viewModel
+        self.onDownloadAdded = onDownloadAdded
     }
 
     public var body: some View {
@@ -67,6 +70,16 @@ public struct AddDownloadView: View {
                         Text(error)
                             .font(.caption)
                             .foregroundColor(.red)
+                    }
+
+                    if let success = successMessage {
+                        HStack {
+                            Image(systemName: "checkmark.circle.fill")
+                                .foregroundColor(.green)
+                            Text(success)
+                                .font(.caption)
+                                .foregroundColor(.green)
+                        }
                     }
                 }
 
@@ -166,6 +179,23 @@ public struct AddDownloadView: View {
                     speedLimitBytesPerSecond: limit,
                     autoStart: autoStart
                 )
+
+                // 1. Reset submission spinner
+                isSubmitting = false
+
+                // 2. Set success confirmation message
+                successMessage = "Download added successfully."
+                viewModel.showNotification("Download added successfully.")
+
+                // 3. Clear entry fields
+                urlString = ""
+                customFilename = ""
+                speedLimitKBps = ""
+
+                // 4. Trigger tab switch callback if embedded in TabView
+                onDownloadAdded?()
+
+                // 5. Dismiss modal sheet if presented as a sheet
                 presentationMode.wrappedValue.dismiss()
             } catch {
                 errorMessage = error.localizedDescription
