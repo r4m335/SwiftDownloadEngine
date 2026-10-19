@@ -192,8 +192,8 @@ public struct SettingsView: View {
 
         let seeding = viewModel.defaultSeedingPreference
         self.seedingMode = seeding.mode
-        self.targetRatio = seeding.targetRatio ?? 1.0
-        self.targetDurationMinutes = Int((seeding.targetDurationSeconds ?? 3600) / 60)
+        self.targetRatio = seeding.targetRatio
+        self.targetDurationMinutes = Int(seeding.targetDurationSeconds / 60)
 
         if let bytes = viewModel.globalBandwidthLimitBytesPerSecond, bytes > 0 {
             self.enableGlobalSpeedLimit = true
@@ -214,8 +214,8 @@ public struct SettingsView: View {
 
         let preference = SeedingPreference(
             mode: seedingMode,
-            targetRatio: seedingMode == .ratio ? targetRatio : nil,
-            targetDurationSeconds: seedingMode == .duration ? UInt64(targetDurationMinutes * 60) : nil
+            targetRatio: targetRatio,
+            targetDurationSeconds: TimeInterval(targetDurationMinutes * 60)
         )
 
         Task { @MainActor in
