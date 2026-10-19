@@ -1,6 +1,10 @@
 #if canImport(SwiftUI)
 import SwiftUI
 
+#if canImport(QuickLook)
+import QuickLook
+#endif
+
 /// Screen 3: Download Details Screen displaying URL, progress, speed, status, and error details.
 public struct DownloadDetailsView: View {
     @ObservedObject public var viewModel: DownloadManagerViewModel
@@ -8,6 +12,11 @@ public struct DownloadDetailsView: View {
 
     @Environment(\.presentationMode) private var presentationMode
     @State private var showingDeleteAlert = false
+    @State private var isCalculatingHash = false
+    @State private var hashProgress: Double = 0.0
+    @State private var calculatedHash: String? = nil
+    @State private var hashError: String? = nil
+    @State private var quickLookURL: URL? = nil
 
     public init(viewModel: DownloadManagerViewModel, download: DownloadSnapshot) {
         self.viewModel = viewModel
@@ -72,7 +81,34 @@ public struct DownloadDetailsView: View {
 
                     // Integrity & Checksums
                     Section(header: Text("Integrity Verification")) {
-                        DetailRow(label: "Checksum Outcome", value: checksumString(download.checksumOutcome))
+                        DetailRow(label: "Verification Status", value: checksumString(download.checksumOutcome))
+
+                        if let hash = calculatedHash {
+                            DetailRow(label: "Calculated SHA-256", value: hash)
+                        }
+
+                        if let err = hashError {
+                            Text(err)
+                                .font(.caption)
+                                .foregroundColor(.red)
+                        }
+
+                        if isCalculatingHash {
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text("Calculating SHA-256... \(Int(hashProgress * 100))%")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                                ProgressView(value: hashProgress)
+                                    .progressViewStyle(LinearProgressViewStyle())
+                            }
+                            .padding(.vertical, 4)
+                        } else if FileManager.default.fileExists(atPath: download.destinationURL.path) {
+                            Button {
+                                runChecksumVerification(for: download)
+                            } label: {
+                                Label(calculatedHash == nil ? "Verify File Integrity (SHA-256)" : "Recalculate SHA-256", systemImage: "checkmark.shield")
+                            }
+                        }
                     }
 
                     // File & Location Details
@@ -85,26 +121,49 @@ public struct DownloadDetailsView: View {
 
                     // Control Operations
                     Section {
-                        if download.state == .downloading {
+                        if download.state == .downloading || download.state == .probing {
                             Button {
                                 Task { @MainActor in try? await viewModel.pauseDownload(id: download.id) }
                             } label: {
                                 Label("Pause Download", systemImage: "pause.fill")
                                     .foregroundColor(.orange)
                             }
-                        } else if download.canResume {
+                        } else if download.state == .paused {
                             Button {
                                 Task { @MainActor in try? await viewModel.resumeDownload(id: download.id) }
                             } label: {
                                 Label("Resume Download", systemImage: "play.fill")
                                     .foregroundColor(.green)
                             }
-                        } else if download.isFailed {
+                        } else if download.state == .completed {
                             Button {
-                                Task { @MainActor in try? await viewModel.retryDownload(id: download.id) }
+                                quickLookURL = download.destinationURL
                             } label: {
-                                Label("Retry Download", systemImage: "arrow.clockwise")
+                                Label("Open File", systemImage: "doc.text")
                                     .foregroundColor(.blue)
+                            }
+                        } else if download.isFailed {
+                            if download.isNonResumable {
+                                Button {
+                                    Task { @MainActor in try? await viewModel.restartDownload(id: download.id) }
+                                } label: {
+                                    Label("Restart Download", systemImage: "arrow.counterclockwise")
+                                        .foregroundColor(.orange)
+                                }
+                            } else if download.isRateLimited {
+                                Button {
+                                    Task { @MainActor in try? await viewModel.retryDownload(id: download.id) }
+                                } label: {
+                                    Label("Retry when eligible", systemImage: "clock.arrow.circlepath")
+                                        .foregroundColor(.purple)
+                                }
+                            } else {
+                                Button {
+                                    Task { @MainActor in try? await viewModel.resumeDownload(id: download.id) }
+                                } label: {
+                                    Label("Resume Download", systemImage: "play.fill")
+                                        .foregroundColor(.green)
+                                }
                             }
                         }
 
@@ -128,6 +187,9 @@ public struct DownloadDetailsView: View {
                 .navigationBarTitleDisplayMode(.inline)
                 #endif
                 .navigationTitle("Details")
+                #if canImport(QuickLook)
+                .quickLookPreview($quickLookURL)
+                #endif
                 .alert("Remove Download", isPresented: $showingDeleteAlert) {
                     Button("Remove Entry Only", role: .none) {
                         Task { @MainActor in
@@ -178,6 +240,33 @@ public struct DownloadDetailsView: View {
             return "Verified (\(sha.prefix(8))...)"
         case .mismatch(let expected, _):
             return "Mismatch (Expected \(expected.prefix(8))...)"
+        }
+    }
+
+    private func runChecksumVerification(for download: DownloadSnapshot) {
+        guard !isCalculatingHash else { return }
+        isCalculatingHash = true
+        hashProgress = 0.0
+        hashError = nil
+        let url = download.destinationURL
+
+        Task.detached(priority: .userInitiated) {
+            do {
+                let hash = try FileHasher.sha256(for: url) { progress in
+                    Task { @MainActor in
+                        self.hashProgress = progress
+                    }
+                }
+                await MainActor.run {
+                    self.calculatedHash = hash
+                    self.isCalculatingHash = false
+                }
+            } catch {
+                await MainActor.run {
+                    self.hashError = "Verification error: \(error.localizedDescription)"
+                    self.isCalculatingHash = false
+                }
+            }
         }
     }
 }

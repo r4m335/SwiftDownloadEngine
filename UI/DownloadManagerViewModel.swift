@@ -121,6 +121,9 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
         // Apply persisted settings to the underlying engine
         try? await applyPersistedSettings()
 
+        // Automatically restore persistent queue on boot
+        try? await engine.restoreQueue(autoStart: false)
+
         // Fetch authoritative initial snapshots
         await refreshSnapshots()
 
@@ -349,6 +352,28 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
         } catch {
             self.errorMessage = error.localizedDescription
             throw error
+        }
+    }
+
+    /// Restarts a download from byte 0.
+    public func restartDownload(id: DownloadID) async throws {
+        do {
+            try await engine.restartDownload(id: id)
+        } catch {
+            self.errorMessage = error.localizedDescription
+            throw error
+        }
+    }
+
+    /// Unified action: resumes, retries, or restarts a download depending on its state.
+    public func resumeOrRetryDownload(id: DownloadID) async throws {
+        guard let download = downloads.first(where: { $0.id == id }) else { return }
+        if download.isNonResumable {
+            try await restartDownload(id: id)
+        } else if download.isFailed {
+            try await retryDownload(id: id)
+        } else {
+            try await resumeDownload(id: id)
         }
     }
 

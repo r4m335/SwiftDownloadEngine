@@ -45,6 +45,7 @@ public enum SegmentDownloaderError: Error, LocalizedError, Equatable, Sendable {
     case contentRangeMismatch(expectedStart: Int64, expectedEnd: Int64, actualStart: Int64, actualEnd: Int64)
     case totalSizeMismatch(expected: Int64, actual: Int64)
     case bodyLengthMismatch(expected: Int64, actual: Int64)
+    case rateLimited(retryAfterSeconds: Double?)
     case cancelled
 
     public var errorDescription: String? {
@@ -61,6 +62,12 @@ public enum SegmentDownloaderError: Error, LocalizedError, Equatable, Sendable {
             return "Content-Range total size (\(actual)) does not match probed file size (\(expected))"
         case .bodyLengthMismatch(let expected, let actual):
             return "Body length mismatch: expected \(expected) bytes, received \(actual) bytes"
+        case .rateLimited(let retryAfter):
+            if let sec = retryAfter {
+                return "Server rate limit exceeded (HTTP 429). Retry after \(Int(sec))s."
+            } else {
+                return "Server rate limit exceeded (HTTP 429). Please wait before retrying."
+            }
         case .cancelled:
             return "Segment download task was cancelled"
         }
@@ -218,6 +225,11 @@ public final class SegmentDownloader: Sendable {
 
         guard let httpResponse = response as? HTTPURLResponse else {
             throw SegmentDownloaderError.invalidHTTPResponse
+        }
+
+        if httpResponse.statusCode == 429 {
+            let retryAfter = HTTPRangeProbe.parseRetryAfter(httpResponse.value(forHTTPHeaderField: "Retry-After"))
+            throw SegmentDownloaderError.rateLimited(retryAfterSeconds: retryAfter)
         }
 
         // Strict 206 Partial Content enforcement (C1569kI.java:L126 & e.java:L5649)

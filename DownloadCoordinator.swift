@@ -4,6 +4,10 @@ import Foundation
 import FoundationNetworking
 #endif
 
+#if canImport(CryptoKit)
+import CryptoKit
+#endif
+
 /// Request parameters for a download operation coordinated by `DownloadCoordinator`.
 public struct DownloadRequest: Sendable, Equatable, Codable {
     public let id: String
@@ -435,13 +439,19 @@ public actor DownloadCoordinator {
             existingRecord = initialRecord
         }
 
+        // Retrieve existing confirmed bytes and total size if resuming or re-probing
+        let initialCompleted = existingRecord?.completedBytes ?? 0
+        let initialTotal = (existingRecord?.totalSize != nil && existingRecord!.totalSize > 0) ? existingRecord?.totalSize : nil
+        let initialFinishedSegments = existingRecord?.segments.filter { $0.isCompleted }.count ?? 0
+        let initialTotalSegments = existingRecord?.segments.count ?? 0
+
         updateProgress(
             downloadID: request.id,
             state: .probing,
-            bytesReceived: 0,
-            totalBytes: nil,
-            completedSegments: 0,
-            totalSegments: 0,
+            bytesReceived: initialCompleted,
+            totalBytes: initialTotal,
+            completedSegments: initialFinishedSegments,
+            totalSegments: initialTotalSegments,
             handler: handler
         )
 
@@ -467,7 +477,13 @@ public actor DownloadCoordinator {
                         throw error
                     }
                     probeAttempt += 1
-                    try await Task.sleep(nanoseconds: UInt64(250_000_000 * probeAttempt))
+                    let delaySeconds: Double
+                    if case HTTPRangeProbeError.rateLimited(_, let retryAfter) = error, let sec = retryAfter {
+                        delaySeconds = min(60.0, max(1.0, sec))
+                    } else {
+                        delaySeconds = min(15.0, 0.5 * pow(2.0, Double(probeAttempt - 1)))
+                    }
+                    try await Task.sleep(nanoseconds: UInt64(delaySeconds * 1_000_000_000))
                 }
             }
             try Task.checkCancellation()
@@ -479,6 +495,12 @@ public actor DownloadCoordinator {
                 if existing.completedBytes > 0 && !FileManager.default.fileExists(atPath: request.destinationURL.path) {
                     isResume = false
                     record = nil
+                } else if !probeResult.supportsRange {
+                    // Remote server does not support byte ranges for resumption.
+                    // Preserve the file and notify the user clearly.
+                    throw DownloadCoordinatorError.cannotResume(
+                        reason: "Resume unavailable: This server doesn't support reliable download resumption. Restarting the download may be required."
+                    )
                 } else {
                     let validation = existing.validateForResume(
                         remoteETag: probeResult.eTag,
@@ -490,12 +512,16 @@ public actor DownloadCoordinator {
                     case .valid:
                         isResume = true
                         record = existing
-                    case .sizeMismatch, .validatorMismatch, .unsupportedNonResumable:
+                    case .sizeMismatch, .validatorMismatch:
                         isResume = false
                         if FileManager.default.fileExists(atPath: request.destinationURL.path) {
                             try? FileManager.default.removeItem(at: request.destinationURL)
                         }
                         record = nil
+                    case .unsupportedNonResumable:
+                        throw DownloadCoordinatorError.cannotResume(
+                            reason: "Resume unavailable: This server doesn't support reliable download resumption. Restarting the download may be required."
+                        )
                     }
                 }
             } else {
@@ -523,7 +549,12 @@ public actor DownloadCoordinator {
                     )
                 } catch {
                     if Self.isRangeIgnored(error) {
-                        // Safe fallback: Server returned 200 after ranged request
+                        if isResume {
+                            throw DownloadCoordinatorError.cannotResume(
+                                reason: "Resume unavailable: This server doesn't support reliable download resumption. Restarting the download may be required."
+                            )
+                        }
+                        // Safe fallback for fresh downloads: Server returned 200 after ranged request
                         try await runSingleStreamFallback(
                             request: request,
                             probeResult: probeResult,
@@ -545,6 +576,17 @@ public actor DownloadCoordinator {
             throw CancellationError()
         } catch {
             _ = try? await persistenceStore.updateState(tag: request.id, state: .failed(reason: error.localizedDescription))
+            if let current = try? await persistenceStore.fetch(tag: request.id) {
+                updateProgress(
+                    downloadID: request.id,
+                    state: .failed(reason: error.localizedDescription),
+                    bytesReceived: current.completedBytes,
+                    totalBytes: current.totalSize,
+                    completedSegments: current.segments.filter { $0.isCompleted }.count,
+                    totalSegments: current.segments.count,
+                    handler: handler
+                )
+            }
             throw error
         }
     }
@@ -704,7 +746,15 @@ public actor DownloadCoordinator {
                                     throw error
                                 }
                                 attempt += 1
-                                try await Task.sleep(nanoseconds: UInt64(250_000_000 * attempt))
+                                let delaySeconds: Double
+                                if case SegmentDownloaderError.rateLimited(let retryAfter) = error, let sec = retryAfter {
+                                    delaySeconds = min(60.0, max(1.0, sec))
+                                } else if case SegmentDownloaderError.rateLimited = error {
+                                    delaySeconds = min(30.0, 1.0 * pow(2.0, Double(attempt)))
+                                } else {
+                                    delaySeconds = min(15.0, 0.25 * Double(attempt))
+                                }
+                                try await Task.sleep(nanoseconds: UInt64(delaySeconds * 1_000_000_000))
                             }
                         }
                     }
@@ -820,8 +870,7 @@ public actor DownloadCoordinator {
 
         // 10. Checksum validation (if provided)
         if let expectedSHA = request.expectedSHA256, !expectedSHA.isEmpty {
-            let fileData = try Data(contentsOf: request.destinationURL)
-            let actualSHA = EngineSHA256.hash(data: fileData)
+            let actualSHA = try FileHasher.sha256(for: request.destinationURL)
             guard actualSHA.caseInsensitiveCompare(expectedSHA) == .orderedSame else {
                 checksumOutcomes[request.id] = .mismatch(expected: expectedSHA, actual: actualSHA)
                 let error = DownloadCoordinatorError.checksumMismatch(expected: expectedSHA, actual: actualSHA)
@@ -952,10 +1001,18 @@ public actor DownloadCoordinator {
 
         do {
             let (bytes, response) = try await session.bytes(for: urlRequest)
-            guard let httpResponse = response as? HTTPURLResponse,
-                  httpResponse.statusCode == 200 || httpResponse.statusCode == 206 else {
+            guard let httpResponse = response as? HTTPURLResponse else {
                 throw DownloadCoordinatorError.unexpectedSingleStreamError(
-                    reason: "Unexpected HTTP status: \((response as? HTTPURLResponse)?.statusCode ?? -1)"
+                    reason: "Unexpected HTTP response: not HTTPURLResponse"
+                )
+            }
+            if httpResponse.statusCode == 429 {
+                let retryAfter = HTTPRangeProbe.parseRetryAfter(httpResponse.value(forHTTPHeaderField: "Retry-After"))
+                throw SegmentDownloaderError.rateLimited(retryAfterSeconds: retryAfter)
+            }
+            guard httpResponse.statusCode == 200 || httpResponse.statusCode == 206 else {
+                throw DownloadCoordinatorError.unexpectedSingleStreamError(
+                    reason: "Unexpected HTTP status: \(httpResponse.statusCode)"
                 )
             }
 
@@ -1027,6 +1084,19 @@ public actor DownloadCoordinator {
                     throw CancellationError()
                 }
                 _ = try? await persistenceStore.updateState(tag: request.id, state: .failed(reason: error.localizedDescription))
+                updateProgress(
+                    downloadID: request.id,
+                    state: .failed(reason: error.localizedDescription),
+                    bytesReceived: totalWritten,
+                    totalBytes: expectedTotal,
+                    completedSegments: 0,
+                    totalSegments: 1,
+                    currentSpeed: 0,
+                    averageSpeed: 0,
+                    elapsedTime: 0,
+                    eta: nil,
+                    handler: handler
+                )
                 throw error
             }
 
@@ -1051,8 +1121,7 @@ public actor DownloadCoordinator {
 
             // Checksum validation (if provided)
             if let expectedSHA = request.expectedSHA256, !expectedSHA.isEmpty {
-                let fileData = try Data(contentsOf: request.destinationURL)
-                let actualSHA = EngineSHA256.hash(data: fileData)
+                let actualSHA = try FileHasher.sha256(for: request.destinationURL)
                 guard actualSHA.caseInsensitiveCompare(expectedSHA) == .orderedSame else {
                     checksumOutcomes[request.id] = .mismatch(expected: expectedSHA, actual: actualSHA)
                     let error = DownloadCoordinatorError.checksumMismatch(expected: expectedSHA, actual: actualSHA)
@@ -1252,3 +1321,38 @@ public enum EngineSHA256 {
         return h.map { String(format: "%08x", $0) }.joined()
     }
 }
+
+// MARK: - Streaming File Hasher
+#if canImport(CryptoKit)
+public enum FileHasher {
+    public static func sha256(for url: URL, progress: (@Sendable (Double) -> Void)? = nil) throws -> String {
+        let fileHandle = try FileHandle(forReadingFrom: url)
+        defer { try? fileHandle.close() }
+        let totalSize: Int64 = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int64) ?? 0
+        var hasher = SHA256()
+        let bufferSize = 256 * 1024
+        var processed: Int64 = 0
+
+        while true {
+            let data = fileHandle.readData(ofLength: bufferSize)
+            if data.isEmpty { break }
+            hasher.update(data: data)
+            processed += Int64(data.count)
+            if totalSize > 0, let progress = progress {
+                let frac = min(1.0, max(0.0, Double(processed) / Double(totalSize)))
+                progress(frac)
+            }
+        }
+        let digest = hasher.finalize()
+        return digest.map { String(format: "%02x", $0) }.joined()
+    }
+}
+#else
+public enum FileHasher {
+    public static func sha256(for url: URL, progress: (@Sendable (Double) -> Void)? = nil) throws -> String {
+        let data = try Data(contentsOf: url)
+        progress?(1.0)
+        return EngineSHA256.hash(data: data)
+    }
+}
+#endif

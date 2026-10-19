@@ -89,6 +89,7 @@ struct HTTPRangeProbeResult: Sendable, Equatable {
 enum HTTPRangeProbeError: Error, LocalizedError, Equatable {
     case invalidURL(URL)
     case unsupportedResponse(statusCode: Int, message: String)
+    case rateLimited(URL, retryAfterSeconds: Double?)
     case resourceNotFound(URL)
     case unauthorized(URL)
     case forbidden(URL)
@@ -102,6 +103,12 @@ enum HTTPRangeProbeError: Error, LocalizedError, Equatable {
             return "Invalid URL: \(url.absoluteString)"
         case .unsupportedResponse(let code, let msg):
             return "Unsupported HTTP response (\(code)): \(msg)"
+        case .rateLimited(_, let retryAfter):
+            if let sec = retryAfter {
+                return "Server rate limit exceeded (HTTP 429). Retry after \(Int(sec))s."
+            } else {
+                return "Server rate limit exceeded (HTTP 429). Please wait before retrying."
+            }
         case .resourceNotFound(let url):
             return "Resource not found (404): \(url.absoluteString)"
         case .unauthorized(let url):
@@ -195,13 +202,16 @@ final class HTTPRangeProbe: Sendable {
             throw HTTPRangeProbeError.unauthorized(finalURL)
         case 403:
             throw HTTPRangeProbeError.forbidden(finalURL)
+        case 429:
+            let retryAfter = Self.parseRetryAfter(headers["retry-after"])
+            throw HTTPRangeProbeError.rateLimited(finalURL, retryAfterSeconds: retryAfter)
         case 416:
             if let contentRange = headers["content-range"], contentRange.hasSuffix("/0") {
                 // RFC 7233 Section 4.4: Content-Range: bytes */0 indicates an empty resource
                 break
             }
             throw HTTPRangeProbeError.rangeNotSatisfiable(finalURL)
-        case 400...599 where statusCode != 416:
+        case 400...599 where statusCode != 416 && statusCode != 429:
             let statusText = HTTPURLResponse.localizedString(forStatusCode: statusCode)
             throw HTTPRangeProbeError.unsupportedResponse(statusCode: statusCode, message: statusText)
         default:
@@ -240,6 +250,25 @@ final class HTTPRangeProbe: Sendable {
             lastModified: headers["last-modified"],
             responseHeaders: headers
         )
+    }
+
+    // MARK: - Rate Limiting & Retry-After
+    static func parseRetryAfter(_ headerValue: String?) -> Double? {
+        guard let headerValue = headerValue?.trimmingCharacters(in: .whitespaces), !headerValue.isEmpty else {
+            return nil
+        }
+        if let seconds = Double(headerValue), seconds >= 0 {
+            return seconds
+        }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss zzz"
+        if let date = formatter.date(from: headerValue) {
+            let interval = date.timeIntervalSinceNow
+            return max(1.0, interval)
+        }
+        return nil
     }
 
     // MARK: - Length Resolution

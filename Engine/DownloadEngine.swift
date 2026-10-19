@@ -41,6 +41,23 @@ public struct DownloadSnapshot: Sendable, Equatable, Identifiable, Codable {
         if case .failed = state { return true } else { return false }
     }
 
+    public var isNonResumable: Bool {
+        if case .failed(let reason) = state {
+            return reason.localizedCaseInsensitiveContains("Resume unavailable") ||
+                   reason.localizedCaseInsensitiveContains("non-resumable")
+        }
+        return false
+    }
+
+    public var isRateLimited: Bool {
+        if case .failed(let reason) = state {
+            return reason.localizedCaseInsensitiveContains("429") ||
+                   reason.localizedCaseInsensitiveContains("rate-limit") ||
+                   reason.localizedCaseInsensitiveContains("rate limited")
+        }
+        return false
+    }
+
     public init(
         id: DownloadID,
         url: URL,
@@ -288,7 +305,15 @@ public actor DownloadEngine {
     /// Resumes an interrupted or paused download.
     public func resumeDownload(id: DownloadID) async throws {
         await attachListeners()
+        terminalEventsEmitted.remove(id)
         try await queueManager.resume(id: id)
+    }
+
+    /// Restarts a download from byte 0.
+    public func restartDownload(id: DownloadID) async throws {
+        await attachListeners()
+        terminalEventsEmitted.remove(id)
+        try await queueManager.restart(id: id)
     }
 
     /// Cancels a download, stopping active transfers and optionally deleting destination files.
@@ -307,6 +332,7 @@ public actor DownloadEngine {
 
     /// Retries an eligible failed download.
     public func retryDownload(id: DownloadID) async throws {
+        await attachListeners()
         terminalEventsEmitted.remove(id)
         try await queueManager.retry(id: id)
     }

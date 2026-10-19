@@ -259,17 +259,42 @@ public actor DownloadQueueManager {
         notifyQueueChanged()
     }
 
-    /// Resumes an eligible paused download.
+    /// Resumes an eligible paused or failed download.
     ///
     /// Transitions state to `.pending` and triggers queue scheduling.
     public func resume(id: String) throws {
         guard var item = items[id] else {
             throw DownloadQueueError.downloadNotFound(id: id)
         }
-        guard item.state == .paused else {
+        guard item.state == .paused || item.state.canResume else {
             return
         }
 
+        item.state = .pending
+        items[id] = item
+        persistQueue()
+        processQueue()
+        notifyQueueChanged()
+    }
+
+    /// Restarts a download from byte 0, discarding partial data and resetting persistence records.
+    public func restart(id: String) async throws {
+        guard var item = items[id] else {
+            throw DownloadQueueError.downloadNotFound(id: id)
+        }
+
+        if let task = activeTasks.removeValue(forKey: id) {
+            try? await coordinator.cancel(id: id, deleteDestinationFile: true)
+            task.cancel()
+            _ = await task.value
+        } else {
+            if FileManager.default.fileExists(atPath: item.request.destinationURL.path) {
+                try? FileManager.default.removeItem(at: item.request.destinationURL)
+            }
+            try? await persistenceStore.delete(tag: id)
+        }
+
+        item.completedBytes = 0
         item.state = .pending
         items[id] = item
         persistQueue()
@@ -473,53 +498,108 @@ public actor DownloadQueueManager {
     ///
     /// - Parameter autoStart: If true, dispatches eligible queued downloads up to the concurrency limit.
     public func restoreQueue(autoStart: Bool = true) async throws {
-        guard FileManager.default.fileExists(atPath: queueStoreURL.path) else {
-            return
-        }
-
-        let data: Data
-        let manifest: QueueManifest
-        do {
-            data = try Data(contentsOf: queueStoreURL)
-            manifest = try decoder.decode(QueueManifest.self, from: data)
-        } catch {
-            throw DownloadQueueError.persistenceError("Corrupted queue manifest: \(error.localizedDescription)")
-        }
-
-        if manifest.maxConcurrentDownloads > 0 {
-            self.maxConcurrentDownloads = manifest.maxConcurrentDownloads
-        }
-        self.sequenceCounter = max(self.sequenceCounter, manifest.sequenceCounter)
-
-        for rawItem in manifest.items {
-            var item = rawItem
-            if activeTasks[item.id] != nil {
-                continue
-            }
-            if let record = try await persistenceStore.fetch(tag: item.id) {
-                item.completedBytes = record.completedBytes
-                item.totalBytes = record.totalSize
-
-                switch record.state {
-                case .completed:
-                    item.state = .completed
-                case .cancelled:
-                    item.state = .cancelled
-                case .paused:
-                    item.state = .paused
-                case .failed(let reason):
-                    item.state = .failed(reason: reason)
-                case .downloading, .probing, .pending:
-                    // Process was terminated during transfer -> return to queued for safe resume
-                    item.state = .pending
+        // 1. Attempt to load manifest if present, but do not wipe queue if corrupted
+        if FileManager.default.fileExists(atPath: queueStoreURL.path) {
+            do {
+                let data = try Data(contentsOf: queueStoreURL)
+                let manifest = try decoder.decode(QueueManifest.self, from: data)
+                if manifest.maxConcurrentDownloads > 0 {
+                    self.maxConcurrentDownloads = manifest.maxConcurrentDownloads
                 }
-            } else {
-                if item.state == .downloading || item.state == .probing {
-                    item.state = .pending
+                self.sequenceCounter = max(self.sequenceCounter, manifest.sequenceCounter)
+                for item in manifest.items {
+                    if activeTasks[item.id] == nil {
+                        self.items[item.id] = item
+                    }
+                }
+            } catch {
+                // If manifest is corrupted, recover from persistence store
+            }
+        }
+
+        // 2. Reconcile with persistence store records (source of truth for disk data & segments)
+        if let storedRecords = try? await persistenceStore.fetchAll() {
+            for record in storedRecords {
+                if var existing = self.items[record.id] {
+                    // Update progress from disk record
+                    existing.completedBytes = max(existing.completedBytes, record.completedBytes)
+                    if record.totalSize > 0 {
+                        existing.totalBytes = record.totalSize
+                    }
+
+                    // Reconcile state
+                    switch record.state {
+                    case .completed:
+                        existing.state = .completed
+                    case .cancelled:
+                        existing.state = .cancelled
+                    case .paused:
+                        existing.state = .paused
+                    case .failed(let reason):
+                        existing.state = .failed(reason: reason)
+                    case .downloading, .probing, .pending:
+                        // Process was terminated during transfer -> restore as paused with recoverable progress
+                        existing.state = .paused
+                    }
+                    self.items[record.id] = existing
+                } else {
+                    // Item in persistence store but missing from manifest: reconstruct it
+                    self.sequenceCounter += 1
+                    let request = DownloadRequest(
+                        id: record.id,
+                        url: record.originalURL,
+                        destinationURL: record.destinationURL,
+                        headers: record.headers,
+                        configuredThreadCount: max(1, record.segments.count),
+                        storageMode: record.storageMode
+                    )
+                    let restoredState: DownloadState
+                    switch record.state {
+                    case .completed:
+                        restoredState = .completed
+                    case .cancelled:
+                        restoredState = .cancelled
+                    case .paused:
+                        restoredState = .paused
+                    case .failed(let reason):
+                        restoredState = .failed(reason: reason)
+                    case .downloading, .probing, .pending:
+                        restoredState = .paused
+                    }
+                    let item = QueueItem(
+                        request: request,
+                        priority: .normal,
+                        sequenceIndex: self.sequenceCounter,
+                        enqueuedAt: record.createdAt,
+                        state: restoredState,
+                        completedBytes: record.completedBytes,
+                        totalBytes: record.totalSize > 0 ? record.totalSize : nil
+                    )
+                    self.items[record.id] = item
                 }
             }
+        }
 
-            self.items[item.id] = item
+        // 3. Ensure any items left in .downloading or .probing without an active task become .paused
+        for (id, item) in self.items {
+            if (item.state == .downloading || item.state == .probing) && activeTasks[id] == nil {
+                var updated = item
+                updated.state = .paused
+                self.items[id] = updated
+            }
+            // Reconcile completed items with physical disk file
+            if item.state == .completed {
+                if let diskSize = try? FileManager.default.attributesOfItem(atPath: item.request.destinationURL.path)[.size] as? Int64, diskSize > 0 {
+                    var updated = self.items[id] ?? item
+                    if updated.completedBytes == 0 {
+                        updated.completedBytes = diskSize
+                    }
+                    if updated.totalBytes == nil || updated.totalBytes == 0 {
+                        updated.totalBytes = diskSize
+                    }
+                    self.items[id] = updated
+                }
+            }
         }
 
         persistQueue()
@@ -586,9 +666,13 @@ public actor DownloadQueueManager {
     }
 
     private func handleProgressUpdate(_ progress: CoordinatorProgress) {
-        if items[progress.downloadID] != nil {
-            items[progress.downloadID]?.completedBytes = progress.bytesReceived
-            items[progress.downloadID]?.totalBytes = progress.totalBytes
+        if let existing = items[progress.downloadID] {
+            if progress.bytesReceived > 0 || existing.completedBytes == 0 {
+                items[progress.downloadID]?.completedBytes = progress.bytesReceived
+            }
+            if let newTotal = progress.totalBytes, newTotal > 0 {
+                items[progress.downloadID]?.totalBytes = newTotal
+            }
             progressHandlers[progress.downloadID]?(progress)
             globalProgressHandler?(progress)
         }

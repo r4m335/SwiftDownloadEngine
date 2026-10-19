@@ -27,6 +27,16 @@ public enum DownloadState: Codable, Equatable, Sendable {
             return false
         }
     }
+
+    public var isFailed: Bool {
+        if case .failed = self { return true }
+        return false
+    }
+
+    public var failureReason: String? {
+        if case .failed(let reason) = self { return reason }
+        return nil
+    }
 }
 
 /// Policy governing resumption of downloads when remote origin server provides no validator (no ETag and no Last-Modified).

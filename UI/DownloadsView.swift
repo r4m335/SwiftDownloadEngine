@@ -216,6 +216,7 @@ public struct DownloadsView: View {
                                     onPause: { pauseDownload(download) },
                                     onResume: { resumeDownload(download) },
                                     onRetry: { retryDownload(download) },
+                                    onRestart: { restartDownload(download) },
                                     onCancel: { cancelDownload(download) },
                                     onRemoveQueue: { removeFromQueue(download) },
                                     onDeleteFile: { promptDeleteFile(download) }
@@ -233,6 +234,7 @@ public struct DownloadsView: View {
                                     onPause: { pauseDownload(download) },
                                     onResume: { resumeDownload(download) },
                                     onRetry: { retryDownload(download) },
+                                    onRestart: { restartDownload(download) },
                                     onCancel: { cancelDownload(download) },
                                     onRemoveQueue: { removeFromQueue(download) },
                                     onDeleteFile: { promptDeleteFile(download) }
@@ -426,22 +428,29 @@ public struct DownloadsView: View {
             viewModel.errorMessage = "Cannot verify integrity: file not found on disk."
             return
         }
-        Task { @MainActor in
+        let url = download.destinationURL
+        let outcome = download.checksumOutcome
+        viewModel.showNotification("Calculating SHA-256 for \(url.lastPathComponent)...")
+
+        Task.detached(priority: .userInitiated) {
             do {
-                let data = try Data(contentsOf: download.destinationURL)
-                let sha = EngineSHA256.hash(data: data)
-                let attr = try? FileManager.default.attributesOfItem(atPath: download.destinationURL.path)
-                let size = (attr?[.size] as? NSNumber)?.int64Value ?? Int64(data.count)
-                activeAlert = .integrity(
-                    IntegrityReport(
-                        filename: download.destinationURL.lastPathComponent,
-                        fileSize: size,
-                        sha256: sha,
-                        outcome: download.checksumOutcome
+                let sha = try FileHasher.sha256(for: url)
+                let attr = try? FileManager.default.attributesOfItem(atPath: url.path)
+                let size = (attr?[.size] as? NSNumber)?.int64Value ?? 0
+                await MainActor.run {
+                    self.activeAlert = .integrity(
+                        IntegrityReport(
+                            filename: url.lastPathComponent,
+                            fileSize: size,
+                            sha256: sha,
+                            outcome: outcome
+                        )
                     )
-                )
+                }
             } catch {
-                viewModel.errorMessage = "Checksum verification failed: \(error.localizedDescription)"
+                await MainActor.run {
+                    self.viewModel.errorMessage = "Checksum verification failed: \(error.localizedDescription)"
+                }
             }
         }
     }
@@ -465,6 +474,12 @@ public struct DownloadsView: View {
     private func retryDownload(_ download: DownloadSnapshot) {
         Task { @MainActor in
             try? await viewModel.retryDownload(id: download.id)
+        }
+    }
+
+    private func restartDownload(_ download: DownloadSnapshot) {
+        Task { @MainActor in
+            try? await viewModel.restartDownload(id: download.id)
         }
     }
 
@@ -503,9 +518,42 @@ public struct DownloadMenuContent: View {
     public let onPause: () -> Void
     public let onResume: () -> Void
     public let onRetry: () -> Void
+    public let onRestart: () -> Void
     public let onCancel: () -> Void
     public let onRemoveQueue: () -> Void
     public let onDeleteFile: () -> Void
+
+    public init(
+        download: DownloadSnapshot,
+        onOpen: @escaping () -> Void = {},
+        onSaveToFiles: @escaping () -> Void = {},
+        onShare: @escaping () -> Void = {},
+        onCopyLink: @escaping () -> Void = {},
+        onVerifyIntegrity: @escaping () -> Void = {},
+        onShowDetails: @escaping () -> Void = {},
+        onPause: @escaping () -> Void = {},
+        onResume: @escaping () -> Void = {},
+        onRetry: @escaping () -> Void = {},
+        onRestart: @escaping () -> Void = {},
+        onCancel: @escaping () -> Void = {},
+        onRemoveQueue: @escaping () -> Void = {},
+        onDeleteFile: @escaping () -> Void = {}
+    ) {
+        self.download = download
+        self.onOpen = onOpen
+        self.onSaveToFiles = onSaveToFiles
+        self.onShare = onShare
+        self.onCopyLink = onCopyLink
+        self.onVerifyIntegrity = onVerifyIntegrity
+        self.onShowDetails = onShowDetails
+        self.onPause = onPause
+        self.onResume = onResume
+        self.onRetry = onRetry
+        self.onRestart = onRestart
+        self.onCancel = onCancel
+        self.onRemoveQueue = onRemoveQueue
+        self.onDeleteFile = onDeleteFile
+    }
 
     public var body: some View {
         switch download.state {
@@ -573,8 +621,18 @@ public struct DownloadMenuContent: View {
             }
 
         case .failed:
-            Button(action: onRetry) {
-                Label("Retry", systemImage: "arrow.clockwise")
+            if download.isNonResumable {
+                Button(action: onRestart) {
+                    Label("Restart Download", systemImage: "arrow.counterclockwise")
+                }
+            } else if download.isRateLimited {
+                Button(action: onRetry) {
+                    Label("Retry when eligible", systemImage: "clock.arrow.circlepath")
+                }
+            } else {
+                Button(action: onResume) {
+                    Label("Resume", systemImage: "play.fill")
+                }
             }
             Button(action: onCopyLink) {
                 Label("Copy Download Link", systemImage: "doc.on.doc")
@@ -627,6 +685,7 @@ public struct DownloadRowView: View {
     public let onPause: () -> Void
     public let onResume: () -> Void
     public let onRetry: () -> Void
+    public let onRestart: () -> Void
     public let onCancel: () -> Void
     public let onRemoveQueue: () -> Void
     public let onDeleteFile: () -> Void
@@ -643,6 +702,7 @@ public struct DownloadRowView: View {
         onPause: @escaping () -> Void = {},
         onResume: @escaping () -> Void = {},
         onRetry: @escaping () -> Void = {},
+        onRestart: @escaping () -> Void = {},
         onCancel: @escaping () -> Void = {},
         onRemoveQueue: @escaping () -> Void = {},
         onDeleteFile: @escaping () -> Void = {}
@@ -658,6 +718,7 @@ public struct DownloadRowView: View {
         self.onPause = onPause
         self.onResume = onResume
         self.onRetry = onRetry
+        self.onRestart = onRestart
         self.onCancel = onCancel
         self.onRemoveQueue = onRemoveQueue
         self.onDeleteFile = onDeleteFile
@@ -687,6 +748,7 @@ public struct DownloadRowView: View {
                         onPause: onPause,
                         onResume: onResume,
                         onRetry: onRetry,
+                        onRestart: onRestart,
                         onCancel: onCancel,
                         onRemoveQueue: onRemoveQueue,
                         onDeleteFile: onDeleteFile
@@ -727,7 +789,7 @@ public struct DownloadRowView: View {
 
             // Quick Inline Action Controls
             HStack(spacing: 12) {
-                if download.state == .downloading {
+                if download.state == .downloading || download.state == .probing {
                     Button {
                         onPause()
                     } label: {
@@ -736,7 +798,7 @@ public struct DownloadRowView: View {
                     }
                     .buttonStyle(.bordered)
                     .tint(.orange)
-                } else if download.canResume {
+                } else if download.state == .paused {
                     Button {
                         onResume()
                     } label: {
@@ -745,15 +807,44 @@ public struct DownloadRowView: View {
                     }
                     .buttonStyle(.bordered)
                     .tint(.green)
-                } else if download.isFailed {
+                } else if download.state == .completed {
                     Button {
-                        onRetry()
+                        onOpen()
                     } label: {
-                        Label("Retry", systemImage: "arrow.clockwise")
+                        Label("Open File", systemImage: "doc.text")
                             .font(.caption2)
                     }
                     .buttonStyle(.bordered)
                     .tint(.blue)
+                } else if download.isFailed {
+                    if download.isNonResumable {
+                        Button {
+                            onRestart()
+                        } label: {
+                            Label("Restart", systemImage: "arrow.counterclockwise")
+                                .font(.caption2)
+                        }
+                        .buttonStyle(.bordered)
+                        .tint(.orange)
+                    } else if download.isRateLimited {
+                        Button {
+                            onRetry()
+                        } label: {
+                            Label("Retry when eligible", systemImage: "clock.arrow.circlepath")
+                                .font(.caption2)
+                        }
+                        .buttonStyle(.bordered)
+                        .tint(.purple)
+                    } else {
+                        Button {
+                            onResume()
+                        } label: {
+                            Label("Resume", systemImage: "play.fill")
+                                .font(.caption2)
+                        }
+                        .buttonStyle(.bordered)
+                        .tint(.green)
+                    }
                 }
 
                 if !download.isTerminal {

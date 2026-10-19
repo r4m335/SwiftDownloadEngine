@@ -975,4 +975,73 @@ final class DownloadQueueManagerTests: XCTestCase {
         XCTAssertEqual(items[2].id, "proc-1")
         XCTAssertEqual(items[2].priority, .low)
     }
+
+    // MARK: - 26. Restore Queue Reconciles With Persistence Store And Handles Corrupted Manifest
+
+    func test26_RestoreQueueReconcilesWithPersistenceStoreAndHandlesCorruptedManifest() async throws {
+        let manifestURL = tempDirectory.appendingPathComponent("corrupted_manifest.json")
+        try "corrupted json content".write(to: manifestURL, atomically: true, encoding: .utf8)
+
+        let destURL = tempDirectory.appendingPathComponent("recovered_file.bin")
+        let payload = Data([0x01, 0x02, 0x03, 0x04])
+        try payload.write(to: destURL)
+
+        let record = DownloadRecord(
+            id: "recovered-dl",
+            originalURL: URL(string: "https://example.com/file.bin")!,
+            destinationURL: destURL,
+            totalSize: 4,
+            state: .completed,
+            segments: [SegmentRecord(id: 0, startOffset: 0, endOffset: 3, length: 4, completedBytes: 4)]
+        )
+        try await persistenceStore.save(record)
+
+        let manager = DownloadQueueManager(
+            coordinator: coordinator,
+            persistenceStore: persistenceStore,
+            queueStoreURL: manifestURL,
+            maxConcurrentDownloads: 2
+        )
+        try await manager.restoreQueue(autoStart: false)
+
+        let items = await manager.allItems()
+        XCTAssertEqual(items.count, 1)
+        XCTAssertEqual(items.first?.id, "recovered-dl")
+        XCTAssertEqual(items.first?.state, .completed)
+        XCTAssertEqual(items.first?.completedBytes, 4)
+    }
+
+    // MARK: - 27. Interrupted Download Restored As Paused With Preserved Bytes
+
+    func test27_InterruptedDownloadRestoredAsPausedWithPreservedBytes() async throws {
+        let manifestURL = tempDirectory.appendingPathComponent("interrupted_manifest.json")
+        let destURL = tempDirectory.appendingPathComponent("interrupted_file.bin")
+        let payload = Data(count: 1000)
+        try payload.write(to: destURL)
+
+        let record = DownloadRecord(
+            id: "interrupted-dl",
+            originalURL: URL(string: "https://example.com/interrupted.bin")!,
+            destinationURL: destURL,
+            totalSize: 2000,
+            state: .downloading,
+            segments: [SegmentRecord(id: 0, startOffset: 0, endOffset: 1999, length: 2000, completedBytes: 1000)]
+        )
+        try await persistenceStore.save(record)
+
+        let manager = DownloadQueueManager(
+            coordinator: coordinator,
+            persistenceStore: persistenceStore,
+            queueStoreURL: manifestURL,
+            maxConcurrentDownloads: 2
+        )
+        try await manager.restoreQueue(autoStart: false)
+
+        let items = await manager.allItems()
+        XCTAssertEqual(items.count, 1)
+        XCTAssertEqual(items.first?.id, "interrupted-dl")
+        XCTAssertEqual(items.first?.state, .paused, "Interrupted download should be restored as paused with recoverable progress")
+        XCTAssertEqual(items.first?.completedBytes, 1000)
+        XCTAssertEqual(items.first?.totalBytes, 2000)
+    }
 }
