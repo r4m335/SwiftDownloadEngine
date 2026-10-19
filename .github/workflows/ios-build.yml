@@ -101,10 +101,11 @@ jobs:
           assert(!bridge.isListening, "Session should not be listening before start")
           assert(bridge.listenPort == 0, "Listen port should be 0 before start")
 
-          var error: NSError?
-          let started = bridge.startSession(&error)
-          if !started {
-              print("FAIL: Failed to start session: \(String(describing: error))")
+          do {
+              try bridge.startSession()
+              print("Session successfully started!")
+          } catch {
+              print("FAIL: Failed to start session: \(error)")
               exit(2)
           }
 

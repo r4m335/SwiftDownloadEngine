@@ -30,10 +30,7 @@ final class TorrentSessionBridgeTests: XCTestCase {
         XCTAssertFalse(bridge.isListening)
         XCTAssertEqual(bridge.listenPort, 0)
 
-        var error: NSError?
-        let started = bridge.startSession(&error)
-        XCTAssertTrue(started, "Failed to start libtorrent session: \(String(describing: error))")
-        XCTAssertNil(error, "Unexpected error starting session: \(String(describing: error))")
+        XCTAssertNoThrow(try bridge.startSession(), "Failed to start libtorrent session")
         XCTAssertTrue(bridge.isListening, "Expected session to be listening after startSession")
         XCTAssertGreaterThan(bridge.listenPort, 0, "Listen port should be non-zero after session starts")
 
