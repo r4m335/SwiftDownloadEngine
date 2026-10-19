@@ -286,6 +286,10 @@
 					"$(inherited)",
 					"-lc++",
 					"-liconv",
+					"-framework",
+					"SystemConfiguration",
+					"-framework",
+					"Security",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.r4m335.SwiftDownloadEngine;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -320,6 +324,10 @@
 					"$(inherited)",
 					"-lc++",
 					"-liconv",
+					"-framework",
+					"SystemConfiguration",
+					"-framework",
+					"Security",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.r4m335.SwiftDownloadEngine;
 				PRODUCT_NAME = "$(TARGET_NAME)";
