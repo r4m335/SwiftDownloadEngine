@@ -261,7 +261,7 @@ jobs:
                       maxConcurrentTorrents: 3
                   )
                   try await m6Engine.start()
-                  let m6Status = m6Engine.sessionStatus()
+                  let m6Status = await m6Engine.sessionStatus()
                   assert(m6Status.portRange == 6881...6891, "Port range must match 6881...6891")
                   assert(m6Status.listenPort >= 6881, "Listen port must be >= 6881")
                   print("Port range and active listen port verified: range=\(m6Status.portRange), activePort=\(m6Status.listenPort)")
