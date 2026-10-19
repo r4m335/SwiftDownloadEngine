@@ -261,17 +261,17 @@ jobs:
                       maxConcurrentTorrents: 3
                   )
                   try await m6Engine.start()
-                  let m6Status = await m6Engine.sessionStatus()
-                  assert(m6Status?.portRange == 6881...6891, "Port range must match 6881...6891")
-                  assert(m6Status?.listenPort != nil && m6Status!.listenPort >= 6881, "Listen port must be >= 6881")
-                  print("Port range and active listen port verified: range=\(m6Status?.portRange?.description ?? "nil"), activePort=\(m6Status?.listenPort ?? 0)")
+                  let m6Status = m6Engine.sessionStatus()
+                  assert(m6Status.portRange == 6881...6891, "Port range must match 6881...6891")
+                  assert(m6Status.listenPort >= 6881, "Listen port must be >= 6881")
+                  print("Port range and active listen port verified: range=\(m6Status.portRange), activePort=\(m6Status.listenPort)")
 
                   let m6Mag = "magnet:?xt=urn:btih:4444444444444444444444444444444444444444&dn=Milestone6Torrent"
                   let m6Task = try await m6Engine.addTorrent(magnetURI: m6Mag, priority: .normal)
                   
                   // Verify file priority configuration
-                  try await m6Engine.setFilePriority(0, priority: .doNotDownload, for: m6Task.infoHash)
-                  try await m6Engine.setFilePriorities([.doNotDownload, .high, .normal], for: m6Task.infoHash)
+                  try await m6Engine.setFilePriority(.doNotDownload, forFileAt: 0, in: m6Task.infoHash)
+                  try await m6Engine.setFilePriorities([0: .doNotDownload, 1: .high, 2: .normal], for: m6Task.infoHash)
                   let taskWithFiles = await m6Engine.task(for: m6Task.infoHash)
                   assert(taskWithFiles?.filePriorities?[0] == .doNotDownload, "File 0 priority must be doNotDownload")
                   assert(taskWithFiles?.filePriorities?[1] == .high, "File 1 priority must be high")
