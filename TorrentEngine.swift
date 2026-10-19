@@ -21,8 +21,9 @@ public actor TorrentEngine {
         storageDirectoryURL: URL,
         portStart: UInt = 6881,
         portEnd: UInt = 6891,
-        maxConcurrentTorrents: Int = 3
-    ) {
+        maxConcurrentTorrents: Int = 3,
+        persistenceStore: TorrentPersistenceStore? = nil
+    ) throws {
         self.storageDirectoryURL = storageDirectoryURL
         self.portStart = portStart
         self.portEnd = portEnd
@@ -32,8 +33,12 @@ public actor TorrentEngine {
             portStart: Int(portStart),
             portEnd: Int(portEnd)
         )
-        let persistURL = storageDirectoryURL.appendingPathComponent("TorrentMetadata", isDirectory: true)
-        self.persistenceStore = (try? TorrentPersistenceStore(storageDirectoryURL: persistURL)) ?? (try! TorrentPersistenceStore())
+        if let store = persistenceStore {
+            self.persistenceStore = store
+        } else {
+            let persistURL = storageDirectoryURL.appendingPathComponent("TorrentMetadata", isDirectory: true)
+            self.persistenceStore = try TorrentPersistenceStore(storageDirectoryURL: persistURL)
+        }
     }
 
     /// Starts the native session, restores persisted torrents with fast-resume, and starts queue scheduling.
@@ -85,7 +90,7 @@ public actor TorrentEngine {
         }
 
         // Update task cache
-        _ = allTasks()
+        _ = await allTasks()
     }
 
     /// Stops the native session safely, saving fast-resume data for active torrents before session shutdown.
@@ -359,18 +364,45 @@ public actor TorrentEngine {
 
     // MARK: - Status & Inspection
 
-    public func task(for infoHash: String) -> TorrentTask? {
+    public func task(for infoHash: String) async -> TorrentTask? {
         let key = infoHash.lowercased()
         if let bridgeStatus = bridge.status(forTorrentWithHash: key) {
-            return updateTask(from: bridgeStatus)
+            var t = updateTask(from: bridgeStatus)
+            if let rec = await scheduler?.record(for: key) {
+                if rec.isExplicitlyPaused {
+                    t.state = .paused
+                    t.isExplicitlyPaused = true
+                } else if rec.state == .queued && (t.state == .paused || t.state == .downloading) {
+                    t.state = .queued
+                }
+                t.priority = rec.priority
+                tasks[key] = t
+            }
+            return t
         }
         return tasks[key]
     }
 
-    public func allTasks() -> [TorrentTask] {
+    public func allTasks() async -> [TorrentTask] {
         let statuses = bridge.allTorrentStatuses()
         for s in statuses {
             _ = updateTask(from: s)
+        }
+        if let sched = scheduler {
+            let records = await sched.allRecords()
+            for rec in records {
+                let key = rec.infoHash.lowercased()
+                if var task = tasks[key] {
+                    if rec.isExplicitlyPaused {
+                        task.state = .paused
+                        task.isExplicitlyPaused = true
+                    } else if rec.state == .queued && (task.state == .paused || task.state == .downloading) {
+                        task.state = .queued
+                    }
+                    task.priority = rec.priority
+                    tasks[key] = task
+                }
+            }
         }
         return Array(tasks.values)
     }
@@ -416,6 +448,26 @@ public actor TorrentEngine {
         }
     }
 
+    public func pauseTorrent(infoHash: String) async throws {
+        try await pause(infoHash: infoHash)
+    }
+
+    public func resumeTorrent(infoHash: String) async throws {
+        try await resume(infoHash: infoHash)
+    }
+
+    public func removeTorrent(infoHash: String, deleteFiles: Bool = false) async throws {
+        try await remove(infoHash: infoHash, deleteFiles: deleteFiles)
+    }
+
+    public func sessionStatus() -> TorrentSessionStatus {
+        status()
+    }
+
+    public func maxConcurrentTorrents() async -> Int {
+        await scheduler?.maxConcurrentTorrents() ?? defaultMaxConcurrentTorrents
+    }
+
     deinit {
         // Deterministic cleanup
     }
@@ -445,4 +497,311 @@ private extension TorrentState {
         }
     }
 }
+#else
+
+/// Fallback TorrentEngine for environments without native LibTorrent bridging (e.g. Linux WSL unit tests / headless CI).
+/// Implements identical public actor interface backed by TorrentPersistenceStore and TorrentQueueScheduler.
+public actor TorrentEngine {
+    private let persistenceStore: TorrentPersistenceStore
+    private var scheduler: TorrentQueueScheduler?
+    private let storageDirectoryURL: URL
+    private let portStart: UInt
+    private let portEnd: UInt
+    private var currentMaxConcurrentTorrents: Int
+    private var isRunning = false
+    private var tasks: [String: TorrentTask] = [:]
+
+    public init(
+        storageDirectoryURL: URL,
+        portStart: UInt = 6881,
+        portEnd: UInt = 6891,
+        maxConcurrentTorrents: Int = 3,
+        persistenceStore: TorrentPersistenceStore? = nil
+    ) throws {
+        self.storageDirectoryURL = storageDirectoryURL
+        self.portStart = portStart
+        self.portEnd = portEnd
+        self.currentMaxConcurrentTorrents = maxConcurrentTorrents
+        if let store = persistenceStore {
+            self.persistenceStore = store
+        } else {
+            let persistURL = storageDirectoryURL.appendingPathComponent("TorrentMetadata", isDirectory: true)
+            self.persistenceStore = try TorrentPersistenceStore(storageDirectoryURL: persistURL)
+        }
+    }
+
+    public func start() async throws {
+        guard !isRunning else { return }
+        isRunning = true
+        let scheduler = try await TorrentQueueScheduler(
+            persistenceStore: persistenceStore,
+            maxConcurrentTorrents: currentMaxConcurrentTorrents
+        )
+        self.scheduler = scheduler
+        let records = await scheduler.allRecords()
+        for record in records {
+            let state: TorrentState = record.isExplicitlyPaused ? .paused : .queued
+            let task = TorrentTask(
+                id: record.id,
+                source: record.source,
+                name: record.name,
+                savePath: record.savePath,
+                state: state,
+                createdAt: record.createdAt,
+                infoHash: record.infoHash,
+                priority: record.priority,
+                isExplicitlyPaused: record.isExplicitlyPaused
+            )
+            tasks[record.infoHash] = task
+        }
+    }
+
+    public func stop(timeoutSeconds: TimeInterval = 4.0) async {
+        isRunning = false
+    }
+
+    public func stop() async {
+        await stop(timeoutSeconds: 3.0)
+    }
+
+    public func addTorrent(
+        magnetURI: String,
+        saveDirectoryURL: URL? = nil,
+        priority: TorrentPriority = .normal,
+        isExplicitlyPaused: Bool = false
+    ) async throws -> TorrentTask {
+        guard isRunning else { throw TorrentEngineError.sessionNotRunning }
+        guard let infoHash = Self.extractInfoHash(from: magnetURI) else {
+            throw TorrentEngineError.invalidMagnetURI(magnetURI)
+        }
+        if tasks[infoHash] != nil {
+            throw TorrentEngineError.duplicateTorrent(infoHash)
+        }
+        let saveDir = saveDirectoryURL ?? storageDirectoryURL
+        let name = Self.extractDisplayName(from: magnetURI) ?? "Torrent-\(infoHash.prefix(8))"
+
+        guard let sched = scheduler else { throw TorrentEngineError.sessionNotRunning }
+        let record = try await sched.enqueue(
+            infoHash: infoHash,
+            source: magnetURI,
+            name: name,
+            savePath: saveDir.appendingPathComponent(name),
+            priority: priority,
+            isExplicitlyPaused: isExplicitlyPaused
+        )
+        let task = TorrentTask(
+            id: record.id,
+            source: record.source,
+            name: record.name,
+            savePath: record.savePath,
+            state: record.state,
+            createdAt: record.createdAt,
+            infoHash: record.infoHash,
+            priority: record.priority,
+            isExplicitlyPaused: record.isExplicitlyPaused
+        )
+        tasks[infoHash] = task
+        return task
+    }
+
+    public func addTorrent(
+        fileURL: URL,
+        saveDirectoryURL: URL? = nil,
+        priority: TorrentPriority = .normal,
+        isExplicitlyPaused: Bool = false
+    ) async throws -> TorrentTask {
+        let data = try Data(contentsOf: fileURL)
+        return try await addTorrent(
+            data: data,
+            name: fileURL.deletingPathExtension().lastPathComponent,
+            saveDirectoryURL: saveDirectoryURL,
+            priority: priority,
+            isExplicitlyPaused: isExplicitlyPaused
+        )
+    }
+
+    public func addTorrent(
+        data: Data,
+        name: String? = nil,
+        saveDirectoryURL: URL? = nil,
+        priority: TorrentPriority = .normal,
+        isExplicitlyPaused: Bool = false
+    ) async throws -> TorrentTask {
+        guard isRunning else { throw TorrentEngineError.sessionNotRunning }
+        guard !data.isEmpty else {
+            throw TorrentEngineError.invalidTorrentFile("Empty data")
+        }
+        let sha1 = data.prefix(20).map { String(format: "%02x", $0) }.joined()
+        let infoHash = sha1.count == 40 ? sha1 : sha1.padding(toLength: 40, withPad: "0", startingAt: 0)
+        if tasks[infoHash] != nil {
+            throw TorrentEngineError.duplicateTorrent(infoHash)
+        }
+        let saveDir = saveDirectoryURL ?? storageDirectoryURL
+        let displayName = name ?? "Torrent-\(infoHash.prefix(8))"
+
+        guard let sched = scheduler else { throw TorrentEngineError.sessionNotRunning }
+        let record = try await sched.enqueue(
+            infoHash: infoHash,
+            source: "raw-buffer",
+            name: displayName,
+            savePath: saveDir.appendingPathComponent(displayName),
+            priority: priority,
+            isExplicitlyPaused: isExplicitlyPaused
+        )
+        let task = TorrentTask(
+            id: record.id,
+            source: record.source,
+            name: record.name,
+            savePath: record.savePath,
+            state: record.state,
+            createdAt: record.createdAt,
+            infoHash: record.infoHash,
+            priority: record.priority,
+            isExplicitlyPaused: record.isExplicitlyPaused
+        )
+        tasks[infoHash] = task
+        return task
+    }
+
+    public func pause(infoHash: String) async throws {
+        guard isRunning else { throw TorrentEngineError.sessionNotRunning }
+        let hash = infoHash.lowercased()
+        guard var task = tasks[hash] else { throw TorrentEngineError.torrentNotFound }
+        task.state = .paused
+        task.isExplicitlyPaused = true
+        tasks[hash] = task
+        _ = try await scheduler?.pause(infoHash: hash)
+    }
+
+    public func pauseTorrent(infoHash: String) async throws {
+        try await pause(infoHash: infoHash)
+    }
+
+    public func resume(infoHash: String) async throws {
+        guard isRunning else { throw TorrentEngineError.sessionNotRunning }
+        let hash = infoHash.lowercased()
+        guard var task = tasks[hash] else { throw TorrentEngineError.torrentNotFound }
+        task.state = .downloading
+        task.isExplicitlyPaused = false
+        tasks[hash] = task
+        _ = try await scheduler?.resume(infoHash: hash)
+    }
+
+    public func resumeTorrent(infoHash: String) async throws {
+        try await resume(infoHash: infoHash)
+    }
+
+    public func remove(infoHash: String, deleteFiles: Bool = false) async throws {
+        guard isRunning else { throw TorrentEngineError.sessionNotRunning }
+        let hash = infoHash.lowercased()
+        guard let task = tasks[hash] else { throw TorrentEngineError.torrentNotFound }
+        tasks.removeValue(forKey: hash)
+        _ = try await scheduler?.remove(infoHash: hash)
+        try? await persistenceStore.deleteRecord(infoHash: hash)
+        try? await persistenceStore.deleteResumeData(for: hash)
+        if deleteFiles {
+            try? FileManager.default.removeItem(at: task.savePath)
+        }
+    }
+
+    public func removeTorrent(infoHash: String, deleteFiles: Bool = false) async throws {
+        try await remove(infoHash: infoHash, deleteFiles: deleteFiles)
+    }
+
+    public func setPriority(_ priority: TorrentPriority, for infoHash: String) async throws {
+        let hash = infoHash.lowercased()
+        guard var task = tasks[hash] else { throw TorrentEngineError.torrentNotFound }
+        task.priority = priority
+        tasks[hash] = task
+        _ = try await scheduler?.setPriority(priority, for: hash)
+    }
+
+    public func task(for infoHash: String) async -> TorrentTask? {
+        let hash = infoHash.lowercased()
+        guard var task = tasks[hash] else { return nil }
+        if let rec = await scheduler?.record(for: hash) {
+            task.priority = rec.priority
+            task.isExplicitlyPaused = rec.isExplicitlyPaused
+            if rec.isExplicitlyPaused {
+                task.state = .paused
+            } else if rec.state == .queued {
+                task.state = .queued
+            }
+        }
+        return task
+    }
+
+    public func allTasks() async -> [TorrentTask] {
+        var result: [TorrentTask] = []
+        let records = await scheduler?.allRecords() ?? []
+        let recMap = Dictionary(uniqueKeysWithValues: records.map { ($0.infoHash.lowercased(), $0) })
+        for (hash, var t) in tasks {
+            if let rec = recMap[hash] {
+                t.priority = rec.priority
+                t.isExplicitlyPaused = rec.isExplicitlyPaused
+                if rec.isExplicitlyPaused {
+                    t.state = .paused
+                } else if rec.state == .queued {
+                    t.state = .queued
+                }
+            }
+            result.append(t)
+        }
+        return result
+    }
+
+    public func status() -> TorrentSessionStatus {
+        TorrentSessionStatus(isRunning: isRunning, isListening: isRunning, listenPort: portStart, libtorrentVersion: "mock-1.0")
+    }
+
+    public func sessionStatus() -> TorrentSessionStatus {
+        status()
+    }
+
+    public func queueSnapshot() async -> TorrentQueueSnapshot? {
+        await scheduler?.snapshot()
+    }
+
+    public func setMaxConcurrentTorrents(_ max: Int) async throws {
+        currentMaxConcurrentTorrents = max
+        _ = try await scheduler?.setMaxConcurrentTorrents(max)
+    }
+
+    public func maxConcurrentTorrents() async -> Int {
+        currentMaxConcurrentTorrents
+    }
+
+    public func saveState() async throws {}
+
+    private static func extractInfoHash(from magnetURI: String) -> String? {
+        guard let components = URLComponents(string: magnetURI),
+              let queryItems = components.queryItems else {
+            return nil
+        }
+        for item in queryItems where item.name == "xt" {
+            guard let value = item.value?.lowercased() else { continue }
+            if value.hasPrefix("urn:btih:") {
+                let hash = String(value.dropFirst("urn:btih:".count))
+                if hash.count == 40 || hash.count == 32 {
+                    return hash
+                }
+            }
+        }
+        return nil
+    }
+
+    private static func extractDisplayName(from magnetURI: String) -> String? {
+        guard let components = URLComponents(string: magnetURI),
+              let queryItems = components.queryItems else {
+            return nil
+        }
+        for item in queryItems where item.name == "dn" {
+            if let name = item.value, !name.isEmpty {
+                return name
+            }
+        }
+        return nil
+    }
+}
+
 #endif

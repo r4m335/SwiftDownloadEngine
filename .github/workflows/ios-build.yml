@@ -200,7 +200,7 @@ jobs:
                   try FileManager.default.createDirectory(atPath: m4Dir, withIntermediateDirectories: true)
                   defer { try? FileManager.default.removeItem(atPath: m4Dir) }
 
-                  let m4Engine = TorrentEngine(
+                  let m4Engine = try TorrentEngine(
                       storageDirectoryURL: URL(fileURLWithPath: m4Dir),
                       portStart: 6943,
                       portEnd: 6953,
@@ -234,7 +234,7 @@ jobs:
                   print("TorrentEngine stopped cleanly with resume-data generation!")
 
                   // Relaunch fresh engine on the same storage directory
-                  let freshEngine = TorrentEngine(
+                  let freshEngine = try TorrentEngine(
                       storageDirectoryURL: URL(fileURLWithPath: m4Dir),
                       portStart: 6943,
                       portEnd: 6953,

@@ -37,18 +37,20 @@ public enum DownloadFilter: String, CaseIterable, Sendable, Identifiable {
     public var id: String { rawValue }
 }
 
-/// Main-actor isolated view model bridging `DownloadEngine` to UI layers (SwiftUI / UIKit).
+/// Main-actor isolated view model bridging `DownloadEngine` and `TorrentEngine` to UI layers (SwiftUI / UIKit).
 ///
 /// Features:
 /// - Real-Time Observation: Conforms directly to `ObservableObject` with `@Published` state properties for automatic SwiftUI view redraws.
 /// - Event Stream Subscription: Subscribes to `engine.events()` via an `AsyncStream<DownloadEvent>` and updates UI state.
+/// - Unified Presentation: Merges HTTP snapshots and BitTorrent tasks into `unifiedTransfers` for consistent presentation.
 /// - Authoritative Snapshot Sync: Keeps live snapshots without diverging from underlying queue/persistence.
-/// - Action Dispatching: Exposes pause, resume, cancel, retry, remove, and add operations.
-/// - Configurable Settings & Persistence: Manages dynamic concurrency limits, request budgets, and bandwidth throttling, persisted via `UserDefaults`.
+/// - Action Dispatching: Exposes pause, resume, cancel, retry, remove, and add operations for both HTTP and BitTorrent.
+/// - Configurable Settings & Persistence: Manages concurrency limits, request budgets, and bandwidth throttling, persisted via `UserDefaults`.
 /// - Robust Edge-Case Handling: Validates input domains, sanitizes limits, manages stream lifecycle restarts, and surfaces user-facing errors.
 @MainActor
 public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendable {
     public let engine: DownloadEngine
+    public let torrentEngine: TorrentEngine?
     public let downloadsDirectoryURL: URL
     private let userDefaults: UserDefaults
 
@@ -56,23 +58,41 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
         public static let maxConcurrentDownloads = "SwiftDownloadEngine.maxConcurrentDownloads"
         public static let maxGlobalRequests = "SwiftDownloadEngine.maxGlobalRequests"
         public static let globalBandwidthLimit = "SwiftDownloadEngine.globalBandwidthLimit"
+        public static let maxConcurrentTorrents = "SwiftDownloadEngine.maxConcurrentTorrents"
+        public static let defaultTorrentPriority = "SwiftDownloadEngine.defaultTorrentPriority"
     }
 
+    // HTTP-specific published properties (backward compatible)
     @Published public var downloads: [DownloadSnapshot] = []
     @Published public var selectedDownload: DownloadSnapshot? = nil
     @Published public var queueSummary: QueueSnapshot? = nil
+
+    // Torrent-specific published properties
+    @Published public var torrentTasks: [TorrentTask] = []
+    @Published public var torrentQueueSummary: TorrentQueueSnapshot? = nil
+
+    // Unified presentation properties
+    @Published public var unifiedTransfers: [UnifiedTransfer] = []
+    @Published public var selectedTransfer: UnifiedTransfer? = nil
+
     @Published public var filterText: String = ""
     @Published public var selectedFilter: DownloadFilter = .all
 
+    // HTTP Settings
     @Published public var maxConcurrentDownloads: Int = 3
     @Published public var maxGlobalRequests: Int = 12
     @Published public var globalBandwidthLimitBytesPerSecond: Int64? = nil
+
+    // Torrent Settings
+    @Published public var maxConcurrentTorrents: Int = 3
+    @Published public var defaultTorrentPriority: TorrentPriority = .normal
 
     @Published public var errorMessage: String? = nil
     @Published public var userNotificationMessage: String? = nil
     @Published public var isObserving: Bool = false
 
     private var eventTask: Task<Void, Never>? = nil
+    private var torrentRefreshTask: Task<Void, Never>? = nil
 
     /// Resolves the default destination downloads directory.
     public static func defaultDownloadsDirectory() -> URL {
@@ -89,10 +109,12 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
 
     public init(
         engine: DownloadEngine,
+        torrentEngine: TorrentEngine? = nil,
         downloadsDirectory: URL? = nil,
         userDefaults: UserDefaults = .standard
     ) {
         self.engine = engine
+        self.torrentEngine = torrentEngine
         self.downloadsDirectoryURL = downloadsDirectory ?? Self.defaultDownloadsDirectory()
         self.userDefaults = userDefaults
 
@@ -109,11 +131,21 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
         } else {
             self.globalBandwidthLimitBytesPerSecond = nil
         }
+
+        let savedTorrents = userDefaults.integer(forKey: SettingsKeys.maxConcurrentTorrents)
+        self.maxConcurrentTorrents = savedTorrents > 0 ? savedTorrents : 3
+
+        let prioVal = userDefaults.integer(forKey: SettingsKeys.defaultTorrentPriority)
+        if let prio = TorrentPriority(rawValue: prioVal) {
+            self.defaultTorrentPriority = prio
+        } else {
+            self.defaultTorrentPriority = .normal
+        }
     }
 
     // MARK: - Event Subscription & Synchronization
 
-    /// Starts observing asynchronous events from `DownloadEngine`.
+    /// Starts observing asynchronous events from `DownloadEngine` and `TorrentEngine`.
     public func startObserving() async {
         guard !isObserving else { return }
         isObserving = true
@@ -124,10 +156,17 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
         // Automatically restore persistent queue on boot
         try? await engine.restoreQueue(autoStart: false)
 
+        // Initialize and start torrent engine if available
+        if let te = torrentEngine {
+            try? await te.start()
+            try? await te.setMaxConcurrentTorrents(maxConcurrentTorrents)
+            startTorrentPolling()
+        }
+
         // Fetch authoritative initial snapshots
         await refreshSnapshots()
 
-        // Listen for real-time background events
+        // Listen for real-time background events from HTTP engine
         eventTask?.cancel()
         let stream = await engine.events()
         eventTask = Task { [weak self] in
@@ -141,14 +180,46 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
         }
     }
 
-    /// Stops observing engine events.
+    /// Stops observing engine events and polling.
     public func stopObserving() {
         eventTask?.cancel()
         eventTask = nil
+        torrentRefreshTask?.cancel()
+        torrentRefreshTask = nil
         isObserving = false
     }
 
-    /// Reloads all download records directly from the engine.
+    /// Starts the underlying BitTorrent engine and initiates background snapshot polling.
+    public func startTorrentEngine() async throws {
+        guard let te = torrentEngine else { return }
+        try await te.start()
+        try await te.setMaxConcurrentTorrents(maxConcurrentTorrents)
+        startTorrentPolling()
+        await refreshTorrentSnapshots()
+    }
+
+    /// Stops the underlying BitTorrent engine, saving state and canceling polling.
+    public func stopTorrentEngine() async throws {
+        torrentRefreshTask?.cancel()
+        torrentRefreshTask = nil
+        if let te = torrentEngine {
+            await te.stop()
+        }
+        await refreshTorrentSnapshots()
+    }
+
+    private func startTorrentPolling() {
+        torrentRefreshTask?.cancel()
+        torrentRefreshTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 1_500_000_000) // 1.5s
+                guard !Task.isCancelled else { break }
+                await self?.refreshTorrentSnapshots()
+            }
+        }
+    }
+
+    /// Reloads all download records directly from both engines.
     public func refreshSnapshots() async {
         let snaps = await engine.allSnapshots()
         self.downloads = snaps
@@ -156,6 +227,33 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
 
         if let selected = selectedDownload, let updated = snaps.first(where: { $0.id == selected.id }) {
             self.selectedDownload = updated
+        }
+
+        if let te = torrentEngine {
+            self.torrentTasks = await te.allTasks()
+            self.torrentQueueSummary = await te.queueSnapshot()
+        }
+
+        rebuildUnifiedTransfers()
+    }
+
+    /// Reloads torrent snapshots directly from `TorrentEngine`.
+    public func refreshTorrentSnapshots() async {
+        guard let te = torrentEngine else { return }
+        self.torrentTasks = await te.allTasks()
+        self.torrentQueueSummary = await te.queueSnapshot()
+        rebuildUnifiedTransfers()
+    }
+
+    private func rebuildUnifiedTransfers() {
+        let httpTransfers = downloads.map { UnifiedTransfer(from: $0) }
+        let torrentTransfers = torrentTasks.map { UnifiedTransfer(from: $0) }
+        var combined = httpTransfers + torrentTransfers
+        combined.sort { $0.createdAt > $1.createdAt }
+        self.unifiedTransfers = combined
+
+        if let selected = selectedTransfer, let updated = combined.first(where: { $0.id == selected.id }) {
+            self.selectedTransfer = updated
         }
     }
 
@@ -177,6 +275,7 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
             if selectedDownload?.id == id {
                 selectedDownload = nil
             }
+            rebuildUnifiedTransfers()
 
         case .integrityVerified(let id, let outcome):
             if let index = downloads.firstIndex(where: { $0.id == id }) {
@@ -202,6 +301,7 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
                 if selectedDownload?.id == id {
                     selectedDownload = updated
                 }
+                rebuildUnifiedTransfers()
             }
 
         case .queueStateChanged(let summary):
@@ -219,6 +319,7 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
         if selectedDownload?.id == snap.id {
             selectedDownload = snap
         }
+        rebuildUnifiedTransfers()
     }
 
     // MARK: - Filtered Views
@@ -226,7 +327,6 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
     /// Returns downloads matching current search query and status filter.
     public var filteredDownloads: [DownloadSnapshot] {
         downloads.filter { snap in
-            // Filter by search text
             if !filterText.isEmpty {
                 let filename = snap.destinationURL.lastPathComponent.lowercased()
                 let urlString = snap.url.absoluteString.lowercased()
@@ -236,7 +336,6 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
                 }
             }
 
-            // Filter by status category
             switch selectedFilter {
             case .all:
                 return true
@@ -253,9 +352,37 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
         }
     }
 
-    // MARK: - Download Lifecycle Actions
+    /// Returns unified transfers (HTTP + Torrent) matching current search query and status filter.
+    public var filteredTransfers: [UnifiedTransfer] {
+        unifiedTransfers.filter { item in
+            if !filterText.isEmpty {
+                let query = filterText.lowercased()
+                let nameMatches = item.name.lowercased().contains(query)
+                let sourceMatches = item.source.lowercased().contains(query)
+                let hashMatches = item.infoHash?.lowercased().contains(query) ?? false
+                guard nameMatches || sourceMatches || hashMatches else {
+                    return false
+                }
+            }
 
-    /// Enqueues a new download request from UI inputs.
+            switch selectedFilter {
+            case .all:
+                return true
+            case .active:
+                return item.state == .downloading || item.state == .seeding
+            case .paused:
+                return item.state == .paused
+            case .completed:
+                return item.state == .completed
+            case .failed:
+                if case .failed = item.state { return true }
+                return false
+            }
+        }
+    }
+
+    // MARK: - Download Lifecycle Actions (HTTP)
+
     @discardableResult
     public func addDownload(
         urlText: String,
@@ -301,7 +428,6 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
         }
     }
 
-    /// Cooperatively pauses an active download.
     public func pauseDownload(id: DownloadID) async throws {
         do {
             try await engine.pauseDownload(id: id)
@@ -311,7 +437,6 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
         }
     }
 
-    /// Resumes a paused or interrupted download.
     public func resumeDownload(id: DownloadID) async throws {
         do {
             try await engine.resumeDownload(id: id)
@@ -321,7 +446,6 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
         }
     }
 
-    /// Cancels an in-progress or queued download.
     public func cancelDownload(id: DownloadID, deleteFile: Bool = false) async throws {
         do {
             try await engine.cancelDownload(id: id, deleteFile: deleteFile)
@@ -331,7 +455,6 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
         }
     }
 
-    /// Removes a download record from the queue.
     public func removeDownload(id: DownloadID, deleteFile: Bool = false) async throws {
         do {
             try await engine.removeDownload(id: id, deleteFile: deleteFile)
@@ -339,13 +462,13 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
             if selectedDownload?.id == id {
                 selectedDownload = nil
             }
+            rebuildUnifiedTransfers()
         } catch {
             self.errorMessage = error.localizedDescription
             throw error
         }
     }
 
-    /// Retries an eligible failed download.
     public func retryDownload(id: DownloadID) async throws {
         do {
             try await engine.retryDownload(id: id)
@@ -355,7 +478,6 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
         }
     }
 
-    /// Restarts a download from byte 0.
     public func restartDownload(id: DownloadID) async throws {
         do {
             try await engine.restartDownload(id: id)
@@ -365,7 +487,6 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
         }
     }
 
-    /// Unified action: resumes, retries, or restarts a download depending on its state.
     public func resumeOrRetryDownload(id: DownloadID) async throws {
         guard let download = downloads.first(where: { $0.id == id }) else { return }
         if download.isNonResumable {
@@ -377,37 +498,266 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
         }
     }
 
-    /// Bulk pauses all active downloads.
+    // MARK: - Torrent Operations
+
+    @discardableResult
+    public func addTorrent(
+        magnetURI: String,
+        saveDirectoryURL: URL? = nil,
+        priority: TorrentPriority? = nil
+    ) async throws -> UnifiedTransfer {
+        guard let te = torrentEngine else {
+            let error = "Torrent engine is not initialized."
+            self.errorMessage = error
+            throw TorrentEngineError.sessionNotRunning
+        }
+
+        let trimmed = magnetURI.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.lowercased().hasPrefix("magnet:?"),
+              trimmed.lowercased().contains("xt=urn:btih:") else {
+            let error = "Invalid Magnet URI: Must start with 'magnet:?' and contain an info-hash parameter ('xt=urn:btih:')."
+            self.errorMessage = error
+            throw TorrentEngineError.invalidMagnetURI(trimmed)
+        }
+
+        let resolvedPriority = priority ?? defaultTorrentPriority
+        do {
+            let task = try await te.addTorrent(
+                magnetURI: trimmed,
+                saveDirectoryURL: saveDirectoryURL ?? downloadsDirectoryURL,
+                priority: resolvedPriority
+            )
+            await refreshTorrentSnapshots()
+            let transfer = UnifiedTransfer(from: task)
+            showNotification("Torrent added successfully: \(task.name)")
+            return transfer
+        } catch {
+            self.errorMessage = error.localizedDescription
+            throw error
+        }
+    }
+
+    @discardableResult
+    public func addTorrent(
+        fileURL: URL,
+        saveDirectoryURL: URL? = nil,
+        priority: TorrentPriority? = nil
+    ) async throws -> UnifiedTransfer {
+        guard let te = torrentEngine else {
+            let error = "Torrent engine is not initialized."
+            self.errorMessage = error
+            throw TorrentEngineError.sessionNotRunning
+        }
+
+        let resolvedPriority = priority ?? defaultTorrentPriority
+        do {
+            #if os(iOS) || os(macOS)
+            let hasSecurityScope = fileURL.startAccessingSecurityScopedResource()
+            defer {
+                if hasSecurityScope {
+                    fileURL.stopAccessingSecurityScopedResource()
+                }
+            }
+            #endif
+
+            let task = try await te.addTorrent(
+                fileURL: fileURL,
+                saveDirectoryURL: saveDirectoryURL ?? downloadsDirectoryURL,
+                priority: resolvedPriority
+            )
+            await refreshTorrentSnapshots()
+            let transfer = UnifiedTransfer(from: task)
+            showNotification("Torrent added successfully: \(task.name)")
+            return transfer
+        } catch {
+            self.errorMessage = error.localizedDescription
+            throw error
+        }
+    }
+
+    @discardableResult
+    public func addTorrent(
+        data: Data,
+        name: String? = nil,
+        saveDirectoryURL: URL? = nil,
+        priority: TorrentPriority? = nil
+    ) async throws -> UnifiedTransfer {
+        guard let te = torrentEngine else {
+            let error = "Torrent engine is not initialized."
+            self.errorMessage = error
+            throw TorrentEngineError.sessionNotRunning
+        }
+
+        let resolvedPriority = priority ?? defaultTorrentPriority
+        do {
+            let task = try await te.addTorrent(
+                data: data,
+                name: name,
+                saveDirectoryURL: saveDirectoryURL ?? downloadsDirectoryURL,
+                priority: resolvedPriority
+            )
+            await refreshTorrentSnapshots()
+            let transfer = UnifiedTransfer(from: task)
+            showNotification("Torrent added successfully: \(task.name)")
+            return transfer
+        } catch {
+            self.errorMessage = error.localizedDescription
+            throw error
+        }
+    }
+
+    public func pauseTorrent(infoHash: String) async throws {
+        guard let te = torrentEngine else { return }
+        do {
+            try await te.pause(infoHash: infoHash)
+            await refreshTorrentSnapshots()
+        } catch {
+            self.errorMessage = error.localizedDescription
+            throw error
+        }
+    }
+
+    public func resumeTorrent(infoHash: String) async throws {
+        guard let te = torrentEngine else { return }
+        do {
+            try await te.resume(infoHash: infoHash)
+            await refreshTorrentSnapshots()
+        } catch {
+            self.errorMessage = error.localizedDescription
+            throw error
+        }
+    }
+
+    public func removeTorrent(infoHash: String, deleteFiles: Bool = false) async throws {
+        guard let te = torrentEngine else { return }
+        do {
+            try await te.remove(infoHash: infoHash, deleteFiles: deleteFiles)
+            torrentTasks.removeAll { $0.infoHash.caseInsensitiveCompare(infoHash) == .orderedSame }
+            if selectedTransfer?.infoHash?.caseInsensitiveCompare(infoHash) == .orderedSame {
+                selectedTransfer = nil
+            }
+            rebuildUnifiedTransfers()
+        } catch {
+            self.errorMessage = error.localizedDescription
+            throw error
+        }
+    }
+
+    public func setTorrentPriority(_ priority: TorrentPriority, for infoHash: String) async throws {
+        guard let te = torrentEngine else { return }
+        do {
+            try await te.setPriority(priority, for: infoHash)
+            await refreshTorrentSnapshots()
+        } catch {
+            self.errorMessage = error.localizedDescription
+            throw error
+        }
+    }
+
+    public func updateTorrentSettings(maxConcurrent: Int, defaultPriority: TorrentPriority) async throws {
+        guard maxConcurrent >= 1 else {
+            let error = "Max concurrent torrents must be at least 1."
+            self.errorMessage = error
+            throw DownloadCoordinatorError.invalidRequest(reason: error)
+        }
+
+        self.maxConcurrentTorrents = maxConcurrent
+        self.defaultTorrentPriority = defaultPriority
+
+        userDefaults.set(maxConcurrent, forKey: SettingsKeys.maxConcurrentTorrents)
+        userDefaults.set(defaultPriority.rawValue, forKey: SettingsKeys.defaultTorrentPriority)
+
+        if let te = torrentEngine {
+            try? await te.setMaxConcurrentTorrents(maxConcurrent)
+        }
+    }
+
+    // MARK: - Unified Dispatch Actions
+
+    public func pauseTransfer(id: String) async throws {
+        if let transfer = unifiedTransfers.first(where: { $0.id == id }) {
+            if transfer.isTorrent, let hash = transfer.infoHash {
+                try await pauseTorrent(infoHash: hash)
+            } else {
+                try await pauseDownload(id: id)
+            }
+        }
+    }
+
+    public func resumeTransfer(id: String) async throws {
+        if let transfer = unifiedTransfers.first(where: { $0.id == id }) {
+            if transfer.isTorrent, let hash = transfer.infoHash {
+                try await resumeTorrent(infoHash: hash)
+            } else {
+                try await resumeOrRetryDownload(id: id)
+            }
+        }
+    }
+
+    public func removeTransfer(id: String, deleteFiles: Bool = false) async throws {
+        if let transfer = unifiedTransfers.first(where: { $0.id == id }) {
+            if transfer.isTorrent, let hash = transfer.infoHash {
+                try await removeTorrent(infoHash: hash, deleteFiles: deleteFiles)
+            } else {
+                try await removeDownload(id: id, deleteFile: deleteFiles)
+            }
+        }
+    }
+
+    public func selectTransfer(id: String) {
+        self.selectedTransfer = unifiedTransfers.first(where: { $0.id == id })
+    }
+
+    public func clearSelectedTransfer() {
+        self.selectedTransfer = nil
+    }
+
+    // MARK: - Bulk Operations
+
     public func pauseAll() async {
         await engine.pauseAllDownloads()
+        if let te = torrentEngine {
+            for task in torrentTasks {
+                try? await te.pause(infoHash: task.infoHash)
+            }
+            await refreshTorrentSnapshots()
+        }
     }
 
-    /// Bulk resumes all paused downloads.
     public func resumeAll() async {
         await engine.resumeAllDownloads()
+        if let te = torrentEngine {
+            for task in torrentTasks where !task.isExplicitlyPaused {
+                try? await te.resume(infoHash: task.infoHash)
+            }
+            await refreshTorrentSnapshots()
+        }
     }
 
-    /// Bulk cancels all downloads.
     public func cancelAll(deleteFiles: Bool = false) async {
         await engine.cancelAllDownloads(deleteFiles: deleteFiles)
+        if let te = torrentEngine {
+            for task in torrentTasks {
+                try? await te.remove(infoHash: task.infoHash, deleteFiles: deleteFiles)
+            }
+            await refreshTorrentSnapshots()
+        }
     }
 
-    /// Selects a download for viewing in the Details screen.
+    // MARK: - Selection & UI Feedback
+
     public func selectDownload(id: DownloadID) {
         self.selectedDownload = downloads.first { $0.id == id }
     }
 
-    /// Deselects the currently active download details view.
     public func clearSelection() {
         self.selectedDownload = nil
     }
 
-    /// Clears the current user-facing error message.
     public func clearError() {
         self.errorMessage = nil
     }
 
-    /// Displays a user-facing success or status notification banner.
     public func showNotification(_ message: String, autoDismissSeconds: Double = 3.5) {
         self.userNotificationMessage = message
         if autoDismissSeconds > 0 {
@@ -421,14 +771,12 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
         }
     }
 
-    /// Clears any currently active user notification banner.
     public func clearNotification() {
         self.userNotificationMessage = nil
     }
 
     // MARK: - Settings Configuration & Persistence
 
-    /// Updates the engine's configuration settings and persists them to UserDefaults.
     public func updateSettings(
         maxConcurrent: Int,
         maxGlobalRequests: Int,
@@ -468,17 +816,21 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
         }
     }
 
-    /// Applies configured/persisted settings to the underlying engine.
     public func applyPersistedSettings() async throws {
         try await engine.setMaxConcurrentDownloads(maxConcurrentDownloads)
         try await engine.setMaxGlobalRequests(maxGlobalRequests)
         await engine.setGlobalSpeedLimit(globalBandwidthLimitBytesPerSecond)
+        if let te = torrentEngine {
+            try? await te.setMaxConcurrentTorrents(maxConcurrentTorrents)
+        }
     }
 
-    /// Restores persistent queue state from disk.
     public func restoreQueue(autoStart: Bool = false) async throws {
         do {
             try await engine.restoreQueue(autoStart: autoStart)
+            if let te = torrentEngine {
+                try? await te.start()
+            }
             await refreshSnapshots()
         } catch {
             self.errorMessage = error.localizedDescription

@@ -4,10 +4,10 @@ import SwiftUI
 /// Top-level native SwiftUI application coordinator for iOS/macOS.
 ///
 /// Features:
-/// - Engine Lifecycle Bootstrapping: Automatically configures `DownloadEngine` with persistent storage
-///   located in the application sandbox (`Application Support` or `Documents`).
+/// - Engine Lifecycle Bootstrapping: Automatically configures both `DownloadEngine` and `TorrentEngine`
+///   with persistent storage located in the application sandbox (`Application Support` or `Documents`).
 /// - Scene Phase Management: Listens to `.scenePhase` changes (`.active`, `.background`) to start observing
-///   real-time transfer events and restore persistent queues upon returning to the foreground.
+///   real-time transfer events, restore persistent queues, and perform bounded fast-resume saves on backgrounding.
 /// - Shared Application State: Connects `DownloadManagerViewModel` to `DownloadManagerAppView`.
 public struct SwiftDownloadEngineApp: App {
     @StateObject private var viewModel: DownloadManagerViewModel
@@ -27,7 +27,7 @@ public struct SwiftDownloadEngineApp: App {
         return baseDir
     }
 
-    /// Convenience initializer configuring the production engine and view model automatically.
+    /// Convenience initializer configuring production engines and view model automatically.
     public init() {
         let downloadsDir = DownloadManagerViewModel.defaultDownloadsDirectory()
         let storeDir = Self.defaultStorageDirectory()
@@ -45,23 +45,34 @@ public struct SwiftDownloadEngineApp: App {
             fatalError("Failed to initialize DownloadEngine: \(error)")
         }
 
+        var torrentEngine: TorrentEngine? = nil
+        do {
+            let torrentStorage = storeDir.appendingPathComponent("Torrents", isDirectory: true)
+            try? FileManager.default.createDirectory(at: torrentStorage, withIntermediateDirectories: true)
+            torrentEngine = try TorrentEngine(storageDirectoryURL: torrentStorage)
+        } catch {
+            print("Notice: TorrentEngine initialization skipped or deferred: \(error.localizedDescription)")
+        }
+
         let vm = DownloadManagerViewModel(
             engine: engine,
+            torrentEngine: torrentEngine,
             downloadsDirectory: downloadsDir,
             userDefaults: .standard
         )
         _viewModel = StateObject(wrappedValue: vm)
     }
 
-    /// Primary designated initializer allowing custom engine injection (e.g., testing or preview).
+    /// Primary designated initializer allowing custom view model injection (e.g., testing or preview).
     public init(viewModel: DownloadManagerViewModel) {
         _viewModel = StateObject(wrappedValue: viewModel)
     }
 
-    /// Primary designated initializer accepting an explicit DownloadEngine.
-    public init(engine: DownloadEngine, downloadsDirectory: URL? = nil) {
+    /// Designated initializer accepting explicit engines.
+    public init(engine: DownloadEngine, torrentEngine: TorrentEngine? = nil, downloadsDirectory: URL? = nil) {
         let vm = DownloadManagerViewModel(
             engine: engine,
+            torrentEngine: torrentEngine,
             downloadsDirectory: downloadsDirectory,
             userDefaults: .standard
         )
@@ -77,16 +88,20 @@ public struct SwiftDownloadEngineApp: App {
             case .active:
                 Task { @MainActor in
                     await viewModel.startObserving()
+                    try? await viewModel.startTorrentEngine()
                     if !hasRestoredQueue {
                         hasRestoredQueue = true
                         try? await viewModel.restoreQueue(autoStart: false)
                     } else {
                         await viewModel.refreshSnapshots()
+                        await viewModel.refreshTorrentSnapshots()
                     }
                 }
             case .background:
                 Task { @MainActor in
                     await viewModel.refreshSnapshots()
+                    await viewModel.refreshTorrentSnapshots()
+                    try? await viewModel.stopTorrentEngine()
                 }
             case .inactive:
                 break

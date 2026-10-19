@@ -18,7 +18,7 @@ final class TorrentEngineTests: XCTestCase {
             try? FileManager.default.removeItem(at: tempDir)
         }
 
-        let engine = TorrentEngine(
+        let engine = try TorrentEngine(
             storageDirectoryURL: tempDir,
             portStart: 6881,
             portEnd: 6891
@@ -64,7 +64,7 @@ final class TorrentEngineTests: XCTestCase {
             try? FileManager.default.removeItem(at: tempDir)
         }
 
-        let engine = TorrentEngine(
+        let engine = try TorrentEngine(
             storageDirectoryURL: tempDir,
             portStart: 6912,
             portEnd: 6922
@@ -125,7 +125,7 @@ final class TorrentEngineTests: XCTestCase {
             try? FileManager.default.removeItem(at: tempDir)
         }
 
-        let engine = TorrentEngine(
+        let engine = try TorrentEngine(
             storageDirectoryURL: tempDir,
             portStart: 6932,
             portEnd: 6942,
@@ -160,7 +160,7 @@ final class TorrentEngineTests: XCTestCase {
         await engine.stop(timeoutSeconds: 2.0)
 
         // Restart fresh engine with the same directory
-        let freshEngine = TorrentEngine(
+        let freshEngine = try TorrentEngine(
             storageDirectoryURL: tempDir,
             portStart: 6932,
             portEnd: 6942,
@@ -168,14 +168,44 @@ final class TorrentEngineTests: XCTestCase {
         )
 
         try await freshEngine.start()
-        defer {
-            Task { await freshEngine.stop() }
-        }
+        await freshEngine.stop()
 
         let restoredSnap = await freshEngine.queueSnapshot()
         XCTAssertNotNil(restoredSnap)
         XCTAssertEqual(restoredSnap?.totalTorrents, 3)
         XCTAssertEqual(restoredSnap?.pausedCount, 1, "Explicitly paused torrent must remain paused upon restoration")
+    }
+
+    func testTorrentEngineInitializationRejectsInvalidPersistenceStore() async throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("TorrentEngineInitFailTests_\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(at: tempDir)
+        }
+
+        // Write an unsupported schema version manifest into TorrentMetadata directory
+        let metaDir = tempDir.appendingPathComponent("TorrentMetadata", isDirectory: true)
+        try FileManager.default.createDirectory(at: metaDir, withIntermediateDirectories: true)
+        let manifestURL = metaDir.appendingPathComponent("torrent_manifest.json")
+        let futureManifest = TorrentQueueManifest(
+            schemaVersion: 9999,
+            maxConcurrentTorrents: 5,
+            sequenceCounter: 1,
+            records: []
+        )
+        let data = try JSONEncoder().encode(futureManifest)
+        try data.write(to: manifestURL)
+
+        // TorrentEngine.init MUST deliberately throw rather than fall back to another directory or crash
+        do {
+            _ = try TorrentEngine(storageDirectoryURL: tempDir)
+            XCTFail("Should throw unsupportedSchemaVersion error for version 9999")
+        } catch let error as TorrentEngineError {
+            XCTAssertEqual(error, .unsupportedSchemaVersion(9999))
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
     }
 }
 #endif

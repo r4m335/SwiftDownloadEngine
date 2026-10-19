@@ -62,6 +62,7 @@ public enum ActiveSheet: Identifiable {
 public enum ActiveAlert: Identifiable {
     case integrity(IntegrityReport)
     case deleteConfirmation(DownloadSnapshot)
+    case deleteTransferConfirmation(UnifiedTransfer)
 
     public var id: String {
         switch self {
@@ -69,6 +70,8 @@ public enum ActiveAlert: Identifiable {
             return "integrity_\(report.id.uuidString)"
         case .deleteConfirmation(let snap):
             return "delete_\(snap.id)"
+        case .deleteTransferConfirmation(let transfer):
+            return "delete_transfer_\(transfer.id)"
         }
     }
 }
@@ -103,6 +106,7 @@ public struct DownloadsView: View {
     @State private var activeAlert: ActiveAlert? = nil
     @State private var quickLookURL: URL? = nil
     @State private var selectedDownloadForDetails: DownloadSnapshot? = nil
+    @State private var selectedTransferForDetails: UnifiedTransfer? = nil
 
     private var trailingToolbarPlacement: ToolbarItemPlacement {
         #if os(iOS)
@@ -122,13 +126,15 @@ public struct DownloadsView: View {
                 // Programmatic Navigation Link for "Show Details"
                 NavigationLink(
                     destination: Group {
-                        if let target = selectedDownloadForDetails {
+                        if let transfer = selectedTransferForDetails {
+                            DownloadDetailsView(viewModel: viewModel, transfer: transfer)
+                        } else if let target = selectedDownloadForDetails {
                             DownloadDetailsView(viewModel: viewModel, download: target)
                         }
                     },
                     isActive: Binding(
-                        get: { selectedDownloadForDetails != nil },
-                        set: { if !$0 { selectedDownloadForDetails = nil } }
+                        get: { selectedTransferForDetails != nil || selectedDownloadForDetails != nil },
+                        set: { if !$0 { selectedTransferForDetails = nil; selectedDownloadForDetails = nil } }
                     )
                 ) {
                     EmptyView()
@@ -195,68 +201,60 @@ public struct DownloadsView: View {
                 FilterBar(selectedFilter: $viewModel.selectedFilter)
                     .padding(.vertical, 8)
 
-                // Downloads List
-                if viewModel.filteredDownloads.isEmpty {
+                // Unified Downloads & Torrents List
+                if viewModel.filteredTransfers.isEmpty {
                     EmptyDownloadsState(filter: viewModel.selectedFilter)
                 } else {
                     List {
-                        ForEach(viewModel.filteredDownloads) { download in
+                        ForEach(viewModel.filteredTransfers) { transfer in
                             NavigationLink(
-                                destination: DownloadDetailsView(viewModel: viewModel, download: download)
+                                destination: DownloadDetailsView(viewModel: viewModel, transfer: transfer)
                             ) {
-                                DownloadRowView(
+                                UnifiedTransferRowView(
                                     viewModel: viewModel,
-                                    download: download,
-                                    onOpen: { openFile(download) },
-                                    onSaveToFiles: { saveToFiles(download) },
-                                    onShare: { shareFile(download) },
-                                    onCopyLink: { copyDownloadLink(download) },
-                                    onVerifyIntegrity: { verifyIntegrity(download) },
-                                    onShowDetails: { showDetails(download) },
-                                    onPause: { pauseDownload(download) },
-                                    onResume: { resumeDownload(download) },
-                                    onRetry: { retryDownload(download) },
-                                    onRestart: { restartDownload(download) },
-                                    onCancel: { cancelDownload(download) },
-                                    onRemoveQueue: { removeFromQueue(download) },
-                                    onDeleteFile: { promptDeleteFile(download) }
+                                    transfer: transfer,
+                                    onOpen: { openTransferFile(transfer) },
+                                    onSaveToFiles: { saveTransferToFiles(transfer) },
+                                    onShare: { shareTransferFile(transfer) },
+                                    onCopyLink: { copyTransferLink(transfer) },
+                                    onShowDetails: { showTransferDetails(transfer) },
+                                    onPause: { pauseTransfer(transfer) },
+                                    onResume: { resumeTransfer(transfer) },
+                                    onRemoveQueue: { removeTransferFromQueue(transfer) },
+                                    onDeleteFile: { promptDeleteTransferFile(transfer) }
                                 )
                             }
                             .contextMenu {
-                                DownloadMenuContent(
-                                    download: download,
-                                    onOpen: { openFile(download) },
-                                    onSaveToFiles: { saveToFiles(download) },
-                                    onShare: { shareFile(download) },
-                                    onCopyLink: { copyDownloadLink(download) },
-                                    onVerifyIntegrity: { verifyIntegrity(download) },
-                                    onShowDetails: { showDetails(download) },
-                                    onPause: { pauseDownload(download) },
-                                    onResume: { resumeDownload(download) },
-                                    onRetry: { retryDownload(download) },
-                                    onRestart: { restartDownload(download) },
-                                    onCancel: { cancelDownload(download) },
-                                    onRemoveQueue: { removeFromQueue(download) },
-                                    onDeleteFile: { promptDeleteFile(download) }
+                                UnifiedTransferMenuContent(
+                                    transfer: transfer,
+                                    onOpen: { openTransferFile(transfer) },
+                                    onSaveToFiles: { saveTransferToFiles(transfer) },
+                                    onShare: { shareTransferFile(transfer) },
+                                    onCopyLink: { copyTransferLink(transfer) },
+                                    onShowDetails: { showTransferDetails(transfer) },
+                                    onPause: { pauseTransfer(transfer) },
+                                    onResume: { resumeTransfer(transfer) },
+                                    onRemoveQueue: { removeTransferFromQueue(transfer) },
+                                    onDeleteFile: { promptDeleteTransferFile(transfer) }
                                 )
                             }
                             .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                                 Button(role: .destructive) {
-                                    removeFromQueue(download)
+                                    removeTransferFromQueue(transfer)
                                 } label: {
                                     Label("Remove", systemImage: "trash")
                                 }
 
-                                if download.state.canResume {
+                                if transfer.canResume {
                                     Button {
-                                        resumeDownload(download)
+                                        resumeTransfer(transfer)
                                     } label: {
                                         Label("Resume", systemImage: "play.fill")
                                     }
                                     .tint(.green)
-                                } else if download.state == .downloading {
+                                } else if transfer.canPause {
                                     Button {
-                                        pauseDownload(download)
+                                        pauseTransfer(transfer)
                                     } label: {
                                         Label("Pause", systemImage: "pause.fill")
                                     }
@@ -268,6 +266,7 @@ public struct DownloadsView: View {
                     .listStyle(.plain)
                     .refreshable {
                         await viewModel.refreshSnapshots()
+                        await viewModel.refreshTorrentSnapshots()
                     }
                 }
             }
@@ -378,6 +377,23 @@ public struct DownloadsView: View {
                             }
                         },
                         secondaryButton: .cancel()
+                    )
+                case .deleteTransferConfirmation(let transfer):
+                    return Alert(
+                        title: Text("Remove \(transfer.name)?"),
+                        message: Text("Do you want to delete the downloaded file from disk as well?"),
+                        primaryButton: .destructive(Text("Delete File & Remove")) {
+                            Task { @MainActor in
+                                try? await viewModel.removeTransfer(id: transfer.id, deleteFiles: true)
+                                viewModel.showNotification("Removed '\(transfer.name)' and deleted file")
+                            }
+                        },
+                        secondaryButton: .default(Text("Keep File & Remove")) {
+                            Task { @MainActor in
+                                try? await viewModel.removeTransfer(id: transfer.id, deleteFiles: false)
+                                viewModel.showNotification("Removed '\(transfer.name)' (file kept)")
+                            }
+                        }
                     )
                 }
             }
@@ -502,6 +518,67 @@ public struct DownloadsView: View {
 
     private func promptDeleteFile(_ download: DownloadSnapshot) {
         activeAlert = .deleteConfirmation(download)
+    }
+
+    // MARK: - Unified Transfer Actions
+
+    private func openTransferFile(_ transfer: UnifiedTransfer) {
+        #if canImport(QuickLook)
+        quickLookURL = transfer.destinationURL
+        #endif
+    }
+
+    private func saveTransferToFiles(_ transfer: UnifiedTransfer) {
+        guard FileManager.default.fileExists(atPath: transfer.destinationURL.path) else {
+            viewModel.errorMessage = "File not found at '\(transfer.destinationURL.lastPathComponent)'."
+            return
+        }
+        activeSheet = .saveToFiles(transfer.destinationURL)
+    }
+
+    private func shareTransferFile(_ transfer: UnifiedTransfer) {
+        guard FileManager.default.fileExists(atPath: transfer.destinationURL.path) else {
+            viewModel.errorMessage = "File not found at '\(transfer.destinationURL.lastPathComponent)'."
+            return
+        }
+        activeSheet = .shareFile(transfer.destinationURL)
+    }
+
+    private func copyTransferLink(_ transfer: UnifiedTransfer) {
+        #if canImport(UIKit)
+        UIPasteboard.general.string = transfer.source
+        #elseif canImport(AppKit)
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(transfer.source, forType: .string)
+        #endif
+        viewModel.showNotification("Link copied to clipboard")
+    }
+
+    private func showTransferDetails(_ transfer: UnifiedTransfer) {
+        selectedTransferForDetails = transfer
+    }
+
+    private func pauseTransfer(_ transfer: UnifiedTransfer) {
+        Task { @MainActor in
+            try? await viewModel.pauseTransfer(id: transfer.id)
+        }
+    }
+
+    private func resumeTransfer(_ transfer: UnifiedTransfer) {
+        Task { @MainActor in
+            try? await viewModel.resumeTransfer(id: transfer.id)
+        }
+    }
+
+    private func removeTransferFromQueue(_ transfer: UnifiedTransfer) {
+        Task { @MainActor in
+            try? await viewModel.removeTransfer(id: transfer.id, deleteFiles: false)
+            viewModel.showNotification("Removed '\(transfer.name)' from queue (file preserved)")
+        }
+    }
+
+    private func promptDeleteTransferFile(_ transfer: UnifiedTransfer) {
+        activeAlert = .deleteTransferConfirmation(transfer)
     }
 }
 
@@ -666,6 +743,255 @@ public struct DownloadMenuContent: View {
             }
             Button(role: .destructive, action: onDeleteFile) {
                 Label("Delete File", systemImage: "trash")
+            }
+        }
+    }
+}
+
+// MARK: - Unified Transfer Row View
+
+public struct UnifiedTransferRowView: View {
+    public let viewModel: DownloadManagerViewModel
+    public let transfer: UnifiedTransfer
+    public let onOpen: () -> Void
+    public let onSaveToFiles: () -> Void
+    public let onShare: () -> Void
+    public let onCopyLink: () -> Void
+    public let onShowDetails: () -> Void
+    public let onPause: () -> Void
+    public let onResume: () -> Void
+    public let onRemoveQueue: () -> Void
+    public let onDeleteFile: () -> Void
+
+    public init(
+        viewModel: DownloadManagerViewModel,
+        transfer: UnifiedTransfer,
+        onOpen: @escaping () -> Void = {},
+        onSaveToFiles: @escaping () -> Void = {},
+        onShare: @escaping () -> Void = {},
+        onCopyLink: @escaping () -> Void = {},
+        onShowDetails: @escaping () -> Void = {},
+        onPause: @escaping () -> Void = {},
+        onResume: @escaping () -> Void = {},
+        onRemoveQueue: @escaping () -> Void = {},
+        onDeleteFile: @escaping () -> Void = {}
+    ) {
+        self.viewModel = viewModel
+        self.transfer = transfer
+        self.onOpen = onOpen
+        self.onSaveToFiles = onSaveToFiles
+        self.onShare = onShare
+        self.onCopyLink = onCopyLink
+        self.onShowDetails = onShowDetails
+        self.onPause = onPause
+        self.onResume = onResume
+        self.onRemoveQueue = onRemoveQueue
+        self.onDeleteFile = onDeleteFile
+    }
+
+    public var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            // Header: Name, Type Badge, Status Badge, 3-Dot Menu
+            HStack(alignment: .center, spacing: 6) {
+                Text(transfer.name)
+                    .font(.headline)
+                    .lineLimit(1)
+
+                Spacer()
+
+                TypeBadge(type: transfer.type)
+                UnifiedStatusBadge(state: transfer.state)
+
+                Menu {
+                    UnifiedTransferMenuContent(
+                        transfer: transfer,
+                        onOpen: onOpen,
+                        onSaveToFiles: onSaveToFiles,
+                        onShare: onShare,
+                        onCopyLink: onCopyLink,
+                        onShowDetails: onShowDetails,
+                        onPause: onPause,
+                        onResume: onResume,
+                        onRemoveQueue: onRemoveQueue,
+                        onDeleteFile: onDeleteFile
+                    )
+                } label: {
+                    Image(systemName: "ellipsis")
+                        .font(.body.weight(.bold))
+                        .foregroundColor(.secondary)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 4)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(BorderlessButtonStyle())
+            }
+
+            // Progress Bar
+            if let total = transfer.totalBytes, total > 0 {
+                ProgressView(value: transfer.progressFraction)
+                    .progressViewStyle(LinearProgressViewStyle(tint: statusColor))
+            } else if transfer.state == .downloading {
+                ProgressView()
+                    .progressViewStyle(LinearProgressViewStyle(tint: statusColor))
+            } else {
+                ProgressView(value: transfer.progressFraction)
+                    .progressViewStyle(LinearProgressViewStyle(tint: statusColor))
+            }
+
+            // Metrics: Size & Speed
+            HStack {
+                if let total = transfer.totalBytes, total > 0 {
+                    Text("\(UIFormatters.formatBytes(transfer.completedBytes)) / \(UIFormatters.formatBytes(total))")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                } else {
+                    Text("\(UIFormatters.formatBytes(transfer.completedBytes)) (Size pending)")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+
+                Spacer()
+
+                if transfer.state == .downloading {
+                    if transfer.isTorrent {
+                        Text("↓ \(UIFormatters.formatSpeed(transfer.downloadSpeedBytesPerSecond))  ↑ \(UIFormatters.formatSpeed(transfer.uploadSpeedBytesPerSecond))")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    } else {
+                        Text(UIFormatters.formatSpeed(transfer.downloadSpeedBytesPerSecond))
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                } else if transfer.state == .seeding {
+                    Text("Seeding • ↑ \(UIFormatters.formatSpeed(transfer.uploadSpeedBytesPerSecond))")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                } else {
+                    Text("\(Int(transfer.progressFraction * 100))%")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+            }
+
+            // Extra metrics for torrent: Peers & Seeds
+            if transfer.isTorrent {
+                HStack {
+                    Text("Peers: \(transfer.connectedPeers ?? 0) • Seeds: \(transfer.connectedSeeds ?? 0)")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                    if let prio = transfer.torrentPriority {
+                        Spacer()
+                        Text("Priority: \(prioLabel(prio))")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                    }
+                }
+            }
+
+            // Quick Inline Action Controls
+            HStack(spacing: 12) {
+                if transfer.canPause {
+                    Button(action: onPause) {
+                        Label("Pause", systemImage: "pause.fill")
+                            .font(.caption2)
+                    }
+                    .buttonStyle(.bordered)
+                    .tint(.orange)
+                } else if transfer.canResume {
+                    Button(action: onResume) {
+                        Label("Resume", systemImage: "play.fill")
+                            .font(.caption2)
+                    }
+                    .buttonStyle(.bordered)
+                    .tint(.green)
+                } else if transfer.state == .completed {
+                    Button(action: onOpen) {
+                        Label("Open File", systemImage: "doc.text")
+                            .font(.caption2)
+                    }
+                    .buttonStyle(.bordered)
+                    .tint(.blue)
+                }
+            }
+            .padding(.top, 2)
+        }
+        .padding(.vertical, 4)
+    }
+
+    private func prioLabel(_ p: TorrentPriority) -> String {
+        switch p {
+        case .low: return "Low"
+        case .normal: return "Normal"
+        case .high: return "High"
+        }
+    }
+
+    private var statusColor: Color {
+        switch transfer.state {
+        case .downloading: return .blue
+        case .completed: return .green
+        case .paused: return .orange
+        case .failed: return .red
+        case .queued: return .gray
+        case .seeding: return .teal
+        }
+    }
+}
+
+// MARK: - Unified Transfer Menu Content
+
+public struct UnifiedTransferMenuContent: View {
+    public let transfer: UnifiedTransfer
+    public let onOpen: () -> Void
+    public let onSaveToFiles: () -> Void
+    public let onShare: () -> Void
+    public let onCopyLink: () -> Void
+    public let onShowDetails: () -> Void
+    public let onPause: () -> Void
+    public let onResume: () -> Void
+    public let onRemoveQueue: () -> Void
+    public let onDeleteFile: () -> Void
+
+    public var body: some View {
+        Group {
+            if transfer.canPause {
+                Button(action: onPause) {
+                    Label("Pause", systemImage: "pause.fill")
+                }
+            } else if transfer.canResume {
+                Button(action: onResume) {
+                    Label("Resume", systemImage: "play.fill")
+                }
+            }
+
+            if transfer.state == .completed {
+                Button(action: onOpen) {
+                    Label("Open File", systemImage: "doc.text")
+                }
+                Button(action: onSaveToFiles) {
+                    Label("Save to Files", systemImage: "folder")
+                }
+                Button(action: onShare) {
+                    Label("Share", systemImage: "square.and.arrow.up")
+                }
+            }
+
+            Button(action: onCopyLink) {
+                Label(transfer.isTorrent ? "Copy Torrent Source" : "Copy Download Link", systemImage: "doc.on.doc")
+            }
+
+            Button(action: onShowDetails) {
+                Label("Show Details", systemImage: "info.circle")
+            }
+
+            Divider()
+
+            Button(action: onRemoveQueue) {
+                Label("Remove from Queue", systemImage: "minus.circle")
+            }
+
+            Button(role: .destructive, action: onDeleteFile) {
+                Label("Delete Files from Disk", systemImage: "trash")
             }
         }
     }

@@ -5,14 +5,21 @@ import SwiftUI
 import UIKit
 #endif
 
-/// Screen 4: Settings Screen exposing the engine's concurrency, request budget, and bandwidth limits.
+/// Screen 4: Settings Screen exposing the engine's concurrency, request budget, bandwidth limits, and BitTorrent controls.
 public struct SettingsView: View {
     @ObservedObject public var viewModel: DownloadManagerViewModel
 
+    // HTTP Settings
     @State private var maxConcurrent: Int = 3
     @State private var maxGlobalRequests: Int = 12
     @State private var enableGlobalSpeedLimit: Bool = false
     @State private var globalSpeedLimitKBps: String = "2048"
+
+    // Torrent Settings
+    @State private var maxConcurrentTorrents: Int = 3
+    @State private var defaultTorrentPriority: TorrentPriority = .normal
+
+    // UI Feedback
     @State private var showingSavedAlert: Bool = false
     @State private var statusMessage: String? = nil
 
@@ -23,15 +30,37 @@ public struct SettingsView: View {
     public var body: some View {
         NavigationView {
             Form {
-                // Section 1: Queue & Concurrency
+                // Section 1: HTTP Queue & Concurrency
                 Section(
-                    header: Text("Queue Concurrency"),
-                    footer: Text("Controls how many downloads are transferred concurrently. Excess items wait in priority order.")
+                    header: Text("HTTP Queue Concurrency"),
+                    footer: Text("Controls how many HTTP downloads are transferred concurrently. Excess items wait in priority order.")
                 ) {
-                    Stepper("Max Concurrent Downloads: \(maxConcurrent)", value: $maxConcurrent, in: 1...10)
+                    Stepper("Max Concurrent HTTP Downloads: \(maxConcurrent)", value: $maxConcurrent, in: 1...10)
                 }
 
-                // Section 2: HTTP Connection & Request Budgeting
+                // Section 2: BitTorrent Concurrency & Queueing
+                Section(
+                    header: Text("BitTorrent Queueing"),
+                    footer: Text("Limits concurrent active torrent downloads and configures default priority for newly ingested torrents.")
+                ) {
+                    Stepper("Max Concurrent Torrents: \(maxConcurrentTorrents)", value: $maxConcurrentTorrents, in: 1...10)
+
+                    Picker("Default Priority", selection: $defaultTorrentPriority) {
+                        Text("Low").tag(TorrentPriority.low)
+                        Text("Normal").tag(TorrentPriority.normal)
+                        Text("High").tag(TorrentPriority.high)
+                    }
+
+                    HStack {
+                        Text("Listen Ports")
+                        Spacer()
+                        Text("6881 – 6891 (TCP/UDP)")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                }
+
+                // Section 3: HTTP Connection & Request Budgeting
                 Section(
                     header: Text("HTTP Request Budget"),
                     footer: Text("Limits total in-flight HTTP range requests across all segment workers to avoid socket exhaustion.")
@@ -39,7 +68,7 @@ public struct SettingsView: View {
                     Stepper("Max Global In-Flight Requests: \(maxGlobalRequests)", value: $maxGlobalRequests, in: 2...32)
                 }
 
-                // Section 3: Bandwidth Management
+                // Section 4: Bandwidth Management
                 Section(
                     header: Text("Bandwidth Throttling"),
                     footer: Text("Token-bucket rate limiter dynamically enforces download throughput caps.")
@@ -60,7 +89,7 @@ public struct SettingsView: View {
                     }
                 }
 
-                // Section 4: Storage & Persistence
+                // Section 5: Storage & Persistence
                 Section(header: Text("Storage & Recovery")) {
                     HStack {
                         Text("Download Directory")
@@ -91,7 +120,7 @@ public struct SettingsView: View {
                     }
                 }
 
-                // Section 5: Save Action
+                // Section 6: Save Action
                 Section {
                     Button {
                         saveSettings()
@@ -120,6 +149,9 @@ public struct SettingsView: View {
     private func loadCurrentSettings() {
         self.maxConcurrent = viewModel.maxConcurrentDownloads
         self.maxGlobalRequests = viewModel.maxGlobalRequests
+        self.maxConcurrentTorrents = viewModel.maxConcurrentTorrents
+        self.defaultTorrentPriority = viewModel.defaultTorrentPriority
+
         if let bytes = viewModel.globalBandwidthLimitBytesPerSecond, bytes > 0 {
             self.enableGlobalSpeedLimit = true
             self.globalSpeedLimitKBps = String(bytes / 1024)
@@ -142,6 +174,10 @@ public struct SettingsView: View {
                 maxConcurrent: maxConcurrent,
                 maxGlobalRequests: maxGlobalRequests,
                 globalBandwidthLimit: limit
+            )
+            await viewModel.updateTorrentSettings(
+                maxConcurrentTorrents: maxConcurrentTorrents,
+                defaultPriority: defaultTorrentPriority
             )
             showingSavedAlert = true
         }

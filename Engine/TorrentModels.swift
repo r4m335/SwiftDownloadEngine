@@ -230,6 +230,8 @@ public enum TorrentEngineError: LocalizedError, Equatable, Sendable {
     case persistenceError(String)
     case unsupportedSchemaVersion(Int)
     case duplicateTorrent(String)
+    case invalidMagnetURI(String)
+    case invalidTorrentFile(String)
 
     public var errorDescription: String? {
         switch self {
@@ -249,6 +251,10 @@ public enum TorrentEngineError: LocalizedError, Equatable, Sendable {
             return "Unsupported persistence schema version: \(ver)"
         case .duplicateTorrent(let hash):
             return "Torrent with info-hash \(hash) already exists."
+        case .invalidMagnetURI(let uri):
+            return "Invalid magnet URI: \(uri)"
+        case .invalidTorrentFile(let msg):
+            return "Invalid .torrent file: \(msg)"
         }
     }
 }
