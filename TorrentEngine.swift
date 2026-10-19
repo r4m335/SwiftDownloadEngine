@@ -465,7 +465,7 @@ public actor TorrentEngine {
     }
 
     public func maxConcurrentTorrents() async -> Int {
-        await scheduler?.maxConcurrentTorrents() ?? defaultMaxConcurrentTorrents
+        await scheduler?.maxConcurrentTorrents ?? defaultMaxConcurrentTorrents
     }
 
     deinit {
