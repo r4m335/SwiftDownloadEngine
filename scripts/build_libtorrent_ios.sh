@@ -83,7 +83,6 @@ xcodebuild \
     CODE_SIGNING_ALLOWED=NO \
     CODE_SIGNING_REQUIRED=NO \
     CODE_SIGN_IDENTITY="" \
-    SYMROOT="$BUILD_DIR/symroot" \
     build
 
 # 5. Build libtorrent-rasterbar for iOS Simulator (arm64 + x86_64)
@@ -99,19 +98,29 @@ xcodebuild \
     CODE_SIGNING_ALLOWED=NO \
     CODE_SIGNING_REQUIRED=NO \
     CODE_SIGN_IDENTITY="" \
-    SYMROOT="$BUILD_DIR/symroot" \
     build
 
-DEVICE_LIB=$(find "$BUILD_DIR/symroot" -path "*Release-iphoneos*/libtorrent-rasterbar.a" | head -n 1)
-SIM_LIB=$(find "$BUILD_DIR/symroot" -path "*Release-iphonesimulator*/libtorrent-rasterbar.a" | head -n 1)
+if [ -f "$CMAKE_BUILD/Release-iphoneos/libtorrent-rasterbar.a" ]; then
+    DEVICE_LIB="$CMAKE_BUILD/Release-iphoneos/libtorrent-rasterbar.a"
+else
+    DEVICE_LIB=$(find "$BUILD_DIR" -name "libtorrent-rasterbar.a" | grep -E "Release-iphoneos" | head -n 1)
+fi
+
+if [ -f "$CMAKE_BUILD/Release-iphonesimulator/libtorrent-rasterbar.a" ]; then
+    SIM_LIB="$CMAKE_BUILD/Release-iphonesimulator/libtorrent-rasterbar.a"
+else
+    SIM_LIB=$(find "$BUILD_DIR" -name "libtorrent-rasterbar.a" | grep -E "Release-iphonesimulator" | head -n 1)
+fi
 
 if [ -z "$DEVICE_LIB" ] || [ ! -f "$DEVICE_LIB" ]; then
-    echo "Error: Device libtorrent-rasterbar.a build failed!"
+    echo "Error: Device libtorrent-rasterbar.a not found in $BUILD_DIR!"
+    find "$BUILD_DIR" -name "*.a" || true
     exit 1
 fi
 
 if [ -z "$SIM_LIB" ] || [ ! -f "$SIM_LIB" ]; then
-    echo "Error: Simulator libtorrent-rasterbar.a build failed!"
+    echo "Error: Simulator libtorrent-rasterbar.a not found in $BUILD_DIR!"
+    find "$BUILD_DIR" -name "*.a" || true
     exit 1
 fi
 
