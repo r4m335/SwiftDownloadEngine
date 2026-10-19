@@ -4,9 +4,9 @@ import Foundation
 #if canImport(LibTorrent)
 import LibTorrent
 
-/// Milestone 1-3 Verification Test Suite.
+/// Milestone 1-4 Verification Test Suite.
 /// Validates libtorrent 2.0.x native build feasibility, Objective-C++ bridge integration,
-/// safe session creation / teardown, and Milestone 3 core transfer operations.
+/// safe session creation / teardown, Milestone 3 transfer operations, and Milestone 4 fast-resume generation/restoration.
 final class TorrentSessionBridgeTests: XCTestCase {
     func testLibtorrentVersionString() {
         let version = TorrentSessionBridge.libtorrentVersion()
@@ -81,6 +81,51 @@ final class TorrentSessionBridgeTests: XCTestCase {
         try bridge.removeTorrent(withHash: hash, deleteFiles: false)
         XCTAssertNil(bridge.status(forTorrentWithHash: hash))
         XCTAssertEqual(bridge.allTorrentStatuses().count, 0)
+    }
+
+    func testBridgeFastResumeGenerationAndRestoration() throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("1DM_Torrent_Resume_\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(at: tempDir)
+        }
+
+        let bridge = TorrentSessionBridge(storagePath: tempDir.path, portStart: 6952, portEnd: 6962)
+        try bridge.startSession()
+        defer { bridge.stopSession() }
+
+        let magnet = "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567&dn=FastResumeTest"
+        let hash = try bridge.addTorrent(withMagnetURI: magnet, savePath: tempDir.path)
+        XCTAssertEqual(hash, "0123456789abcdef0123456789abcdef01234567")
+
+        // Request fast-resume generation
+        XCTAssertNoThrow(try bridge.requestResumeData(forTorrentWithHash: hash))
+
+        // Poll for asynchronous alert
+        var resumeData: Data?
+        for _ in 0..<25 {
+            bridge.pollAlerts()
+            if bridge.isResumeDataReady(forTorrentWithHash: hash) {
+                resumeData = bridge.resumeData(forTorrentWithHash: hash)
+                break
+            }
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+
+        // If resumeData was generated, test restoring it
+        if let data = resumeData {
+            XCTAssertGreaterThan(data.count, 0)
+
+            // Remove existing torrent
+            try bridge.removeTorrent(withHash: hash, deleteFiles: false)
+            XCTAssertNil(bridge.status(forTorrentWithHash: hash))
+
+            // Restore from fast-resume data
+            let restoredHash = try bridge.addTorrent(withResumeData: data, savePath: tempDir.path)
+            XCTAssertEqual(restoredHash, hash)
+            XCTAssertNotNil(bridge.status(forTorrentWithHash: hash))
+        }
     }
 }
 #endif

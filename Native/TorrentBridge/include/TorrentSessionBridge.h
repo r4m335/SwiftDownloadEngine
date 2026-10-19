@@ -141,6 +141,37 @@ NS_SWIFT_NAME(TorrentSessionBridge)
 /// Drains session alerts and updates internal status caches.
 - (void)pollAlerts NS_SWIFT_NAME(pollAlerts());
 
+// MARK: - Milestone 4: Fast-Resume & State Persistence
+
+/// Requests libtorrent to generate fast-resume data for a specific torrent.
+/// Note: Generation is asynchronous in libtorrent. Once ready, the resulting data
+/// can be queried via -resumeDataForTorrentWithHash:
+/// @param infoHash Lowercase hexadecimal info-hash of the target torrent.
+/// @param error Populated if the torrent is not found or request fails.
+/// @return YES if the resume data request was successfully dispatched.
+- (BOOL)requestResumeDataForTorrentWithHash:(NSString *)infoHash
+                                      error:(NSError * _Nullable * _Nullable)error NS_SWIFT_NAME(requestResumeData(forTorrentWithHash:));
+
+/// Checks whether fast-resume data has been generated and is ready for retrieval.
+- (BOOL)isResumeDataReadyForTorrentWithHash:(NSString *)infoHash NS_SWIFT_NAME(isResumeDataReady(forTorrentWithHash:));
+
+/// Returns the generated fast-resume binary bytes for a torrent if available.
+/// @param infoHash Lowercase hexadecimal info-hash of the target torrent.
+/// @return Fast-resume NSData or nil if not yet ready or failed.
+- (nullable NSData *)resumeDataForTorrentWithHash:(NSString *)infoHash NS_SWIFT_NAME(resumeData(forTorrentWithHash:));
+
+/// Returns any error string associated with the last resume-data generation attempt.
+- (nullable NSString *)resumeDataErrorForTorrentWithHash:(NSString *)infoHash NS_SWIFT_NAME(resumeDataError(forTorrentWithHash:));
+
+/// Adds a torrent to the session from persisted fast-resume data.
+/// @param resumeData Raw bencoded fast-resume bytes previously exported by libtorrent.
+/// @param savePath Destination directory (or nil to use path stored inside resume data).
+/// @param error Populated if resume data is corrupt, invalid, or addition fails.
+/// @return Lowercase hexadecimal info-hash of the restored torrent, or nil on failure.
+- (nullable NSString *)addTorrentWithResumeData:(NSData *)resumeData
+                                      savePath:(nullable NSString *)savePath
+                                         error:(NSError * _Nullable * _Nullable)error NS_SWIFT_NAME(addTorrent(withResumeData:savePath:));
+
 @end
 
 NS_ASSUME_NONNULL_END

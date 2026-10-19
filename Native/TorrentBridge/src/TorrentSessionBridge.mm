@@ -23,6 +23,8 @@
 #include <libtorrent/torrent_flags.hpp>
 #include <libtorrent/span.hpp>
 #include <libtorrent/info_hash.hpp>
+#include <libtorrent/write_resume_data.hpp>
+#include <libtorrent/read_resume_data.hpp>
 
 static std::string hexEncode(const uint8_t *bytes, size_t length) {
     static const char hexDigits[] = "0123456789abcdef";
@@ -85,6 +87,8 @@ static std::string infoHashToHex(const libtorrent::info_hash_t &ih) {
     NSUInteger _portEnd;
     std::map<std::string, libtorrent::torrent_handle> _torrents;
     std::map<std::string, NSString *> _torrentErrors;
+    std::map<std::string, std::vector<char>> _cachedResumeData;
+    std::map<std::string, NSString *> _resumeDataErrors;
 }
 @property (nonatomic, readwrite, copy) NSString *storagePath;
 @end
@@ -162,6 +166,8 @@ static std::string infoHashToHex(const libtorrent::info_hash_t &ih) {
     }
     _torrents.clear();
     _torrentErrors.clear();
+    _cachedResumeData.clear();
+    _resumeDataErrors.clear();
     auto proxy = _session->abort();
     _session.reset();
 }
@@ -195,6 +201,22 @@ static std::string infoHashToHex(const libtorrent::info_hash_t &ih) {
             std::string hash = infoHashToHex(te->handle.info_hashes());
             if (!hash.empty()) {
                 _torrentErrors[hash] = [NSString stringWithUTF8String:te->error.message().c_str()];
+            }
+        } else if (auto const *rda = libtorrent::alert_cast<libtorrent::save_resume_data_alert>(a)) {
+            std::string hash = infoHashToHex(rda->handle.info_hashes());
+            if (!hash.empty()) {
+                try {
+                    auto buf = libtorrent::write_resume_data_buf(rda->params);
+                    _cachedResumeData[hash] = std::move(buf);
+                    _resumeDataErrors.erase(hash);
+                } catch (const std::exception &ex) {
+                    _resumeDataErrors[hash] = [NSString stringWithUTF8String:ex.what()];
+                }
+            }
+        } else if (auto const *fa = libtorrent::alert_cast<libtorrent::save_resume_data_failed_alert>(a)) {
+            std::string hash = infoHashToHex(fa->handle.info_hashes());
+            if (!hash.empty()) {
+                _resumeDataErrors[hash] = [NSString stringWithUTF8String:fa->error.message().c_str()];
             }
         }
     }
@@ -554,6 +576,142 @@ static std::string infoHashToHex(const libtorrent::info_hash_t &ih) {
         }
     }
     return [list copy];
+}
+
+// MARK: - Milestone 4: Fast-Resume & State Persistence
+
+- (BOOL)requestResumeDataForTorrentWithHash:(NSString *)infoHash
+                                      error:(NSError * _Nullable * _Nullable)error {
+    std::lock_guard<std::mutex> lock(_sessionMutex);
+    if (!_session) {
+        if (error) {
+            *error = [NSError errorWithDomain:@"com.r4m335.TorrentSessionBridge"
+                                         code:2001
+                                     userInfo:@{NSLocalizedDescriptionKey: @"Session not running"}];
+        }
+        return NO;
+    }
+
+    std::string key = [infoHash.lowercaseString UTF8String];
+    auto it = _torrents.find(key);
+    if (it == _torrents.end() || !it->second.is_valid()) {
+        if (error) {
+            *error = [NSError errorWithDomain:@"com.r4m335.TorrentSessionBridge"
+                                         code:2002
+                                     userInfo:@{NSLocalizedDescriptionKey: @"Torrent not found"}];
+        }
+        return NO;
+    }
+
+    _cachedResumeData.erase(key);
+    _resumeDataErrors.erase(key);
+
+    try {
+        it->second.save_resume_data(libtorrent::torrent_handle::save_info_dict);
+        return YES;
+    } catch (const std::exception &ex) {
+        if (error) {
+            *error = [NSError errorWithDomain:@"com.r4m335.TorrentSessionBridge"
+                                         code:2007
+                                     userInfo:@{NSLocalizedDescriptionKey: [NSString stringWithUTF8String:ex.what()]}];
+        }
+        return NO;
+    }
+}
+
+- (BOOL)isResumeDataReadyForTorrentWithHash:(NSString *)infoHash {
+    std::lock_guard<std::mutex> lock(_sessionMutex);
+    [self processAlertsLocked];
+    std::string key = [infoHash.lowercaseString UTF8String];
+    return _cachedResumeData.find(key) != _cachedResumeData.end();
+}
+
+- (nullable NSData *)resumeDataForTorrentWithHash:(NSString *)infoHash {
+    std::lock_guard<std::mutex> lock(_sessionMutex);
+    [self processAlertsLocked];
+    std::string key = [infoHash.lowercaseString UTF8String];
+    auto it = _cachedResumeData.find(key);
+    if (it != _cachedResumeData.end() && !it->second.empty()) {
+        return [NSData dataWithBytes:it->second.data() length:it->second.size()];
+    }
+    return nil;
+}
+
+- (nullable NSString *)resumeDataErrorForTorrentWithHash:(NSString *)infoHash {
+    std::lock_guard<std::mutex> lock(_sessionMutex);
+    [self processAlertsLocked];
+    std::string key = [infoHash.lowercaseString UTF8String];
+    auto it = _resumeDataErrors.find(key);
+    if (it != _resumeDataErrors.end()) {
+        return it->second;
+    }
+    return nil;
+}
+
+- (nullable NSString *)addTorrentWithResumeData:(NSData *)resumeData
+                                      savePath:(nullable NSString *)savePath
+                                         error:(NSError * _Nullable * _Nullable)error {
+    std::lock_guard<std::mutex> lock(_sessionMutex);
+    if (!_session) {
+        if (error) {
+            *error = [NSError errorWithDomain:@"com.r4m335.TorrentSessionBridge"
+                                         code:2001
+                                     userInfo:@{NSLocalizedDescriptionKey: @"Session not running"}];
+        }
+        return nil;
+    }
+
+    if (!resumeData || resumeData.length == 0) {
+        if (error) {
+            *error = [NSError errorWithDomain:@"com.r4m335.TorrentSessionBridge"
+                                         code:2006
+                                     userInfo:@{NSLocalizedDescriptionKey: @"Empty or missing fast-resume data"}];
+        }
+        return nil;
+    }
+
+    try {
+        libtorrent::error_code ec;
+        libtorrent::span<char const> buffer(reinterpret_cast<const char *>(resumeData.bytes), resumeData.length);
+        libtorrent::add_torrent_params params = libtorrent::read_resume_data(buffer, ec);
+        if (ec) {
+            if (error) {
+                NSString *msg = [NSString stringWithUTF8String:ec.message().c_str()];
+                *error = [NSError errorWithDomain:@"com.r4m335.TorrentSessionBridge"
+                                             code:2006
+                                         userInfo:@{NSLocalizedDescriptionKey: [NSString stringWithFormat:@"Corrupt fast-resume data: %@", msg]}];
+            }
+            return nil;
+        }
+
+        NSString *targetSavePath = (savePath != nil && savePath.length > 0) ? savePath : _storagePath;
+        if (targetSavePath.length > 0) {
+            params.save_path = [targetSavePath UTF8String];
+        }
+
+        libtorrent::torrent_handle handle = _session->add_torrent(params, ec);
+        if (ec) {
+            if (error) {
+                NSString *msg = [NSString stringWithUTF8String:ec.message().c_str()];
+                *error = [NSError errorWithDomain:@"com.r4m335.TorrentSessionBridge"
+                                             code:2003
+                                         userInfo:@{NSLocalizedDescriptionKey: msg}];
+            }
+            return nil;
+        }
+
+        std::string hexHash = infoHashToHex(handle.info_hashes());
+        _torrents[hexHash] = handle;
+        return [NSString stringWithUTF8String:hexHash.c_str()];
+    } catch (const std::exception &ex) {
+        if (error) {
+            NSString *msg = [NSString stringWithUTF8String:ex.what()];
+            *error = [NSError errorWithDomain:@"com.r4m335.TorrentSessionBridge"
+                                         code:2005
+                                     userInfo:@{NSLocalizedDescriptionKey: msg}];
+        }
+        return nil;
+    }
 }
 
 - (void)dealloc {

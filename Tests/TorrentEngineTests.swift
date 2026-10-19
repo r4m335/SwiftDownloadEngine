@@ -5,9 +5,10 @@ import Foundation
 #if canImport(LibTorrent)
 import LibTorrent
 
-/// Milestone 2 & 3 Integration Tests.
+/// Milestone 2, 3 & 4 Integration Tests.
 /// Validates that `TorrentEngine` Swift actor facade interacts correctly with
-/// the underlying native libtorrent session lifecycle, magnet ingestion, and transfer controls.
+/// the underlying native libtorrent session lifecycle, magnet ingestion, transfer controls,
+/// persistence, fast-resume recovery, and queue scheduling.
 final class TorrentEngineTests: XCTestCase {
     func testTorrentEngineLifecycleAndStatus() async throws {
         let tempDir = FileManager.default.temporaryDirectory
@@ -114,6 +115,67 @@ final class TorrentEngineTests: XCTestCase {
         XCTAssertNil(afterRemove)
         let allAfterRemove = await engine.allTasks()
         XCTAssertEqual(allAfterRemove.count, 0)
+    }
+
+    func testTorrentEngineQueueAndPersistenceIntegration() async throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("TorrentEngineQueueTests_\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(at: tempDir)
+        }
+
+        let engine = TorrentEngine(
+            storageDirectoryURL: tempDir,
+            portStart: 6932,
+            portEnd: 6942,
+            maxConcurrentTorrents: 2
+        )
+
+        try await engine.start()
+
+        let m1 = "magnet:?xt=urn:btih:1111111111111111111111111111111111111111&dn=First"
+        let m2 = "magnet:?xt=urn:btih:2222222222222222222222222222222222222222&dn=Second"
+        let m3 = "magnet:?xt=urn:btih:3333333333333333333333333333333333333333&dn=Third"
+
+        _ = try await engine.addTorrent(magnetURI: m1, priority: .normal)
+        _ = try await engine.addTorrent(magnetURI: m2, priority: .high)
+        _ = try await engine.addTorrent(magnetURI: m3, priority: .low)
+
+        let snapshot = await engine.queueSnapshot()
+        XCTAssertNotNil(snapshot)
+        XCTAssertEqual(snapshot?.totalTorrents, 3)
+        XCTAssertEqual(snapshot?.activeCount, 2)
+        XCTAssertEqual(snapshot?.queuedCount, 1)
+
+        // Explicitly pause Second (hash 2222...)
+        try await engine.pause(infoHash: "2222222222222222222222222222222222222222")
+
+        // Third should have been promoted into the vacated slot!
+        let snapAfterPause = await engine.queueSnapshot()
+        XCTAssertEqual(snapAfterPause?.activeCount, 2)
+        XCTAssertEqual(snapAfterPause?.pausedCount, 1)
+
+        // Stop session safely with persistence
+        await engine.stop(timeoutSeconds: 2.0)
+
+        // Restart fresh engine with the same directory
+        let freshEngine = TorrentEngine(
+            storageDirectoryURL: tempDir,
+            portStart: 6932,
+            portEnd: 6942,
+            maxConcurrentTorrents: 2
+        )
+
+        try await freshEngine.start()
+        defer {
+            Task { await freshEngine.stop() }
+        }
+
+        let restoredSnap = await freshEngine.queueSnapshot()
+        XCTAssertNotNil(restoredSnap)
+        XCTAssertEqual(restoredSnap?.totalTorrents, 3)
+        XCTAssertEqual(restoredSnap?.pausedCount, 1, "Explicitly paused torrent must remain paused upon restoration")
     }
 }
 #endif

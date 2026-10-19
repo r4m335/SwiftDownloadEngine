@@ -194,6 +194,60 @@ jobs:
 
                   await m3Engine.stop()
                   print("--- Milestone 3 SUCCESS: Core Torrent Downloads & Controls Verified ---")
+
+                  print("--- Milestone 4 Verification Test: Persistence, Fast-Resume & Queue Recovery ---")
+                  let m4Dir = NSTemporaryDirectory() + "m4_test_" + UUID().uuidString
+                  try FileManager.default.createDirectory(atPath: m4Dir, withIntermediateDirectories: true)
+                  defer { try? FileManager.default.removeItem(atPath: m4Dir) }
+
+                  let m4Engine = TorrentEngine(
+                      storageDirectoryURL: URL(fileURLWithPath: m4Dir),
+                      portStart: 6943,
+                      portEnd: 6953,
+                      maxConcurrentTorrents: 2
+                  )
+                  try await m4Engine.start()
+
+                  let mag1 = "magnet:?xt=urn:btih:1111111111111111111111111111111111111111&dn=FirstTorrent"
+                  let mag2 = "magnet:?xt=urn:btih:2222222222222222222222222222222222222222&dn=SecondTorrent"
+                  let mag3 = "magnet:?xt=urn:btih:3333333333333333333333333333333333333333&dn=ThirdTorrent"
+
+                  _ = try await m4Engine.addTorrent(magnetURI: mag1, priority: .normal)
+                  _ = try await m4Engine.addTorrent(magnetURI: mag2, priority: .high)
+                  _ = try await m4Engine.addTorrent(magnetURI: mag3, priority: .low)
+
+                  let snap = await m4Engine.queueSnapshot()
+                  assert(snap?.totalTorrents == 3, "Total torrents should be 3")
+                  assert(snap?.activeCount == 2, "Active count should be 2 respecting concurrency limit")
+                  assert(snap?.queuedCount == 1, "Queued count should be 1")
+                  print("Queue concurrency enforced: active=2, queued=1")
+
+                  // Explicitly pause the second torrent
+                  try await m4Engine.pause(infoHash: "2222222222222222222222222222222222222222")
+                  let snapPaused = await m4Engine.queueSnapshot()
+                  assert(snapPaused?.pausedCount == 1, "Paused count should be 1")
+                  assert(snapPaused?.activeCount == 2, "Third torrent promoted into vacated active slot")
+                  print("Explicit pause and promotion verified!")
+
+                  // Stop engine with fast-resume generation and persistence
+                  await m4Engine.stop(timeoutSeconds: 2.0)
+                  print("TorrentEngine stopped cleanly with resume-data generation!")
+
+                  // Relaunch fresh engine on the same storage directory
+                  let freshEngine = TorrentEngine(
+                      storageDirectoryURL: URL(fileURLWithPath: m4Dir),
+                      portStart: 6943,
+                      portEnd: 6953,
+                      maxConcurrentTorrents: 2
+                  )
+                  try await freshEngine.start()
+                  let restoredSnap = await freshEngine.queueSnapshot()
+                  assert(restoredSnap?.totalTorrents == 3, "All 3 torrents must survive application restart")
+                  assert(restoredSnap?.pausedCount == 1, "Explicitly paused torrent must remain paused upon relaunch")
+                  print("Crash recovery & persistence verified: total=3, paused=1 preserved!")
+
+                  await freshEngine.stop()
+                  print("--- Milestone 4 SUCCESS: Persistence, Fast-Resume & Queue Recovery Verified ---")
               }
           }
           EOF
@@ -212,6 +266,8 @@ jobs:
             -Xlinker -framework -Xlinker Security \
             -Xlinker -framework -Xlinker SystemConfiguration \
             Engine/TorrentModels.swift \
+            Engine/TorrentPersistenceStore.swift \
+            Engine/TorrentQueueScheduler.swift \
             Engine/TorrentEngine.swift \
             test_session_lifecycle.swift \
             -o test_session_lifecycle_sim
