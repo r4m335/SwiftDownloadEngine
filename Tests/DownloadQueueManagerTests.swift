@@ -526,8 +526,8 @@ final class DownloadQueueManagerTests: XCTestCase {
     func test13_CancelOneActiveDownload() async throws {
         try await queueManager.setMaxConcurrentDownloads(1)
 
-        let size = 40 * 1024
-        server.register(path: "/ca_active.bin", data: makePayload(size: size, seed: 1), chunkDelayMs: 4)
+        let size = 200 * 1024
+        server.register(path: "/ca_active.bin", data: makePayload(size: size, seed: 1), chunkDelayMs: 15)
         server.register(path: "/ca_queued.bin", data: makePayload(size: 10 * 1024, seed: 2), chunkDelayMs: 0)
 
         let rActive = makeRequest(id: "ca-active", path: "/ca_active.bin")
@@ -537,7 +537,7 @@ final class DownloadQueueManagerTests: XCTestCase {
         try await queueManager.add(rQueued, priority: .normal)
 
         for _ in 0..<50 {
-            try await Task.sleep(nanoseconds: 20_000_000)
+            try await Task.sleep(nanoseconds: 10_000_000)
             if let item = await queueManager.item(for: "ca-active"), item.state == .downloading {
                 break
             }
@@ -787,22 +787,30 @@ final class DownloadQueueManagerTests: XCTestCase {
     func test20_ChangingConcurrencyWhileDownloadsAreActive() async throws {
         try await queueManager.setMaxConcurrentDownloads(1)
 
-        let size = 40 * 1024
+        let size = 200 * 1024
         for i in 1...4 {
-            server.register(path: "/chg_conc_\(i).bin", data: makePayload(size: size, seed: UInt8(i)), chunkDelayMs: 4)
+            server.register(path: "/chg_conc_\(i).bin", data: makePayload(size: size, seed: UInt8(i)), chunkDelayMs: 15)
         }
 
         let requests = (1...4).map { makeRequest(id: "chg-c-\($0)", path: "/chg_conc_\($0).bin") }
         try await queueManager.add(requests, priority: .normal)
 
         // Wait until download 1 is active
-        try await Task.sleep(nanoseconds: 30_000_000)
+        for _ in 0..<50 {
+            let snap = await queueManager.snapshot()
+            if snap.activeCount == 1 { break }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
         let initialSnap = await queueManager.snapshot()
         XCTAssertEqual(initialSnap.activeCount, 1)
 
         // Increase limit to 3 -> 2 additional downloads should start immediately
         try await queueManager.setMaxConcurrentDownloads(3)
-        try await Task.sleep(nanoseconds: 30_000_000)
+        for _ in 0..<50 {
+            let snap = await queueManager.snapshot()
+            if snap.activeCount == 3 { break }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
 
         let increasedSnap = await queueManager.snapshot()
         XCTAssertEqual(increasedSnap.activeCount, 3, "Increasing concurrency must immediately schedule queued items up to new limit")
