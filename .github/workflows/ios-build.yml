@@ -84,41 +84,77 @@ jobs:
           import Foundation
           import LibTorrent
 
-          print("--- Milestone 1 Verification Test ---")
-          let ver = TorrentSessionBridge.libtorrentVersion()
-          print("libtorrent version reported: \(ver)")
-          guard ver.hasPrefix("2.0.") else {
-              print("FAIL: Expected version prefix '2.0.', got '\(ver)'")
-              exit(1)
+          @main
+          struct TestRunner {
+              static func main() async throws {
+                  print("--- Milestone 1 Verification Test: Objective-C++ Bridge ---")
+                  let ver = TorrentSessionBridge.libtorrentVersion()
+                  print("libtorrent version reported: \(ver)")
+                  guard ver.hasPrefix("2.0.") else {
+                      print("FAIL: Expected version prefix '2.0.', got '\(ver)'")
+                      exit(1)
+                  }
+
+                  let tempDir = NSTemporaryDirectory() + "m1_test_" + UUID().uuidString
+                  try FileManager.default.createDirectory(atPath: tempDir, withIntermediateDirectories: true)
+                  defer { try? FileManager.default.removeItem(atPath: tempDir) }
+
+                  let bridge = TorrentSessionBridge(storagePath: tempDir, portStart: 6881, portEnd: 6891)
+                  print("Storage path: \(bridge.storagePath)")
+                  assert(!bridge.isListening, "Session should not be listening before start")
+                  assert(bridge.listenPort == 0, "Listen port should be 0 before start")
+
+                  do {
+                      try bridge.startSession()
+                      print("Session successfully started!")
+                  } catch {
+                      print("FAIL: Failed to start session: \(error)")
+                      exit(2)
+                  }
+
+                  print("isListening: \(bridge.isListening)")
+                  print("listenPort: \(bridge.listenPort)")
+                  assert(bridge.isListening, "Session should report isListening == true")
+                  assert(bridge.listenPort > 0, "Listen port should be non-zero")
+
+                  bridge.stopSession()
+                  print("Session stopped cleanly!")
+                  assert(!bridge.isListening, "Session should report isListening == false after stop")
+                  print("--- Milestone 1 SUCCESS: Native Build & Session Lifecycle Verified ---")
+
+                  print("--- Milestone 2 Verification Test: TorrentEngine Actor Facade ---")
+                  let engineDir = NSTemporaryDirectory() + "m2_test_" + UUID().uuidString
+                  try FileManager.default.createDirectory(atPath: engineDir, withIntermediateDirectories: true)
+                  defer { try? FileManager.default.removeItem(atPath: engineDir) }
+
+                  let engine = TorrentEngine(storageDirectoryURL: URL(fileURLWithPath: engineDir), portStart: 6882, portEnd: 6892)
+                  var status = await engine.status()
+                  assert(!status.isRunning, "Engine should report isRunning == false initially")
+                  assert(!status.isListening, "Engine should report isListening == false initially")
+                  assert(status.listenPort == 0, "Engine listenPort should be 0 initially")
+                  assert(status.libtorrentVersion.hasPrefix("2.0."), "Engine status should have libtorrent version")
+
+                  try await engine.start()
+                  print("TorrentEngine actor started successfully!")
+                  status = await engine.status()
+                  assert(status.isRunning, "Engine should report isRunning == true")
+                  assert(status.isListening, "Engine should report isListening == true")
+                  assert(status.listenPort > 0, "Engine listenPort should be non-zero")
+                  print("TorrentEngine listening on port: \(status.listenPort)")
+
+                  // Idempotent start call
+                  try await engine.start()
+                  status = await engine.status()
+                  assert(status.isRunning, "Engine should remain running on repeated start")
+
+                  await engine.stop()
+                  print("TorrentEngine actor stopped cleanly!")
+                  status = await engine.status()
+                  assert(!status.isRunning, "Engine should report isRunning == false after stop")
+                  assert(!status.isListening, "Engine should report isListening == false after stop")
+                  print("--- Milestone 2 SUCCESS: TorrentEngine Actor Lifecycle Verified ---")
+              }
           }
-
-          let tempDir = NSTemporaryDirectory() + "m1_test_" + UUID().uuidString
-          try FileManager.default.createDirectory(atPath: tempDir, withIntermediateDirectories: true)
-          defer { try? FileManager.default.removeItem(atPath: tempDir) }
-
-          let bridge = TorrentSessionBridge(storagePath: tempDir, portStart: 6881, portEnd: 6891)
-          print("Storage path: \(bridge.storagePath)")
-          assert(!bridge.isListening, "Session should not be listening before start")
-          assert(bridge.listenPort == 0, "Listen port should be 0 before start")
-
-          do {
-              try bridge.startSession()
-              print("Session successfully started!")
-          } catch {
-              print("FAIL: Failed to start session: \(error)")
-              exit(2)
-          }
-
-          print("Session successfully started!")
-          print("isListening: \(bridge.isListening)")
-          print("listenPort: \(bridge.listenPort)")
-          assert(bridge.isListening, "Session should report isListening == true")
-          assert(bridge.listenPort > 0, "Listen port should be non-zero")
-
-          bridge.stopSession()
-          print("Session stopped cleanly!")
-          assert(!bridge.isListening, "Session should report isListening == false after stop")
-          print("--- Milestone 1 SUCCESS: Native Build & Session Lifecycle Verified ---")
           EOF
 
           SIM_HEADERS="$(pwd)/Frameworks/LibTorrent.xcframework/ios-arm64_x86_64-simulator/Headers"
@@ -127,12 +163,15 @@ jobs:
           xcrun --sdk iphonesimulator swiftc \
             -target arm64-apple-ios15.0-simulator \
             -sdk "$SIM_SDK" \
+            -parse-as-library \
             -I "$SIM_HEADERS" \
             "$SIM_ARCHIVE" \
             -Xlinker -lc++ \
             -Xlinker -liconv \
             -Xlinker -framework -Xlinker Security \
             -Xlinker -framework -Xlinker SystemConfiguration \
+            Engine/TorrentModels.swift \
+            Engine/TorrentEngine.swift \
             test_session_lifecycle.swift \
             -o test_session_lifecycle_sim
 
@@ -152,6 +191,7 @@ jobs:
   build-simulator:
     name: iOS Simulator Build
     runs-on: macos-14
+    needs: [milestone1-torrent-build]
 
     steps:
       - name: Checkout Repository
@@ -166,6 +206,17 @@ jobs:
           else
             sudo xcode-select -s /Applications/Xcode.app
           fi
+
+      - name: Download LibTorrent XCFramework
+        uses: actions/download-artifact@v4
+        with:
+          name: LibTorrent-iOS-XCFramework
+          path: Frameworks/LibTorrent.xcframework
+
+      - name: Verify Framework Presence
+        run: |
+          ls -la Frameworks/LibTorrent.xcframework
+          lipo -info Frameworks/LibTorrent.xcframework/ios-arm64_x86_64-simulator/*.a
 
       - name: Build iOS Application Target (Simulator)
         run: |
@@ -219,6 +270,7 @@ jobs:
   build-device:
     name: iOS Device Build
     runs-on: macos-14
+    needs: [milestone1-torrent-build]
 
     steps:
       - name: Checkout Repository
@@ -233,6 +285,17 @@ jobs:
           else
             sudo xcode-select -s /Applications/Xcode.app
           fi
+
+      - name: Download LibTorrent XCFramework
+        uses: actions/download-artifact@v4
+        with:
+          name: LibTorrent-iOS-XCFramework
+          path: Frameworks/LibTorrent.xcframework
+
+      - name: Verify Framework Presence
+        run: |
+          ls -la Frameworks/LibTorrent.xcframework
+          lipo -info Frameworks/LibTorrent.xcframework/ios-arm64/*.a
 
       - name: Build iOS Application Target (Device - Unsigned)
         run: |
