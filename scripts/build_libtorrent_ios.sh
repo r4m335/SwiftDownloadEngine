@@ -36,12 +36,13 @@ BOOST_INCLUDE="$BOOST_PREFIX/include"
 echo "==> Found Boost headers at: $BOOST_INCLUDE"
 
 # 2. Fetch libtorrent source
-if [ ! -d "$SRC_DIR/.git" ]; then
-    echo "==> Cloning libtorrent ($LIBTORRENT_TAG)..."
+if [ ! -d "$SRC_DIR/.git" ] || [ ! -f "$SRC_DIR/deps/try_signal/try_signal.cpp" ]; then
+    echo "==> Cloning libtorrent ($LIBTORRENT_TAG) with submodules..."
     rm -rf "$SRC_DIR"
-    git clone --depth 1 --branch "$LIBTORRENT_TAG" https://github.com/arvidn/libtorrent.git "$SRC_DIR"
+    git clone --depth 1 --recurse-submodules --shallow-submodules --branch "$LIBTORRENT_TAG" https://github.com/arvidn/libtorrent.git "$SRC_DIR"
 else
     echo "==> Using existing libtorrent source in $SRC_DIR"
+    git -C "$SRC_DIR" submodule update --init --recursive
 fi
 
 # 3. Generate Xcode multi-target project via CMake
@@ -60,6 +61,7 @@ cmake -B "$CMAKE_BUILD" \
     -DBoost_INCLUDE_DIR="$BOOST_INCLUDE" \
     -DCMAKE_INCLUDE_PATH="$BOOST_INCLUDE" \
     -DCMAKE_FIND_ROOT_PATH_MODE_INCLUDE=BOTH \
+    -DBUILD_SHARED_LIBS=OFF \
     -Dbuild_tests=OFF \
     -Dbuild_examples=OFF \
     -Dbuild_tools=OFF \
