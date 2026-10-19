@@ -273,15 +273,17 @@ jobs:
                   try await m6Engine.setFilePriority(0, priority: .doNotDownload, for: m6Task.infoHash)
                   try await m6Engine.setFilePriorities([.doNotDownload, .high, .normal], for: m6Task.infoHash)
                   let taskWithFiles = await m6Engine.task(for: m6Task.infoHash)
-                  assert(taskWithFiles?.filePriorities == [.doNotDownload, .high, .normal], "File priorities must match updated priorities")
+                  assert(taskWithFiles?.filePriorities?[0] == .doNotDownload, "File 0 priority must be doNotDownload")
+                  assert(taskWithFiles?.filePriorities?[1] == .high, "File 1 priority must be high")
+                  assert(taskWithFiles?.filePriorities?[2] == .normal, "File 2 priority must be normal")
                   print("Per-file priority selection verified!")
 
                   // Verify seeding controls
                   let customSeeding = SeedingPreference(mode: .ratio, targetRatio: 2.5, targetDurationSeconds: 7200)
                   try await m6Engine.setSeedingPreference(customSeeding, for: m6Task.infoHash)
                   let taskWithSeeding = await m6Engine.task(for: m6Task.infoHash)
-                  assert(taskWithSeeding?.seedingPreference.mode == .ratio, "Seeding mode must be ratio")
-                  assert(taskWithSeeding?.seedingPreference.targetRatio == 2.5, "Target ratio must be 2.5")
+                  assert(taskWithSeeding?.seedingPreference?.mode == .ratio, "Seeding mode must be ratio")
+                  assert(taskWithSeeding?.seedingPreference?.targetRatio == 2.5, "Target ratio must be 2.5")
                   print("Seeding preference configuration verified!")
 
                   // Stop and restart to verify persistence
@@ -295,9 +297,11 @@ jobs:
                   try await m6RestartEngine.start()
                   let restoredM6Task = await m6RestartEngine.task(for: m6Task.infoHash)
                   assert(restoredM6Task != nil, "Task must be restored upon restart")
-                  assert(restoredM6Task?.filePriorities == [.doNotDownload, .high, .normal], "File priorities must persist across restarts")
-                  assert(restoredM6Task?.seedingPreference.mode == .ratio, "Seeding preference must persist across restarts")
-                  assert(restoredM6Task?.seedingPreference.targetRatio == 2.5, "Target ratio must persist across restarts")
+                  assert(restoredM6Task?.filePriorities?[0] == .doNotDownload, "File priorities must persist across restarts")
+                  assert(restoredM6Task?.filePriorities?[1] == .high, "File priorities must persist across restarts")
+                  assert(restoredM6Task?.filePriorities?[2] == .normal, "File priorities must persist across restarts")
+                  assert(restoredM6Task?.seedingPreference?.mode == .ratio, "Seeding preference must persist across restarts")
+                  assert(restoredM6Task?.seedingPreference?.targetRatio == 2.5, "Target ratio must persist across restarts")
                   print("Milestone 6 persistence and restoration verified!")
 
                   await m6RestartEngine.stop()

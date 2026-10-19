@@ -246,11 +246,18 @@ public struct DownloadDetailsView: View {
                     .padding(.top, 2)
 
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(file.name)
-                        .font(.subheadline)
-                        .lineLimit(2)
-                        .strikethrough(file.priority == .doNotDownload)
-                        .foregroundColor(file.priority == .doNotDownload ? .secondary : .primary)
+                    if file.priority == .doNotDownload {
+                        Text(file.name)
+                            .font(.subheadline)
+                            .lineLimit(2)
+                            .strikethrough()
+                            .foregroundColor(.secondary)
+                    } else {
+                        Text(file.name)
+                            .font(.subheadline)
+                            .lineLimit(2)
+                            .foregroundColor(.primary)
+                    }
 
                     HStack(spacing: 8) {
                         Text(UIFormatters.formatBytes(file.size))
