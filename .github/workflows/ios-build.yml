@@ -34,16 +34,28 @@ jobs:
 
       - name: Build iOS Application Target (Simulator)
         run: |
+          SIM_NAME=$(xcrun simctl list devices available | grep -E "iPhone 15|iPhone 14|iPhone 16|iPhone" | head -n 1 | sed -E 's/^[[:space:]]+//; s/ \([A-F0-9-]+\)//')
+          echo "Selected simulator device: ${SIM_NAME:-iPhone 15}"
           xcodebuild \
             -project SwiftDownloadEngine.xcodeproj \
             -scheme SwiftDownloadEngine \
-            -destination 'generic/platform=iOS Simulator' \
+            -destination "platform=iOS Simulator,name=${SIM_NAME:-iPhone 15}" \
             -configuration Debug \
             -derivedDataPath build \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
             build
+
+      - name: Dump Diagnostic Reports on Failure
+        if: failure()
+        run: |
+          for f in ~/Library/Logs/DiagnosticReports/*; do
+            if [ -f "$f" ]; then
+              echo "=== Diagnostic Report: $f ==="
+              head -n 60 "$f"
+            fi
+          done
 
       - name: Package Simulator App Bundle
         run: |
