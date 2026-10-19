@@ -188,7 +188,8 @@ jobs:
                   try await m3Engine.remove(infoHash: task.infoHash, deleteFiles: false)
                   let afterRemove = await m3Engine.task(for: task.infoHash)
                   assert(afterRemove == nil, "Task should be nil after removal")
-                  assert(await m3Engine.allTasks().count == 0, "allTasks should be empty after removal")
+                  let remainingTasks = await m3Engine.allTasks()
+                  assert(remainingTasks.count == 0, "allTasks should be empty after removal")
                   print("Torrent transfer removed successfully!")
 
                   await m3Engine.stop()
