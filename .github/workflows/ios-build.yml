@@ -127,7 +127,7 @@ jobs:
                   try FileManager.default.createDirectory(atPath: engineDir, withIntermediateDirectories: true)
                   defer { try? FileManager.default.removeItem(atPath: engineDir) }
 
-                  let engine = TorrentEngine(storageDirectoryURL: URL(fileURLWithPath: engineDir), portStart: 6882, portEnd: 6892)
+                  let engine = try TorrentEngine(storageDirectoryURL: URL(fileURLWithPath: engineDir), portStart: 6882, portEnd: 6892)
                   var status = await engine.status()
                   assert(!status.isRunning, "Engine should report isRunning == false initially")
                   assert(!status.isListening, "Engine should report isListening == false initially")
@@ -159,7 +159,7 @@ jobs:
                   try FileManager.default.createDirectory(atPath: m3Dir, withIntermediateDirectories: true)
                   defer { try? FileManager.default.removeItem(atPath: m3Dir) }
 
-                  let m3Engine = TorrentEngine(storageDirectoryURL: URL(fileURLWithPath: m3Dir), portStart: 6883, portEnd: 6893)
+                  let m3Engine = try TorrentEngine(storageDirectoryURL: URL(fileURLWithPath: m3Dir), portStart: 6883, portEnd: 6893)
                   try await m3Engine.start()
 
                   let magnet = "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567&dn=UbuntuDemo"
