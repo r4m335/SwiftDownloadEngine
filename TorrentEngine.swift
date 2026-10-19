@@ -19,8 +19,8 @@ public actor TorrentEngine {
     ) {
         self.bridge = TorrentSessionBridge(
             storagePath: storageDirectoryURL.path,
-            portStart: portStart,
-            portEnd: portEnd
+            portStart: Int(portStart),
+            portEnd: Int(portEnd)
         )
     }
 
@@ -43,7 +43,7 @@ public actor TorrentEngine {
         TorrentSessionStatus(
             isRunning: isRunning,
             isListening: bridge.isListening,
-            listenPort: bridge.listenPort,
+            listenPort: UInt(max(0, bridge.listenPort)),
             libtorrentVersion: TorrentSessionBridge.libtorrentVersion()
         )
     }
