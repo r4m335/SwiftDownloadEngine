@@ -654,22 +654,26 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
         }
     }
 
-    public func updateTorrentSettings(maxConcurrent: Int, defaultPriority: TorrentPriority) async throws {
-        guard maxConcurrent >= 1 else {
+    public func updateTorrentSettings(maxConcurrentTorrents: Int, defaultPriority: TorrentPriority) async throws {
+        guard maxConcurrentTorrents >= 1 else {
             let error = "Max concurrent torrents must be at least 1."
             self.errorMessage = error
             throw DownloadCoordinatorError.invalidRequest(reason: error)
         }
 
-        self.maxConcurrentTorrents = maxConcurrent
+        self.maxConcurrentTorrents = maxConcurrentTorrents
         self.defaultTorrentPriority = defaultPriority
 
-        userDefaults.set(maxConcurrent, forKey: SettingsKeys.maxConcurrentTorrents)
+        userDefaults.set(maxConcurrentTorrents, forKey: SettingsKeys.maxConcurrentTorrents)
         userDefaults.set(defaultPriority.rawValue, forKey: SettingsKeys.defaultTorrentPriority)
 
         if let te = torrentEngine {
-            try? await te.setMaxConcurrentTorrents(maxConcurrent)
+            try? await te.setMaxConcurrentTorrents(maxConcurrentTorrents)
         }
+    }
+
+    public func updateTorrentSettings(maxConcurrent: Int, defaultPriority: TorrentPriority) async throws {
+        try await updateTorrentSettings(maxConcurrentTorrents: maxConcurrent, defaultPriority: defaultPriority)
     }
 
     // MARK: - Unified Dispatch Actions

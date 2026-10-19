@@ -45,6 +45,10 @@ public enum UnifiedTransferState: Sendable, Equatable, Hashable {
         }
     }
 
+    public var displayName: String {
+        displayText
+    }
+
     public var badgeText: String {
         switch self {
         case .queued: return "Queued"

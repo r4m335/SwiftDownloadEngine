@@ -175,7 +175,7 @@ public struct SettingsView: View {
                 maxGlobalRequests: maxGlobalRequests,
                 globalBandwidthLimit: limit
             )
-            await viewModel.updateTorrentSettings(
+            try? await viewModel.updateTorrentSettings(
                 maxConcurrentTorrents: maxConcurrentTorrents,
                 defaultPriority: defaultTorrentPriority
             )
