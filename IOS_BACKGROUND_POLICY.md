@@ -31,7 +31,8 @@ When the app returns to the foreground (`sceneWillEnterForeground` or `applicati
 
 ### C. HTTP Engine Lifecycle Status
 - **Current Foreground / In-Process Transport:** HTTP downloads currently execute in-process via `URLSession.shared` using concurrent chunked streaming (`SegmentDownloader`). These transfers pause when the app is suspended by the operating system and resume from their recorded byte offsets upon foregrounding.
-- **System-Managed Background HTTP Transfers:** True out-of-process background HTTP transfers via `URLSessionConfiguration.background(withIdentifier:)` require a dedicated background session manager, custom `URLSessionDownloadDelegate`, persistent task-to-segment state mapping, and application lifecycle reconnection (`handleEventsForBackgroundURLSession`). This functionality is **not implemented** in the current codebase and remains a dedicated future milestone.
+- **System-Managed Background HTTP Transport (Milestone 6A Implemented):** The background transport foundation is implemented behind a separate interface (`BackgroundDownloadSessionManager`). It provides `URLSessionConfiguration.background(withIdentifier:)`, persistent task-to-segment mappings (`BackgroundDownloadTaskMappingStore`), HTTP 206/Content-Range response validation (`BackgroundResponseValidator`), crash-safe atomic part-file relocation (`BackgroundDownloadFileHandler`), and launch reconciliation.
+- **Download Coordinator Integration (Milestone 6B Pending):** Production downloads currently continue using the foreground transport. Routing eligible HTTP downloads through the background transport will be performed in Milestone 6B.
 
 ---
 
@@ -40,7 +41,7 @@ When the app returns to the foreground (`sceneWillEnterForeground` or `applicati
 | Mechanism | Feasibility & Applicability | SwiftDownloadEngine Status | Apple Review Compliance |
 |:---|:---|:---|:---|
 | **Bounded Execution (`beginBackgroundTask`)** | Torrent & HTTP: Safe flush & state persistence only (up to ~30s) | **Implemented & Verified** | 100% Compliant |
-| **`URLSession` Background Daemon** | HTTP only: Incompatible with BitTorrent raw socket swarms | **Unimplemented Milestone** (Planned for future HTTP background milestone) | Compliant when implemented |
+| **`URLSession` Background Daemon** | HTTP only: Incompatible with BitTorrent raw socket swarms | **Milestone 6A Foundation Implemented** (Milestone 6B coordinator routing pending) | Compliant |
 | **`BGAppRefreshTask` / `BGProcessingTask`** | Low: Non-deterministic batch maintenance when charging | Future exploration for queue maintenance | Fully Compliant |
 | **Silent Audio / Location Workaround** | Prohibited for download managers | **Rejected & Excluded** | Violates Guideline 2.5.4 |
 
@@ -52,4 +53,5 @@ When the app returns to the foreground (`sceneWillEnterForeground` or `applicati
 - [x] Verified bounded background execution is used exclusively for state persistence (fast-resume & manifests).
 - [x] Verified corrupt fast-resume data falls back cleanly to storage verification without engine crashes.
 - [x] Confirmed zero lost piece data or corrupted file state after simulated app suspension and process relaunch.
-- [x] Documented honestly that system-managed background HTTP downloading is a separate, unimplemented milestone.
+- [x] Implemented Milestone 6A: Background HTTP session manager, persistent task mapping store, response validation, crash-safe part handling, and task reconciliation.
+- [ ] Milestone 6B: Download coordinator integration to route eligible production HTTP downloads through background transport.
