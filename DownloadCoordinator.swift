@@ -23,6 +23,7 @@ public struct DownloadRequest: Sendable, Equatable, Codable {
     public var maxConcurrentRequests: Int?
     public var speedLimitBytesPerSecond: Int64?
     public var resumePolicy: ResumeIntegrityPolicy
+    public var transportPolicy: HTTPTransportPolicy
 
     public init(
         id: String = UUID().uuidString,
@@ -37,7 +38,8 @@ public struct DownloadRequest: Sendable, Equatable, Codable {
         expectedSHA256: String? = nil,
         maxConcurrentRequests: Int? = nil,
         speedLimitBytesPerSecond: Int64? = nil,
-        resumePolicy: ResumeIntegrityPolicy = .compatibility
+        resumePolicy: ResumeIntegrityPolicy = .compatibility,
+        transportPolicy: HTTPTransportPolicy = .foreground
     ) {
         self.id = id
         self.url = url
@@ -52,6 +54,29 @@ public struct DownloadRequest: Sendable, Equatable, Codable {
         self.maxConcurrentRequests = maxConcurrentRequests
         self.speedLimitBytesPerSecond = speedLimitBytesPerSecond
         self.resumePolicy = resumePolicy
+        self.transportPolicy = transportPolicy
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id, url, destinationURL, headers, configuredThreadCount, advancedMode, storageMode, reserveDiskBytes, retryCount, expectedSHA256, maxConcurrentRequests, speedLimitBytesPerSecond, resumePolicy, transportPolicy
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        url = try container.decode(URL.self, forKey: .url)
+        destinationURL = try container.decode(URL.self, forKey: .destinationURL)
+        headers = try container.decodeIfPresent([String: String].self, forKey: .headers) ?? [:]
+        configuredThreadCount = try container.decodeIfPresent(Int.self, forKey: .configuredThreadCount) ?? 10
+        advancedMode = try container.decodeIfPresent(Bool.self, forKey: .advancedMode) ?? false
+        storageMode = try container.decodeIfPresent(DownloadStorageMode.self, forKey: .storageMode) ?? .directSeek
+        reserveDiskBytes = try container.decodeIfPresent(Int64.self, forKey: .reserveDiskBytes) ?? 64 * 1024 * 1024
+        retryCount = try container.decodeIfPresent(Int.self, forKey: .retryCount) ?? 2
+        expectedSHA256 = try container.decodeIfPresent(String.self, forKey: .expectedSHA256)
+        maxConcurrentRequests = try container.decodeIfPresent(Int.self, forKey: .maxConcurrentRequests)
+        speedLimitBytesPerSecond = try container.decodeIfPresent(Int64.self, forKey: .speedLimitBytesPerSecond)
+        resumePolicy = try container.decodeIfPresent(ResumeIntegrityPolicy.self, forKey: .resumePolicy) ?? .compatibility
+        transportPolicy = try container.decodeIfPresent(HTTPTransportPolicy.self, forKey: .transportPolicy) ?? .foreground
     }
 }
 
@@ -221,17 +246,30 @@ public actor DownloadCoordinator {
     private var activeTasks: [String: Task<Void, Error>] = [:]
     private var progressByID: [String: CoordinatorProgress] = [:]
     private var pauseRequested: Set<String> = []
+    private var backgroundSessionManager: BackgroundDownloadSessionManager?
 
     public init(
         session: URLSession = .shared,
         persistenceStore: DownloadPersistenceStore? = nil,
         requestBudget: SharedRequestBudget? = nil,
-        globalBandwidthLimiter: BandwidthLimiter? = nil
+        globalBandwidthLimiter: BandwidthLimiter? = nil,
+        backgroundSessionManager: BackgroundDownloadSessionManager? = nil
     ) throws {
         self.session = session
         self.persistenceStore = try persistenceStore ?? DownloadPersistenceStore()
         self.requestBudget = requestBudget ?? SharedRequestBudget(maxGlobalRequests: 12)
         self.globalBandwidthLimiter = globalBandwidthLimiter ?? BandwidthLimiter(bytesPerSecond: nil)
+        self.backgroundSessionManager = backgroundSessionManager
+    }
+
+    /// Sets or updates the associated background session manager.
+    public func setBackgroundSessionManager(_ manager: BackgroundDownloadSessionManager) {
+        self.backgroundSessionManager = manager
+    }
+
+    /// Returns the associated background session manager if configured.
+    public func getBackgroundSessionManager() -> BackgroundDownloadSessionManager? {
+        self.backgroundSessionManager
     }
 
     /// Dynamically updates the global bandwidth limit.
@@ -309,6 +347,7 @@ public actor DownloadCoordinator {
     public func pause(id: String) async throws {
         pauseRequested.insert(id)
         await requestBudget.cancelWaiters(for: id)
+        await backgroundSessionManager?.cancelTasks(for: id)
 
         guard let task = activeTasks[id] else {
             // If task is not actively running, update persisted state only if not already completed
@@ -364,6 +403,7 @@ public actor DownloadCoordinator {
     /// Cancels an active download, updating persistence and optionally deleting the partial file.
     public func cancel(id: String, deleteDestinationFile: Bool = false) async throws {
         await requestBudget.cancelWaiters(for: id)
+        await backgroundSessionManager?.cancelTasks(for: id)
 
         let task = activeTasks[id]
         task?.cancel()
@@ -393,6 +433,12 @@ public actor DownloadCoordinator {
         if deleteDestinationFile {
             if let record = try? await persistenceStore.fetch(tag: id) {
                 _ = try? FileManager.default.removeItem(at: record.destinationURL)
+                if let bgManager = backgroundSessionManager {
+                    for seg in record.segments {
+                        let part = bgManager.partFileURL(downloadID: id, segmentID: seg.id)
+                        _ = try? FileManager.default.removeItem(at: part)
+                    }
+                }
             }
             _ = try? await persistenceStore.delete(tag: id)
         }
@@ -564,39 +610,59 @@ public actor DownloadCoordinator {
                 )
             }
 
-            // Step 4: Dispatch strategy based on server capabilities
-            if probeResult.supportsRange, let totalSize = probeResult.totalSize, totalSize > 0 {
-                do {
-                    try await runMultiSegmentDownload(
+            // Step 4: Dispatch strategy based on server capabilities and transport policy
+            if request.transportPolicy == .background {
+                if probeResult.supportsRange, let totalSize = probeResult.totalSize, totalSize > 0 {
+                    try await runMultiSegmentBackgroundDownload(
                         request: request,
                         probeResult: probeResult,
                         existingRecord: isResume ? record : nil,
                         progress: handler
                     )
-                } catch {
-                    if Self.isRangeIgnored(error) {
-                        if isResume {
-                            throw DownloadCoordinatorError.cannotResume(
-                                reason: "Resume unavailable: This server doesn't support reliable download resumption. Restarting the download may be required."
-                            )
-                        }
-                        // Safe fallback for fresh downloads: Server returned 200 after ranged request
-                        try await runSingleStreamFallback(
-                            request: request,
-                            probeResult: probeResult,
-                            progress: handler
-                        )
-                    } else {
-                        throw error
-                    }
+                } else {
+                    // Ranged background download unsupported (server ignores range or indeterminate length)
+                    // Fall back cleanly to foreground single-stream transport as per Milestone 6B Requirement 4
+                    print("[DownloadCoordinator] Server does not support byte ranges for \(request.url); falling back to foreground single-stream transport.")
+                    try await runSingleStreamDownload(
+                        request: request,
+                        probeResult: probeResult,
+                        progress: handler
+                    )
                 }
             } else {
-                // Linear single-stream download (ranges unsupported or indeterminate length)
-                try await runSingleStreamDownload(
-                    request: request,
-                    probeResult: probeResult,
-                    progress: handler
-                )
+                if probeResult.supportsRange, let totalSize = probeResult.totalSize, totalSize > 0 {
+                    do {
+                        try await runMultiSegmentDownload(
+                            request: request,
+                            probeResult: probeResult,
+                            existingRecord: isResume ? record : nil,
+                            progress: handler
+                        )
+                    } catch {
+                        if Self.isRangeIgnored(error) {
+                            if isResume {
+                                throw DownloadCoordinatorError.cannotResume(
+                                    reason: "Resume unavailable: This server doesn't support reliable download resumption. Restarting the download may be required."
+                                )
+                            }
+                            // Safe fallback for fresh downloads: Server returned 200 after ranged request
+                            try await runSingleStreamFallback(
+                                request: request,
+                                probeResult: probeResult,
+                                progress: handler
+                            )
+                        } else {
+                            throw error
+                        }
+                    }
+                } else {
+                    // Linear single-stream download (ranges unsupported or indeterminate length)
+                    try await runSingleStreamDownload(
+                        request: request,
+                        probeResult: probeResult,
+                        progress: handler
+                    )
+                }
             }
         } catch is CancellationError {
             throw CancellationError()
@@ -1222,6 +1288,462 @@ public actor DownloadCoordinator {
             }
             throw error
         }
+    }
+
+    // MARK: - Multi-Segment Background Download
+
+    private enum BackgroundEvent: Sendable {
+        case progress(segmentID: Int, completedBytes: Int64, totalBytes: Int64)
+        case completed(segmentID: Int, partURL: URL)
+        case failed(segmentID: Int, reason: String)
+    }
+
+    private func runMultiSegmentBackgroundDownload(
+        request: DownloadRequest,
+        probeResult: HTTPRangeProbeResult,
+        existingRecord: DownloadRecord?,
+        progress handler: ProgressHandler?
+    ) async throws {
+        guard let totalSize = probeResult.totalSize, totalSize > 0 else {
+            throw DownloadCoordinatorError.invalidRequest(reason: "Invalid file size for ranged background download")
+        }
+
+        // 1. Allocate segments or restore existing boundaries
+        let segments: [DownloadSegment]
+        var initialCompletedMap: [Int: Int64] = [:]
+
+        if let existingRecord, !existingRecord.segments.isEmpty {
+            segments = existingRecord.segments.map { $0.toDownloadSegment() }
+            for seg in existingRecord.segments {
+                initialCompletedMap[seg.id] = seg.completedBytes
+            }
+        } else {
+            segments = try SegmentAllocator.makeSegments(
+                totalSize: totalSize,
+                configuredThreadCount: request.configuredThreadCount,
+                advancedMode: request.advancedMode
+            )
+        }
+
+        try Self.validateSegmentLayout(segments, totalSize: totalSize)
+
+        // Ensure background session manager is available
+        guard let bgManager = self.backgroundSessionManager else {
+            print("[DownloadCoordinator] Notice: BackgroundDownloadSessionManager unavailable, falling back to foreground transport.")
+            try await runMultiSegmentDownload(
+                request: request,
+                probeResult: probeResult,
+                existingRecord: existingRecord,
+                progress: handler
+            )
+            return
+        }
+
+        // 2. Reconcile existing part files on disk for safe resumption
+        var completedSegmentsSet = Set<Int>()
+        for seg in segments {
+            let partURL = bgManager.partFileURL(downloadID: request.id, segmentID: seg.id)
+            if FileManager.default.fileExists(atPath: partURL.path),
+               let attrs = try? FileManager.default.attributesOfItem(atPath: partURL.path),
+               let size = attrs[.size] as? Int64,
+               size == seg.length {
+                // Segment part file exists on disk and is 100% complete
+                initialCompletedMap[seg.id] = seg.length
+                completedSegmentsSet.insert(seg.id)
+            } else {
+                // Segment is incomplete: reset completedBytes to 0 so fresh/resumed task downloads full segment
+                initialCompletedMap[seg.id] = 0
+                if FileManager.default.fileExists(atPath: partURL.path) {
+                    try? FileManager.default.removeItem(at: partURL)
+                }
+            }
+        }
+
+        // 3. Prepare persistent record with .partFiles mode and .background transportPolicy
+        let segmentRecords = segments.map { segment in
+            SegmentRecord(segment: segment, completedBytes: initialCompletedMap[segment.id] ?? 0)
+        }
+        let currentRecord = DownloadRecord(
+            id: request.id,
+            originalURL: request.url,
+            resolvedURL: probeResult.finalURL,
+            destinationURL: request.destinationURL,
+            totalSize: totalSize,
+            state: .downloading,
+            storageMode: .partFiles,
+            transportPolicy: .background,
+            eTag: probeResult.eTag,
+            lastModified: probeResult.lastModified,
+            suggestedFilename: probeResult.suggestedFilename,
+            mimeType: probeResult.mimeType,
+            headers: request.headers,
+            segments: segmentRecords
+        )
+        try await persistenceStore.save(currentRecord)
+
+        // 4. Progress tracker
+        let progressAccumulator = ProgressAccumulator(
+            segments: segments,
+            initialCompletedBytes: initialCompletedMap
+        )
+        let initialSnapshot = await progressAccumulator.snapshot()
+
+        let speedTracker = speedTrackers[request.id] ?? DownloadSpeedTracker()
+        speedTrackers[request.id] = speedTracker
+
+        updateProgress(
+            downloadID: request.id,
+            state: .downloading,
+            bytesReceived: initialSnapshot.bytesReceived,
+            totalBytes: totalSize,
+            completedSegments: initialSnapshot.completedSegments,
+            totalSegments: segments.count,
+            handler: handler
+        )
+
+        // 5. If all segments are already completed on disk, skip scheduling and jump straight to merge!
+        if completedSegmentsSet.count == segments.count {
+            try await finalizeBackgroundMerge(
+                request: request,
+                segments: segments,
+                totalSize: totalSize,
+                bgManager: bgManager,
+                speedTracker: speedTracker,
+                progressAccumulator: progressAccumulator,
+                handler: handler
+            )
+            return
+        }
+
+        // 6. Setup asynchronous observer stream
+        let (eventStream, eventContinuation) = AsyncStream<BackgroundEvent>.makeStream(bufferingPolicy: .unbounded)
+        bgManager.addObserver(
+            for: request.id,
+            onProgress: { segID, done, total in
+                eventContinuation.yield(.progress(segmentID: segID, completedBytes: done, totalBytes: total))
+            },
+            onCompleted: { segID, url in
+                eventContinuation.yield(.completed(segmentID: segID, partURL: url))
+            },
+            onFailed: { segID, err in
+                eventContinuation.yield(.failed(segmentID: segID, reason: err.localizedDescription))
+            }
+        )
+        defer {
+            bgManager.removeObservers(for: request.id)
+            eventContinuation.finish()
+        }
+
+        // 7. Schedule pending segments, preventing duplicates
+        let existingTasks = await bgManager.activeTasks(for: request.id)
+        let activeSegmentIDs = Set(existingTasks.map { $0.segmentID })
+
+        for segment in segments {
+            guard !completedSegmentsSet.contains(segment.id) else { continue }
+            guard !activeSegmentIDs.contains(segment.id) else { continue } // Prevent duplicate task
+
+            let segRec = SegmentRecord(segment: segment, completedBytes: 0)
+            try await bgManager.scheduleSegmentDownload(
+                download: currentRecord,
+                segment: segRec,
+                customHeaders: self.mergeValidatorHeaders(
+                    original: request.headers,
+                    eTag: probeResult.eTag,
+                    lastModified: probeResult.lastModified
+                )
+            )
+        }
+
+        // 8. Event loop processing progress, completion, failure, pause, and cancellation
+        var retryAttempts: [Int: Int] = [:]
+
+        do {
+            for await event in eventStream {
+                try Task.checkCancellation()
+                if pauseRequested.contains(request.id) {
+                    throw CancellationError()
+                }
+
+                switch event {
+                case .progress(let segID, let done, _):
+                    let agg = await progressAccumulator.update(segmentID: segID, completedBytes: done)
+                    let metrics = speedTracker.snapshot(expectedTotalBytes: totalSize)
+                    updateProgress(
+                        downloadID: request.id,
+                        state: .downloading,
+                        bytesReceived: agg.bytesReceived,
+                        totalBytes: totalSize,
+                        completedSegments: agg.completedSegments,
+                        totalSegments: segments.count,
+                        currentSpeed: metrics.currentBytesPerSecond,
+                        averageSpeed: metrics.averageBytesPerSecond,
+                        elapsedTime: metrics.elapsedTime,
+                        eta: metrics.estimatedTimeRemaining,
+                        handler: handler
+                    )
+
+                    let needsCheckpoint = await progressAccumulator.shouldCheckpoint(segmentID: segID, completedBytes: done)
+                    if needsCheckpoint {
+                        _ = try? await self.persistenceStore.updateSegmentProgress(
+                            tag: request.id,
+                            segmentID: segID,
+                            completedBytes: done
+                        )
+                    }
+
+                case .completed(let segID, _):
+                    completedSegmentsSet.insert(segID)
+                    guard let seg = segments.first(where: { $0.id == segID }) else { continue }
+                    let agg = await progressAccumulator.update(segmentID: segID, completedBytes: seg.length)
+                    _ = try? await self.persistenceStore.updateSegmentProgress(
+                        tag: request.id,
+                        segmentID: segID,
+                        completedBytes: seg.length
+                    )
+
+                    let metrics = speedTracker.snapshot(expectedTotalBytes: totalSize)
+                    updateProgress(
+                        downloadID: request.id,
+                        state: .downloading,
+                        bytesReceived: agg.bytesReceived,
+                        totalBytes: totalSize,
+                        completedSegments: agg.completedSegments,
+                        totalSegments: segments.count,
+                        currentSpeed: metrics.currentBytesPerSecond,
+                        averageSpeed: metrics.averageBytesPerSecond,
+                        elapsedTime: metrics.elapsedTime,
+                        eta: metrics.estimatedTimeRemaining,
+                        handler: handler
+                    )
+
+                case .failed(let segID, let reason):
+                    let attempt = retryAttempts[segID, default: 0]
+                    if attempt < request.retryCount && !pauseRequested.contains(request.id) && !Task.isCancelled {
+                        retryAttempts[segID] = attempt + 1
+                        let delaySeconds = min(15.0, 0.5 * pow(2.0, Double(attempt)))
+                        try await Task.sleep(nanoseconds: UInt64(delaySeconds * 1_000_000_000))
+                        if let seg = segments.first(where: { $0.id == segID }) {
+                            let segRec = SegmentRecord(segment: seg, completedBytes: 0)
+                            _ = try? await bgManager.scheduleSegmentDownload(
+                                download: currentRecord,
+                                segment: segRec,
+                                customHeaders: self.mergeValidatorHeaders(
+                                    original: request.headers,
+                                    eTag: probeResult.eTag,
+                                    lastModified: probeResult.lastModified
+                                )
+                            )
+                        }
+                    } else {
+                        throw DownloadCoordinatorError.retryLimitExceeded(id: request.id, underlyingError: reason)
+                    }
+                }
+
+                // Check if all segments are completed
+                if completedSegmentsSet.count == segments.count {
+                    break
+                }
+            }
+
+            if pauseRequested.contains(request.id) || Task.isCancelled {
+                throw CancellationError()
+            }
+        } catch is CancellationError {
+            await bgManager.cancelTasks(for: request.id)
+            let completedMap = await progressAccumulator.getCompletedBytes()
+            for (segID, bytes) in completedMap {
+                _ = try? await persistenceStore.updateSegmentProgress(tag: request.id, segmentID: segID, completedBytes: bytes)
+            }
+            _ = try? await persistenceStore.updateState(tag: request.id, state: .paused)
+            let snap = await progressAccumulator.snapshot()
+            let metrics = speedTracker.snapshot(expectedTotalBytes: totalSize)
+            updateProgress(
+                downloadID: request.id,
+                state: .paused,
+                bytesReceived: snap.bytesReceived,
+                totalBytes: totalSize,
+                completedSegments: snap.completedSegments,
+                totalSegments: segments.count,
+                currentSpeed: 0,
+                averageSpeed: metrics.averageBytesPerSecond,
+                elapsedTime: metrics.elapsedTime,
+                eta: nil,
+                handler: handler
+            )
+            throw CancellationError()
+        } catch {
+            await bgManager.cancelTasks(for: request.id)
+            let completedMap = await progressAccumulator.getCompletedBytes()
+            for (segID, bytes) in completedMap {
+                _ = try? await persistenceStore.updateSegmentProgress(tag: request.id, segmentID: segID, completedBytes: bytes)
+            }
+            _ = try? await persistenceStore.updateState(tag: request.id, state: .failed(reason: error.localizedDescription))
+            let snap = await progressAccumulator.snapshot()
+            let metrics = speedTracker.snapshot(expectedTotalBytes: totalSize)
+            updateProgress(
+                downloadID: request.id,
+                state: .failed(reason: error.localizedDescription),
+                bytesReceived: snap.bytesReceived,
+                totalBytes: totalSize,
+                completedSegments: snap.completedSegments,
+                totalSegments: segments.count,
+                currentSpeed: 0,
+                averageSpeed: metrics.averageBytesPerSecond,
+                elapsedTime: metrics.elapsedTime,
+                eta: nil,
+                handler: handler
+            )
+            throw error
+        }
+
+        // 9. Merge, verify, and finalize completed download
+        try await finalizeBackgroundMerge(
+            request: request,
+            segments: segments,
+            totalSize: totalSize,
+            bgManager: bgManager,
+            speedTracker: speedTracker,
+            progressAccumulator: progressAccumulator,
+            handler: handler
+        )
+    }
+
+    private func finalizeBackgroundMerge(
+        request: DownloadRequest,
+        segments: [DownloadSegment],
+        totalSize: Int64,
+        bgManager: BackgroundDownloadSessionManager,
+        speedTracker: DownloadSpeedTracker,
+        progressAccumulator: ProgressAccumulator,
+        handler: ProgressHandler?
+    ) async throws {
+        // 1. Gather and verify all part files
+        let partURLs = segments.map { bgManager.partFileURL(downloadID: request.id, segmentID: $0.id) }
+        for (idx, partURL) in partURLs.enumerated() {
+            guard FileManager.default.fileExists(atPath: partURL.path) else {
+                throw DownloadCoordinatorError.cannotResume(reason: "Missing part file for segment \(idx)")
+            }
+        }
+
+        // 2. Safely merge part files using staged replacement
+        try DownloadFileWriter.mergeFiles(
+            partURLs: partURLs,
+            destinationURL: request.destinationURL,
+            expectedMergedSize: totalSize
+        )
+
+        // 3. Remove part files after successful merge
+        for partURL in partURLs {
+            try? FileManager.default.removeItem(at: partURL)
+        }
+
+        // 4. Validate physical disk file attributes
+        let diskAttributes = try FileManager.default.attributesOfItem(atPath: request.destinationURL.path)
+        guard let actualDiskSize = diskAttributes[.size] as? Int64, actualDiskSize == totalSize else {
+            let error = SegmentDownloaderError.bodyLengthMismatch(
+                expected: totalSize,
+                actual: (diskAttributes[.size] as? Int64) ?? -1
+            )
+            _ = try? await persistenceStore.updateState(tag: request.id, state: .failed(reason: error.localizedDescription))
+            throw error
+        }
+
+        // 5. Update persistence store segment records
+        for seg in segments {
+            _ = try? await persistenceStore.updateSegmentProgress(tag: request.id, segmentID: seg.id, completedBytes: seg.length)
+        }
+
+        guard let finalRecord = try await persistenceStore.fetch(tag: request.id),
+              finalRecord.isAllSegmentsCompleted else {
+            let error = DownloadCoordinatorError.segmentLayoutInvalid(reason: "Not all segments reported completed")
+            _ = try? await persistenceStore.updateState(tag: request.id, state: .failed(reason: error.localizedDescription))
+            throw error
+        }
+
+        // 6. Checksum validation
+        if let expectedSHA = request.expectedSHA256, !expectedSHA.isEmpty {
+            let actualSHA = try FileHasher.sha256(for: request.destinationURL)
+            guard actualSHA.caseInsensitiveCompare(expectedSHA) == .orderedSame else {
+                checksumOutcomes[request.id] = .mismatch(expected: expectedSHA, actual: actualSHA)
+                let error = DownloadCoordinatorError.checksumMismatch(expected: expectedSHA, actual: actualSHA)
+                _ = try? await persistenceStore.updateState(tag: request.id, state: .failed(reason: error.localizedDescription))
+                throw error
+            }
+            checksumOutcomes[request.id] = .verified(sha256: actualSHA)
+        } else {
+            checksumOutcomes[request.id] = .notChecked
+        }
+
+        // 7. Mark download completed
+        try await persistenceStore.updateState(tag: request.id, state: .completed)
+        let finalMetrics = speedTracker.snapshot(expectedTotalBytes: totalSize)
+        updateProgress(
+            downloadID: request.id,
+            state: .completed,
+            bytesReceived: totalSize,
+            totalBytes: totalSize,
+            completedSegments: segments.count,
+            totalSegments: segments.count,
+            currentSpeed: 0,
+            averageSpeed: finalMetrics.averageBytesPerSecond,
+            elapsedTime: finalMetrics.elapsedTime,
+            eta: 0,
+            checksumOutcome: checksumOutcomes[request.id],
+            handler: handler
+        )
+    }
+
+    // MARK: - Recovery & Reconciliation
+
+    /// Reconciles system background tasks with persisted manifests and on-disk part files.
+    public func reconcileBackgroundTransfers() async throws -> BackgroundReconciliationReport {
+        guard let bgManager = self.backgroundSessionManager else {
+            return BackgroundReconciliationReport(
+                activeTasksCount: 0,
+                orphanedTasksCount: 0,
+                restoredRecords: [],
+                completedRecords: []
+            )
+        }
+
+        let report = try await bgManager.reconcileActiveTasks()
+        let allRecords = try await persistenceStore.fetchAll()
+
+        for record in allRecords where record.transportPolicy == .background && record.state == .downloading {
+            var allSegmentsFinished = true
+            for seg in record.segments {
+                let partURL = bgManager.partFileURL(downloadID: record.id, segmentID: seg.id)
+                let exists = FileManager.default.fileExists(atPath: partURL.path)
+                let attrs = try? FileManager.default.attributesOfItem(atPath: partURL.path)
+                let size = (attrs?[.size] as? Int64) ?? 0
+                if !exists || size != seg.length {
+                    allSegmentsFinished = false
+                    break
+                }
+            }
+
+            if allSegmentsFinished && !record.segments.isEmpty {
+                let partURLs = record.segments.map { bgManager.partFileURL(downloadID: record.id, segmentID: $0.id) }
+                do {
+                    try DownloadFileWriter.mergeFiles(
+                        partURLs: partURLs,
+                        destinationURL: record.destinationURL,
+                        expectedMergedSize: record.totalSize
+                    )
+                    for partURL in partURLs {
+                        try? FileManager.default.removeItem(at: partURL)
+                    }
+                    for seg in record.segments {
+                        _ = try? await persistenceStore.updateSegmentProgress(tag: record.id, segmentID: seg.id, completedBytes: seg.length)
+                    }
+                    try await persistenceStore.updateState(tag: record.id, state: .completed)
+                } catch {
+                    print("[DownloadCoordinator] Recovery merge deferred for \(record.id): \(error)")
+                }
+            }
+        }
+
+        return report
     }
 
     // MARK: - Helpers

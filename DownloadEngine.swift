@@ -24,6 +24,7 @@ public struct DownloadSnapshot: Sendable, Equatable, Identifiable, Codable {
     public let failureReason: String?
     public let checksumOutcome: ChecksumOutcome
     public let enqueuedAt: Date
+    public let transportPolicy: HTTPTransportPolicy
 
     public var isTerminal: Bool {
         state.isTerminal
@@ -73,7 +74,8 @@ public struct DownloadSnapshot: Sendable, Equatable, Identifiable, Codable {
         estimatedTimeRemaining: TimeInterval? = nil,
         failureReason: String? = nil,
         checksumOutcome: ChecksumOutcome = .notChecked,
-        enqueuedAt: Date = Date()
+        enqueuedAt: Date = Date(),
+        transportPolicy: HTTPTransportPolicy = .foreground
     ) {
         self.id = id
         self.url = url
@@ -90,6 +92,31 @@ public struct DownloadSnapshot: Sendable, Equatable, Identifiable, Codable {
         self.failureReason = failureReason
         self.checksumOutcome = checksumOutcome
         self.enqueuedAt = enqueuedAt
+        self.transportPolicy = transportPolicy
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id, url, destinationURL, state, priority, completedBytes, totalBytes, progressFraction, currentBytesPerSecond, averageBytesPerSecond, elapsedTime, estimatedTimeRemaining, failureReason, checksumOutcome, enqueuedAt, transportPolicy
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(DownloadID.self, forKey: .id)
+        url = try container.decode(URL.self, forKey: .url)
+        destinationURL = try container.decode(URL.self, forKey: .destinationURL)
+        state = try container.decode(DownloadState.self, forKey: .state)
+        priority = try container.decodeIfPresent(DownloadPriority.self, forKey: .priority) ?? .normal
+        completedBytes = try container.decodeIfPresent(Int64.self, forKey: .completedBytes) ?? 0
+        totalBytes = try container.decodeIfPresent(Int64.self, forKey: .totalBytes)
+        progressFraction = try container.decodeIfPresent(Double.self, forKey: .progressFraction) ?? 0.0
+        currentBytesPerSecond = try container.decodeIfPresent(Double.self, forKey: .currentBytesPerSecond) ?? 0.0
+        averageBytesPerSecond = try container.decodeIfPresent(Double.self, forKey: .averageBytesPerSecond) ?? 0.0
+        elapsedTime = try container.decodeIfPresent(TimeInterval.self, forKey: .elapsedTime) ?? 0.0
+        estimatedTimeRemaining = try container.decodeIfPresent(TimeInterval.self, forKey: .estimatedTimeRemaining)
+        failureReason = try container.decodeIfPresent(String.self, forKey: .failureReason)
+        checksumOutcome = try container.decodeIfPresent(ChecksumOutcome.self, forKey: .checksumOutcome) ?? .notChecked
+        enqueuedAt = try container.decodeIfPresent(Date.self, forKey: .enqueuedAt) ?? Date()
+        transportPolicy = try container.decodeIfPresent(HTTPTransportPolicy.self, forKey: .transportPolicy) ?? .foreground
     }
 }
 
@@ -154,16 +181,22 @@ public actor DownloadEngine {
         maxConcurrentDownloads: Int = 3,
         maxGlobalRequests: Int = 12,
         globalBandwidthLimit: Int64? = nil,
-        session: URLSession = .shared
+        session: URLSession = .shared,
+        backgroundSessionManager: BackgroundDownloadSessionManager? = nil
     ) throws {
         let persistence = try DownloadPersistenceStore(storageDirectoryURL: storageDirectoryURL)
         let budget = SharedRequestBudget(maxGlobalRequests: maxGlobalRequests)
         let limiter = BandwidthLimiter(bytesPerSecond: globalBandwidthLimit)
+        let bgManager = backgroundSessionManager ?? (try? BackgroundDownloadSessionManager(
+            storageDirectoryURL: persistence.storageDirectoryURL,
+            persistenceStore: persistence
+        ))
         let coord = try DownloadCoordinator(
             session: session,
             persistenceStore: persistence,
             requestBudget: budget,
-            globalBandwidthLimiter: limiter
+            globalBandwidthLimiter: limiter,
+            backgroundSessionManager: bgManager
         )
         let queue = DownloadQueueManager(
             coordinator: coord,
@@ -386,6 +419,11 @@ public actor DownloadEngine {
         try await queueManager.restoreQueue(autoStart: autoStart)
     }
 
+    /// Reconciles system background tasks with persisted manifests and on-disk part files.
+    public func reconcileBackgroundTransfers() async throws -> BackgroundReconciliationReport {
+        try await coordinator.reconcileBackgroundTransfers()
+    }
+
     // MARK: - Resource & Bandwidth Throttling Configuration
 
     /// Updates the global in-flight HTTP request limit across all downloads.
@@ -525,7 +563,8 @@ public actor DownloadEngine {
             estimatedTimeRemaining: metrics?.estimatedTimeRemaining ?? coordProg?.estimatedTimeRemaining,
             failureReason: failureReason,
             checksumOutcome: outcome,
-            enqueuedAt: item.enqueuedAt
+            enqueuedAt: item.enqueuedAt,
+            transportPolicy: item.request.transportPolicy
         )
     }
 

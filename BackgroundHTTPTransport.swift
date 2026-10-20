@@ -497,7 +497,120 @@ public final class BackgroundDownloadSessionManager: NSObject, @unchecked Sendab
     public var onSegmentCompleted: (@Sendable (String, Int, URL) -> Void)?
 
     /// Failure notification hook: (downloadID, segmentID, error)
+    /// Failure notification hook: (downloadID, segmentID, error)
     public var onSegmentFailed: (@Sendable (String, Int, Error) -> Void)?
+
+    // MARK: - In-Flight Task Tracking & Callback Ordering
+    private let eventLock = NSLock()
+    private var inFlightDelegateTasks = 0
+    private var pendingDrainContinuations: [CheckedContinuation<Void, Never>] = []
+
+    // Per-download observer callbacks for coordinator integration
+    private var progressObservers: [String: [@Sendable (Int, Int64, Int64) -> Void]] = [:]
+    private var completionObservers: [String: [@Sendable (Int, URL) -> Void]] = [:]
+    private var failureObservers: [String: [@Sendable (Int, Error) -> Void]] = [:]
+
+    /// Registers per-download lifecycle observers for coordinator integration.
+    public func addObserver(
+        for downloadID: String,
+        onProgress: (@Sendable (Int, Int64, Int64) -> Void)? = nil,
+        onCompleted: (@Sendable (Int, URL) -> Void)? = nil,
+        onFailed: (@Sendable (Int, Error) -> Void)? = nil
+    ) {
+        eventLock.lock()
+        defer { eventLock.unlock() }
+        if let onProgress { progressObservers[downloadID, default: []].append(onProgress) }
+        if let onCompleted { completionObservers[downloadID, default: []].append(onCompleted) }
+        if let onFailed { failureObservers[downloadID, default: []].append(onFailed) }
+    }
+
+    /// Removes all observers registered for a download.
+    public func removeObservers(for downloadID: String) {
+        eventLock.lock()
+        defer { eventLock.unlock() }
+        progressObservers.removeValue(forKey: downloadID)
+        completionObservers.removeValue(forKey: downloadID)
+        failureObservers.removeValue(forKey: downloadID)
+    }
+
+    internal func trackDelegateTaskStarted() {
+        eventLock.lock()
+        defer { eventLock.unlock() }
+        inFlightDelegateTasks += 1
+    }
+
+    internal func trackDelegateTaskFinished() {
+        eventLock.lock()
+        inFlightDelegateTasks -= 1
+        if inFlightDelegateTasks <= 0 {
+            inFlightDelegateTasks = 0
+            let continuations = pendingDrainContinuations
+            pendingDrainContinuations.removeAll()
+            eventLock.unlock()
+            for c in continuations {
+                c.resume()
+            }
+            return
+        }
+        eventLock.unlock()
+    }
+
+    /// Awaits all active delegate async work (file moves, validations, persistence writes) to settle.
+    public func waitForInFlightEvents() async {
+        let needsWait: Bool = {
+            eventLock.lock()
+            defer { eventLock.unlock() }
+            return inFlightDelegateTasks > 0
+        }()
+        guard needsWait else { return }
+
+        await withCheckedContinuation { continuation in
+            eventLock.lock()
+            if inFlightDelegateTasks == 0 {
+                eventLock.unlock()
+                continuation.resume()
+            } else {
+                pendingDrainContinuations.append(continuation)
+                eventLock.unlock()
+            }
+        }
+    }
+
+    internal func notifyProgress(downloadID: String, segmentID: Int, completedBytes: Int64, totalBytes: Int64) {
+        self.onSegmentProgress?(downloadID, segmentID, completedBytes, totalBytes)
+        let observers: [@Sendable (Int, Int64, Int64) -> Void] = {
+            eventLock.lock()
+            defer { eventLock.unlock() }
+            return progressObservers[downloadID] ?? []
+        }()
+        for obs in observers {
+            obs(segmentID, completedBytes, totalBytes)
+        }
+    }
+
+    internal func notifyCompleted(downloadID: String, segmentID: Int, partURL: URL) {
+        self.onSegmentCompleted?(downloadID, segmentID, partURL)
+        let observers: [@Sendable (Int, URL) -> Void] = {
+            eventLock.lock()
+            defer { eventLock.unlock() }
+            return completionObservers[downloadID] ?? []
+        }()
+        for obs in observers {
+            obs(segmentID, partURL)
+        }
+    }
+
+    internal func notifyFailed(downloadID: String, segmentID: Int, error: Error) {
+        self.onSegmentFailed?(downloadID, segmentID, error)
+        let observers: [@Sendable (Int, Error) -> Void] = {
+            eventLock.lock()
+            defer { eventLock.unlock() }
+            return failureObservers[downloadID] ?? []
+        }()
+        for obs in observers {
+            obs(segmentID, error)
+        }
+    }
 
     public init(
         sessionIdentifier: String = BackgroundDownloadSessionManager.defaultSessionIdentifier,
@@ -730,7 +843,9 @@ extension BackgroundDownloadSessionManager: URLSessionDownloadDelegate {
         let taskID = downloadTask.taskIdentifier
         let sessID = self.sessionIdentifier
 
+        trackDelegateTaskStarted()
         Task { [weak self] in
+            defer { self?.trackDelegateTaskFinished() }
             guard let self = self else { return }
             guard let record = await self.mappingStore.record(sessionIdentifier: sessID, taskIdentifier: taskID) else { return }
 
@@ -752,7 +867,12 @@ extension BackgroundDownloadSessionManager: URLSessionDownloadDelegate {
                 }
             }
 
-            self.onSegmentProgress?(record.downloadID, record.segmentID, segmentTotalCompleted, record.segmentLength)
+            self.notifyProgress(
+                downloadID: record.downloadID,
+                segmentID: record.segmentID,
+                completedBytes: segmentTotalCompleted,
+                totalBytes: record.segmentLength
+            )
         }
     }
 
@@ -775,21 +895,25 @@ extension BackgroundDownloadSessionManager: URLSessionDownloadDelegate {
         let segmentID = parsed.segmentID
         let destination = self.partFileURL(downloadID: downloadID, segmentID: segmentID)
 
+        trackDelegateTaskStarted()
+
         // 1. Relocate file immediately to destination using safe staging before iOS purges `location`
         do {
             try BackgroundDownloadFileHandler.relocateTemporaryFile(from: location, to: destination)
         } catch {
             print("[BackgroundDownloadSessionManager] Error relocating temporary download file: \(error)")
             Task { [weak self] in
+                defer { self?.trackDelegateTaskFinished() }
                 guard let self = self else { return }
                 try? await self.mappingStore.markFailed(sessionIdentifier: sessID, taskIdentifier: taskID, error: error.localizedDescription)
-                self.onSegmentFailed?(downloadID, segmentID, error)
+                self.notifyFailed(downloadID: downloadID, segmentID: segmentID, error: error)
             }
             return
         }
 
         // 2. Validate response, verify expected size, and update stores asynchronously
         Task { [weak self] in
+            defer { self?.trackDelegateTaskFinished() }
             guard let self = self else { return }
             let record = await self.mappingStore.record(sessionIdentifier: sessID, taskIdentifier: taskID)
 
@@ -811,7 +935,7 @@ extension BackgroundDownloadSessionManager: URLSessionDownloadDelegate {
                 } catch {
                     try? FileManager.default.removeItem(at: destination)
                     try? await self.mappingStore.markFailed(sessionIdentifier: sessID, taskIdentifier: taskID, error: error.localizedDescription)
-                    self.onSegmentFailed?(downloadID, segmentID, error)
+                    self.notifyFailed(downloadID: downloadID, segmentID: segmentID, error: error)
                     return
                 }
             }
@@ -825,7 +949,7 @@ extension BackgroundDownloadSessionManager: URLSessionDownloadDelegate {
                     let err = BackgroundTransportError.bodyLengthMismatch(expected: rec.expectedBytes, actual: actualSize)
                     try? FileManager.default.removeItem(at: destination)
                     try? await self.mappingStore.markFailed(sessionIdentifier: sessID, taskIdentifier: taskID, error: err.localizedDescription)
-                    self.onSegmentFailed?(downloadID, segmentID, err)
+                    self.notifyFailed(downloadID: downloadID, segmentID: segmentID, error: err)
                     return
                 }
                 finalSize = size
@@ -850,7 +974,7 @@ extension BackgroundDownloadSessionManager: URLSessionDownloadDelegate {
                 }
             }
 
-            self.onSegmentCompleted?(downloadID, segmentID, destination)
+            self.notifyCompleted(downloadID: downloadID, segmentID: segmentID, partURL: destination)
         }
     }
 
@@ -863,20 +987,26 @@ extension BackgroundDownloadSessionManager: URLSessionDownloadDelegate {
         let sessID = self.sessionIdentifier
         guard let error = error else { return }
 
+        trackDelegateTaskStarted()
         Task { [weak self] in
+            defer { self?.trackDelegateTaskFinished() }
             guard let self = self else { return }
             if let rec = await self.mappingStore.record(sessionIdentifier: sessID, taskIdentifier: taskID) {
                 try? await self.mappingStore.markFailed(sessionIdentifier: sessID, taskIdentifier: taskID, error: error.localizedDescription)
-                self.onSegmentFailed?(rec.downloadID, rec.segmentID, error)
+                self.notifyFailed(downloadID: rec.downloadID, segmentID: rec.segmentID, error: error)
             }
         }
     }
 
     public func urlSessionDidFinishEvents(forBackgroundURLSession session: URLSession) {
-        DispatchQueue.main.async { [weak self] in
+        Task { [weak self] in
             guard let self = self else { return }
-            self.backgroundEventsCompletionHandler?()
-            self.backgroundEventsCompletionHandler = nil
+            // Await all in-flight file operations, validations, and persistence writes before calling completionHandler
+            await self.waitForInFlightEvents()
+            DispatchQueue.main.async {
+                self.backgroundEventsCompletionHandler?()
+                self.backgroundEventsCompletionHandler = nil
+            }
         }
     }
 }

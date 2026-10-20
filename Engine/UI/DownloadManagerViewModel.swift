@@ -426,6 +426,7 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
         filename: String? = nil,
         threadCount: Int = 6,
         speedLimitBytesPerSecond: Int64? = nil,
+        transportPolicy: HTTPTransportPolicy = .foreground,
         autoStart: Bool = true
     ) async throws -> DownloadSnapshot {
         let trimmed = urlText.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -452,7 +453,8 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
             url: url,
             destinationURL: destURL,
             configuredThreadCount: max(1, min(32, threadCount)),
-            speedLimitBytesPerSecond: sanitizedLimit
+            speedLimitBytesPerSecond: sanitizedLimit,
+            transportPolicy: transportPolicy
         )
 
         do {

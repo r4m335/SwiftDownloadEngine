@@ -70,6 +70,17 @@ public enum ResumeValidationResult: Equatable, Sendable {
     case unsupportedNonResumable
 }
 
+/// Explicit transport execution policy for HTTP transfers.
+public enum HTTPTransportPolicy: String, Codable, Sendable, CaseIterable {
+    /// Foreground / in-process streaming transport via concurrent SegmentDownloader.
+    /// Default for interactive, direct-seek, or unsegmented downloads.
+    case foreground
+
+    /// System-managed out-of-process background URLSession transport.
+    /// Uses BackgroundDownloadSessionManager with partFiles mode.
+    case background
+}
+
 /// Durable segment progress record corresponding to 1DM+'s `ThreadInfo`.
 public struct SegmentRecord: Codable, Equatable, Identifiable, Sendable {
     public let id: Int
@@ -127,6 +138,7 @@ public struct DownloadRecord: Codable, Equatable, Identifiable, Sendable {
     public let totalSize: Int64
     public var state: DownloadState
     public var storageMode: DownloadStorageMode
+    public var transportPolicy: HTTPTransportPolicy
     public var eTag: String?
     public var lastModified: String?
     public var suggestedFilename: String?
@@ -161,6 +173,7 @@ public struct DownloadRecord: Codable, Equatable, Identifiable, Sendable {
         totalSize: Int64,
         state: DownloadState = .pending,
         storageMode: DownloadStorageMode = .directSeek,
+        transportPolicy: HTTPTransportPolicy = .foreground,
         eTag: String? = nil,
         lastModified: String? = nil,
         suggestedFilename: String? = nil,
@@ -177,6 +190,7 @@ public struct DownloadRecord: Codable, Equatable, Identifiable, Sendable {
         self.totalSize = totalSize
         self.state = state
         self.storageMode = storageMode
+        self.transportPolicy = transportPolicy
         self.eTag = eTag
         self.lastModified = lastModified
         self.suggestedFilename = suggestedFilename
@@ -185,6 +199,31 @@ public struct DownloadRecord: Codable, Equatable, Identifiable, Sendable {
         self.createdAt = createdAt
         self.updatedAt = updatedAt
         self.segments = segments
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id, originalURL, resolvedURL, destinationURL, totalSize, state, storageMode, transportPolicy
+        case eTag, lastModified, suggestedFilename, mimeType, headers, createdAt, updatedAt, segments
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.id = try container.decode(String.self, forKey: .id)
+        self.originalURL = try container.decode(URL.self, forKey: .originalURL)
+        self.resolvedURL = try container.decodeIfPresent(URL.self, forKey: .resolvedURL)
+        self.destinationURL = try container.decode(URL.self, forKey: .destinationURL)
+        self.totalSize = try container.decode(Int64.self, forKey: .totalSize)
+        self.state = try container.decode(DownloadState.self, forKey: .state)
+        self.storageMode = try container.decode(DownloadStorageMode.self, forKey: .storageMode)
+        self.transportPolicy = try container.decodeIfPresent(HTTPTransportPolicy.self, forKey: .transportPolicy) ?? .foreground
+        self.eTag = try container.decodeIfPresent(String.self, forKey: .eTag)
+        self.lastModified = try container.decodeIfPresent(String.self, forKey: .lastModified)
+        self.suggestedFilename = try container.decodeIfPresent(String.self, forKey: .suggestedFilename)
+        self.mimeType = try container.decodeIfPresent(String.self, forKey: .mimeType)
+        self.headers = try container.decode([String: String].self, forKey: .headers)
+        self.createdAt = try container.decode(Date.self, forKey: .createdAt)
+        self.updatedAt = try container.decode(Date.self, forKey: .updatedAt)
+        self.segments = try container.decode([SegmentRecord].self, forKey: .segments)
     }
 
     /// Evaluates remote server headers before resuming an interrupted download.

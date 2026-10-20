@@ -244,6 +244,57 @@ public actor DownloadFileWriter {
         }
     }
 
+    /// Merges an arbitrary list of part file URLs sequentially into destinationURL.
+    public static func mergeFiles(
+        partURLs: [URL],
+        destinationURL: URL,
+        expectedMergedSize: Int64? = nil,
+        bufferSize: Int = 64 * 1024
+    ) throws {
+        guard bufferSize > 0 else {
+            throw DownloadFileWriterError.invalidOffset
+        }
+
+        let fileManager = FileManager.default
+        let parentDir = destinationURL.deletingLastPathComponent()
+        try fileManager.createDirectory(at: parentDir, withIntermediateDirectories: true)
+
+        if fileManager.fileExists(atPath: destinationURL.path) {
+            try fileManager.removeItem(at: destinationURL)
+        }
+        guard fileManager.createFile(atPath: destinationURL.path, contents: nil) else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+
+        let output = try FileHandle(forWritingTo: destinationURL)
+        defer { try? output.close() }
+
+        var mergedBytes: Int64 = 0
+        for partURL in partURLs {
+            guard fileManager.fileExists(atPath: partURL.path) else {
+                throw CocoaError(.fileNoSuchFile)
+            }
+
+            let input = try FileHandle(forReadingFrom: partURL)
+            defer { try? input.close() }
+
+            while true {
+                let data = try input.read(upToCount: bufferSize) ?? Data()
+                if data.isEmpty { break }
+                try output.write(contentsOf: data)
+                mergedBytes += Int64(data.count)
+            }
+        }
+
+        try output.synchronize()
+        if let expectedMergedSize, mergedBytes != expectedMergedSize {
+            throw DownloadFileWriterError.mergeLengthMismatch(
+                expected: expectedMergedSize,
+                actual: mergedBytes
+            )
+        }
+    }
+
     public func synchronize() throws {
         if let destinationHandle {
             try destinationHandle.synchronize()

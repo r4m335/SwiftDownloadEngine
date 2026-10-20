@@ -80,6 +80,7 @@ public struct UnifiedTransfer: Identifiable, Sendable, Equatable {
     public let createdAt: Date
     public let failureReason: String?
     public let checksumOutcome: ChecksumOutcome?
+    public let transportPolicy: HTTPTransportPolicy?
 
     // Torrent-specific properties
     public let infoHash: String?
@@ -121,6 +122,7 @@ public struct UnifiedTransfer: Identifiable, Sendable, Equatable {
         self.createdAt = snapshot.enqueuedAt
         self.failureReason = snapshot.failureReason
         self.checksumOutcome = snapshot.checksumOutcome
+        self.transportPolicy = snapshot.transportPolicy
 
         self.infoHash = nil
         self.connectedPeers = nil
@@ -164,6 +166,7 @@ public struct UnifiedTransfer: Identifiable, Sendable, Equatable {
         self.createdAt = task.createdAt
         self.failureReason = task.errorMessage
         self.checksumOutcome = nil
+        self.transportPolicy = nil
 
         self.infoHash = task.infoHash
         self.connectedPeers = task.progress.connectedPeers
@@ -190,6 +193,7 @@ public struct UnifiedTransfer: Identifiable, Sendable, Equatable {
         createdAt: Date = Date(),
         failureReason: String? = nil,
         checksumOutcome: ChecksumOutcome? = nil,
+        transportPolicy: HTTPTransportPolicy? = nil,
         infoHash: String? = nil,
         connectedPeers: Int? = nil,
         connectedSeeds: Int? = nil,
@@ -212,6 +216,7 @@ public struct UnifiedTransfer: Identifiable, Sendable, Equatable {
         self.createdAt = createdAt
         self.failureReason = failureReason
         self.checksumOutcome = checksumOutcome
+        self.transportPolicy = transportPolicy
         self.infoHash = infoHash
         self.connectedPeers = connectedPeers
         self.connectedSeeds = connectedSeeds

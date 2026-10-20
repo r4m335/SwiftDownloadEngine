@@ -92,6 +92,21 @@ public struct SwiftDownloadEngineApp: App {
         let downloadsDir = DownloadManagerViewModel.defaultDownloadsDirectory()
         let storeDir = Self.defaultStorageDirectory()
 
+        var bgManager: BackgroundDownloadSessionManager? = nil
+        #if canImport(UIKit) && !os(watchOS)
+        do {
+            let bgTransportDir = storeDir.appendingPathComponent("BackgroundTransport", isDirectory: true)
+            let manager = try BackgroundDownloadSessionManager(
+                sessionIdentifier: BackgroundDownloadSessionManager.defaultSessionIdentifier,
+                storageDirectoryURL: bgTransportDir
+            )
+            bgManager = manager
+            AppDelegate.attach(manager: manager)
+        } catch {
+            print("Notice: BackgroundDownloadSessionManager initialization in AppDelegate skipped: \(error.localizedDescription)")
+        }
+        #endif
+
         let engine: DownloadEngine
         do {
             engine = try DownloadEngine(
@@ -99,25 +114,12 @@ public struct SwiftDownloadEngineApp: App {
                 maxConcurrentDownloads: 3,
                 maxGlobalRequests: 12,
                 globalBandwidthLimit: nil,
-                session: .shared
+                session: .shared,
+                backgroundSessionManager: bgManager
             )
         } catch {
             fatalError("Failed to initialize DownloadEngine: \(error)")
         }
-
-        #if canImport(UIKit) && !os(watchOS)
-        do {
-            let bgTransportDir = storeDir.appendingPathComponent("BackgroundTransport", isDirectory: true)
-            let bgManager = try BackgroundDownloadSessionManager(
-                sessionIdentifier: BackgroundDownloadSessionManager.defaultSessionIdentifier,
-                storageDirectoryURL: bgTransportDir,
-                persistenceStore: engine.persistenceStore
-            )
-            AppDelegate.attach(manager: bgManager)
-        } catch {
-            print("Notice: BackgroundDownloadSessionManager initialization in AppDelegate skipped: \(error.localizedDescription)")
-        }
-        #endif
 
         var torrentEngine: TorrentEngine? = nil
         do {
@@ -166,7 +168,9 @@ public struct SwiftDownloadEngineApp: App {
                     if !hasRestoredQueue {
                         hasRestoredQueue = true
                         try? await viewModel.restoreQueue(autoStart: false)
+                        _ = try? await viewModel.engine.reconcileBackgroundTransfers()
                     } else {
+                        _ = try? await viewModel.engine.reconcileBackgroundTransfers()
                         await viewModel.refreshSnapshots()
                         await viewModel.refreshTorrentSnapshots()
                     }
