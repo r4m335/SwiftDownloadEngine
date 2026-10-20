@@ -449,4 +449,384 @@ final class BackgroundCoordinatorIntegrationTests: XCTestCase {
         try await Task.sleep(nanoseconds: 50_000_000)
         XCTAssertTrue(box.invoked)
     }
+
+    // MARK: - Milestone 6B.1 Regression Tests (A through J)
+
+    // Test A: Background download has completed segments but no final destination file.
+    // Recovery must preserve completed segment progress and not treat as fresh unresumable download.
+    func testRegressionA_CompletedSegmentsPreservedWhenDestinationFileMissing() async throws {
+        let payload = makePayload(size: 8192, seed: 0x41)
+        let expectedSHA = EngineSHA256.hash(data: payload)
+        let path = "/test_reg_a.bin"
+        server.register(path: path, data: payload, eTag: "\"etag-a\"")
+        let sourceURL = server.url(for: path)
+        let destURL = tempDirectory.appendingPathComponent("reg_a_result.bin")
+        let dlID = "dl-reg-a"
+
+        let seg0Length: Int64 = 4096
+        let seg1Length: Int64 = 4096
+
+        // Stage completed part 0 file on disk
+        let part0 = bgSessionManager.partFileURL(downloadID: dlID, segmentID: 0)
+        let chunk0 = payload.subdata(in: 0..<4096)
+        try chunk0.write(to: part0)
+
+        // Ensure final destination file does NOT exist yet
+        XCTAssertFalse(FileManager.default.fileExists(atPath: destURL.path))
+
+        // Persist DownloadRecord with segment 0 completed and segment 1 pending
+        let existingRecord = DownloadRecord(
+            id: dlID,
+            originalURL: sourceURL,
+            destinationURL: destURL,
+            totalSize: 8192,
+            state: .downloading,
+            storageMode: .partFiles,
+            transportPolicy: .background,
+            eTag: "\"etag-a\"",
+            segments: [
+                SegmentRecord(id: 0, startOffset: 0, endOffset: 4095, length: seg0Length, completedBytes: seg0Length),
+                SegmentRecord(id: 1, startOffset: 4096, endOffset: 8191, length: seg1Length, completedBytes: 0)
+            ]
+        )
+        try await persistenceStore.save(existingRecord)
+
+        // Verify reconcilePartialFile preserves segment 0
+        let reconciled = DownloadCoordinator.reconcilePartialFile(
+            destinationURL: destURL,
+            record: existingRecord,
+            backgroundSessionManager: bgSessionManager
+        )
+        XCTAssertEqual(reconciled.segments[0].completedBytes, seg0Length)
+        XCTAssertEqual(reconciled.segments[0].isCompleted, true)
+        XCTAssertEqual(reconciled.segments[1].completedBytes, 0)
+
+        // Now resume through coordinator: should complete segment 1, merge, and finalize
+        let request = DownloadRequest(
+            id: dlID,
+            url: sourceURL,
+            destinationURL: destURL,
+            expectedSHA256: expectedSHA,
+            transportPolicy: .background
+        )
+        try await coordinator.resume(request)
+
+        let finalRecord = try await persistenceStore.fetch(tag: dlID)
+        XCTAssertEqual(finalRecord?.state, .completed)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: destURL.path))
+        XCTAssertEqual(try Data(contentsOf: destURL).count, 8192)
+        XCTAssertEqual(try FileHasher.sha256(for: destURL), expectedSHA)
+    }
+
+    // Test B: Relaunch with active URLSession tasks does not create duplicates.
+    func testRegressionB_RelaunchWithActiveTasksDoesNotCreateDuplicates() async throws {
+        let payload = makePayload(size: 4096, seed: 0x42)
+        let path = "/test_reg_b.bin"
+        server.register(path: path, data: payload)
+        let sourceURL = server.url(for: path)
+        let destURL = tempDirectory.appendingPathComponent("reg_b_result.bin")
+        let dlID = "dl-reg-b"
+
+        let record = DownloadRecord(
+            id: dlID,
+            originalURL: sourceURL,
+            destinationURL: destURL,
+            totalSize: 4096,
+            state: .downloading,
+            storageMode: .partFiles,
+            transportPolicy: .background,
+            segments: [
+                SegmentRecord(id: 0, startOffset: 0, endOffset: 4095, length: 4096, completedBytes: 0)
+            ]
+        )
+        try await persistenceStore.save(record)
+
+        // Schedule segment 0 task once
+        let segRec = record.segments[0]
+        let taskRecord = try await bgSessionManager.scheduleSegmentDownload(download: record, segment: segRec)
+
+        // activeTasks should report exactly 1 task
+        let active = await bgSessionManager.activeTasks(for: dlID)
+        XCTAssertEqual(active.count, 1)
+        XCTAssertEqual(active.first?.taskIdentifier, taskRecord.taskIdentifier)
+
+        // Clean up
+        await bgSessionManager.cancelTasks(for: dlID)
+    }
+
+    // Test C: A completed segment with an invalid file length is not accepted.
+    func testRegressionC_InvalidLengthPartFileRejected() throws {
+        let dlID = "dl-reg-c"
+        let destURL = tempDirectory.appendingPathComponent("reg_c.bin")
+        let segLength: Int64 = 2048
+
+        // Case 1: Corrupted/oversized part file (3000 bytes > 2048)
+        let partURL = bgSessionManager.partFileURL(downloadID: dlID, segmentID: 0)
+        try Data(repeating: 0x55, count: 3000).write(to: partURL)
+
+        let record = DownloadRecord(
+            id: dlID,
+            originalURL: URL(string: "https://example.com/file.bin")!,
+            destinationURL: destURL,
+            totalSize: segLength,
+            state: .downloading,
+            storageMode: .partFiles,
+            transportPolicy: .background,
+            segments: [
+                SegmentRecord(id: 0, startOffset: 0, endOffset: segLength - 1, length: segLength, completedBytes: segLength)
+            ]
+        )
+
+        let reconciled = DownloadCoordinator.reconcilePartialFile(
+            destinationURL: destURL,
+            record: record,
+            backgroundSessionManager: bgSessionManager
+        )
+
+        // Must reject oversized file, purge it from disk, and reset completedBytes to 0
+        XCTAssertEqual(reconciled.segments[0].completedBytes, 0)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: partURL.path))
+    }
+
+    // Test D: An interrupted segment resumes from the correct byte offset and appends.
+    func testRegressionD_InterruptedSegmentResumesFromCorrectByteOffset() throws {
+        let dlID = "dl-reg-d"
+        let destURL = tempDirectory.appendingPathComponent("reg_d.bin")
+        let partURL = bgSessionManager.partFileURL(downloadID: dlID, segmentID: 0)
+
+        // Simulate 400 bytes already downloaded in part file
+        let initialData = Data(repeating: 0x11, count: 400)
+        try initialData.write(to: partURL)
+
+        // Stage remaining 624 bytes in incoming temporary file
+        let incomingData = Data(repeating: 0x22, count: 624)
+        let incomingURL = tempDirectory.appendingPathComponent("incoming_d.tmp")
+        try incomingData.write(to: incomingURL)
+
+        // Relocate with append = true, expectedFinalTotalBytes = 1024
+        let finalSize = try BackgroundDownloadFileHandler.relocateOrAppendTemporaryFile(
+            from: incomingURL,
+            to: partURL,
+            expectedNewBytes: 624,
+            expectedFinalTotalBytes: 1024,
+            append: true
+        )
+
+        XCTAssertEqual(finalSize, 1024)
+        let resultData = try Data(contentsOf: partURL)
+        XCTAssertEqual(resultData.count, 1024)
+        XCTAssertEqual(resultData.prefix(400), initialData)
+        XCTAssertEqual(resultData.suffix(624), incomingData)
+    }
+
+    // Test E: A changed ETag prevents unsafe segment combination.
+    func testRegressionE_ChangedETagPreventsUnsafeCombination() async throws {
+        let payloadV2 = makePayload(size: 4096, seed: 0x77)
+        let path = "/test_reg_e.bin"
+        server.register(path: path, data: payloadV2, eTag: "\"version-2\"")
+        let sourceURL = server.url(for: path)
+        let destURL = tempDirectory.appendingPathComponent("reg_e_result.bin")
+        let dlID = "dl-reg-e"
+
+        // Persist record with OLD ETag and old part file
+        let part0 = bgSessionManager.partFileURL(downloadID: dlID, segmentID: 0)
+        try Data(repeating: 0x99, count: 2048).write(to: part0)
+
+        let oldRecord = DownloadRecord(
+            id: dlID,
+            originalURL: sourceURL,
+            destinationURL: destURL,
+            totalSize: 4096,
+            state: .paused,
+            storageMode: .partFiles,
+            transportPolicy: .background,
+            eTag: "\"version-1\"", // Old ETag
+            segments: [
+                SegmentRecord(id: 0, startOffset: 0, endOffset: 4095, length: 4096, completedBytes: 2048)
+            ]
+        )
+        try await persistenceStore.save(oldRecord)
+
+        // Request resumption with new version on server
+        let request = DownloadRequest(
+            id: dlID,
+            url: sourceURL,
+            destinationURL: destURL,
+            transportPolicy: .background
+        )
+
+        // Starting should detect validator mismatch, discard old part0, and download fresh
+        try await coordinator.start(request)
+
+        let finalRecord = try await persistenceStore.fetch(tag: dlID)
+        XCTAssertEqual(finalRecord?.state, .completed)
+        XCTAssertEqual(finalRecord?.eTag, "\"version-2\"")
+        let finalData = try Data(contentsOf: destURL)
+        XCTAssertEqual(finalData, payloadV2)
+    }
+
+    // Test F: Missing part files are recovered or rescheduled safely.
+    func testRegressionF_MissingPartFilesSafelyRecoveredAndRescheduled() async throws {
+        let dlID = "dl-reg-f"
+        let destURL = tempDirectory.appendingPathComponent("reg_f.bin")
+
+        // Record says segment 0 has 2048 bytes completed, but part file does NOT exist
+        let record = DownloadRecord(
+            id: dlID,
+            originalURL: URL(string: "https://example.com/file.bin")!,
+            destinationURL: destURL,
+            totalSize: 2048,
+            state: .paused,
+            storageMode: .partFiles,
+            transportPolicy: .background,
+            segments: [
+                SegmentRecord(id: 0, startOffset: 0, endOffset: 2047, length: 2048, completedBytes: 2048)
+            ]
+        )
+        try await persistenceStore.save(record)
+
+        let reconciled = DownloadCoordinator.reconcilePartialFile(
+            destinationURL: destURL,
+            record: record,
+            backgroundSessionManager: bgSessionManager
+        )
+
+        // Part file was missing: completedBytes must be safely reset to 0
+        XCTAssertEqual(reconciled.segments[0].completedBytes, 0)
+        XCTAssertFalse(reconciled.segments[0].isCompleted)
+    }
+
+    // Test G: Pause and resume preserve progress without double-counting.
+    func testRegressionG_PauseAndResumePreserveProgress() async throws {
+        let payload = makePayload(size: 8192, seed: 0x88)
+        let path = "/test_reg_g.bin"
+        server.register(path: path, data: payload)
+        let sourceURL = server.url(for: path)
+        let destURL = tempDirectory.appendingPathComponent("reg_g_result.bin")
+        let dlID = "dl-reg-g"
+
+        // Stage segment 0 as completed
+        let part0 = bgSessionManager.partFileURL(downloadID: dlID, segmentID: 0)
+        try payload.subdata(in: 0..<4096).write(to: part0)
+
+        let record = DownloadRecord(
+            id: dlID,
+            originalURL: sourceURL,
+            destinationURL: destURL,
+            totalSize: 8192,
+            state: .paused,
+            storageMode: .partFiles,
+            transportPolicy: .background,
+            segments: [
+                SegmentRecord(id: 0, startOffset: 0, endOffset: 4095, length: 4096, completedBytes: 4096),
+                SegmentRecord(id: 1, startOffset: 4096, endOffset: 8191, length: 4096, completedBytes: 0)
+            ]
+        )
+        try await persistenceStore.save(record)
+
+        let request = DownloadRequest(
+            id: dlID,
+            url: sourceURL,
+            destinationURL: destURL,
+            expectedSHA256: EngineSHA256.hash(data: payload),
+            transportPolicy: .background
+        )
+
+        try await coordinator.resume(request)
+
+        let finalRecord = try await persistenceStore.fetch(tag: dlID)
+        XCTAssertEqual(finalRecord?.state, .completed)
+        XCTAssertEqual(finalRecord?.completedBytes, 8192)
+        XCTAssertEqual(try Data(contentsOf: destURL), payload)
+    }
+
+    // Test H: Cancellation removes matching tasks and preserves state correctly.
+    func testRegressionH_CancellationRemovesMatchingTasksAndPreservesState() async throws {
+        let dlID = "dl-reg-h"
+        let destURL = tempDirectory.appendingPathComponent("reg_h.bin")
+        let part0 = bgSessionManager.partFileURL(downloadID: dlID, segmentID: 0)
+        try Data("part data".utf8).write(to: part0)
+
+        let record = DownloadRecord(
+            id: dlID,
+            originalURL: URL(string: "https://example.com/file.bin")!,
+            destinationURL: destURL,
+            totalSize: 1000,
+            state: .downloading,
+            storageMode: .partFiles,
+            transportPolicy: .background,
+            segments: [
+                SegmentRecord(id: 0, startOffset: 0, endOffset: 999, length: 1000, completedBytes: 100)
+            ]
+        )
+        try await persistenceStore.save(record)
+
+        // Cancel with deleteDestinationFile = true
+        try await coordinator.cancel(id: dlID, deleteDestinationFile: true)
+
+        // Verify part file deleted and persistence record removed
+        XCTAssertFalse(FileManager.default.fileExists(atPath: part0.path))
+        let deleted = try await persistenceStore.fetch(tag: dlID)
+        XCTAssertNil(deleted)
+    }
+
+    // Test I: All segments complete, merge succeeds, and checksum matches.
+    func testRegressionI_AllSegmentsCompleteMergeAndChecksumMatch() async throws {
+        let payload = makePayload(size: 8192, seed: 0x99)
+        let expectedSHA = EngineSHA256.hash(data: payload)
+        let path = "/test_reg_i.bin"
+        server.register(path: path, data: payload)
+        let sourceURL = server.url(for: path)
+        let destURL = tempDirectory.appendingPathComponent("reg_i_result.bin")
+
+        let request = DownloadRequest(
+            id: "dl-reg-i",
+            url: sourceURL,
+            destinationURL: destURL,
+            expectedSHA256: expectedSHA,
+            transportPolicy: .background
+        )
+
+        try await coordinator.start(request)
+
+        let record = try await persistenceStore.fetch(tag: "dl-reg-i")
+        XCTAssertEqual(record?.state, .completed)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: destURL.path))
+        XCTAssertEqual(try Data(contentsOf: destURL), payload)
+        XCTAssertEqual(try FileHasher.sha256(for: destURL), expectedSHA)
+    }
+
+    // Test J: Failed merge or checksum validation never marks the download completed.
+    func testRegressionJ_ChecksumMismatchNeverMarksDownloadCompleted() async throws {
+        let payload = makePayload(size: 4096, seed: 0x5A)
+        let wrongSHA = "0000000000000000000000000000000000000000000000000000000000000000"
+        let path = "/test_reg_j.bin"
+        server.register(path: path, data: payload)
+        let sourceURL = server.url(for: path)
+        let destURL = tempDirectory.appendingPathComponent("reg_j_result.bin")
+        let dlID = "dl-reg-j"
+
+        let request = DownloadRequest(
+            id: dlID,
+            url: sourceURL,
+            destinationURL: destURL,
+            expectedSHA256: wrongSHA,
+            transportPolicy: .background
+        )
+
+        do {
+            try await coordinator.start(request)
+            XCTFail("Expected checksum mismatch error")
+        } catch {
+            // Expected failure
+        }
+
+        let record = try await persistenceStore.fetch(tag: dlID)
+        XCTAssertNotEqual(record?.state, .completed)
+        if case .failed = record?.state {
+            // Expected state
+        } else {
+            XCTFail("Record state should be .failed, but was \(String(describing: record?.state))")
+        }
+    }
 }

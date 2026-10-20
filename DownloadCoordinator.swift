@@ -557,7 +557,8 @@ public actor DownloadCoordinator {
             var record = try await persistenceStore.fetch(tag: request.id)
             let isResume: Bool
             if let existing = record, existing.state.canResume, existing.totalSize > 0, !existing.segments.isEmpty {
-                if existing.completedBytes > 0 && !FileManager.default.fileExists(atPath: request.destinationURL.path) {
+                let requiresDestinationFile = (existing.storageMode == .directSeek && existing.transportPolicy == .foreground)
+                if requiresDestinationFile && existing.completedBytes > 0 && !FileManager.default.fileExists(atPath: request.destinationURL.path) {
                     isResume = false
                     record = nil
                 } else if !probeResult.supportsRange {
@@ -577,7 +578,8 @@ public actor DownloadCoordinator {
                     case .valid:
                         let reconciled = Self.reconcilePartialFile(
                             destinationURL: request.destinationURL,
-                            record: existing
+                            record: existing,
+                            backgroundSessionManager: self.backgroundSessionManager
                         )
                         if reconciled != existing {
                             try await persistenceStore.save(reconciled)
@@ -588,6 +590,16 @@ public actor DownloadCoordinator {
                         isResume = false
                         if FileManager.default.fileExists(atPath: request.destinationURL.path) {
                             try? FileManager.default.removeItem(at: request.destinationURL)
+                        }
+                        // Clean up any existing part files and cancel background tasks to prevent mixing versions
+                        if let bgManager = self.backgroundSessionManager {
+                            await bgManager.cancelTasks(for: request.id)
+                            for seg in existing.segments {
+                                let part = bgManager.partFileURL(downloadID: request.id, segmentID: seg.id)
+                                if FileManager.default.fileExists(atPath: part.path) {
+                                    try? FileManager.default.removeItem(at: part)
+                                }
+                            }
                         }
                         record = nil
                     case .unsupportedNonResumable:
@@ -1345,17 +1357,21 @@ public actor DownloadCoordinator {
             let partURL = bgManager.partFileURL(downloadID: request.id, segmentID: seg.id)
             if FileManager.default.fileExists(atPath: partURL.path),
                let attrs = try? FileManager.default.attributesOfItem(atPath: partURL.path),
-               let size = attrs[.size] as? Int64,
-               size == seg.length {
-                // Segment part file exists on disk and is 100% complete
-                initialCompletedMap[seg.id] = seg.length
-                completedSegmentsSet.insert(seg.id)
-            } else {
-                // Segment is incomplete: reset completedBytes to 0 so fresh/resumed task downloads full segment
-                initialCompletedMap[seg.id] = 0
-                if FileManager.default.fileExists(atPath: partURL.path) {
+               let size = attrs[.size] as? Int64 {
+                if size == seg.length {
+                    // Segment part file exists on disk and is 100% complete
+                    initialCompletedMap[seg.id] = seg.length
+                    completedSegmentsSet.insert(seg.id)
+                } else if size > 0 && size < seg.length {
+                    // Segment was partially downloaded and is resumable
+                    initialCompletedMap[seg.id] = size
+                } else {
+                    // Corrupted/oversized part file: remove and reset
+                    initialCompletedMap[seg.id] = 0
                     try? FileManager.default.removeItem(at: partURL)
                 }
+            } else {
+                initialCompletedMap[seg.id] = 0
             }
         }
 
@@ -1442,7 +1458,8 @@ public actor DownloadCoordinator {
             guard !completedSegmentsSet.contains(segment.id) else { continue }
             guard !activeSegmentIDs.contains(segment.id) else { continue } // Prevent duplicate task
 
-            let segRec = SegmentRecord(segment: segment, completedBytes: 0)
+            let completedSoFar = initialCompletedMap[segment.id] ?? 0
+            let segRec = SegmentRecord(segment: segment, completedBytes: completedSoFar)
             try await bgManager.scheduleSegmentDownload(
                 download: currentRecord,
                 segment: segRec,
@@ -1618,10 +1635,17 @@ public actor DownloadCoordinator {
         handler: ProgressHandler?
     ) async throws {
         // 1. Gather and verify all part files
-        let partURLs = segments.map { bgManager.partFileURL(downloadID: request.id, segmentID: $0.id) }
-        for (idx, partURL) in partURLs.enumerated() {
+        let sortedSegments = segments.sorted { $0.id < $1.id }
+        let partURLs = sortedSegments.map { bgManager.partFileURL(downloadID: request.id, segmentID: $0.id) }
+        for (idx, seg) in sortedSegments.enumerated() {
+            let partURL = partURLs[idx]
             guard FileManager.default.fileExists(atPath: partURL.path) else {
-                throw DownloadCoordinatorError.cannotResume(reason: "Missing part file for segment \(idx)")
+                throw DownloadCoordinatorError.cannotResume(reason: "Missing part file for segment \(seg.id)")
+            }
+            guard let attrs = try? FileManager.default.attributesOfItem(atPath: partURL.path),
+                  let size = attrs[.size] as? Int64,
+                  size == seg.length else {
+                throw DownloadCoordinatorError.cannotResume(reason: "Corrupted or incomplete part file for segment \(seg.id)")
             }
         }
 
@@ -1649,7 +1673,7 @@ public actor DownloadCoordinator {
         }
 
         // 5. Update persistence store segment records
-        for seg in segments {
+        for seg in sortedSegments {
             _ = try? await persistenceStore.updateSegmentProgress(tag: request.id, segmentID: seg.id, completedBytes: seg.length)
         }
 
@@ -1682,8 +1706,8 @@ public actor DownloadCoordinator {
             state: .completed,
             bytesReceived: totalSize,
             totalBytes: totalSize,
-            completedSegments: segments.count,
-            totalSegments: segments.count,
+            completedSegments: sortedSegments.count,
+            totalSegments: sortedSegments.count,
             currentSpeed: 0,
             averageSpeed: finalMetrics.averageBytesPerSecond,
             elapsedTime: finalMetrics.elapsedTime,
@@ -1711,7 +1735,8 @@ public actor DownloadCoordinator {
 
         for record in allRecords where record.transportPolicy == .background && record.state == .downloading {
             var allSegmentsFinished = true
-            for seg in record.segments {
+            let sortedSegments = record.segments.sorted { $0.id < $1.id }
+            for seg in sortedSegments {
                 let partURL = bgManager.partFileURL(downloadID: record.id, segmentID: seg.id)
                 let exists = FileManager.default.fileExists(atPath: partURL.path)
                 let attrs = try? FileManager.default.attributesOfItem(atPath: partURL.path)
@@ -1722,8 +1747,8 @@ public actor DownloadCoordinator {
                 }
             }
 
-            if allSegmentsFinished && !record.segments.isEmpty {
-                let partURLs = record.segments.map { bgManager.partFileURL(downloadID: record.id, segmentID: $0.id) }
+            if allSegmentsFinished && !sortedSegments.isEmpty {
+                let partURLs = sortedSegments.map { bgManager.partFileURL(downloadID: record.id, segmentID: $0.id) }
                 do {
                     try DownloadFileWriter.mergeFiles(
                         partURLs: partURLs,
@@ -1733,7 +1758,7 @@ public actor DownloadCoordinator {
                     for partURL in partURLs {
                         try? FileManager.default.removeItem(at: partURL)
                     }
-                    for seg in record.segments {
+                    for seg in sortedSegments {
                         _ = try? await persistenceStore.updateSegmentProgress(tag: record.id, segmentID: seg.id, completedBytes: seg.length)
                     }
                     try await persistenceStore.updateState(tag: record.id, state: .completed)
@@ -1833,62 +1858,97 @@ public actor DownloadCoordinator {
     /// Ensures the partial file, persisted byte offset, and subsequent HTTP Range request all agree.
     public static func reconcilePartialFile(
         destinationURL: URL,
-        record: DownloadRecord
+        record: DownloadRecord,
+        backgroundSessionManager: BackgroundDownloadSessionManager? = nil
     ) -> DownloadRecord {
         var reconciled = record
         let fileManager = FileManager.default
 
-        guard fileManager.fileExists(atPath: destinationURL.path) else {
-            // Destination file is missing: reset all segments to byte 0
+        if fileManager.fileExists(atPath: destinationURL.path) {
+            guard let attrs = try? fileManager.attributesOfItem(atPath: destinationURL.path),
+                  let fileSize = attrs[.size] as? Int64 else {
+                return reconciled
+            }
+
+            if record.storageMode == .directSeek {
+                // Direct seek files are preallocated to totalSize
+                let total = record.totalSize
+                if total > 0 {
+                    if fileSize < total {
+                        // File on disk is smaller than expected totalSize: re-truncate or reset
+                        if let handle = try? FileHandle(forWritingTo: destinationURL) {
+                            try? handle.truncate(atOffset: UInt64(total))
+                            try? handle.close()
+                        } else {
+                            reconciled.segments = record.segments.map { seg in
+                                var s = seg
+                                s.completedBytes = 0
+                                return s
+                            }
+                        }
+                    }
+                }
+            } else {
+                // Non-directSeek mode with existing destination file (e.g. linear single-stream mode)
+                let savedCompleted = record.completedBytes
+                if fileSize > savedCompleted {
+                    // File contains more data than saved checkpoint (e.g. 90 MB on disk vs 25 MB checkpointed)
+                    // Truncate to saved checkpoint so subsequent HTTP Range request and disk file align perfectly
+                    if let handle = try? FileHandle(forWritingTo: destinationURL) {
+                        try? handle.truncate(atOffset: UInt64(savedCompleted))
+                        try? handle.close()
+                    }
+                } else if fileSize < savedCompleted {
+                    // Disk file has fewer bytes than checkpoint: clamp completedBytes to actual disk size
+                    if !reconciled.segments.isEmpty {
+                        reconciled.segments[0].completedBytes = max(0, fileSize)
+                    }
+                }
+            }
+            return reconciled
+        }
+
+        // Destination file does not exist on disk:
+        if record.storageMode == .partFiles || record.transportPolicy == .background {
+            // For .partFiles or .background transport, progress is stored in individual segment part files.
+            // The final destination file does not exist until merge at completion.
             reconciled.segments = record.segments.map { seg in
                 var s = seg
-                s.completedBytes = 0
+                let partURL: URL = {
+                    if let bg = backgroundSessionManager {
+                        return bg.partFileURL(downloadID: record.id, segmentID: seg.id)
+                    } else {
+                        return destinationURL.deletingPathExtension().appendingPathExtension("part\(seg.id)")
+                    }
+                }()
+
+                guard fileManager.fileExists(atPath: partURL.path),
+                      let attrs = try? fileManager.attributesOfItem(atPath: partURL.path),
+                      let fileSize = attrs[.size] as? Int64 else {
+                    s.completedBytes = 0
+                    return s
+                }
+
+                if fileSize == seg.length {
+                    s.completedBytes = seg.length
+                } else if fileSize > 0 && fileSize < seg.length {
+                    s.completedBytes = fileSize
+                } else {
+                    // Invalid or corrupted size (e.g. exceeds segment length): purge corrupted file
+                    try? fileManager.removeItem(at: partURL)
+                    s.completedBytes = 0
+                }
                 return s
             }
             return reconciled
         }
 
-        guard let attrs = try? fileManager.attributesOfItem(atPath: destinationURL.path),
-              let fileSize = attrs[.size] as? Int64 else {
-            return reconciled
+        // Destination file is missing for directSeek: reset all segments to byte 0
+        reconciled.segments = record.segments.map { seg in
+            var s = seg
+            s.completedBytes = 0
+            return s
         }
-
-        if record.storageMode == .directSeek {
-            // Direct seek files are preallocated to totalSize
-            let total = record.totalSize
-            if total > 0 {
-                if fileSize < total {
-                    // File on disk is smaller than expected totalSize: re-truncate or reset
-                    if let handle = try? FileHandle(forWritingTo: destinationURL) {
-                        try? handle.truncate(atOffset: UInt64(total))
-                        try? handle.close()
-                    } else {
-                        reconciled.segments = record.segments.map { seg in
-                            var s = seg
-                            s.completedBytes = 0
-                            return s
-                        }
-                    }
-                }
-            }
-        } else {
-            // Linear single-stream mode
-            let savedCompleted = record.completedBytes
-            if fileSize > savedCompleted {
-                // File contains more data than saved checkpoint (e.g. 90 MB on disk vs 25 MB checkpointed)
-                // Truncate to saved checkpoint so subsequent HTTP Range request and disk file align perfectly
-                if let handle = try? FileHandle(forWritingTo: destinationURL) {
-                    try? handle.truncate(atOffset: UInt64(savedCompleted))
-                    try? handle.close()
-                }
-            } else if fileSize < savedCompleted {
-                // Disk file has fewer bytes than checkpoint: clamp completedBytes to actual disk size
-                if !reconciled.segments.isEmpty {
-                    reconciled.segments[0].completedBytes = max(0, fileSize)
-                }
-            }
-        }
-
         return reconciled
     }
 }

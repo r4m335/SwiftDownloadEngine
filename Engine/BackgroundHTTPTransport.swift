@@ -370,6 +370,26 @@ public enum BackgroundDownloadFileHandler {
         to destinationURL: URL,
         expectedBytes: Int64? = nil
     ) throws -> Int64 {
+        try relocateOrAppendTemporaryFile(
+            from: sourceURL,
+            to: destinationURL,
+            expectedNewBytes: expectedBytes,
+            expectedFinalTotalBytes: expectedBytes,
+            append: false
+        )
+    }
+
+    /// Relocates or appends downloaded temporary bytes into destination part file safely and atomically.
+    /// If `append == true` and destination file exists, appends the newly downloaded bytes to destination (via safe staging)
+    /// and verifies that the final merged file equals `expectedFinalTotalBytes`.
+    @discardableResult
+    public static func relocateOrAppendTemporaryFile(
+        from sourceURL: URL,
+        to destinationURL: URL,
+        expectedNewBytes: Int64? = nil,
+        expectedFinalTotalBytes: Int64? = nil,
+        append: Bool = false
+    ) throws -> Int64 {
         let fileManager = FileManager.default
 
         guard fileManager.fileExists(atPath: sourceURL.path) else {
@@ -383,10 +403,42 @@ public enum BackgroundDownloadFileHandler {
         let stagingURL = parentDir
             .appendingPathComponent("staging-\(UUID().uuidString).tmp")
 
-        do {
-            try fileManager.moveItem(at: sourceURL, to: stagingURL)
-        } catch {
-            throw BackgroundTransportError.fileRelocationFailed(underlyingError: "Failed to stage temporary file: \(error.localizedDescription)")
+        if append && fileManager.fileExists(atPath: destinationURL.path) {
+            // Copy existing partial destination to staging, then append new bytes from sourceURL
+            do {
+                try fileManager.copyItem(at: destinationURL, to: stagingURL)
+            } catch {
+                throw BackgroundTransportError.fileRelocationFailed(underlyingError: "Failed to copy partial destination to staging: \(error.localizedDescription)")
+            }
+
+            do {
+                let writeHandle = try FileHandle(forWritingTo: stagingURL)
+                defer {
+                    try? writeHandle.synchronize()
+                    try? writeHandle.close()
+                }
+                try writeHandle.seekToEnd()
+
+                let readHandle = try FileHandle(forReadingFrom: sourceURL)
+                defer { try? readHandle.close() }
+
+                let bufferSize = 256 * 1024
+                while true {
+                    let chunk = readHandle.readData(ofLength: bufferSize)
+                    if chunk.isEmpty { break }
+                    writeHandle.write(chunk)
+                }
+                _ = try? fileManager.removeItem(at: sourceURL)
+            } catch {
+                try? fileManager.removeItem(at: stagingURL)
+                throw BackgroundTransportError.fileRelocationFailed(underlyingError: "Failed to append downloaded bytes: \(error.localizedDescription)")
+            }
+        } else {
+            do {
+                try fileManager.moveItem(at: sourceURL, to: stagingURL)
+            } catch {
+                throw BackgroundTransportError.fileRelocationFailed(underlyingError: "Failed to stage temporary file: \(error.localizedDescription)")
+            }
         }
 
         // Verify size of staged file before touching destination
@@ -396,7 +448,7 @@ public enum BackgroundDownloadFileHandler {
             throw BackgroundTransportError.fileRelocationFailed(underlyingError: "Cannot determine staged file size")
         }
 
-        if let expected = expectedBytes, fileSize != expected {
+        if let expected = expectedFinalTotalBytes, fileSize != expected {
             // Corrupt or truncated file: remove staging and throw. Existing destination is preserved!
             try? fileManager.removeItem(at: stagingURL)
             throw BackgroundTransportError.bodyLengthMismatch(expected: expected, actual: fileSize)
@@ -747,9 +799,12 @@ public final class BackgroundDownloadSessionManager: NSObject, @unchecked Sendab
         }
     }
 
-    /// Queries all active tasks for a download.
+    /// Queries all active tasks for a download that are currently running in the system URLSession.
     public func activeTasks(for downloadID: String) async -> [BackgroundDownloadTaskRecord] {
-        await mappingStore.records(forDownloadID: downloadID)
+        let allTasks = await activeSessionTasks()
+        let taskIDsInSession = Set(allTasks.map { $0.taskIdentifier })
+        let records = await mappingStore.records(forDownloadID: downloadID)
+        return records.filter { taskIDsInSession.contains($0.taskIdentifier) && !$0.isCompleted }
     }
 
     /// Reconciles system URLSession tasks with persisted mappings upon app launch / reactivation.
@@ -771,7 +826,7 @@ public final class BackgroundDownloadSessionManager: NSObject, @unchecked Sendab
                 if FileManager.default.fileExists(atPath: r.destinationPartURL.path) {
                     let attrs = try? FileManager.default.attributesOfItem(atPath: r.destinationPartURL.path)
                     let size = (attrs?[.size] as? Int64) ?? 0
-                    if size == r.expectedBytes {
+                    if size == r.segmentLength || size == r.expectedBytes {
                         try await mappingStore.markCompleted(sessionIdentifier: r.sessionIdentifier, taskIdentifier: r.taskIdentifier, finalBytes: size)
                         completed.append(r)
 
@@ -787,6 +842,8 @@ public final class BackgroundDownloadSessionManager: NSObject, @unchecked Sendab
                         continue
                     }
                 }
+                // Dead/incomplete task: clean up orphaned mapping from store so it does not block future task scheduling
+                try? await mappingStore.remove(sessionIdentifier: r.sessionIdentifier, taskIdentifier: r.taskIdentifier)
                 orphanedCount += 1
             }
         }
@@ -844,9 +901,8 @@ extension BackgroundDownloadSessionManager: URLSessionDownloadDelegate {
         let sessID = self.sessionIdentifier
 
         trackDelegateTaskStarted()
-        Task { [weak self] in
-            defer { self?.trackDelegateTaskFinished() }
-            guard let self = self else { return }
+        Task { [self] in
+            defer { self.trackDelegateTaskFinished() }
             guard let record = await self.mappingStore.record(sessionIdentifier: sessID, taskIdentifier: taskID) else { return }
 
             try? await self.mappingStore.updateProgress(sessionIdentifier: sessID, taskIdentifier: taskID, taskBytesWritten: totalBytesWritten)
@@ -897,14 +953,17 @@ extension BackgroundDownloadSessionManager: URLSessionDownloadDelegate {
 
         trackDelegateTaskStarted()
 
-        // 1. Relocate file immediately to destination using safe staging before iOS purges `location`
+        // 1. Relocate to an intermediate staging file synchronously before iOS deletes `location`
+        let parentDir = destination.deletingLastPathComponent()
+        try? FileManager.default.createDirectory(at: parentDir, withIntermediateDirectories: true)
+        let stagingURL = parentDir.appendingPathComponent("incoming_\(taskID)_\(UUID().uuidString).tmp")
+
         do {
-            try BackgroundDownloadFileHandler.relocateTemporaryFile(from: location, to: destination)
+            try FileManager.default.moveItem(at: location, to: stagingURL)
         } catch {
-            print("[BackgroundDownloadSessionManager] Error relocating temporary download file: \(error)")
-            Task { [weak self] in
-                defer { self?.trackDelegateTaskFinished() }
-                guard let self = self else { return }
+            print("[BackgroundDownloadSessionManager] Error staging downloaded file: \(error)")
+            Task { [self] in
+                defer { self.trackDelegateTaskFinished() }
                 try? await self.mappingStore.markFailed(sessionIdentifier: sessID, taskIdentifier: taskID, error: error.localizedDescription)
                 self.notifyFailed(downloadID: downloadID, segmentID: segmentID, error: error)
             }
@@ -912,9 +971,8 @@ extension BackgroundDownloadSessionManager: URLSessionDownloadDelegate {
         }
 
         // 2. Validate response, verify expected size, and update stores asynchronously
-        Task { [weak self] in
-            defer { self?.trackDelegateTaskFinished() }
-            guard let self = self else { return }
+        Task { [self] in
+            defer { self.trackDelegateTaskFinished() }
             let record = await self.mappingStore.record(sessionIdentifier: sessID, taskIdentifier: taskID)
 
             // Fetch download record to obtain known total size for response validation
@@ -933,6 +991,7 @@ extension BackgroundDownloadSessionManager: URLSessionDownloadDelegate {
                         expectedTotalSize: knownTotalSize
                     )
                 } catch {
+                    try? FileManager.default.removeItem(at: stagingURL)
                     try? FileManager.default.removeItem(at: destination)
                     try? await self.mappingStore.markFailed(sessionIdentifier: sessID, taskIdentifier: taskID, error: error.localizedDescription)
                     self.notifyFailed(downloadID: downloadID, segmentID: segmentID, error: error)
@@ -940,22 +999,23 @@ extension BackgroundDownloadSessionManager: URLSessionDownloadDelegate {
                 }
             }
 
+            let shouldAppend = (record?.initialSegmentCompletedBytes ?? 0) > 0
+            let expectedFinalBytes = record?.segmentLength ?? record?.expectedBytes
             let finalSize: Int64
-            if let rec = record {
-                guard let attrs = try? FileManager.default.attributesOfItem(atPath: destination.path),
-                      let size = attrs[.size] as? Int64,
-                      size == rec.expectedBytes else {
-                    let actualSize = (try? FileManager.default.attributesOfItem(atPath: destination.path)[.size] as? Int64) ?? 0
-                    let err = BackgroundTransportError.bodyLengthMismatch(expected: rec.expectedBytes, actual: actualSize)
-                    try? FileManager.default.removeItem(at: destination)
-                    try? await self.mappingStore.markFailed(sessionIdentifier: sessID, taskIdentifier: taskID, error: err.localizedDescription)
-                    self.notifyFailed(downloadID: downloadID, segmentID: segmentID, error: err)
-                    return
-                }
-                finalSize = size
-            } else {
-                let attrs = try? FileManager.default.attributesOfItem(atPath: destination.path)
-                finalSize = (attrs?[.size] as? Int64) ?? 0
+            do {
+                finalSize = try BackgroundDownloadFileHandler.relocateOrAppendTemporaryFile(
+                    from: stagingURL,
+                    to: destination,
+                    expectedNewBytes: record?.expectedBytes,
+                    expectedFinalTotalBytes: expectedFinalBytes,
+                    append: shouldAppend
+                )
+            } catch {
+                print("[BackgroundDownloadSessionManager] Error committing downloaded file: \(error)")
+                try? FileManager.default.removeItem(at: stagingURL)
+                try? await self.mappingStore.markFailed(sessionIdentifier: sessID, taskIdentifier: taskID, error: error.localizedDescription)
+                self.notifyFailed(downloadID: downloadID, segmentID: segmentID, error: error)
+                return
             }
 
             try? await self.mappingStore.markCompleted(sessionIdentifier: sessID, taskIdentifier: taskID, finalBytes: finalSize)
@@ -988,9 +1048,8 @@ extension BackgroundDownloadSessionManager: URLSessionDownloadDelegate {
         guard let error = error else { return }
 
         trackDelegateTaskStarted()
-        Task { [weak self] in
-            defer { self?.trackDelegateTaskFinished() }
-            guard let self = self else { return }
+        Task { [self] in
+            defer { self.trackDelegateTaskFinished() }
             if let rec = await self.mappingStore.record(sessionIdentifier: sessID, taskIdentifier: taskID) {
                 try? await self.mappingStore.markFailed(sessionIdentifier: sessID, taskIdentifier: taskID, error: error.localizedDescription)
                 self.notifyFailed(downloadID: rec.downloadID, segmentID: rec.segmentID, error: error)
