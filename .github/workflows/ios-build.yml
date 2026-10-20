@@ -457,13 +457,67 @@ jobs:
                   try await downloaderEngine.pause(infoHash: torrentInfoHash)
                   let pausedTask = await downloaderEngine.task(for: torrentInfoHash)
                   assert(pausedTask?.state == .paused, "Task must pause")
+                  assert(pausedTask?.isExplicitlyPaused == true, "Task must have isExplicitlyPaused == true")
                   try await downloaderEngine.resume(infoHash: torrentInfoHash)
                   let resumedTask = await downloaderEngine.task(for: torrentInfoHash)
                   assert(resumedTask?.state != .paused, "Task must resume")
+                  assert(resumedTask?.isExplicitlyPaused == false, "Task must have isExplicitlyPaused == false")
 
                   await downloaderEngine.stop(timeoutSeconds: 2.0)
                   await seederEngine.stop(timeoutSeconds: 2.0)
                   print("--- Milestone 6.1 SUCCESS: Real BitTorrent Swarm Transfer & Incomplete Download Recovery Verified ---")
+
+                  print("--- Milestone 6.2 Verification Test: Explicit Pause Invariant & Auto-Manage Prohibition ---")
+                  let m62Dir = NSTemporaryDirectory() + "m62_test_" + UUID().uuidString
+                  try FileManager.default.createDirectory(atPath: m62Dir, withIntermediateDirectories: true)
+                  defer { try? FileManager.default.removeItem(atPath: m62Dir) }
+
+                  let m62Engine = try TorrentEngine(
+                      storageDirectoryURL: URL(fileURLWithPath: m62Dir),
+                      portStart: 18911,
+                      portEnd: 18920,
+                      maxConcurrentTorrents: 2
+                  )
+                  try await m62Engine.start()
+                  let m62Task = try await m62Engine.addTorrent(
+                      fileURL: URL(fileURLWithPath: torrentFilePath),
+                      saveDirectoryURL: URL(fileURLWithPath: m62Dir)
+                  )
+                  // Explicitly pause
+                  try await m62Engine.pause(infoHash: m62Task.infoHash)
+                  let pausedCheck = await m62Engine.task(for: m62Task.infoHash)
+                  assert(pausedCheck?.state == .paused, "Must be paused")
+                  assert(pausedCheck?.isExplicitlyPaused == true, "Must have isExplicitlyPaused == true")
+
+                  // Verify repeated status checks and wait for libtorrent internal ticks
+                  for _ in 1...10 {
+                      try await Task.sleep(nanoseconds: 100_000_000) // 100ms
+                      let pollTask = await m62Engine.task(for: m62Task.infoHash)
+                      assert(pollTask?.state == .paused, "Must remain paused during polling")
+                      assert(pollTask?.isExplicitlyPaused == true, "isExplicitlyPaused must remain true")
+                  }
+
+                  // Stop and restart
+                  await m62Engine.stop(timeoutSeconds: 2.0)
+                  let m62Relaunched = try TorrentEngine(
+                      storageDirectoryURL: URL(fileURLWithPath: m62Dir),
+                      portStart: 18911,
+                      portEnd: 18920,
+                      maxConcurrentTorrents: 2
+                  )
+                  try await m62Relaunched.start()
+                  let restoredCheck = await m62Relaunched.task(for: m62Task.infoHash)
+                  assert(restoredCheck?.state == .paused, "Restored torrent must remain paused")
+                  assert(restoredCheck?.isExplicitlyPaused == true, "Restored torrent must retain isExplicitlyPaused == true")
+
+                  // Explicit user resume
+                  try await m62Relaunched.resume(infoHash: m62Task.infoHash)
+                  let resumedCheck = await m62Relaunched.task(for: m62Task.infoHash)
+                  assert(resumedCheck?.isExplicitlyPaused == false, "Resume must clear isExplicitlyPaused")
+                  assert(resumedCheck?.state == .downloading, "Admitted torrent must transition to downloading")
+
+                  await m62Relaunched.stop(timeoutSeconds: 2.0)
+                  print("--- Milestone 6.2 SUCCESS: Torrent Explicit Pause Invariant & Auto-Manage Prohibition Verified ---")
               }
           }
           EOF

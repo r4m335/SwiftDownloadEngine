@@ -154,6 +154,12 @@ NS_SWIFT_NAME(TorrentSessionBridge)
 - (BOOL)resumeTorrentWithHash:(NSString *)infoHash
                         error:(NSError * _Nullable * _Nullable)error NS_SWIFT_NAME(resumeTorrent(withHash:));
 
+/// Queries whether a torrent has been explicitly paused by the user.
+- (BOOL)isTorrentExplicitlyPausedWithHash:(NSString *)infoHash NS_SWIFT_NAME(isExplicitlyPaused(forTorrentWithHash:));
+
+/// Explicitly sets or clears the pause invariant on a torrent handle.
+- (void)setExplicitlyPaused:(BOOL)paused forTorrentWithHash:(NSString *)infoHash NS_SWIFT_NAME(setExplicitlyPaused(_:forTorrentWithHash:));
+
 /// Removes a torrent from the session, optionally deleting downloaded payload files.
 - (BOOL)removeTorrentWithHash:(NSString *)infoHash
                   deleteFiles:(BOOL)deleteFiles

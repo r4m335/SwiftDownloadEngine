@@ -75,7 +75,10 @@ public actor TorrentEngine {
             }
 
             // 3. Preserve pause / queued status
-            if record.isExplicitlyPaused || record.state == .paused || record.state == .queued {
+            if record.isExplicitlyPaused {
+                bridge.setExplicitlyPaused(true, forTorrentWithHash: hash)
+                try? bridge.pauseTorrent(withHash: hash)
+            } else if record.state == .paused || record.state == .queued {
                 try? bridge.pauseTorrent(withHash: hash)
             }
         }
@@ -83,7 +86,7 @@ public actor TorrentEngine {
         // 4. Pump queue to activate admitted torrents up to concurrency limit
         let changes = await sched.pumpQueue()
         for h in changes.promoted {
-            try? bridge.resumeTorrent(withHash: h)
+            try? await safeResumeTorrent(withHash: h, source: "start.pumpQueue")
         }
         for h in changes.demoted {
             try? bridge.pauseTorrent(withHash: h)
@@ -128,7 +131,11 @@ public actor TorrentEngine {
         for s in currentStatuses {
             let key = s.infoHash.lowercased()
             if var rec = await scheduler?.record(for: key) {
-                rec.state = TorrentState(bridgeState: s.state)
+                if rec.isExplicitlyPaused {
+                    rec.state = .paused
+                } else {
+                    rec.state = TorrentState(bridgeState: s.state)
+                }
                 rec.progress = TorrentProgress(
                     bytesDownloaded: s.totalDone,
                     totalBytes: s.totalWanted,
@@ -165,6 +172,24 @@ public actor TorrentEngine {
         )
     }
 
+    /// Safely resumes a torrent across bridge and scheduler if and only if
+    /// it is NOT explicitly paused.
+    private func safeResumeTorrent(withHash infoHash: String, source: String = #function) async throws {
+        let key = infoHash.lowercased()
+        if let sched = scheduler, let record = await sched.record(for: key) {
+            if record.isExplicitlyPaused {
+                #if DEBUG
+                print("[TorrentEngine] Invariant enforced: Rejected resume for explicitly paused torrent: \(key) (caller: \(source))")
+                #endif
+                bridge.setExplicitlyPaused(true, forTorrentWithHash: key)
+                try? bridge.pauseTorrent(withHash: key)
+                return
+            }
+        }
+        bridge.setExplicitlyPaused(false, forTorrentWithHash: key)
+        try bridge.resumeTorrent(withHash: key)
+    }
+
     // MARK: - Ingestion
 
     @discardableResult
@@ -188,8 +213,11 @@ public actor TorrentEngine {
                 isExplicitlyPaused: isExplicitlyPaused
             )
 
-            if record.state == .downloading && !isExplicitlyPaused {
-                try? bridge.resumeTorrent(withHash: hash)
+            if isExplicitlyPaused {
+                bridge.setExplicitlyPaused(true, forTorrentWithHash: hash)
+                try? bridge.pauseTorrent(withHash: hash)
+            } else if record.state == .downloading {
+                try? await safeResumeTorrent(withHash: hash, source: "addTorrent.magnet")
             } else {
                 try? bridge.pauseTorrent(withHash: hash)
             }
@@ -222,8 +250,11 @@ public actor TorrentEngine {
                 isExplicitlyPaused: isExplicitlyPaused
             )
 
-            if record.state == .downloading && !isExplicitlyPaused {
-                try? bridge.resumeTorrent(withHash: hash)
+            if isExplicitlyPaused {
+                bridge.setExplicitlyPaused(true, forTorrentWithHash: hash)
+                try? bridge.pauseTorrent(withHash: hash)
+            } else if record.state == .downloading {
+                try? await safeResumeTorrent(withHash: hash, source: "addTorrent.file")
             } else {
                 try? bridge.pauseTorrent(withHash: hash)
             }
@@ -258,8 +289,11 @@ public actor TorrentEngine {
                 isExplicitlyPaused: isExplicitlyPaused
             )
 
-            if record.state == .downloading && !isExplicitlyPaused {
-                try? bridge.resumeTorrent(withHash: hash)
+            if isExplicitlyPaused {
+                bridge.setExplicitlyPaused(true, forTorrentWithHash: hash)
+                try? bridge.pauseTorrent(withHash: hash)
+            } else if record.state == .downloading {
+                try? await safeResumeTorrent(withHash: hash, source: "addTorrent.buffer")
             } else {
                 try? bridge.pauseTorrent(withHash: hash)
             }
@@ -276,6 +310,7 @@ public actor TorrentEngine {
     public func pause(infoHash: String) async throws {
         guard isRunning else { throw TorrentEngineError.sessionNotRunning }
         let key = infoHash.lowercased()
+        bridge.setExplicitlyPaused(true, forTorrentWithHash: key)
         try bridge.pauseTorrent(withHash: key)
 
         try? bridge.requestResumeData(forTorrentWithHash: key)
@@ -283,7 +318,7 @@ public actor TorrentEngine {
         if let sched = scheduler {
             let changes = try await sched.pause(infoHash: key)
             for h in changes.promoted {
-                try? bridge.resumeTorrent(withHash: h)
+                try? await safeResumeTorrent(withHash: h, source: "pause.promoted")
             }
         }
 
@@ -297,24 +332,30 @@ public actor TorrentEngine {
     public func resume(infoHash: String) async throws {
         guard isRunning else { throw TorrentEngineError.sessionNotRunning }
         let key = infoHash.lowercased()
+        bridge.setExplicitlyPaused(false, forTorrentWithHash: key)
 
         if let sched = scheduler {
             let changes = try await sched.resume(infoHash: key)
             for h in changes.promoted {
-                try? bridge.resumeTorrent(withHash: h)
+                try? await safeResumeTorrent(withHash: h, source: "resume.promoted")
             }
             for h in changes.demoted {
                 try? bridge.pauseTorrent(withHash: h)
             }
+            if var task = tasks[key], let rec = await sched.record(for: key) {
+                task.isExplicitlyPaused = false
+                task.state = rec.state
+                task.errorMessage = nil
+                tasks[key] = task
+            }
         } else {
             try bridge.resumeTorrent(withHash: key)
-        }
-
-        if var task = tasks[key] {
-            task.isExplicitlyPaused = false
-            task.state = .downloading
-            task.errorMessage = nil
-            tasks[key] = task
+            if var task = tasks[key] {
+                task.isExplicitlyPaused = false
+                task.state = .downloading
+                task.errorMessage = nil
+                tasks[key] = task
+            }
         }
     }
 
@@ -326,7 +367,7 @@ public actor TorrentEngine {
         if let sched = scheduler {
             let changes = try await sched.remove(infoHash: key)
             for h in changes.promoted {
-                try? bridge.resumeTorrent(withHash: h)
+                try? await safeResumeTorrent(withHash: h, source: "remove.promoted")
             }
         }
 
@@ -341,7 +382,7 @@ public actor TorrentEngine {
         guard let sched = scheduler else { return }
         let changes = try await sched.setMaxConcurrentTorrents(limit)
         for h in changes.promoted {
-            try? bridge.resumeTorrent(withHash: h)
+            try? await safeResumeTorrent(withHash: h, source: "setMaxConcurrentTorrents.promoted")
         }
         for h in changes.demoted {
             try? bridge.pauseTorrent(withHash: h)
@@ -352,7 +393,7 @@ public actor TorrentEngine {
         guard let sched = scheduler else { return }
         let changes = try await sched.setPriority(priority, for: infoHash)
         for h in changes.promoted {
-            try? bridge.resumeTorrent(withHash: h)
+            try? await safeResumeTorrent(withHash: h, source: "setPriority.promoted")
         }
         for h in changes.demoted {
             try? bridge.pauseTorrent(withHash: h)
@@ -427,6 +468,11 @@ public actor TorrentEngine {
                 if rec.isExplicitlyPaused {
                     t.state = .paused
                     t.isExplicitlyPaused = true
+                    // Enforce native pause invariant if bridge status deviated
+                    bridge.setExplicitlyPaused(true, forTorrentWithHash: key)
+                    if bridgeStatus.state != .paused {
+                        try? bridge.pauseTorrent(withHash: key)
+                    }
                 } else if rec.state == .queued && (t.state == .paused || t.state == .downloading) {
                     t.state = .queued
                 }
@@ -460,6 +506,11 @@ public actor TorrentEngine {
                     if rec.isExplicitlyPaused {
                         task.state = .paused
                         task.isExplicitlyPaused = true
+                        // Enforce native pause invariant if bridge status deviated
+                        bridge.setExplicitlyPaused(true, forTorrentWithHash: key)
+                        if let bridgeStatus = bridge.status(forTorrentWithHash: key), bridgeStatus.state != .paused {
+                            try? bridge.pauseTorrent(withHash: key)
+                        }
                     } else if rec.state == .queued && (task.state == .paused || task.state == .downloading) {
                         task.state = .queued
                     }
@@ -757,10 +808,10 @@ public actor TorrentEngine {
         guard isRunning else { throw TorrentEngineError.sessionNotRunning }
         let hash = infoHash.lowercased()
         guard var task = tasks[hash] else { throw TorrentEngineError.torrentNotFound }
+        _ = try await scheduler?.pause(infoHash: hash)
         task.state = .paused
         task.isExplicitlyPaused = true
         tasks[hash] = task
-        _ = try await scheduler?.pause(infoHash: hash)
     }
 
     public func pauseTorrent(infoHash: String) async throws {
@@ -771,10 +822,14 @@ public actor TorrentEngine {
         guard isRunning else { throw TorrentEngineError.sessionNotRunning }
         let hash = infoHash.lowercased()
         guard var task = tasks[hash] else { throw TorrentEngineError.torrentNotFound }
-        task.state = .downloading
+        let changes = try await scheduler?.resume(infoHash: hash) ?? (promoted: [], demoted: [])
         task.isExplicitlyPaused = false
+        if let rec = await scheduler?.record(for: hash) {
+            task.state = rec.state
+        } else {
+            task.state = changes.promoted.contains(hash) ? .downloading : .queued
+        }
         tasks[hash] = task
-        _ = try await scheduler?.resume(infoHash: hash)
     }
 
     public func resumeTorrent(infoHash: String) async throws {
@@ -818,7 +873,10 @@ public actor TorrentEngine {
                 task.state = .paused
             } else if rec.state == .queued {
                 task.state = .queued
+            } else {
+                task.state = rec.state
             }
+            tasks[hash] = task
         }
         return task
     }
@@ -873,6 +931,8 @@ public actor TorrentEngine {
                     t.state = .paused
                 } else if rec.state == .queued {
                     t.state = .queued
+                } else {
+                    t.state = rec.state
                 }
             }
             result.append(t)

@@ -110,6 +110,7 @@ static std::string infoHashToHex(const libtorrent::info_hash_t &ih) {
     std::map<std::string, NSString *> _torrentErrors;
     std::map<std::string, std::vector<char>> _cachedResumeData;
     std::map<std::string, NSString *> _resumeDataErrors;
+    std::set<std::string> _explicitlyPausedHashes;
 }
 @property (nonatomic, readwrite, copy) NSString *storagePath;
 @end
@@ -162,6 +163,14 @@ static std::string infoHashToHex(const libtorrent::info_hash_t &ih) {
         sp.set_bool(libtorrent::settings_pack::enable_natpmp, true);
         sp.set_bool(libtorrent::settings_pack::allow_multiple_connections_per_ip, true);
 
+        // Queueing is exclusively managed by Swift's TorrentQueueScheduler.
+        // Disable libtorrent's internal auto-manage queue evaluation so libtorrent
+        // never auto-resumes or auto-pauses torrents behind the back of the Swift scheduler.
+        sp.set_int(libtorrent::settings_pack::active_downloads, -1);
+        sp.set_int(libtorrent::settings_pack::active_seeds, -1);
+        sp.set_int(libtorrent::settings_pack::active_limit, -1);
+        sp.set_int(libtorrent::settings_pack::auto_manage_interval, 0);
+
         // Enable essential alerts
         sp.set_int(libtorrent::settings_pack::alert_mask,
                    libtorrent::alert_category::error
@@ -197,6 +206,7 @@ static std::string infoHashToHex(const libtorrent::info_hash_t &ih) {
     _torrentErrors.clear();
     _cachedResumeData.clear();
     _resumeDataErrors.clear();
+    _explicitlyPausedHashes.clear();
     auto proxy = _session->abort();
     _session.reset();
 }
@@ -272,7 +282,17 @@ static std::string infoHashToHex(const libtorrent::info_hash_t &ih) {
     NSString *err = _torrentErrors.count(key) ? _torrentErrors[key] : nil;
 
     TorrentBridgeState bridgeState = TorrentBridgeStateQueued;
-    if (st.errc) {
+    if (_explicitlyPausedHashes.count(key) > 0) {
+        bridgeState = TorrentBridgeStatePaused;
+        // Invariant self-healing: ensure native handle remains paused if libtorrent shifted
+        auto it = _torrents.find(key);
+        if (it != _torrents.end() && it->second.is_valid()) {
+            if (!static_cast<bool>(st.flags & libtorrent::torrent_flags::paused)) {
+                it->second.unset_flags(libtorrent::torrent_flags::auto_managed);
+                it->second.pause();
+            }
+        }
+    } else if (st.errc) {
         bridgeState = TorrentBridgeStateError;
         if (!err) {
             err = [NSString stringWithUTF8String:st.errc.message().c_str()];
@@ -355,6 +375,7 @@ static std::string infoHashToHex(const libtorrent::info_hash_t &ih) {
                                                    attributes:nil
                                                         error:nil];
         atp.save_path = [effectiveSavePath UTF8String];
+        atp.flags &= ~libtorrent::torrent_flags::auto_managed;
 
         libtorrent::torrent_handle handle = _session->add_torrent(atp, ec);
         if (ec || !handle.is_valid()) {
@@ -411,6 +432,7 @@ static std::string infoHashToHex(const libtorrent::info_hash_t &ih) {
                                                    attributes:nil
                                                         error:nil];
         atp.save_path = [effectiveSavePath UTF8String];
+        atp.flags &= ~libtorrent::torrent_flags::auto_managed;
 
         libtorrent::error_code ec;
         libtorrent::torrent_handle handle = _session->add_torrent(atp, ec);
@@ -478,6 +500,7 @@ static std::string infoHashToHex(const libtorrent::info_hash_t &ih) {
                                                    attributes:nil
                                                         error:nil];
         atp.save_path = [effectiveSavePath UTF8String];
+        atp.flags &= ~libtorrent::torrent_flags::auto_managed;
 
         libtorrent::error_code ec;
         libtorrent::torrent_handle handle = _session->add_torrent(atp, ec);
@@ -517,6 +540,7 @@ static std::string infoHashToHex(const libtorrent::info_hash_t &ih) {
                        error:(NSError * _Nullable * _Nullable)error {
     std::lock_guard<std::mutex> lock(_sessionMutex);
     std::string key = [[infoHash lowercaseString] UTF8String];
+    _explicitlyPausedHashes.insert(key);
     auto it = _torrents.find(key);
     if (it == _torrents.end() || !it->second.is_valid()) {
         if (error) {
@@ -526,6 +550,7 @@ static std::string infoHashToHex(const libtorrent::info_hash_t &ih) {
         }
         return NO;
     }
+    it->second.unset_flags(libtorrent::torrent_flags::auto_managed);
     it->second.pause();
     return YES;
 }
@@ -534,6 +559,7 @@ static std::string infoHashToHex(const libtorrent::info_hash_t &ih) {
                         error:(NSError * _Nullable * _Nullable)error {
     std::lock_guard<std::mutex> lock(_sessionMutex);
     std::string key = [[infoHash lowercaseString] UTF8String];
+    _explicitlyPausedHashes.erase(key);
     auto it = _torrents.find(key);
     if (it == _torrents.end() || !it->second.is_valid()) {
         if (error) {
@@ -544,8 +570,30 @@ static std::string infoHashToHex(const libtorrent::info_hash_t &ih) {
         return NO;
     }
     _torrentErrors.erase(key);
+    it->second.unset_flags(libtorrent::torrent_flags::auto_managed);
     it->second.resume();
     return YES;
+}
+
+- (BOOL)isTorrentExplicitlyPausedWithHash:(NSString *)infoHash {
+    std::lock_guard<std::mutex> lock(_sessionMutex);
+    std::string key = [[infoHash lowercaseString] UTF8String];
+    return _explicitlyPausedHashes.count(key) > 0;
+}
+
+- (void)setExplicitlyPaused:(BOOL)paused forTorrentWithHash:(NSString *)infoHash {
+    std::lock_guard<std::mutex> lock(_sessionMutex);
+    std::string key = [[infoHash lowercaseString] UTF8String];
+    if (paused) {
+        _explicitlyPausedHashes.insert(key);
+        auto it = _torrents.find(key);
+        if (it != _torrents.end() && it->second.is_valid()) {
+            it->second.unset_flags(libtorrent::torrent_flags::auto_managed);
+            it->second.pause();
+        }
+    } else {
+        _explicitlyPausedHashes.erase(key);
+    }
 }
 
 - (BOOL)removeTorrentWithHash:(NSString *)infoHash
@@ -581,6 +629,7 @@ static std::string infoHashToHex(const libtorrent::info_hash_t &ih) {
     }
     _torrents.erase(it);
     _torrentErrors.erase(key);
+    _explicitlyPausedHashes.erase(key);
     return YES;
 }
 
@@ -822,6 +871,7 @@ static std::string infoHashToHex(const libtorrent::info_hash_t &ih) {
         if (targetSavePath.length > 0) {
             params.save_path = [targetSavePath UTF8String];
         }
+        params.flags &= ~libtorrent::torrent_flags::auto_managed;
 
         libtorrent::torrent_handle handle = _session->add_torrent(params, ec);
         if (ec) {

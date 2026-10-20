@@ -226,7 +226,12 @@ public actor TorrentQueueScheduler {
         let oldState = record.state
         record.progress = progress
         if let newState = state {
-            record.state = newState
+            if record.isExplicitlyPaused {
+                // Invariant: An explicitly paused torrent must NEVER transition to active or queued states
+                record.state = .paused
+            } else {
+                record.state = newState
+            }
         }
         if let err = errorMessage {
             record.errorMessage = err
@@ -293,6 +298,12 @@ public actor TorrentQueueScheduler {
                 }
 
             for r in eligible.prefix(availableSlots) {
+                guard !r.isExplicitlyPaused else {
+                    #if DEBUG
+                    print("[TorrentQueueScheduler] Invariant guard: skipping promotion of explicitly paused torrent \(r.infoHash)")
+                    #endif
+                    continue
+                }
                 let key = r.infoHash
                 var updated = r
                 updated.state = .downloading
@@ -351,8 +362,15 @@ public actor TorrentQueueScheduler {
         // Interrupted active downloads from prior session:
         // Torrents marked .downloading or .checking that were not explicitly paused are marked .queued
         // and re-evaluated through pumpQueue() to respect concurrency limits.
+        // Explicitly paused torrents are strictly preserved in .paused state.
         for (key, var r) in records {
-            if r.state.isActive && !r.isExplicitlyPaused {
+            if r.isExplicitlyPaused {
+                if r.state != .paused {
+                    r.state = .paused
+                    records[key] = r
+                    try? await persistenceStore.saveRecord(r)
+                }
+            } else if r.state.isActive {
                 r.state = .queued
                 records[key] = r
             }
