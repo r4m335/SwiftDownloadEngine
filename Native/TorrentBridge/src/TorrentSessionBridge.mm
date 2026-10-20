@@ -25,6 +25,7 @@
 #include <libtorrent/info_hash.hpp>
 #include <libtorrent/write_resume_data.hpp>
 #include <libtorrent/read_resume_data.hpp>
+#include <boost/asio/ip/tcp.hpp>
 
 static std::string hexEncode(const uint8_t *bytes, size_t length) {
     static const char hexDigits[] = "0123456789abcdef";
@@ -159,6 +160,7 @@ static std::string infoHashToHex(const libtorrent::info_hash_t &ih) {
         sp.set_bool(libtorrent::settings_pack::enable_lsd, true);
         sp.set_bool(libtorrent::settings_pack::enable_upnp, true);
         sp.set_bool(libtorrent::settings_pack::enable_natpmp, true);
+        sp.set_bool(libtorrent::settings_pack::allow_multiple_connections_per_ip, true);
 
         // Enable essential alerts
         sp.set_int(libtorrent::settings_pack::alert_mask,
@@ -843,6 +845,57 @@ static std::string infoHashToHex(const libtorrent::info_hash_t &ih) {
                                      userInfo:@{NSLocalizedDescriptionKey: msg}];
         }
         return nil;
+    }
+}
+
+// MARK: - Milestone 6.1: Direct Peer Connection & Local Swarm
+
+- (BOOL)connectPeerWithAddress:(NSString *)address
+                          port:(NSUInteger)port
+             toTorrentWithHash:(NSString *)infoHash
+                         error:(NSError * _Nullable * _Nullable)error {
+    std::lock_guard<std::mutex> lock(_sessionMutex);
+    if (!_session) {
+        if (error) {
+            *error = [NSError errorWithDomain:@"com.r4m335.TorrentSessionBridge"
+                                         code:2001
+                                     userInfo:@{NSLocalizedDescriptionKey: @"Torrent session is not running"}];
+        }
+        return NO;
+    }
+
+    std::string key = [infoHash.lowercaseString UTF8String];
+    auto it = _torrents.find(key);
+    if (it == _torrents.end() || !it->second.is_valid()) {
+        if (error) {
+            *error = [NSError errorWithDomain:@"com.r4m335.TorrentSessionBridge"
+                                         code:2006
+                                     userInfo:@{NSLocalizedDescriptionKey: @"Torrent not found"}];
+        }
+        return NO;
+    }
+
+    try {
+        boost::system::error_code ec;
+        auto ip = boost::asio::ip::make_address([address UTF8String], ec);
+        if (ec) {
+            if (error) {
+                *error = [NSError errorWithDomain:@"com.r4m335.TorrentSessionBridge"
+                                             code:2007
+                                         userInfo:@{NSLocalizedDescriptionKey: [NSString stringWithUTF8String:ec.message().c_str()]}];
+            }
+            return NO;
+        }
+        boost::asio::ip::tcp::endpoint ep(ip, static_cast<unsigned short>(port));
+        it->second.connect_peer(ep);
+        return YES;
+    } catch (const std::exception &ex) {
+        if (error) {
+            *error = [NSError errorWithDomain:@"com.r4m335.TorrentSessionBridge"
+                                         code:2008
+                                     userInfo:@{NSLocalizedDescriptionKey: [NSString stringWithUTF8String:ex.what()]}];
+        }
+        return NO;
     }
 }
 

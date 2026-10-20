@@ -162,9 +162,9 @@ final class Milestone6ValidationTests: XCTestCase {
         #endif
     }
 
-    // MARK: - Phase 1: Real-World Torrent Download, Fixture & Integrity Verification
+    // MARK: - Phase 1: Torrent Fixture Creation & Metadata Ingestion
 
-    func testPhase1_RealTorrentFixtureCreationAndPayloadIntegrity() async throws {
+    func testPhase1_TorrentFixtureCreationAndMetadataIngestion() async throws {
         // 1. Generate 8 KB known deterministic payload
         var sampleBytes = [UInt8]()
         for i in 0..<8192 {
@@ -186,17 +186,9 @@ final class Milestone6ValidationTests: XCTestCase {
         try fixture.torrentData.write(to: torrentFileURL)
         XCTAssertTrue(FileManager.default.fileExists(atPath: torrentFileURL.path))
 
-        // 3. Verify write to destination and cryptographic hash calculation
+        // 3. Ingest into TorrentEngine without pre-writing synthetic payload
         let destinationDir = tempDirectoryURL.appendingPathComponent("DownloadedPayloads", isDirectory: true)
         try FileManager.default.createDirectory(at: destinationDir, withIntermediateDirectories: true)
-        let finalPayloadURL = destinationDir.appendingPathComponent("legal_sample.bin")
-        try payload.write(to: finalPayloadURL)
-
-        // 4. Verify SHA-256 matches expected cryptographic hash
-        let calculatedHash = try FileHasher.sha256(for: finalPayloadURL)
-        XCTAssertEqual(calculatedHash.lowercased(), fixture.expectedSHA256.lowercased(), "Downloaded payload SHA-256 must match known cryptographic hash")
-
-        // 5. Ingest into TorrentEngine
         let engine = try TorrentEngine(storageDirectoryURL: tempDirectoryURL, portStart: 6881, portEnd: 6891)
         try await engine.start()
         defer { Task { await engine.stop() } }
@@ -205,7 +197,7 @@ final class Milestone6ValidationTests: XCTestCase {
         XCTAssertEqual(task.name, "legal_sample.bin")
         XCTAssertEqual(task.infoHash.lowercased(), fixture.infoHash.lowercased())
 
-        // Verify task state
+        // Verify task state is tracked
         let retrieved = await engine.task(for: task.infoHash)
         XCTAssertNotNil(retrieved)
 
@@ -217,6 +209,170 @@ final class Milestone6ValidationTests: XCTestCase {
         try await engine.resume(infoHash: task.infoHash)
         let resumedTask = await engine.task(for: task.infoHash)
         XCTAssertNotEqual(resumedTask?.state, .paused)
+    }
+
+    // MARK: - Phase 1b: Deterministic Local Swarm Transfer (Real Loopback Sockets)
+
+    func testPhase1_DeterministicLocalSwarmTransfer() async throws {
+        #if canImport(LibTorrent)
+        // 1. Generate deterministic 32 KB test payload and torrent fixture
+        var sampleBytes = [UInt8]()
+        for i in 0..<32768 {
+            sampleBytes.append(UInt8((i * 31 + 17) & 0xFF))
+        }
+        let payload = Data(sampleBytes)
+
+        let fixture = createDeterministicSingleFileTorrent(
+            name: "swarm_sample.bin",
+            payload: payload,
+            pieceLength: 16384
+        )
+        let torrentFileURL = tempDirectoryURL.appendingPathComponent("swarm_sample.torrent")
+        try fixture.torrentData.write(to: torrentFileURL)
+
+        // 2. Setup Seeder: storage contains the payload file
+        let seederDir = tempDirectoryURL.appendingPathComponent("SeederStorage", isDirectory: true)
+        try FileManager.default.createDirectory(at: seederDir, withIntermediateDirectories: true)
+        let seederPayloadURL = seederDir.appendingPathComponent("swarm_sample.bin")
+        try payload.write(to: seederPayloadURL)
+
+        let seederEngine = try TorrentEngine(storageDirectoryURL: seederDir, portStart: 18881, portEnd: 18890)
+        try await seederEngine.start()
+        defer { Task { await seederEngine.stop() } }
+
+        let seederTask = try await seederEngine.addTorrent(fileURL: torrentFileURL, saveDirectoryURL: seederDir)
+        XCTAssertEqual(seederTask.infoHash.lowercased(), fixture.infoHash.lowercased())
+
+        let seederStatus = await seederEngine.status()
+        XCTAssertGreaterThan(seederStatus.listenPort, 0, "Seeder must bind to valid listening port")
+
+        // 3. Setup Downloader: destination directory is strictly EMPTY
+        let downloaderDir = tempDirectoryURL.appendingPathComponent("DownloaderStorage", isDirectory: true)
+        try FileManager.default.createDirectory(at: downloaderDir, withIntermediateDirectories: true)
+        let initialContents = try FileManager.default.contentsOfDirectory(atPath: downloaderDir.path)
+        XCTAssertTrue(initialContents.isEmpty, "Downloader destination must be genuinely empty before transfer begins")
+
+        let downloaderEngine = try TorrentEngine(storageDirectoryURL: downloaderDir, portStart: 18891, portEnd: 18900)
+        try await downloaderEngine.start()
+        defer { Task { await downloaderEngine.stop() } }
+
+        let downloaderTask = try await downloaderEngine.addTorrent(fileURL: torrentFileURL, saveDirectoryURL: downloaderDir)
+        XCTAssertEqual(downloaderTask.infoHash.lowercased(), fixture.infoHash.lowercased())
+
+        let downloadedFile = downloaderDir.appendingPathComponent("swarm_sample.bin")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: downloadedFile.path), "Payload must not exist prior to swarm transfer")
+
+        // 4. Connect Downloader to Seeder via loopback endpoint
+        try await downloaderEngine.connectPeer(
+            address: "127.0.0.1",
+            port: seederStatus.listenPort,
+            toTorrentWithHash: fixture.infoHash
+        )
+
+        // 5. Poll for download completion over loopback socket (up to 15 seconds)
+        let deadline = Date().addingTimeInterval(15.0)
+        var transferComplete = false
+        while Date() < deadline {
+            let current = await downloaderEngine.task(for: fixture.infoHash)
+            if let c = current, (c.state == .finished || c.state == .seeding || c.progress.bytesDownloaded >= payload.count) {
+                transferComplete = true
+                break
+            }
+            try await Task.sleep(nanoseconds: 100_000_000) // 100ms
+        }
+
+        XCTAssertTrue(transferComplete, "Downloader must complete payload download from local seeder within deadline")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: downloadedFile.path), "Downloaded payload file must exist on disk")
+
+        // 6. Verify downloaded payload integrity via SHA-256
+        let calculatedHash = try FileHasher.sha256(for: downloadedFile)
+        XCTAssertEqual(calculatedHash.lowercased(), fixture.expectedSHA256.lowercased(), "Transferred payload SHA-256 must match known cryptographic hash")
+
+        // 7. Verify pause and resume during active session
+        try await downloaderEngine.pause(infoHash: fixture.infoHash)
+        let pausedStatus = await downloaderEngine.task(for: fixture.infoHash)
+        XCTAssertEqual(pausedStatus?.state, .paused)
+
+        try await downloaderEngine.resume(infoHash: fixture.infoHash)
+        let resumedStatus = await downloaderEngine.task(for: fixture.infoHash)
+        XCTAssertNotEqual(resumedStatus?.state, .paused)
+        #else
+        throw XCTSkip("Deterministic local-swarm payload transfer test requires native libtorrent-rasterbar (LibTorrent.xcframework), which is compiled on macOS and iOS Simulator. Linux/WSL uses the pure-Swift fallback actor without native network sockets. See iOS Simulator CI runner for full native swarm transfer validation.")
+        #endif
+    }
+
+    // MARK: - Phase 2: Missing & Corrupt Resume-Data Recovery
+
+    func testPhase2_MissingAndCorruptResumeDataRecovery() async throws {
+        let storeURL = tempDirectoryURL.appendingPathComponent("PersistenceMetadata", isDirectory: true)
+        let store = try TorrentPersistenceStore(storageDirectoryURL: storeURL)
+        let hash = "abcdefabcdefabcdefabcdefabcdefabcdefabcd"
+
+        // 1. Missing resume data: returns nil cleanly without throwing
+        let missing = await store.loadResumeData(for: hash)
+        XCTAssertNil(missing, "Loading non-existent resume data must return nil")
+
+        // 2. Corrupted resume data: store persists and loads raw bytes without throwing
+        let corruptBytes = Data("CORRUPTED_NON_BENCODED_BINARY_GARBAGE".utf8)
+        try await store.saveResumeData(corruptBytes, for: hash)
+        let loaded = await store.loadResumeData(for: hash)
+        XCTAssertEqual(loaded, corruptBytes, "Store must faithfully load raw bytes for inspection")
+
+        // 3. Engine recovery with corrupt resume data: must not crash and fallback cleanly
+        let engine = try TorrentEngine(storageDirectoryURL: tempDirectoryURL, portStart: 6881, portEnd: 6891)
+        try await engine.start()
+        defer { Task { await engine.stop() } }
+
+        let mag = "magnet:?xt=urn:btih:\(hash)&dn=FallbackRecoveryTest"
+        let task = try await engine.addTorrent(magnetURI: mag)
+        XCTAssertEqual(task.infoHash.lowercased(), hash.lowercased())
+    }
+
+    // MARK: - Phase 3: Incomplete Download Recovery & State Persistence
+
+    func testPhase3_IncompleteDownloadRecoveryAndPersistence() async throws {
+        let storeURL = tempDirectoryURL.appendingPathComponent("IncompleteRecoveryMeta", isDirectory: true)
+        let store = try TorrentPersistenceStore(storageDirectoryURL: storeURL)
+        let hash = "1122334455667788990011223344556677889900"
+
+        // Create an incomplete record (50% progress, paused)
+        let incompleteRecord = TorrentRecord(
+            infoHash: hash,
+            source: "magnet:?xt=urn:btih:\(hash)&dn=IncompleteFile",
+            name: "IncompleteFile",
+            savePath: tempDirectoryURL.appendingPathComponent("IncompleteFile"),
+            state: .paused,
+            progress: TorrentProgress(
+                bytesDownloaded: 5000,
+                totalBytes: 10000,
+                downloadBytesPerSecond: 0,
+                uploadBytesPerSecond: 0,
+                connectedPeers: 0,
+                activeSeeds: 0,
+                progressFraction: 0.5
+            ),
+            isExplicitlyPaused: true,
+            filePriorities: [0: .high, 1: .doNotDownload],
+            seedingPreference: SeedingPreference(mode: .ratio, targetRatio: 2.0)
+        )
+        try await store.saveRecord(incompleteRecord)
+
+        // Initialize engine and verify restoration of partial progress and file priorities
+        let engine = try TorrentEngine(
+            storageDirectoryURL: tempDirectoryURL,
+            portStart: 6881,
+            portEnd: 6891,
+            persistenceStore: store
+        )
+        try await engine.start()
+        defer { Task { await engine.stop() } }
+
+        let restoredTask = await engine.task(for: hash)
+        XCTAssertNotNil(restoredTask, "Incomplete task must be restored from persistence store")
+        XCTAssertEqual(restoredTask?.state, .paused, "Explicitly paused incomplete task must remain paused")
+        XCTAssertEqual(restoredTask?.filePriorities?[0], .high, "File 0 priority must survive restart")
+        XCTAssertEqual(restoredTask?.filePriorities?[1], .doNotDownload, "File 1 priority must survive restart")
+        XCTAssertEqual(restoredTask?.seedingPreference?.mode, .ratio, "Seeding preference must survive restart")
     }
 
     // MARK: - Phase 4: Native Listening Port Range Verification

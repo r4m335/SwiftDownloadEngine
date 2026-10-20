@@ -370,8 +370,8 @@ final class ResourceThrottlingTests: XCTestCase {
 
     func testPauseAndResumeWhileThrottled() async throws {
         let path = "/pause_throttle.bin"
-        let data = makeTestData(size: 256 * 1024)
-        server.register(path: path, data: data, chunkDelayMs: 40)
+        let data = makeTestData(size: 512 * 1024)
+        server.register(path: path, data: data, chunkDelayMs: 60)
 
         let dest = tempDirectory.appendingPathComponent("pause_throttle.bin")
         let req = DownloadRequest(
@@ -386,7 +386,7 @@ final class ResourceThrottlingTests: XCTestCase {
         }
 
         // Let it begin receiving chunks (server delay guarantees it is mid-stream)
-        try await Task.sleep(nanoseconds: 80_000_000)
+        try await Task.sleep(nanoseconds: 40_000_000)
 
         // Pause download
         try await coordinator.pause(id: req.id)

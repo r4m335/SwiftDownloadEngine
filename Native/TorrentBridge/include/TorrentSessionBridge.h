@@ -225,6 +225,20 @@ NS_SWIFT_NAME(TorrentSessionBridge)
                                       savePath:(nullable NSString *)savePath
                                          error:(NSError * _Nullable * _Nullable)error NS_SWIFT_NAME(addTorrent(withResumeData:savePath:));
 
+// MARK: - Milestone 6.1: Direct Peer Connection & Local Swarm
+
+/// Manually initiates a peer connection to a specific IP address and port for the given torrent.
+/// Useful for deterministic local-swarm integration tests, private swarms, or known peer endpoints.
+/// @param address IP address string (e.g. "127.0.0.1" or IPv6 address).
+/// @param port Listening TCP port of the peer.
+/// @param infoHash Lowercase hexadecimal info-hash of the target torrent.
+/// @param error Populated if the torrent is invalid, not found, or address resolution fails.
+/// @return YES if the connection request was dispatched to libtorrent, NO otherwise.
+- (BOOL)connectPeerWithAddress:(NSString *)address
+                          port:(NSUInteger)port
+             toTorrentWithHash:(NSString *)infoHash
+                         error:(NSError * _Nullable * _Nullable)error NS_SWIFT_NAME(connectPeer(address:port:toTorrentWithHash:));
+
 @end
 
 NS_ASSUME_NONNULL_END

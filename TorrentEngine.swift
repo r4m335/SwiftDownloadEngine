@@ -541,6 +541,10 @@ public actor TorrentEngine {
         await scheduler?.maxConcurrentTorrents ?? defaultMaxConcurrentTorrents
     }
 
+    public func connectPeer(address: String, port: UInt, toTorrentWithHash infoHash: String) throws {
+        try bridge.connectPeer(address: address, port: port, toTorrentWithHash: infoHash)
+    }
+
     deinit {
         // Deterministic cleanup
     }
@@ -901,6 +905,10 @@ public actor TorrentEngine {
 
     public func maxConcurrentTorrents() async -> Int {
         currentMaxConcurrentTorrents
+    }
+
+    public func connectPeer(address: String, port: UInt, toTorrentWithHash infoHash: String) throws {
+        // Fallback: no-op for non-native environment
     }
 
     public func saveState() async throws {}

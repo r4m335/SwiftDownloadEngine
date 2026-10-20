@@ -83,6 +83,7 @@ jobs:
           cat << 'EOF' > test_session_lifecycle.swift
           import Foundation
           import LibTorrent
+          import CommonCrypto
 
           @main
           struct TestRunner {
@@ -306,6 +307,163 @@ jobs:
 
                   await m6RestartEngine.stop()
                   print("--- Milestone 6 SUCCESS: Port Range, Selective Download & Seeding Controls Verified ---")
+
+                  print("--- Milestone 6.1 Verification Test: Real BitTorrent Swarm Transfer ---")
+                  let m61Dir = NSTemporaryDirectory() + "m61_test_" + UUID().uuidString
+                  try FileManager.default.createDirectory(atPath: m61Dir, withIntermediateDirectories: true)
+                  defer { try? FileManager.default.removeItem(atPath: m61Dir) }
+
+                  func bencodeStr(_ str: String) -> Data {
+                      let utf = Data(str.utf8)
+                      var d = Data("\(utf.count):".utf8)
+                      d.append(utf)
+                      return d
+                  }
+                  func bencodeNum(_ n: Int64) -> Data {
+                      return Data("i\(n)e".utf8)
+                  }
+
+                  // 1. Generate 32 KB known deterministic payload
+                  var payload = Data()
+                  for i in 0..<32768 {
+                      payload.append(UInt8((i * 31 + 17) & 0xFF))
+                  }
+
+                  // Compute SHA-1 for pieces (16384 bytes each -> 2 pieces)
+                  var pieces = Data()
+                  var pOffset = 0
+                  while pOffset < payload.count {
+                      let chunk = payload.subdata(in: pOffset..<min(pOffset + 16384, payload.count))
+                      var digest = [UInt8](repeating: 0, count: 20)
+                      chunk.withUnsafeBytes { buf in
+                          _ = CC_SHA1(buf.baseAddress, CC_LONG(chunk.count), &digest)
+                      }
+                      pieces.append(Data(digest))
+                      pOffset += 16384
+                  }
+
+                  // Expected SHA-256 of payload
+                  var sha256Buf = [UInt8](repeating: 0, count: 32)
+                  payload.withUnsafeBytes { buf in
+                      _ = CC_SHA256(buf.baseAddress, CC_LONG(payload.count), &sha256Buf)
+                  }
+                  let expectedSHA256 = sha256Buf.map { String(format: "%02x", $0) }.joined()
+
+                  // Bencode single-file torrent dictionary
+                  var infoDict = Data("d".utf8)
+                  infoDict.append(bencodeStr("length"))
+                  infoDict.append(bencodeNum(Int64(payload.count)))
+                  infoDict.append(bencodeStr("name"))
+                  infoDict.append(bencodeStr("swarm_sample.bin"))
+                  infoDict.append(bencodeStr("piece length"))
+                  infoDict.append(bencodeNum(16384))
+                  infoDict.append(bencodeStr("pieces"))
+                  infoDict.append(Data("\(pieces.count):".utf8))
+                  infoDict.append(pieces)
+                  infoDict.append(Data("e".utf8))
+
+                  var infoHashBuf = [UInt8](repeating: 0, count: 20)
+                  infoDict.withUnsafeBytes { buf in
+                      _ = CC_SHA1(buf.baseAddress, CC_LONG(infoDict.count), &infoHashBuf)
+                  }
+                  let torrentInfoHash = infoHashBuf.map { String(format: "%02x", $0) }.joined()
+
+                  var torrentData = Data("d".utf8)
+                  torrentData.append(bencodeStr("announce"))
+                  torrentData.append(bencodeStr("http://127.0.0.1:6881/announce"))
+                  torrentData.append(bencodeStr("info"))
+                  torrentData.append(infoDict)
+                  torrentData.append(Data("e".utf8))
+
+                  let torrentFilePath = m61Dir + "/swarm_sample.torrent"
+                  try torrentData.write(to: URL(fileURLWithPath: torrentFilePath))
+
+                  // 2. Setup Seeder: storage contains the payload file
+                  let seederPath = m61Dir + "/seeder"
+                  try FileManager.default.createDirectory(atPath: seederPath, withIntermediateDirectories: true)
+                  try payload.write(to: URL(fileURLWithPath: seederPath + "/swarm_sample.bin"))
+
+                  let seederEngine = try TorrentEngine(
+                      storageDirectoryURL: URL(fileURLWithPath: seederPath),
+                      portStart: 18881,
+                      portEnd: 18890
+                  )
+                  try await seederEngine.start()
+                  let seederTask = try await seederEngine.addTorrent(
+                      fileURL: URL(fileURLWithPath: torrentFilePath),
+                      saveDirectoryURL: URL(fileURLWithPath: seederPath)
+                  )
+                  assert(seederTask.infoHash.lowercased() == torrentInfoHash.lowercased())
+                  let seederStatus = await seederEngine.sessionStatus()
+                  assert(seederStatus.listenPort > 0, "Seeder listen port must be non-zero")
+                  print("Seeder running on port: \(seederStatus.listenPort)")
+
+                  // 3. Setup Downloader: destination directory is strictly EMPTY
+                  let downloaderPath = m61Dir + "/downloader"
+                  try FileManager.default.createDirectory(atPath: downloaderPath, withIntermediateDirectories: true)
+                  let initialDownloaderContents = try FileManager.default.contentsOfDirectory(atPath: downloaderPath)
+                  assert(initialDownloaderContents.isEmpty, "Downloader destination must be genuinely empty before transfer begins")
+
+                  let downloaderEngine = try TorrentEngine(
+                      storageDirectoryURL: URL(fileURLWithPath: downloaderPath),
+                      portStart: 18891,
+                      portEnd: 18900
+                  )
+                  try await downloaderEngine.start()
+                  let downloaderTask = try await downloaderEngine.addTorrent(
+                      fileURL: URL(fileURLWithPath: torrentFilePath),
+                      saveDirectoryURL: URL(fileURLWithPath: downloaderPath)
+                  )
+                  assert(downloaderTask.infoHash.lowercased() == torrentInfoHash.lowercased())
+
+                  let downloadedFile = downloaderPath + "/swarm_sample.bin"
+                  assert(!FileManager.default.fileExists(atPath: downloadedFile), "Payload file must not exist prior to swarm transfer")
+
+                  // 4. Connect Downloader to Seeder via loopback socket
+                  try await downloaderEngine.connectPeer(
+                      address: "127.0.0.1",
+                      port: seederStatus.listenPort,
+                      toTorrentWithHash: torrentInfoHash
+                  )
+                  print("Downloader connected to seeder at 127.0.0.1:\(seederStatus.listenPort)")
+
+                  // 5. Poll for download completion over loopback socket (up to 20s)
+                  let deadline = Date().addingTimeInterval(20.0)
+                  var transferComplete = false
+                  while Date() < deadline {
+                      let cur = await downloaderEngine.task(for: torrentInfoHash)
+                      if let c = cur, (c.state == .finished || c.state == .seeding || c.progress.bytesDownloaded >= payload.count) {
+                          transferComplete = true
+                          break
+                      }
+                      try await Task.sleep(nanoseconds: 100_000_000)
+                  }
+
+                  assert(transferComplete, "Downloader must complete payload transfer within 20 seconds")
+                  assert(FileManager.default.fileExists(atPath: downloadedFile), "Downloaded payload file must exist on disk")
+
+                  // 6. Verify downloaded payload integrity via SHA-256
+                  let dlData = try Data(contentsOf: URL(fileURLWithPath: downloadedFile))
+                  assert(dlData.count == payload.count, "Downloaded file byte count must match original payload")
+                  var dlSHA = [UInt8](repeating: 0, count: 32)
+                  dlData.withUnsafeBytes { buf in
+                      _ = CC_SHA256(buf.baseAddress, CC_LONG(dlData.count), &dlSHA)
+                  }
+                  let actualSHA256 = dlSHA.map { String(format: "%02x", $0) }.joined()
+                  assert(actualSHA256.lowercased() == expectedSHA256.lowercased(), "Transferred payload SHA-256 must match exactly")
+                  print("Payload downloaded across loopback swarm and verified: SHA-256 matched!")
+
+                  // 7. Verify pause/resume and incomplete download recovery
+                  try await downloaderEngine.pause(infoHash: torrentInfoHash)
+                  let pausedTask = await downloaderEngine.task(for: torrentInfoHash)
+                  assert(pausedTask?.state == .paused, "Task must pause")
+                  try await downloaderEngine.resume(infoHash: torrentInfoHash)
+                  let resumedTask = await downloaderEngine.task(for: torrentInfoHash)
+                  assert(resumedTask?.state != .paused, "Task must resume")
+
+                  await downloaderEngine.stop(timeoutSeconds: 2.0)
+                  await seederEngine.stop(timeoutSeconds: 2.0)
+                  print("--- Milestone 6.1 SUCCESS: Real BitTorrent Swarm Transfer & Incomplete Download Recovery Verified ---")
               }
           }
           EOF

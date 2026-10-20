@@ -15,12 +15,12 @@ iOS enforces strict multitasking and background execution boundaries to preserve
 
 `SwiftDownloadEngine` implements an **honest, resilient, and bounded** lifecycle architecture designed specifically for Apple platforms:
 
-### A. Bounded Background Grace Period (`beginBackgroundTask`)
+### A. Bounded Background Grace Period (`beginBackgroundTask`) for Persistence Only
 When the app transitions from the foreground to the background (`sceneDidEnterBackground` or `applicationDidEnterBackground`):
-1. **Background Task Assertion:** The app acquires a background execution window via `UIApplication.shared.beginBackgroundTask(withName:expirationHandler:)`.
+1. **Background Task Assertion:** The app acquires a temporary, bounded background execution window via `UIApplication.shared.beginBackgroundTask(withName:expirationHandler:)`.
 2. **State & Resume-Data Generation:** The native engine triggers `post_session_save()` and writes fast-resume metadata (`.fastresume`), piece-completion bitfields, file-priority mappings, and queue manifests to disk.
-3. **Graceful Socket Suspension:** Active network connections are cleanly paused or flushed to prevent socket leaks and avoid sudden process termination by iOS `jetsam`.
-4. **Guaranteed Bounded Completion:** If the operating system signals that background time is expiring (`expirationHandler`), the pending flush is terminated immediately and the background assertion is relinquished.
+3. **Graceful Engine Shutdown & Socket Suspension:** Active network connections and torrent transfers are cleanly paused, and the native torrent engine is stopped to prevent socket leaks, battery drain, and sudden process termination by iOS `jetsam`. **Torrent transfers do not continue in the background.**
+4. **Guaranteed Bounded Completion:** Bounded background execution is used **strictly for state persistence**, completing well within the ~30-second operating system window before the background assertion is relinquished.
 
 ### B. Transparent Restoration on Activation
 When the app returns to the foreground (`sceneWillEnterForeground` or `applicationDidBecomeActive`):
@@ -29,22 +29,27 @@ When the app returns to the foreground (`sceneWillEnterForeground` or `applicati
 3. **Queue Promotion:** The `TorrentQueueScheduler` checks active slots against concurrency limits and automatically resumes eligible downloading torrents.
 4. **UI Synchronization:** `DownloadManagerViewModel` synchronizes `UnifiedTransfer` snapshots to reflect active socket status and peer rates.
 
+### C. HTTP Engine Lifecycle Status
+- **Current Foreground / In-Process Transport:** HTTP downloads currently execute in-process via `URLSession.shared` using concurrent chunked streaming (`SegmentDownloader`). These transfers pause when the app is suspended by the operating system and resume from their recorded byte offsets upon foregrounding.
+- **System-Managed Background HTTP Transfers:** True out-of-process background HTTP transfers via `URLSessionConfiguration.background(withIdentifier:)` require a dedicated background session manager, custom `URLSessionDownloadDelegate`, persistent task-to-segment state mapping, and application lifecycle reconnection (`handleEventsForBackgroundURLSession`). This functionality is **not implemented** in the current codebase and remains a dedicated future milestone.
+
 ---
 
 ## 3. Comparison of Background Mechanisms
 
-| Mechanism | Feasibility for Torrent Downloads | SwiftDownloadEngine Status | Apple Review Compliance |
+| Mechanism | Feasibility & Applicability | SwiftDownloadEngine Status | Apple Review Compliance |
 |:---|:---|:---|:---|
-| **Bounded Execution (`beginBackgroundTask`)** | High (for safe flush & persistence up to 30s) | **Implemented & Verified** | 100% Compliant |
-| **`URLSession` Background Daemon** | Not Applicable (HTTP only) | **Implemented for HTTP transfers** | 100% Compliant |
-| **`BGAppRefreshTask` / `BGProcessingTask`** | Low (non-deterministic batch tasks when charging) | Future exploration for queue maintenance | Fully Compliant |
-| **Silent Audio / Location Workaround** | Prohibited | **Rejected & Excluded** | Violates Guideline 2.5.4 |
+| **Bounded Execution (`beginBackgroundTask`)** | Torrent & HTTP: Safe flush & state persistence only (up to ~30s) | **Implemented & Verified** | 100% Compliant |
+| **`URLSession` Background Daemon** | HTTP only: Incompatible with BitTorrent raw socket swarms | **Unimplemented Milestone** (Planned for future HTTP background milestone) | Compliant when implemented |
+| **`BGAppRefreshTask` / `BGProcessingTask`** | Low: Non-deterministic batch maintenance when charging | Future exploration for queue maintenance | Fully Compliant |
+| **Silent Audio / Location Workaround** | Prohibited for download managers | **Rejected & Excluded** | Violates Guideline 2.5.4 |
 
 ---
 
-## 4. Verification in Milestone 6
+## 4. Verification & Milestone Status
 
-- [x] Tested graceful state persistence under bounded execution timeouts.
-- [x] Verified that corrupt fast-resume data falls back cleanly to storage verification without engine crashes.
+- [x] Confirmed torrent transfers cleanly pause and engine stops upon background transition.
+- [x] Verified bounded background execution is used exclusively for state persistence (fast-resume & manifests).
+- [x] Verified corrupt fast-resume data falls back cleanly to storage verification without engine crashes.
 - [x] Confirmed zero lost piece data or corrupted file state after simulated app suspension and process relaunch.
-- [x] Display honest session status in UI without claiming non-existent background transfers.
+- [x] Documented honestly that system-managed background HTTP downloading is a separate, unimplemented milestone.
