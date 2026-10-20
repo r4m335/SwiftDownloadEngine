@@ -542,7 +542,7 @@ public actor TorrentEngine {
     }
 
     public func connectPeer(address: String, port: UInt, toTorrentWithHash infoHash: String) throws {
-        try bridge.connectPeer(address: address, port: port, toTorrentWithHash: infoHash)
+        try bridge.connectPeer(address: address, port: Int(port), toTorrentWithHash: infoHash)
     }
 
     deinit {
