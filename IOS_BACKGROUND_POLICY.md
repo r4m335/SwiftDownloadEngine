@@ -52,6 +52,5 @@ When the app returns to the foreground (`sceneWillEnterForeground` or `applicati
 - [x] Confirmed torrent transfers cleanly pause and engine stops upon background transition.
 - [x] Verified bounded background execution is used exclusively for state persistence (fast-resume & manifests).
 - [x] Verified corrupt fast-resume data falls back cleanly to storage verification without engine crashes.
-- [x] Confirmed zero lost piece data or corrupted file state after simulated app suspension and process relaunch.
-- [x] Implemented Milestone 6A: Background HTTP session manager, persistent task mapping store, response validation, crash-safe part handling, and task reconciliation.
+- [x] Implemented Milestone 6A & 6A.1: Background HTTP session manager, persistent task mapping store, scoped task identity, segment-relative progress accounting, response validation, staged crash-safe part handling, corrupted manifest quarantine, reconciliation with DownloadPersistenceStore, and UIApplicationDelegate lifecycle integration.
 - [ ] Milestone 6B: Download coordinator integration to route eligible production HTTP downloads through background transport.

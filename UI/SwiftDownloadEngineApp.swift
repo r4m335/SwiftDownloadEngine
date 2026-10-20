@@ -5,6 +5,58 @@ import SwiftUI
 import UIKit
 #endif
 
+#if canImport(UIKit) && !os(watchOS)
+public final class AppDelegate: NSObject, UIApplicationDelegate {
+    public static var backgroundSessionManager: BackgroundDownloadSessionManager?
+    private static var retainedCompletionHandlers: [String: () -> Void] = [:]
+    private static let lock = NSLock()
+
+    public func application(
+        _ application: UIApplication,
+        handleEventsForBackgroundURLSession identifier: String,
+        completionHandler: @escaping () -> Void
+    ) {
+        guard identifier == BackgroundDownloadSessionManager.defaultSessionIdentifier else {
+            // Unrecognized session identifier: invoke immediately to prevent battery drain
+            completionHandler()
+            return
+        }
+
+        Self.lock.lock()
+        defer { Self.lock.unlock() }
+
+        if let manager = Self.backgroundSessionManager {
+            manager.setEventsCompletionHandler(completionHandler)
+        } else {
+            // Retain until manager is instantiated or attached
+            Self.retainedCompletionHandlers[identifier] = completionHandler
+        }
+    }
+
+    public static func attach(manager: BackgroundDownloadSessionManager) {
+        lock.lock()
+        defer { lock.unlock() }
+        self.backgroundSessionManager = manager
+        if let pending = retainedCompletionHandlers.removeValue(forKey: manager.sessionIdentifier) {
+            manager.setEventsCompletionHandler(pending)
+        }
+    }
+
+    public static func retainedHandlerCount() -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return retainedCompletionHandlers.count
+    }
+
+    public static func reset() {
+        lock.lock()
+        defer { lock.unlock() }
+        backgroundSessionManager = nil
+        retainedCompletionHandlers.removeAll()
+    }
+}
+#endif
+
 /// Top-level native SwiftUI application coordinator for iOS/macOS.
 ///
 /// Features:
@@ -14,6 +66,10 @@ import UIKit
 ///   real-time transfer events, restore persistent queues, and perform bounded fast-resume saves on backgrounding.
 /// - Shared Application State: Connects `DownloadManagerViewModel` to `DownloadManagerAppView`.
 public struct SwiftDownloadEngineApp: App {
+    #if canImport(UIKit) && !os(watchOS)
+    @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
+    #endif
+
     @StateObject private var viewModel: DownloadManagerViewModel
     @Environment(\.scenePhase) private var scenePhase
     @State private var hasRestoredQueue = false
@@ -48,6 +104,20 @@ public struct SwiftDownloadEngineApp: App {
         } catch {
             fatalError("Failed to initialize DownloadEngine: \(error)")
         }
+
+        #if canImport(UIKit) && !os(watchOS)
+        do {
+            let bgTransportDir = storeDir.appendingPathComponent("BackgroundTransport", isDirectory: true)
+            let bgManager = try BackgroundDownloadSessionManager(
+                sessionIdentifier: BackgroundDownloadSessionManager.defaultSessionIdentifier,
+                storageDirectoryURL: bgTransportDir,
+                persistenceStore: engine.persistenceStore
+            )
+            AppDelegate.attach(manager: bgManager)
+        } catch {
+            print("Notice: BackgroundDownloadSessionManager initialization in AppDelegate skipped: \(error.localizedDescription)")
+        }
+        #endif
 
         var torrentEngine: TorrentEngine? = nil
         do {
