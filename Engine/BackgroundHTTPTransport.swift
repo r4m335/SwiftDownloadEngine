@@ -674,85 +674,81 @@ extension BackgroundDownloadSessionManager: URLSessionDownloadDelegate {
         let taskID = downloadTask.taskIdentifier
         let response = downloadTask.response
 
-        // Synchronous temporary file relocation before iOS deletes `location`!
-        // We look up the record synchronously from disk if necessary or use taskDescription.
-
-        // Parse task description fallback if needed
-        var targetPartURL: URL?
-        var expectedBytes: Int64?
-        var dlID: String?
-        var segID: Int?
-
-        if let desc = downloadTask.taskDescription,
-           let parsed = BackgroundDownloadTaskRecord.parseSystemTaskDescription(desc) {
-            dlID = parsed.downloadID
-            segID = parsed.segmentID
-            targetPartURL = self.partFileURL(downloadID: parsed.downloadID, segmentID: parsed.segmentID)
+        // Parse task description (immutable constants)
+        guard let desc = downloadTask.taskDescription,
+              let parsed = BackgroundDownloadTaskRecord.parseSystemTaskDescription(desc) else {
+            print("[BackgroundDownloadSessionManager] Warning: missing or unparseable taskDescription on finished task \(taskID)")
+            return
         }
 
+        let downloadID = parsed.downloadID
+        let segmentID = parsed.segmentID
+        let destination = self.partFileURL(downloadID: downloadID, segmentID: segmentID)
+
+        // 1. Relocate file immediately to destination before iOS removes `location`
         do {
-            // Validate response headers if available
-            if let resp = response {
-                // If we can determine expected bounds:
-                if let dl = dlID, let s = segID {
-                    let sem = DispatchSemaphore(value: 0)
-                    var matchedRecord: BackgroundDownloadTaskRecord?
-                    Task {
-                        matchedRecord = await self.mappingStore.record(forDownloadID: dl, segmentID: s)
-                        sem.signal()
-                    }
-                    sem.wait()
-
-                    if let rec = matchedRecord {
-                        try BackgroundResponseValidator.validate(
-                            response: resp,
-                            expectedStart: rec.startOffset,
-                            expectedEnd: rec.endOffset
-                        )
-                        expectedBytes = rec.expectedBytes
-                        targetPartURL = rec.destinationPartURL
-                    }
-                }
-            }
-
-            guard let destination = targetPartURL else {
-                throw BackgroundTransportError.taskNotFound(taskIdentifier: taskID)
-            }
-
-            // Relocate file safely & atomically
-            let finalSize = try BackgroundDownloadFileHandler.relocateTemporaryFile(
-                from: location,
-                to: destination,
-                expectedBytes: expectedBytes
-            )
-
-            // Update persistent stores asynchronously
-            Task { [weak self] in
-                guard let self = self else { return }
-                try? await self.mappingStore.markCompleted(taskIdentifier: taskID, finalBytes: finalSize)
-
-                if let dl = dlID, let s = segID, let persistence = self.persistenceStore {
-                    _ = try? await persistence.updateSegmentProgress(
-                        tag: dl,
-                        segmentID: s,
-                        completedBytes: finalSize
-                    )
-                }
-
-                if let dl = dlID, let s = segID {
-                    self.onSegmentCompleted?(dl, s, destination)
-                }
-            }
-
+            try BackgroundDownloadFileHandler.relocateTemporaryFile(from: location, to: destination)
         } catch {
-            print("[BackgroundDownloadSessionManager] Part download validation/relocation error: \(error)")
+            print("[BackgroundDownloadSessionManager] Error relocating temporary download file: \(error)")
             Task { [weak self] in
                 guard let self = self else { return }
                 try? await self.mappingStore.markFailed(taskIdentifier: taskID, error: error.localizedDescription)
-                if let dl = dlID, let s = segID {
-                    self.onSegmentFailed?(dl, s, error)
+                self.onSegmentFailed?(downloadID, segmentID, error)
+            }
+            return
+        }
+
+        // 2. Validate response, verify expected size, and update stores asynchronously
+        Task { [weak self] in
+            guard let self = self else { return }
+            let record = await self.mappingStore.record(forTaskIdentifier: taskID)
+
+            // Validate response headers if available
+            if let resp = response, let rec = record {
+                do {
+                    try BackgroundResponseValidator.validate(
+                        response: resp,
+                        expectedStart: rec.startOffset,
+                        expectedEnd: rec.endOffset
+                    )
+                } catch {
+                    try? FileManager.default.removeItem(at: destination)
+                    try? await self.mappingStore.markFailed(taskIdentifier: taskID, error: error.localizedDescription)
+                    self.onSegmentFailed?(downloadID, segmentID, error)
+                    return
                 }
             }
+
+            // Verify actual file size on disk against expected bytes
+            let finalSize: Int64
+            if let rec = record {
+                guard let attrs = try? FileManager.default.attributesOfItem(atPath: destination.path),
+                      let size = attrs[.size] as? Int64,
+                      size == rec.expectedBytes else {
+                    let actualSize = (try? FileManager.default.attributesOfItem(atPath: destination.path)[.size] as? Int64) ?? 0
+                    let err = BackgroundTransportError.bodyLengthMismatch(expected: rec.expectedBytes, actual: actualSize)
+                    try? FileManager.default.removeItem(at: destination)
+                    try? await self.mappingStore.markFailed(taskIdentifier: taskID, error: err.localizedDescription)
+                    self.onSegmentFailed?(downloadID, segmentID, err)
+                    return
+                }
+                finalSize = size
+            } else {
+                let attrs = try? FileManager.default.attributesOfItem(atPath: destination.path)
+                finalSize = (attrs?[.size] as? Int64) ?? 0
+            }
+
+            try? await self.mappingStore.markCompleted(taskIdentifier: taskID, finalBytes: finalSize)
+
+            if let persistence = self.persistenceStore {
+                _ = try? await persistence.updateSegmentProgress(
+                    tag: downloadID,
+                    segmentID: segmentID,
+                    completedBytes: finalSize
+                )
+            }
+
+            self.onSegmentCompleted?(downloadID, segmentID, destination)
         }
     }
 
