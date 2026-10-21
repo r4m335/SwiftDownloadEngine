@@ -40,6 +40,13 @@ public final class BrowserViewModel: NSObject, ObservableObject {
     @Published public var activeHandoff: BrowserDownloadHandoff? = nil
     public let interceptionManager = BrowserDownloadInterceptionManager()
 
+    // Resource discovery state (Milestone 7D)
+    @Published public var isShowingResourceInspector: Bool = false
+    @Published public var isScanningResources: Bool = false
+    @Published public var discoveredResources: [WebpageResource] = []
+    @Published public var selectedResourceIDs: Set<String> = []
+    @Published public var resourceScanError: String? = nil
+
     public weak var downloadDelegate: BrowserDownloadDelegate?
     public var onDownloadInitiated: (() -> Void)? = nil
 
@@ -98,6 +105,114 @@ public final class BrowserViewModel: NSObject, ObservableObject {
             suggestedFilename: suggestedFilename,
             source: .responseAttachment
         )
+    }
+
+    public func openResourceInspector() {
+        isShowingResourceInspector = true
+        inspectCurrentPageResources()
+    }
+
+    public func promptDownloadFromInspector(for resource: WebpageResource) {
+        isShowingResourceInspector = false
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+            guard let self = self else { return }
+            self.promptDownload(for: resource.url, suggestedFilename: resource.suggestedFilename)
+        }
+    }
+
+    public func inspectCurrentPageResources() {
+        guard let url = currentURL else {
+            resourceScanError = "No active webpage is currently loaded."
+            discoveredResources = []
+            selectedResourceIDs = []
+            return
+        }
+
+        isScanningResources = true
+        resourceScanError = nil
+
+        #if canImport(WebKit)
+        guard let wv = webView else {
+            isScanningResources = false
+            resourceScanError = "Web browser engine is not ready."
+            return
+        }
+
+        let jsScript = """
+        (function() {
+            var candidates = [];
+            document.querySelectorAll('video').forEach(function(v) {
+                if (v.src) candidates.push({ rawURL: v.src, tag: 'video', text: v.title || v.getAttribute('aria-label') || '' });
+            });
+            document.querySelectorAll('audio').forEach(function(a) {
+                if (a.src) candidates.push({ rawURL: a.src, tag: 'audio', text: a.title || a.getAttribute('aria-label') || '' });
+            });
+            document.querySelectorAll('source').forEach(function(s) {
+                if (s.src) candidates.push({ rawURL: s.src, tag: 'source', declaredType: s.type || null });
+            });
+            document.querySelectorAll('a[href]').forEach(function(a) {
+                var href = a.getAttribute('href');
+                if (href && !href.startsWith('#') && !href.startsWith('javascript:')) {
+                    candidates.push({ rawURL: href, tag: 'a', text: (a.innerText || a.textContent || '').trim(), declaredType: a.getAttribute('type') || null });
+                }
+            });
+            document.querySelectorAll('img[src]').forEach(function(img) {
+                var src = img.getAttribute('src');
+                if (src && !src.startsWith('data:')) {
+                    candidates.push({ rawURL: src, tag: 'img', text: (img.getAttribute('alt') || '').trim() });
+                }
+            });
+            return JSON.stringify(candidates);
+        })()
+        """
+
+        wv.evaluateJavaScript(jsScript) { [weak self] result, error in
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                self.isScanningResources = false
+
+                if let error = error {
+                    self.resourceScanError = "Failed to scan webpage: \\(error.localizedDescription)"
+                    return
+                }
+
+                guard let jsonStr = result as? String,
+                      let data = jsonStr.data(using: .utf8),
+                      let rawCandidates = try? JSONDecoder().decode([WebpageRawResourceCandidate].self, from: data) else {
+                    self.resourceScanError = "Unable to process resources from webpage."
+                    return
+                }
+
+                self.discoveredResources = WebpageResourceExtractor.extractFromRawCandidates(rawCandidates, baseURL: url)
+                self.selectedResourceIDs = []
+            }
+        }
+        #else
+        isScanningResources = false
+        resourceScanError = "WebKit is not available in this environment."
+        #endif
+    }
+
+    public func downloadSelectedResources() async throws {
+        let targets = discoveredResources.filter { res in
+            res.isSupported && selectedResourceIDs.contains(res.id)
+        }
+
+        guard !targets.isEmpty else { return }
+
+        for resource in targets {
+            try await downloadDelegate?.handleDownloadRequest(
+                url: resource.url,
+                filename: resource.suggestedFilename.isEmpty ? nil : resource.suggestedFilename,
+                threadCount: 6,
+                speedLimitBytesPerSecond: nil
+            )
+        }
+
+        selectedResourceIDs = []
+        isShowingResourceInspector = false
+        downloadSuccessNotification = "\\(targets.count) download(s) queued successfully."
+        onDownloadInitiated?()
     }
 
     public func navigate(to input: String) {
@@ -272,6 +387,9 @@ public struct BrowserView: View {
         .sheet(isPresented: $viewModel.isShowingDownloadSheet) {
             BrowserDownloadSheet(viewModel: viewModel)
         }
+        .sheet(isPresented: $viewModel.isShowingResourceInspector) {
+            BrowserResourceInspectorSheet(viewModel: viewModel)
+        }
         #if canImport(UIKit)
         .background(Color(UIColor.systemBackground))
         #endif
@@ -386,6 +504,21 @@ public struct BrowserView: View {
                     Image(systemName: "house.fill")
                         .font(.system(size: 18))
                 }
+                .frame(maxWidth: .infinity)
+
+                // Find Resources Button
+                Button {
+                    viewModel.openResourceInspector()
+                } label: {
+                    VStack(spacing: 2) {
+                        Image(systemName: "doc.text.magnifyingglass")
+                            .font(.system(size: 18))
+                        Text("Resources")
+                            .font(.system(size: 10, weight: .medium))
+                    }
+                    .foregroundColor(viewModel.currentURL != nil ? .blue : .secondary)
+                }
+                .disabled(viewModel.currentURL == nil)
                 .frame(maxWidth: .infinity)
 
                 // Download Page URL Button

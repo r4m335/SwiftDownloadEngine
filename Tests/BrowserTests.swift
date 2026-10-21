@@ -633,4 +633,259 @@ final class BrowserTests: XCTestCase {
         XCTAssertFalse(vm.shouldSuppressDuplicatePrompt(for: otherURL))
     }
     #endif
+
+    // MARK: - Milestone 7D: Webpage Resource & Media Discovery Tests
+
+    func testHTMLExtraction_VideoAudioImageAndLinks() {
+        let baseURL = URL(string: "https://example.com/media/index.html")!
+        let html = """
+        <!DOCTYPE html>
+        <html>
+        <head><title>Test Media Gallery</title></head>
+        <body>
+            <video src="trailers/sample_1080p.mp4" controls></video>
+            <audio src="podcast/episode42.mp3"></audio>
+            <video>
+                <source src="assets/highres_stream.webm" type="video/webm">
+            </video>
+            <a href="downloads/manual_v1.pdf">User Manual PDF</a>
+            <a href="packages/installer_x64.zip">Windows Installer Archive</a>
+            <a href="/about-us">Regular Webpage Navigation Link</a>
+            <img src="images/banner_artwork.png" alt="Hero Banner Art">
+        </body>
+        </html>
+        """
+
+        let resources = WebpageResourceExtractor.extractResources(fromHTML: html, baseURL: baseURL)
+
+        // Verify counts and categories
+        XCTAssertTrue(resources.contains { $0.url.absoluteString == "https://example.com/media/trailers/sample_1080p.mp4" && $0.resourceType == .video })
+        XCTAssertTrue(resources.contains { $0.url.absoluteString == "https://example.com/media/podcast/episode42.mp3" && $0.resourceType == .audio })
+        XCTAssertTrue(resources.contains { $0.url.absoluteString == "https://example.com/media/assets/highres_stream.webm" && $0.resourceType == .video })
+        XCTAssertTrue(resources.contains { $0.url.absoluteString == "https://example.com/media/downloads/manual_v1.pdf" && $0.resourceType == .document })
+        XCTAssertTrue(resources.contains { $0.url.absoluteString == "https://example.com/media/packages/installer_x64.zip" && $0.resourceType == .archive })
+        XCTAssertTrue(resources.contains { $0.url.absoluteString == "https://example.com/media/images/banner_artwork.png" && $0.resourceType == .image })
+
+        // Non-download navigation link (/about-us) must NOT be extracted
+        XCTAssertFalse(resources.contains { $0.url.absoluteString.contains("about-us") })
+    }
+
+    func testHTMLExtraction_RelativeAndProtocolRelativeURLs() {
+        let baseURL = URL(string: "https://example.com/articles/2026/")!
+        let html = """
+        <div>
+            <video src="../media/clip.mp4#t=30s"></video>
+            <a href="//cdn.example.org/bundles/update.tar.gz#checksum=abc">CDN Package</a>
+            <img src="/static/logo.webp">
+        </div>
+        """
+
+        let resources = WebpageResourceExtractor.extractResources(fromHTML: html, baseURL: baseURL)
+
+        let video = resources.first { $0.resourceType == .video }
+        XCTAssertNotNil(video)
+        XCTAssertEqual(video?.url.absoluteString, "https://example.com/articles/media/clip.mp4")
+
+        let archive = resources.first { $0.resourceType == .archive }
+        XCTAssertNotNil(archive)
+        XCTAssertEqual(archive?.url.absoluteString, "https://cdn.example.org/bundles/update.tar.gz")
+
+        let image = resources.first { $0.resourceType == .image }
+        XCTAssertNotNil(image)
+        XCTAssertEqual(image?.url.absoluteString, "https://example.com/static/logo.webp")
+    }
+
+    func testHTMLExtraction_DuplicateURLElimination() {
+        let baseURL = URL(string: "https://example.com/gallery")!
+        let html = """
+        <div>
+            <a href="file.zip">Download ZIP</a>
+            <a href="file.zip#part1">Download ZIP Part 1</a>
+            <a href="FILE.ZIP">Download Case Insensitive</a>
+            <video src="movie.mp4"></video>
+            <video src="movie.mp4#t=0"></video>
+        </div>
+        """
+
+        let resources = WebpageResourceExtractor.extractResources(fromHTML: html, baseURL: baseURL)
+
+        let zipMatches = resources.filter { $0.suggestedFilename.lowercased() == "file.zip" }
+        XCTAssertEqual(zipMatches.count, 1, "Duplicate URLs with fragments or casing differences must be deduplicated")
+
+        let movieMatches = resources.filter { $0.suggestedFilename.lowercased() == "movie.mp4" }
+        XCTAssertEqual(movieMatches.count, 1, "Duplicate video URLs must be deduplicated")
+    }
+
+    func testWebpageResource_FilenameAndMIMETypeInference() {
+        let baseURL = URL(string: "https://example.com/")!
+        let candidates = [
+            WebpageRawResourceCandidate(rawURL: "https://example.com/api/get_doc", tag: "a", text: "Report", declaredType: "application/pdf"),
+            WebpageRawResourceCandidate(rawURL: "https://example.com/songs/track01.flac", tag: "audio", text: "Track 01", declaredType: "audio/flac"),
+            WebpageRawResourceCandidate(rawURL: "https://example.com/archive.tar.bz2", tag: "a", text: "Source Code")
+        ]
+
+        let results = WebpageResourceExtractor.extractFromRawCandidates(candidates, baseURL: baseURL)
+
+        XCTAssertEqual(results.count, 3)
+
+        let doc = results.first { $0.title == "Report" }
+        XCTAssertEqual(doc?.resourceType, .document)
+        XCTAssertTrue(doc?.suggestedFilename.hasSuffix(".pdf") == true)
+
+        let audio = results.first { $0.title == "Track 01" }
+        XCTAssertEqual(audio?.resourceType, .audio)
+        XCTAssertEqual(audio?.suggestedFilename, "track01.flac")
+
+        let archive = results.first { $0.title == "Source Code" }
+        XCTAssertEqual(archive?.resourceType, .archive)
+        XCTAssertEqual(archive?.suggestedFilename, "archive.tar.bz2")
+    }
+
+    func testWebpageResource_HonestLimitations_UnsupportedSchemes() {
+        let baseURL = URL(string: "https://example.com/")!
+        let candidates = [
+            WebpageRawResourceCandidate(rawURL: "blob:https://example.com/83bc537b-9447-4f67-a279-d6e06b3aa731", tag: "video"),
+            WebpageRawResourceCandidate(rawURL: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==", tag: "img"),
+            WebpageRawResourceCandidate(rawURL: "https://example.com/live/master.m3u8", tag: "source", declaredType: "application/x-mpegURL"),
+            WebpageRawResourceCandidate(rawURL: "https://example.com/streams/dash.mpd", tag: "source", declaredType: "application/dash+xml"),
+            WebpageRawResourceCandidate(rawURL: "ftp://example.com/build.iso", tag: "a", text: "ISO File"),
+            WebpageRawResourceCandidate(rawURL: "https://example.com/valid_release.dmg", tag: "a", text: "Mac Installer")
+        ]
+
+        let results = WebpageResourceExtractor.extractFromRawCandidates(candidates, baseURL: baseURL)
+
+        // 1. Blob URL
+        let blob = results.first { $0.url.absoluteString.hasPrefix("blob:") }
+        XCTAssertNotNil(blob)
+        XCTAssertFalse(blob!.isSupported)
+        XCTAssertTrue(blob!.unsupportedReason?.contains("Blob URLs") == true)
+
+        // 2. Data URI
+        let dataURI = results.first { $0.url.absoluteString.hasPrefix("data:") }
+        XCTAssertNotNil(dataURI)
+        XCTAssertFalse(dataURI!.isSupported)
+        XCTAssertTrue(dataURI!.unsupportedReason?.contains("Data URIs") == true)
+
+        // 3. HLS m3u8 Manifest
+        let hls = results.first { $0.url.absoluteString.contains("master.m3u8") }
+        XCTAssertNotNil(hls)
+        XCTAssertFalse(hls!.isSupported)
+        XCTAssertTrue(hls!.unsupportedReason?.contains("Milestone 7F") == true)
+
+        // 4. DASH mpd Manifest
+        let dash = results.first { $0.url.absoluteString.contains("dash.mpd") }
+        XCTAssertNotNil(dash)
+        XCTAssertFalse(dash!.isSupported)
+        XCTAssertTrue(dash!.unsupportedReason?.contains("Milestone 7F") == true)
+
+        // 5. FTP scheme
+        let ftp = results.first { $0.url.absoluteString.hasPrefix("ftp:") }
+        XCTAssertNotNil(ftp)
+        XCTAssertFalse(ftp!.isSupported)
+        XCTAssertTrue(ftp!.unsupportedReason?.contains("Unsupported URL scheme") == true)
+
+        // 6. Valid DMG download
+        let dmg = results.first { $0.url.absoluteString.contains("valid_release.dmg") }
+        XCTAssertNotNil(dmg)
+        XCTAssertTrue(dmg!.isSupported)
+        XCTAssertNil(dmg!.unsupportedReason)
+    }
+
+    func testWebpageResource_MalformedHTMLEmptyResults() {
+        let baseURL = URL(string: "https://example.com/")!
+
+        // Empty HTML
+        let emptyResults = WebpageResourceExtractor.extractResources(fromHTML: "", baseURL: baseURL)
+        XCTAssertTrue(emptyResults.isEmpty)
+
+        // Malformed HTML without tags
+        let malformed = "Just raw text with no tags or urls <<>> <tag without closing"
+        let malformedResults = WebpageResourceExtractor.extractResources(fromHTML: malformed, baseURL: baseURL)
+        XCTAssertTrue(malformedResults.isEmpty)
+
+        // Broken anchor tag with valid URL inside
+        let brokenTag = "<div><a href=\"broken_link.zip\" unclosed attribute... <p>Hello</p>"
+        let brokenResults = WebpageResourceExtractor.extractResources(fromHTML: brokenTag, baseURL: baseURL)
+        // NSRegularExpression handles partial content safely without crashing
+        XCTAssertNotNil(brokenResults)
+    }
+
+    func testWebpageResource_CategorizationAccuracy() {
+        XCTAssertEqual(WebpageResourceExtractor.categorize(extension: "mp4", mimeType: nil), .video)
+        XCTAssertEqual(WebpageResourceExtractor.categorize(extension: "mkv", mimeType: nil), .video)
+        XCTAssertEqual(WebpageResourceExtractor.categorize(extension: "mp3", mimeType: nil), .audio)
+        XCTAssertEqual(WebpageResourceExtractor.categorize(extension: "flac", mimeType: nil), .audio)
+        XCTAssertEqual(WebpageResourceExtractor.categorize(extension: "pdf", mimeType: nil), .document)
+        XCTAssertEqual(WebpageResourceExtractor.categorize(extension: "docx", mimeType: nil), .document)
+        XCTAssertEqual(WebpageResourceExtractor.categorize(extension: "zip", mimeType: nil), .archive)
+        XCTAssertEqual(WebpageResourceExtractor.categorize(extension: "tar", mimeType: nil), .archive)
+        XCTAssertEqual(WebpageResourceExtractor.categorize(extension: "dmg", mimeType: nil), .archive)
+        XCTAssertEqual(WebpageResourceExtractor.categorize(extension: "png", mimeType: nil), .image)
+        XCTAssertEqual(WebpageResourceExtractor.categorize(extension: "webp", mimeType: nil), .image)
+        XCTAssertEqual(WebpageResourceExtractor.categorize(extension: "unknown", mimeType: "video/mp4"), .video)
+        XCTAssertEqual(WebpageResourceExtractor.categorize(extension: "dat", mimeType: "application/pdf"), .document)
+        XCTAssertEqual(WebpageResourceExtractor.categorize(extension: nil, mimeType: "application/zip"), .archive)
+        XCTAssertEqual(WebpageResourceExtractor.categorize(extension: "html", mimeType: "text/html"), .other)
+    }
+
+    #if canImport(SwiftUI)
+    @MainActor
+    func testBrowserViewModel_ResourceInspectorState() async throws {
+        let mockDelegate = MockBrowserDownloadDelegate()
+        let vm = BrowserViewModel(downloadDelegate: mockDelegate)
+
+        // Initial state
+        XCTAssertFalse(vm.isShowingResourceInspector)
+        XCTAssertFalse(vm.isScanningResources)
+        XCTAssertTrue(vm.discoveredResources.isEmpty)
+        XCTAssertTrue(vm.selectedResourceIDs.isEmpty)
+
+        // Inspect with no URL
+        vm.inspectCurrentPageResources()
+        XCTAssertNotNil(vm.resourceScanError)
+
+        // Mock populate discovered resources
+        let res1 = WebpageResource(
+            url: URL(string: "https://example.com/asset1.mp4")!,
+            title: "Asset 1",
+            suggestedFilename: "asset1.mp4",
+            resourceType: .video,
+            isSupported: true
+        )
+        let res2 = WebpageResource(
+            url: URL(string: "https://example.com/asset2.pdf")!,
+            title: "Asset 2",
+            suggestedFilename: "asset2.pdf",
+            resourceType: .document,
+            isSupported: true
+        )
+        let unsupportedRes = WebpageResource(
+            url: URL(string: "blob:https://example.com/uuid")!,
+            title: "Blob Stream",
+            suggestedFilename: "stream.blob",
+            resourceType: .video,
+            isSupported: false,
+            unsupportedReason: "Blob URLs are unsupported."
+        )
+
+        vm.discoveredResources = [res1, res2, unsupportedRes]
+
+        // Select supported resources and unsupported resource
+        vm.selectedResourceIDs = [res1.id, res2.id, unsupportedRes.id]
+
+        // Execute batch download
+        try await vm.downloadSelectedResources()
+
+        // Verify only supported resources were submitted to delegate
+        XCTAssertEqual(mockDelegate.downloadRequests.count, 2)
+        XCTAssertTrue(mockDelegate.downloadRequests.contains { $0.url == res1.url })
+        XCTAssertTrue(mockDelegate.downloadRequests.contains { $0.url == res2.url })
+        XCTAssertFalse(mockDelegate.downloadRequests.contains { $0.url == unsupportedRes.url })
+
+        // Verify post-batch state
+        XCTAssertTrue(vm.selectedResourceIDs.isEmpty)
+        XCTAssertFalse(vm.isShowingResourceInspector)
+        XCTAssertNotNil(vm.downloadSuccessNotification)
+    }
+    #endif
 }
