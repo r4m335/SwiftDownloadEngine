@@ -34,11 +34,11 @@ public final class BrowserViewModel: NSObject, ObservableObject {
     @Published public var downloadCandidateSpeedLimitKBps: String = ""
     @Published public var downloadSuccessNotification: String? = nil
 
-    // Download detection state & prompt deduplication
+    // Download detection & interception state (Milestone 7B / 7C)
     @Published public var detectedDownloadURL: URL? = nil
     @Published public var detectedDownloadFilename: String = ""
-    public var lastPromptedURL: URL? = nil
-    public var lastPromptedTimestamp: Date? = nil
+    @Published public var activeHandoff: BrowserDownloadHandoff? = nil
+    public let interceptionManager = BrowserDownloadInterceptionManager()
 
     public weak var downloadDelegate: BrowserDownloadDelegate?
     public var onDownloadInitiated: (() -> Void)? = nil
@@ -54,27 +54,50 @@ public final class BrowserViewModel: NSObject, ObservableObject {
     }
 
     public func shouldSuppressDuplicatePrompt(for url: URL) -> Bool {
-        if isShowingDownloadSheet { return true }
-        if let lastURL = lastPromptedURL, lastURL == url,
-           let lastTime = lastPromptedTimestamp,
-           Date().timeIntervalSince(lastTime) < 3.0 {
-            return true
-        }
-        return false
+        interceptionManager.shouldSuppressDuplicate(for: url, isSheetPresented: isShowingDownloadSheet)
     }
 
-    public func promptDownload(for url: URL, suggestedFilename: String?) {
-        guard !shouldSuppressDuplicatePrompt(for: url) else { return }
-        guard BrowserURLResolver.isValidDownloadURL(url) else { return }
+    public func handleNativeDownloadHandoff(
+        originalURL: URL,
+        finalURL: URL? = nil,
+        suggestedFilename: String? = nil,
+        contentDisposition: String? = nil,
+        mimeType: String? = nil,
+        expectedLength: Int64? = nil,
+        source: BrowserDownloadHandoffSource = .nativeWebKitDownload
+    ) {
+        let dest = finalURL ?? originalURL
+        guard !interceptionManager.shouldSuppressDuplicate(for: dest, isSheetPresented: isShowingDownloadSheet) else {
+            return
+        }
+        guard let handoff = interceptionManager.prepareHandoff(
+            originalURL: originalURL,
+            finalURL: finalURL,
+            serverSuggestedFilename: suggestedFilename,
+            contentDisposition: contentDisposition,
+            mimeType: mimeType,
+            expectedLength: expectedLength,
+            source: source
+        ) else {
+            return
+        }
 
-        lastPromptedURL = url
-        lastPromptedTimestamp = Date()
-
-        downloadCandidateURL = url
-        downloadCandidateFilename = suggestedFilename ?? BrowserURLResolver.suggestedFilename(from: url)
+        interceptionManager.recordInterception(for: handoff.finalURL)
+        activeHandoff = handoff
+        downloadCandidateURL = handoff.finalURL
+        downloadCandidateFilename = handoff.suggestedFilename
         downloadCandidateThreads = 6
         downloadCandidateSpeedLimitKBps = ""
         isShowingDownloadSheet = true
+    }
+
+    public func promptDownload(for url: URL, suggestedFilename: String?) {
+        handleNativeDownloadHandoff(
+            originalURL: url,
+            finalURL: url,
+            suggestedFilename: suggestedFilename,
+            source: .responseAttachment
+        )
     }
 
     public func navigate(to input: String) {
@@ -744,7 +767,7 @@ public struct PlatformWebView: NSViewRepresentable {
 
 // MARK: - WKNavigationDelegate Coordinator
 
-public final class BrowserWebViewCoordinator: NSObject, WKNavigationDelegate {
+public final class BrowserWebViewCoordinator: NSObject, WKNavigationDelegate, WKDownloadDelegate {
     public weak var viewModel: BrowserViewModel?
     private var progressObserver: NSKeyValueObservation?
 
@@ -829,11 +852,36 @@ public final class BrowserWebViewCoordinator: NSObject, WKNavigationDelegate {
         }
 
         // Allow HTTP, HTTPS, and blank page
-        if BrowserURLResolver.isValidWebNavigationURL(url) {
-            decisionHandler(.allow)
-        } else {
+        guard BrowserURLResolver.isValidWebNavigationURL(url) else {
             decisionHandler(.cancel)
+            return
         }
+
+        // Native download request via HTML5 <a download> attribute
+        if #available(iOS 14.5, macOS 11.3, *) {
+            if navigationAction.shouldPerformDownload {
+                decisionHandler(.download)
+                return
+            }
+        }
+
+        // Handle target="_blank" links by navigating in the current web view
+        if navigationAction.targetFrame == nil {
+            webView.load(navigationAction.request)
+            decisionHandler(.cancel)
+            return
+        }
+
+        decisionHandler(.allow)
+    }
+
+    @available(iOS 14.5, macOS 11.3, *)
+    public func webView(
+        _ webView: WKWebView,
+        navigationAction: WKNavigationAction,
+        didBecome download: WKDownload
+    ) {
+        download.delegate = self
     }
 
     public func webView(
@@ -871,16 +919,98 @@ public final class BrowserWebViewCoordinator: NSObject, WKNavigationDelegate {
         )
 
         if classification.isDownload {
-            // Cancel WebKit from rendering binary content or consuming response body
-            decisionHandler(.cancel)
-
-            DispatchQueue.main.async { [weak self] in
-                guard let self = self, let vm = self.viewModel else { return }
-                vm.promptDownload(for: url, suggestedFilename: classification.suggestedFilename)
+            if #available(iOS 14.5, macOS 11.3, *) {
+                // Use native WebKit download conversion to resolve redirects and server filename
+                decisionHandler(.download)
+            } else {
+                // Fallback: cancel rendering and prompt directly
+                decisionHandler(.cancel)
+                DispatchQueue.main.async { [weak self] in
+                    guard let self = self, let vm = self.viewModel else { return }
+                    vm.promptDownload(for: url, suggestedFilename: classification.suggestedFilename)
+                }
             }
         } else {
             decisionHandler(.allow)
         }
+    }
+
+    @available(iOS 14.5, macOS 11.3, *)
+    public func webView(
+        _ webView: WKWebView,
+        navigationResponse: WKNavigationResponse,
+        didBecome download: WKDownload
+    ) {
+        download.delegate = self
+    }
+
+    // MARK: - WKDownloadDelegate (Native Interception & Handoff)
+
+    @available(iOS 14.5, macOS 11.3, *)
+    public func download(
+        _ download: WKDownload,
+        decideDestinationUsing response: URLResponse,
+        suggestedFilename: String,
+        completionHandler: @escaping (URL?) -> Void
+    ) {
+        // Resolve original and final redirected URLs
+        let originalURL = download.originalRequest?.url ?? response.url
+        let finalURL = response.url ?? originalURL
+
+        // Halt WebKit internal disk download to prevent duplicate downloading and bypassing coordinator
+        completionHandler(nil)
+
+        guard let destinationURL = finalURL, BrowserURLResolver.isValidDownloadURL(destinationURL) else {
+            return
+        }
+
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self, let vm = self.viewModel else { return }
+            vm.handleNativeDownloadHandoff(
+                originalURL: originalURL ?? destinationURL,
+                finalURL: destinationURL,
+                suggestedFilename: suggestedFilename,
+                mimeType: response.mimeType,
+                expectedLength: response.expectedContentLength > 0 ? response.expectedContentLength : nil,
+                source: .nativeWebKitDownload
+            )
+        }
+    }
+
+    @available(iOS 14.5, macOS 11.3, *)
+    public func download(
+        _ download: WKDownload,
+        willPerformHTTPRedirection response: HTTPURLResponse,
+        newRequest request: URLRequest,
+        decisionHandler: @escaping (WKDownload.RedirectPolicy) -> Void
+    ) {
+        // Preserve valid HTTP/HTTPS redirects during download resolution
+        if let newURL = request.url, BrowserURLResolver.isValidDownloadURL(newURL) {
+            decisionHandler(.allow)
+        } else {
+            decisionHandler(.cancel)
+        }
+    }
+
+    @available(iOS 14.5, macOS 11.3, *)
+    public func download(
+        _ download: WKDownload,
+        didFailWithError error: Error,
+        resumeData: Data?
+    ) {
+        // Ignore intentional cancellations during handoff to DownloadCoordinator
+        if BrowserDownloadInterceptionManager.isIntentionalHandoffCancellation(error) {
+            return
+        }
+
+        DispatchQueue.main.async { [weak self] in
+            self?.viewModel?.errorMessage = "Download preparation failed: \(error.localizedDescription)"
+        }
+    }
+
+    @available(iOS 14.5, macOS 11.3, *)
+    public func downloadDidFinish(_ download: WKDownload) {
+        // WebKit download finished
     }
 }
 

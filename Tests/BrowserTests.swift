@@ -480,6 +480,131 @@ final class BrowserTests: XCTestCase {
         XCTAssertTrue(displayString.contains("user_id=42"))
     }
 
+    // MARK: - 10. Milestone 7C: Native Download Interception & Handoff
+
+    func testInterceptionManagerFilenameResolutionHierarchy() {
+        let manager = BrowserDownloadInterceptionManager()
+        let testURL = URL(string: "https://example.com/api/v1/download/resource")!
+
+        // 1. Server-provided suggested filename takes highest precedence
+        let resolvedServer = manager.resolveFilename(
+            serverSuggested: "Official-Setup.dmg",
+            contentDisposition: "attachment; filename=\"old_name.iso\"",
+            url: testURL,
+            mimeType: "application/octet-stream"
+        )
+        XCTAssertEqual(resolvedServer, "Official-Setup.dmg")
+
+        // 2. Content-Disposition takes precedence when serverSuggested is nil or generic
+        let resolvedDisposition = manager.resolveFilename(
+            serverSuggested: nil,
+            contentDisposition: "attachment; filename*=UTF-8''Invoice%202026.pdf",
+            url: testURL,
+            mimeType: "application/pdf"
+        )
+        XCTAssertEqual(resolvedDisposition, "Invoice 2026.pdf")
+
+        // 3. URL path fallback when no header is present
+        let pathURL = URL(string: "https://example.com/downloads/package-v1.tar.gz")!
+        let resolvedPath = manager.resolveFilename(
+            serverSuggested: nil,
+            contentDisposition: nil,
+            url: pathURL,
+            mimeType: nil
+        )
+        XCTAssertEqual(resolvedPath, "package-v1.tar.gz")
+
+        // 4. MIME type fallback when URL has no extension
+        let noExtURL = URL(string: "https://example.com/stream/media_payload")!
+        let resolvedMIME = manager.resolveFilename(
+            serverSuggested: nil,
+            contentDisposition: nil,
+            url: noExtURL,
+            mimeType: "video/mp4"
+        )
+        XCTAssertEqual(resolvedMIME, "media_payload.mp4")
+    }
+
+    func testInterceptionManagerPreparesValidHandoffWithRedirect() {
+        let manager = BrowserDownloadInterceptionManager()
+        let original = URL(string: "https://example.com/download/latest")!
+        let finalRedirected = URL(string: "https://cdn.example.com/binaries/release-2026.iso")!
+
+        let handoff = manager.prepareHandoff(
+            originalURL: original,
+            finalURL: finalRedirected,
+            serverSuggestedFilename: "custom-ubuntu.iso",
+            mimeType: "application/x-iso9660-image",
+            expectedLength: 4_500_000_000,
+            source: .nativeWebKitDownload
+        )
+
+        XCTAssertNotNil(handoff)
+        XCTAssertEqual(handoff?.originalURL, original)
+        XCTAssertEqual(handoff?.finalURL, finalRedirected)
+        XCTAssertEqual(handoff?.suggestedFilename, "custom-ubuntu.iso")
+        XCTAssertEqual(handoff?.mimeType, "application/x-iso9660-image")
+        XCTAssertEqual(handoff?.expectedContentLength, 4_500_000_000)
+        XCTAssertEqual(handoff?.source, .nativeWebKitDownload)
+    }
+
+    func testInterceptionManagerRejectsInvalidDownloadSchemes() {
+        let manager = BrowserDownloadInterceptionManager()
+        let fileURL = URL(string: "file:///private/var/mobile/secret.tar")!
+        let handoffFile = manager.prepareHandoff(originalURL: fileURL)
+        XCTAssertNil(handoffFile)
+
+        let jsURL = URL(string: "javascript:void(0)")!
+        let handoffJS = manager.prepareHandoff(originalURL: jsURL)
+        XCTAssertNil(handoffJS)
+    }
+
+    func testIsIntentionalHandoffCancellation() {
+        // WebKit download cancellation (WKErrorDomain code 2)
+        let wkCancelledError = NSError(domain: "WKErrorDomain", code: 2, userInfo: nil)
+        XCTAssertTrue(BrowserDownloadInterceptionManager.isIntentionalHandoffCancellation(wkCancelledError))
+
+        // URLSession cancellation (NSURLErrorDomain code -999)
+        let urlCancelledError = NSError(domain: NSURLErrorDomain, code: NSURLErrorCancelled, userInfo: nil)
+        XCTAssertTrue(BrowserDownloadInterceptionManager.isIntentionalHandoffCancellation(urlCancelledError))
+
+        // Real network errors must NOT be identified as intentional cancellations
+        let timeoutError = NSError(domain: NSURLErrorDomain, code: NSURLErrorTimedOut, userInfo: nil)
+        XCTAssertFalse(BrowserDownloadInterceptionManager.isIntentionalHandoffCancellation(timeoutError))
+
+        let cannotConnectError = NSError(domain: NSURLErrorDomain, code: NSURLErrorCannotConnectToHost, userInfo: nil)
+        XCTAssertFalse(BrowserDownloadInterceptionManager.isIntentionalHandoffCancellation(cannotConnectError))
+    }
+
+    func testBrowserDownloadHandoffModelEquatability() {
+        let url1 = URL(string: "https://example.com/archive.zip")!
+        let url2 = URL(string: "https://cdn.example.com/archive.zip")!
+        let fixedDate = Date(timeIntervalSince1970: 1700000000)
+
+        let h1 = BrowserDownloadHandoff(
+            originalURL: url1,
+            finalURL: url2,
+            suggestedFilename: "archive.zip",
+            mimeType: "application/zip",
+            expectedContentLength: 1048576,
+            source: .nativeWebKitDownload,
+            timestamp: fixedDate
+        )
+
+        let h2 = BrowserDownloadHandoff(
+            originalURL: url1,
+            finalURL: url2,
+            suggestedFilename: "archive.zip",
+            mimeType: "application/zip",
+            expectedContentLength: 1048576,
+            source: .nativeWebKitDownload,
+            timestamp: fixedDate
+        )
+
+        XCTAssertEqual(h1, h2)
+        XCTAssertEqual(h1.source.rawValue, "Native WebKit Download")
+    }
+
     #if canImport(SwiftUI)
     @MainActor
     func testBrowserViewModelDuplicatePromptSuppression() {
