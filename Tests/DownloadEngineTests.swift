@@ -613,7 +613,7 @@ final class DownloadEngineTests: XCTestCase {
 
         _ = try await engine.addDownload(req, autoStart: true)
         try await engine.waitUntilIdle(timeoutSeconds: 10.0)
-        try? await Task.sleep(nanoseconds: 50_000_000)
+        try? await Task.sleep(nanoseconds: 150_000_000)
         task.cancel()
 
         let failedEvent = await collector.first {

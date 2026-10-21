@@ -9,10 +9,11 @@ This guide describes how to build, run, and validate the **SwiftDownloadEngine**
 The repository cleanly separates the underlying multi-worker transfer engine from the SwiftUI application presentation:
 
 * **Engine Library (`DM_Reverse_engineering`)**: Multi-worker segmented range transfers, pause/resume offset recovery, priority queue scheduling, token-bucket bandwidth throttling, SHA-256 integrity verification, and persistent JSON manifest storage.
-* **UI Layer (`Engine/UI/`)**: Complete SwiftUI user experience structured around a 3-tab navigation hierarchy coordinated by [DownloadManagerAppView](file:///c:/mini%20project/DM%20Reverse%20engineering/Engine/UI/DownloadManagerAppView.swift):
+* **UI Layer (`Engine/UI/`)**: Complete SwiftUI user experience structured around a 4-tab navigation hierarchy coordinated by [DownloadManagerAppView](file:///c:/mini%20project/DM%20Reverse%20engineering/Engine/UI/DownloadManagerAppView.swift):
   1. **Downloads Tab (`DownloadsView`)**: Active/completed transfers, live speeds, ETA counters, segmented progress bars, and pause/resume/cancel/retry actions.
-  2. **Add Download Tab (`AddDownloadView`)**: URL input, destination file name specification, worker count slider (1–16 workers), and immediate scheduling.
-  3. **Settings Tab (`SettingsView`)**: Concurrency limits, global HTTP request limits, bandwidth cap configuration, manual queue manifest restoration, and persistent `UserDefaults` storage.
+  2. **Browser Tab (`BrowserView`)**: Native WebKit browser (`WKWebView`) with unified address/search bar, navigation controls, loading progress, quick shortcuts, and direct download dispatch to the existing coordinator.
+  3. **Add Download Tab (`AddDownloadView`)**: URL input, destination file name specification, worker count slider (1–16 workers), and immediate scheduling.
+  4. **Settings Tab (`SettingsView`)**: Concurrency limits, global HTTP request limits, bandwidth cap configuration, manual queue manifest restoration, and persistent `UserDefaults` storage.
   * **Detail Inspection Screen (`DownloadDetailsView`)**: Pushed destination navigated to directly from any download row in the Downloads tab, showing byte-level chunk ranges, HTTP headers, hash validation results, and diagnostic metadata.
 * **View Model (`DownloadManagerViewModel`)**: `@MainActor` state bridge conforming to `ObservableObject` with `@Published` properties that consumes `AsyncStream<DownloadEvent>` and automatically drives UI refreshes.
 * **App Coordinator (`SwiftDownloadEngineApp`)**: Top-level `App` coordinator managing application sandbox directories, initial engine instantiation, single-restoration queue bootstrapping, and `.scenePhase` foreground/background transitions.
@@ -99,8 +100,9 @@ The top-level coordinator ([SwiftDownloadEngineApp](file:///c:/mini%20project/DM
 Once opened in Xcode, perform validation across both the iOS Simulator and physical hardware:
 
 1. **Build & Launch on iOS Simulator (iPhone 15 / 16, iOS 17/18):**
-   * Verify all 3 primary tabs render properly: *Downloads*, *Add*, and *Settings*.
+   * Verify all 4 primary tabs render properly: *Downloads*, *Browser*, *Add*, and *Settings*.
    * Verify tapping an active or completed download navigates to the *Download Details* screen.
+   * Verify in-app browser functionality in the *Browser* tab: navigate to a URL or search query, use navigation controls, and tap the download action button to pass the URL to the engine.
    * Add a test URL (e.g. `https://speed.hetzner.de/100MB.bin`) and observe live progress, multi-worker speed, and ETA calculations.
    * Verify interactive pause, resume, cancel, and retry controls.
 2. **Physical iPhone Validation:**

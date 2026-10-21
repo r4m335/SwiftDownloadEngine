@@ -25,19 +25,27 @@ public struct DownloadManagerAppView: View {
                 }
                 .tag(0)
 
+            BrowserView(viewModel: viewModel, onDownloadInitiated: {
+                selectedTab = 0
+            })
+                .tabItem {
+                    Label("Browser", systemImage: "globe")
+                }
+                .tag(1)
+
             AddDownloadView(viewModel: viewModel, onDownloadAdded: {
                 selectedTab = 0
             })
                 .tabItem {
                     Label("Add", systemImage: "plus.circle")
                 }
-                .tag(1)
+                .tag(2)
 
             SettingsView(viewModel: viewModel)
                 .tabItem {
                     Label("Settings", systemImage: "gearshape.fill")
                 }
-                .tag(2)
+                .tag(3)
         }
         .task {
             // Automatically begin observing real-time engine events

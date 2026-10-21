@@ -948,3 +948,23 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
         }
     }
 }
+
+// MARK: - BrowserDownloadDelegate Conformance
+
+extension DownloadManagerViewModel: BrowserDownloadDelegate {
+    public func handleDownloadRequest(
+        url: URL,
+        filename: String?,
+        threadCount: Int,
+        speedLimitBytesPerSecond: Int64?
+    ) async throws {
+        _ = try await addDownload(
+            urlText: url.absoluteString,
+            filename: filename,
+            threadCount: threadCount,
+            speedLimitBytesPerSecond: speedLimitBytesPerSecond,
+            transportPolicy: .foreground,
+            autoStart: true
+        )
+    }
+}
