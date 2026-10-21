@@ -9,7 +9,7 @@ This guide describes how to build, run, and validate the **SwiftDownloadEngine**
 The repository cleanly separates the underlying multi-worker transfer engine from the SwiftUI application presentation:
 
 * **Engine Library (`DM_Reverse_engineering`)**: Multi-worker segmented range transfers, pause/resume offset recovery, priority queue scheduling, token-bucket bandwidth throttling, SHA-256 integrity verification, and persistent JSON manifest storage.
-* **UI Layer (`Engine/UI/` and `UI/`)**: Complete SwiftUI user experience structured around a 3-tab navigation hierarchy coordinated by [DownloadManagerAppView](file:///c:/mini%20project/DM%20Reverse%20engineering/Engine/UI/DownloadManagerAppView.swift):
+* **UI Layer (`Engine/UI/`)**: Complete SwiftUI user experience structured around a 3-tab navigation hierarchy coordinated by [DownloadManagerAppView](file:///c:/mini%20project/DM%20Reverse%20engineering/Engine/UI/DownloadManagerAppView.swift):
   1. **Downloads Tab (`DownloadsView`)**: Active/completed transfers, live speeds, ETA counters, segmented progress bars, and pause/resume/cancel/retry actions.
   2. **Add Download Tab (`AddDownloadView`)**: URL input, destination file name specification, worker count slider (1–16 workers), and immediate scheduling.
   3. **Settings Tab (`SettingsView`)**: Concurrency limits, global HTTP request limits, bandwidth cap configuration, manual queue manifest restoration, and persistent `UserDefaults` storage.
