@@ -403,7 +403,29 @@ public enum BackgroundDownloadFileHandler {
         let stagingURL = parentDir
             .appendingPathComponent("staging-\(UUID().uuidString).tmp")
 
+        if let expectedNew = expectedNewBytes {
+            let sourceAttrs = try fileManager.attributesOfItem(atPath: sourceURL.path)
+            guard let sourceSize = sourceAttrs[.size] as? Int64 else {
+                throw BackgroundTransportError.fileRelocationFailed(underlyingError: "Cannot determine source file size")
+            }
+            if sourceSize != expectedNew {
+                _ = try? fileManager.removeItem(at: sourceURL)
+                throw BackgroundTransportError.bodyLengthMismatch(expected: expectedNew, actual: sourceSize)
+            }
+        }
+
         if append && fileManager.fileExists(atPath: destinationURL.path) {
+            if let expectedFinal = expectedFinalTotalBytes, let expectedNew = expectedNewBytes {
+                let expectedPrefix = expectedFinal - expectedNew
+                if expectedPrefix >= 0 {
+                    let destAttrs = try fileManager.attributesOfItem(atPath: destinationURL.path)
+                    let destSize = (destAttrs[.size] as? Int64) ?? 0
+                    if destSize != expectedPrefix {
+                        throw BackgroundTransportError.bodyLengthMismatch(expected: expectedPrefix, actual: destSize)
+                    }
+                }
+            }
+
             // Copy existing partial destination to staging, then append new bytes from sourceURL
             do {
                 try fileManager.copyItem(at: destinationURL, to: stagingURL)
@@ -809,6 +831,12 @@ public final class BackgroundDownloadSessionManager: NSObject, @unchecked Sendab
 
     /// Reconciles system URLSession tasks with persisted mappings upon app launch / reactivation.
     /// Updates both `mappingStore` and `DownloadPersistenceStore` consistently.
+    ///
+    /// Completion invariant: A background download segment is complete if and only if
+    /// its physical part file exists on disk and its byte size strictly equals the absolute `segmentLength`.
+    /// `expectedBytes` represents only the response body length for this particular HTTP request slice,
+    /// which for a resumed request (`initialSegmentCompletedBytes > 0`) is strictly less than `segmentLength`.
+    /// Under no circumstance may a partial file of size `expectedBytes < segmentLength` be marked complete.
     public func reconcileActiveTasks() async throws -> BackgroundReconciliationReport {
         let allTasks = await activeSessionTasks()
         let taskIDsInSession = Set(allTasks.map { $0.taskIdentifier })
@@ -822,28 +850,69 @@ public final class BackgroundDownloadSessionManager: NSObject, @unchecked Sendab
             if taskIDsInSession.contains(r.taskIdentifier) {
                 restored.append(r)
             } else {
-                // Task is no longer running in session. Check if destination part file is complete.
-                if FileManager.default.fileExists(atPath: r.destinationPartURL.path) {
-                    let attrs = try? FileManager.default.attributesOfItem(atPath: r.destinationPartURL.path)
+                // Task is no longer running in system session.
+                let partPath = r.destinationPartURL.path
+                if FileManager.default.fileExists(atPath: partPath) {
+                    let attrs = try? FileManager.default.attributesOfItem(atPath: partPath)
                     let size = (attrs?[.size] as? Int64) ?? 0
-                    if size == r.segmentLength || size == r.expectedBytes {
-                        try await mappingStore.markCompleted(sessionIdentifier: r.sessionIdentifier, taskIdentifier: r.taskIdentifier, finalBytes: size)
-                        completed.append(r)
 
-                        // Reconcile DownloadPersistenceStore segment record
+                    if size == r.segmentLength && r.segmentLength > 0 {
+                        // Invariant holds: part file strictly equals absolute segment length
+                        try await mappingStore.markCompleted(
+                            sessionIdentifier: r.sessionIdentifier,
+                            taskIdentifier: r.taskIdentifier,
+                            finalBytes: r.segmentLength
+                        )
+
+                        // Reconcile DownloadPersistenceStore segment record.
+                        // Do not silently swallow persistence failures that could cause false completion.
                         if let persistence = self.persistenceStore {
-                            let totalSegmentDone = r.segmentLength
+                            _ = try await persistence.updateSegmentProgress(
+                                tag: r.downloadID,
+                                segmentID: r.segmentID,
+                                completedBytes: r.segmentLength
+                            )
+                        }
+
+                        completed.append(r)
+                        continue
+                    } else if size > r.segmentLength {
+                        // Corrupted or oversized part file: purge corrupted file safely
+                        try? FileManager.default.removeItem(at: r.destinationPartURL)
+                        if let persistence = self.persistenceStore {
                             _ = try? await persistence.updateSegmentProgress(
                                 tag: r.downloadID,
                                 segmentID: r.segmentID,
-                                completedBytes: totalSegmentDone
+                                completedBytes: 0,
+                                allowDecrease: true
                             )
                         }
-                        continue
+                    } else {
+                        // Partial file is smaller than segmentLength (even if size == r.expectedBytes).
+                        // Must remain incomplete! Reconcile persistence with validated on-disk size.
+                        if let persistence = self.persistenceStore {
+                            _ = try? await persistence.updateSegmentProgress(
+                                tag: r.downloadID,
+                                segmentID: r.segmentID,
+                                completedBytes: max(0, size),
+                                allowDecrease: true
+                            )
+                        }
+                    }
+                } else {
+                    // Part file is missing on disk: reset persistence segment completed bytes
+                    if let persistence = self.persistenceStore {
+                        _ = try? await persistence.updateSegmentProgress(
+                            tag: r.downloadID,
+                            segmentID: r.segmentID,
+                            completedBytes: 0,
+                            allowDecrease: true
+                        )
                     }
                 }
-                // Dead/incomplete task: clean up orphaned mapping from store so it does not block future task scheduling
-                try? await mappingStore.remove(sessionIdentifier: r.sessionIdentifier, taskIdentifier: r.taskIdentifier)
+
+                // Dead or incomplete task: clean up orphaned mapping from store so it does not block future task scheduling
+                try await mappingStore.remove(sessionIdentifier: r.sessionIdentifier, taskIdentifier: r.taskIdentifier)
                 orphanedCount += 1
             }
         }
@@ -973,7 +1042,11 @@ extension BackgroundDownloadSessionManager: URLSessionDownloadDelegate {
         // 2. Validate response, verify expected size, and update stores asynchronously
         Task { [self] in
             defer { self.trackDelegateTaskFinished() }
-            let record = await self.mappingStore.record(sessionIdentifier: sessID, taskIdentifier: taskID)
+            guard let record = await self.mappingStore.record(sessionIdentifier: sessID, taskIdentifier: taskID) else {
+                print("[BackgroundDownloadSessionManager] Warning: missing task record for task \(taskID)")
+                try? FileManager.default.removeItem(at: stagingURL)
+                return
+            }
 
             // Fetch download record to obtain known total size for response validation
             var knownTotalSize: Int64? = nil
@@ -982,31 +1055,34 @@ extension BackgroundDownloadSessionManager: URLSessionDownloadDelegate {
                 knownTotalSize = dlRec?.totalSize
             }
 
-            if let resp = response, let rec = record {
+            if let resp = response {
                 do {
                     try BackgroundResponseValidator.validate(
                         response: resp,
-                        expectedStart: rec.startOffset,
-                        expectedEnd: rec.endOffset,
+                        expectedStart: record.startOffset,
+                        expectedEnd: record.endOffset,
                         expectedTotalSize: knownTotalSize
                     )
                 } catch {
                     try? FileManager.default.removeItem(at: stagingURL)
                     try? FileManager.default.removeItem(at: destination)
                     try? await self.mappingStore.markFailed(sessionIdentifier: sessID, taskIdentifier: taskID, error: error.localizedDescription)
+                    if let persistence = self.persistenceStore {
+                        _ = try? await persistence.updateSegmentProgress(tag: downloadID, segmentID: segmentID, completedBytes: 0, allowDecrease: true)
+                    }
                     self.notifyFailed(downloadID: downloadID, segmentID: segmentID, error: error)
                     return
                 }
             }
 
-            let shouldAppend = (record?.initialSegmentCompletedBytes ?? 0) > 0
-            let expectedFinalBytes = record?.segmentLength ?? record?.expectedBytes
+            let shouldAppend = record.initialSegmentCompletedBytes > 0
+            let expectedFinalBytes = record.segmentLength
             let finalSize: Int64
             do {
                 finalSize = try BackgroundDownloadFileHandler.relocateOrAppendTemporaryFile(
                     from: stagingURL,
                     to: destination,
-                    expectedNewBytes: record?.expectedBytes,
+                    expectedNewBytes: record.expectedBytes,
                     expectedFinalTotalBytes: expectedFinalBytes,
                     append: shouldAppend
                 )
@@ -1014,7 +1090,27 @@ extension BackgroundDownloadSessionManager: URLSessionDownloadDelegate {
                 print("[BackgroundDownloadSessionManager] Error committing downloaded file: \(error)")
                 try? FileManager.default.removeItem(at: stagingURL)
                 try? await self.mappingStore.markFailed(sessionIdentifier: sessID, taskIdentifier: taskID, error: error.localizedDescription)
+                if let persistence = self.persistenceStore {
+                    let currentAttrs = try? FileManager.default.attributesOfItem(atPath: destination.path)
+                    let currentSize = (currentAttrs?[.size] as? Int64) ?? 0
+                    _ = try? await persistence.updateSegmentProgress(tag: downloadID, segmentID: segmentID, completedBytes: currentSize, allowDecrease: true)
+                }
                 self.notifyFailed(downloadID: downloadID, segmentID: segmentID, error: error)
+                return
+            }
+
+            guard finalSize == record.segmentLength else {
+                let errorMsg = "Final file size mismatch: expected \(record.segmentLength), got \(finalSize)"
+                print("[BackgroundDownloadSessionManager] Error: \(errorMsg)")
+                try? await self.mappingStore.markFailed(sessionIdentifier: sessID, taskIdentifier: taskID, error: errorMsg)
+                if let persistence = self.persistenceStore {
+                    _ = try? await persistence.updateSegmentProgress(tag: downloadID, segmentID: segmentID, completedBytes: finalSize)
+                }
+                self.notifyFailed(
+                    downloadID: downloadID,
+                    segmentID: segmentID,
+                    error: BackgroundTransportError.bodyLengthMismatch(expected: record.segmentLength, actual: finalSize)
+                )
                 return
             }
 
@@ -1022,15 +1118,17 @@ extension BackgroundDownloadSessionManager: URLSessionDownloadDelegate {
 
             // Segment completion: mark segment completed with full segmentLength
             if let persistence = self.persistenceStore {
-                let segmentFinalCompleted = record?.segmentLength ?? finalSize
                 do {
                     _ = try await persistence.updateSegmentProgress(
                         tag: downloadID,
                         segmentID: segmentID,
-                        completedBytes: segmentFinalCompleted
+                        completedBytes: record.segmentLength
                     )
                 } catch {
                     print("[BackgroundDownloadSessionManager] Warning: failed to mark segment completed in persistence: \(error)")
+                    try? await self.mappingStore.markFailed(sessionIdentifier: sessID, taskIdentifier: taskID, error: error.localizedDescription)
+                    self.notifyFailed(downloadID: downloadID, segmentID: segmentID, error: error)
+                    return
                 }
             }
 

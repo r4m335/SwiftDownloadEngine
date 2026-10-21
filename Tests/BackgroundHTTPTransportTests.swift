@@ -790,4 +790,339 @@ final class BackgroundHTTPTransportTests: XCTestCase {
         XCTAssertEqual(rec.completedBytes, 500)
         XCTAssertEqual(rec.taskIdentifier, -1)
     }
+
+    // MARK: - 8. Milestone 6B.2 Completion & Reconciliation Invariant Tests
+
+    /// 1. A resumed request's leftover file size equals expectedBytes but is less than segmentLength: MUST remain incomplete.
+    func testReconcileResumedSegmentWithLeftoverSizeEqualsExpectedBytesRemainsIncomplete() async throws {
+        let manager = try BackgroundDownloadSessionManager(
+            sessionIdentifier: "test.recon.leftover.\(UUID().uuidString)",
+            storageDirectoryURL: storageDirectoryURL,
+            persistenceStore: persistenceStore
+        )
+
+        // Segment: 0..999 (length = 1000). Previously completed 600 bytes.
+        // Resumed request was scheduled for bytes 600..999, so expectedBytes = 400.
+        let download = DownloadRecord(
+            id: "dl-recon-leftover",
+            originalURL: URL(string: "https://example.com/file.bin")!,
+            destinationURL: storageDirectoryURL.appendingPathComponent("file.bin"),
+            totalSize: 1000,
+            state: .downloading,
+            storageMode: .partFiles,
+            segments: [
+                SegmentRecord(id: 0, startOffset: 0, endOffset: 999, length: 1000, completedBytes: 600)
+            ]
+        )
+        try await persistenceStore.save(download)
+
+        let partURL = manager.partFileURL(downloadID: "dl-recon-leftover", segmentID: 0)
+        // File on disk only contains 400 bytes (equals expectedBytes for the resumed request, but < segmentLength!)
+        let leftoverData = Data(repeating: 0xAA, count: 400)
+        try leftoverData.write(to: partURL)
+
+        let taskRecord = BackgroundDownloadTaskRecord(
+            sessionIdentifier: manager.sessionIdentifier,
+            taskIdentifier: 101,
+            downloadID: "dl-recon-leftover",
+            segmentID: 0,
+            originalURL: download.originalURL,
+            startOffset: 600,
+            endOffset: 999,
+            expectedBytes: 400,
+            initialSegmentCompletedBytes: 600,
+            segmentLength: 1000,
+            destinationPartURL: partURL
+        )
+        try await manager.mappingStore.save(record: taskRecord)
+
+        // Relaunch / Reconcile when task is no longer in active URLSession
+        let report = try await manager.reconcileActiveTasks()
+
+        // MUST NOT be marked complete!
+        XCTAssertEqual(report.completedRecords.count, 0, "Segment of size 400 must NOT be marked complete when segmentLength is 1000")
+        XCTAssertEqual(report.orphanedTasksCount, 1, "Dead interrupted task must be cleaned up")
+
+        // Mapping store must have removed the dead task
+        let storedTask = await manager.mappingStore.record(sessionIdentifier: manager.sessionIdentifier, taskIdentifier: 101)
+        XCTAssertNil(storedTask)
+
+        // Persistence store must NOT be marked complete
+        let fetched = try await persistenceStore.fetch(tag: "dl-recon-leftover")
+        XCTAssertFalse(fetched!.segments[0].isCompleted, "Segment must remain incomplete")
+        XCTAssertEqual(fetched?.segments[0].completedBytes, 400, "Persistence must record actual on-disk bytes, never segmentLength")
+    }
+
+    /// 2. A partial file exactly equals segmentLength: reconcile according to the documented completion invariant.
+    func testReconcilePartFileEqualsSegmentLengthMarksComplete() async throws {
+        let manager = try BackgroundDownloadSessionManager(
+            sessionIdentifier: "test.recon.exact.\(UUID().uuidString)",
+            storageDirectoryURL: storageDirectoryURL,
+            persistenceStore: persistenceStore
+        )
+
+        let download = DownloadRecord(
+            id: "dl-recon-exact",
+            originalURL: URL(string: "https://example.com/file.bin")!,
+            destinationURL: storageDirectoryURL.appendingPathComponent("file.bin"),
+            totalSize: 1000,
+            state: .downloading,
+            storageMode: .partFiles,
+            segments: [
+                SegmentRecord(id: 0, startOffset: 0, endOffset: 999, length: 1000, completedBytes: 500)
+            ]
+        )
+        try await persistenceStore.save(download)
+
+        let partURL = manager.partFileURL(downloadID: "dl-recon-exact", segmentID: 0)
+        // Part file on disk has full 1000 bytes matching segmentLength
+        let completeData = Data(repeating: 0xBB, count: 1000)
+        try completeData.write(to: partURL)
+
+        let taskRecord = BackgroundDownloadTaskRecord(
+            sessionIdentifier: manager.sessionIdentifier,
+            taskIdentifier: 102,
+            downloadID: "dl-recon-exact",
+            segmentID: 0,
+            originalURL: download.originalURL,
+            startOffset: 500,
+            endOffset: 999,
+            expectedBytes: 500,
+            initialSegmentCompletedBytes: 500,
+            segmentLength: 1000,
+            destinationPartURL: partURL
+        )
+        try await manager.mappingStore.save(record: taskRecord)
+
+        let report = try await manager.reconcileActiveTasks()
+
+        XCTAssertEqual(report.completedRecords.count, 1)
+        XCTAssertEqual(report.completedRecords.first?.taskIdentifier, 102)
+
+        let storedTask = await manager.mappingStore.record(sessionIdentifier: manager.sessionIdentifier, taskIdentifier: 102)
+        XCTAssertTrue(storedTask!.isCompleted)
+        XCTAssertEqual(storedTask?.completedBytes, 1000)
+
+        let fetched = try await persistenceStore.fetch(tag: "dl-recon-exact")
+        XCTAssertTrue(fetched!.segments[0].isCompleted)
+        XCTAssertEqual(fetched?.segments[0].completedBytes, 1000)
+    }
+
+    /// 3. A partial file is smaller than segmentLength and expectedBytes differs from segmentLength: MUST remain incomplete.
+    func testReconcilePartFileSmallerThanSegmentLengthAndDifferentFromExpectedBytesRemainsIncomplete() async throws {
+        let manager = try BackgroundDownloadSessionManager(
+            sessionIdentifier: "test.recon.small.\(UUID().uuidString)",
+            storageDirectoryURL: storageDirectoryURL,
+            persistenceStore: persistenceStore
+        )
+
+        let download = DownloadRecord(
+            id: "dl-recon-small",
+            originalURL: URL(string: "https://example.com/file.bin")!,
+            destinationURL: storageDirectoryURL.appendingPathComponent("file.bin"),
+            totalSize: 1000,
+            state: .downloading,
+            storageMode: .partFiles,
+            segments: [
+                SegmentRecord(id: 0, startOffset: 0, endOffset: 999, length: 1000, completedBytes: 600)
+            ]
+        )
+        try await persistenceStore.save(download)
+
+        let partURL = manager.partFileURL(downloadID: "dl-recon-small", segmentID: 0)
+        // File has 250 bytes: < segmentLength (1000) and != expectedBytes (400)
+        let partialData = Data(repeating: 0xCC, count: 250)
+        try partialData.write(to: partURL)
+
+        let taskRecord = BackgroundDownloadTaskRecord(
+            sessionIdentifier: manager.sessionIdentifier,
+            taskIdentifier: 103,
+            downloadID: "dl-recon-small",
+            segmentID: 0,
+            originalURL: download.originalURL,
+            startOffset: 600,
+            endOffset: 999,
+            expectedBytes: 400,
+            initialSegmentCompletedBytes: 600,
+            segmentLength: 1000,
+            destinationPartURL: partURL
+        )
+        try await manager.mappingStore.save(record: taskRecord)
+
+        let report = try await manager.reconcileActiveTasks()
+
+        XCTAssertEqual(report.completedRecords.count, 0)
+        XCTAssertEqual(report.orphanedTasksCount, 1)
+
+        let fetched = try await persistenceStore.fetch(tag: "dl-recon-small")
+        XCTAssertFalse(fetched!.segments[0].isCompleted)
+        XCTAssertEqual(fetched?.segments[0].completedBytes, 250)
+    }
+
+    /// 4. A partial file is larger than segmentLength: handle safely; never mark it complete without validation.
+    func testReconcilePartFileLargerThanSegmentLengthPurgedAndReset() async throws {
+        let manager = try BackgroundDownloadSessionManager(
+            sessionIdentifier: "test.recon.oversized.\(UUID().uuidString)",
+            storageDirectoryURL: storageDirectoryURL,
+            persistenceStore: persistenceStore
+        )
+
+        let download = DownloadRecord(
+            id: "dl-recon-oversized",
+            originalURL: URL(string: "https://example.com/file.bin")!,
+            destinationURL: storageDirectoryURL.appendingPathComponent("file.bin"),
+            totalSize: 1000,
+            state: .downloading,
+            storageMode: .partFiles,
+            segments: [
+                SegmentRecord(id: 0, startOffset: 0, endOffset: 999, length: 1000, completedBytes: 500)
+            ]
+        )
+        try await persistenceStore.save(download)
+
+        let partURL = manager.partFileURL(downloadID: "dl-recon-oversized", segmentID: 0)
+        // File has 1500 bytes (larger than segmentLength 1000)
+        let oversizedData = Data(repeating: 0xDD, count: 1500)
+        try oversizedData.write(to: partURL)
+
+        let taskRecord = BackgroundDownloadTaskRecord(
+            sessionIdentifier: manager.sessionIdentifier,
+            taskIdentifier: 104,
+            downloadID: "dl-recon-oversized",
+            segmentID: 0,
+            originalURL: download.originalURL,
+            startOffset: 500,
+            endOffset: 999,
+            expectedBytes: 500,
+            initialSegmentCompletedBytes: 500,
+            segmentLength: 1000,
+            destinationPartURL: partURL
+        )
+        try await manager.mappingStore.save(record: taskRecord)
+
+        let report = try await manager.reconcileActiveTasks()
+
+        XCTAssertEqual(report.completedRecords.count, 0, "Oversized part file must never be marked completed")
+        XCTAssertEqual(report.orphanedTasksCount, 1)
+
+        // Corrupted file must be removed from disk
+        XCTAssertFalse(FileManager.default.fileExists(atPath: partURL.path), "Corrupted file must be purged")
+
+        // Persistence must be reset to 0
+        let fetched = try await persistenceStore.fetch(tag: "dl-recon-oversized")
+        XCTAssertEqual(fetched?.segments[0].completedBytes, 0)
+        XCTAssertFalse(fetched!.segments[0].isCompleted)
+    }
+
+    /// 5. A normal fresh request completes correctly.
+    func testNormalFreshRequestCompletesCorrectly() throws {
+        let sourceURL = storageDirectoryURL.appendingPathComponent("fresh_temp.bin")
+        let destinationURL = storageDirectoryURL.appendingPathComponent("fresh_dest.bin")
+        let data = Data(repeating: 0xEE, count: 800)
+        try data.write(to: sourceURL)
+
+        let finalSize = try BackgroundDownloadFileHandler.relocateOrAppendTemporaryFile(
+            from: sourceURL,
+            to: destinationURL,
+            expectedNewBytes: 800,
+            expectedFinalTotalBytes: 800,
+            append: false
+        )
+
+        XCTAssertEqual(finalSize, 800)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: destinationURL.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: sourceURL.path))
+        let written = try Data(contentsOf: destinationURL)
+        XCTAssertEqual(written, data)
+    }
+
+    /// 6. A resumed request appends to the existing prefix without duplicating or overwriting bytes.
+    func testResumedRequestAppendsToExistingPrefixCleanly() throws {
+        let prefix = Data(repeating: 0x41, count: 500) // 500 'A's
+        let suffix = Data(repeating: 0x42, count: 500) // 500 'B's
+
+        let destinationURL = storageDirectoryURL.appendingPathComponent("resumed_dest.bin")
+        try prefix.write(to: destinationURL)
+
+        let tempURL = storageDirectoryURL.appendingPathComponent("incoming_suffix.bin")
+        try suffix.write(to: tempURL)
+
+        let finalSize = try BackgroundDownloadFileHandler.relocateOrAppendTemporaryFile(
+            from: tempURL,
+            to: destinationURL,
+            expectedNewBytes: 500,
+            expectedFinalTotalBytes: 1000,
+            append: true
+        )
+
+        XCTAssertEqual(finalSize, 1000)
+        let combined = try Data(contentsOf: destinationURL)
+        XCTAssertEqual(combined.count, 1000)
+        XCTAssertEqual(combined.prefix(500), prefix, "Prefix bytes must match exactly without duplication")
+        XCTAssertEqual(combined.suffix(500), suffix, "Suffix bytes must be appended directly after prefix")
+    }
+
+    /// 7. Invalid response metadata cannot produce a completed segment.
+    func testInvalidResponseMetadataCannotProduceCompletedSegment() {
+        // HTTP 200 OK for a byte-range request must be rejected
+        let url = URL(string: "https://example.com/test.bin")!
+        let resp200 = HTTPURLResponse(url: url, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: [
+            "Content-Range": "bytes 0-499/1000",
+            "Content-Length": "500"
+        ])
+
+        XCTAssertThrowsError(
+            try BackgroundResponseValidator.validate(
+                response: resp200,
+                expectedStart: 0,
+                expectedEnd: 499,
+                expectedTotalSize: 1000
+            )
+        ) { error in
+            guard case BackgroundTransportError.unexpectedStatus(expected: 206, actual: 200) = error else {
+                XCTFail("Expected unexpectedStatus(206, 200), got \(error)")
+                return
+            }
+        }
+
+        // HTML error page must be rejected
+        let respHTML = HTTPURLResponse(url: url, statusCode: 206, httpVersion: "HTTP/1.1", headerFields: [
+            "Content-Range": "bytes 0-499/1000",
+            "Content-Type": "text/html; charset=utf-8"
+        ])
+
+        XCTAssertThrowsError(
+            try BackgroundResponseValidator.validate(
+                response: respHTML,
+                expectedStart: 0,
+                expectedEnd: 499,
+                expectedTotalSize: 1000
+            )
+        ) { error in
+            guard case BackgroundTransportError.htmlErrorPageReceived = error else {
+                XCTFail("Expected htmlErrorPageReceived, got \(error)")
+                return
+            }
+        }
+
+        // Mismatched Content-Range must be rejected
+        let respMismatch = HTTPURLResponse(url: url, statusCode: 206, httpVersion: "HTTP/1.1", headerFields: [
+            "Content-Range": "bytes 100-599/1000"
+        ])
+
+        XCTAssertThrowsError(
+            try BackgroundResponseValidator.validate(
+                response: respMismatch,
+                expectedStart: 0,
+                expectedEnd: 499,
+                expectedTotalSize: 1000
+            )
+        ) { error in
+            guard case BackgroundTransportError.contentRangeMismatch = error else {
+                XCTFail("Expected contentRangeMismatch, got \(error)")
+                return
+            }
+        }
+    }
 }
+

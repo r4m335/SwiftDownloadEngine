@@ -393,11 +393,14 @@ public actor DownloadPersistenceStore {
     }
 
     /// Atomically updates a single segment's completed byte count.
+    /// By default, completed bytes are monotonic (`max(existing, completedBytes)`).
+    /// If `allowDecrease == true`, explicitly sets the byte count (e.g. during disk reconciliation or reset).
     @discardableResult
     public func updateSegmentProgress(
         tag: String,
         segmentID: Int,
-        completedBytes: Int64
+        completedBytes: Int64,
+        allowDecrease: Bool = false
     ) throws -> DownloadRecord {
         guard var record = try fetch(tag: tag) else {
             throw DownloadPersistenceError.recordNotFound(tag: tag)
@@ -415,7 +418,11 @@ public actor DownloadPersistenceStore {
             )
         }
 
-        record.segments[segmentIndex].completedBytes = max(record.segments[segmentIndex].completedBytes, max(0, completedBytes))
+        if allowDecrease {
+            record.segments[segmentIndex].completedBytes = max(0, completedBytes)
+        } else {
+            record.segments[segmentIndex].completedBytes = max(record.segments[segmentIndex].completedBytes, max(0, completedBytes))
+        }
         record.updatedAt = Date()
 
         if record.isAllSegmentsCompleted && record.state == .downloading {
