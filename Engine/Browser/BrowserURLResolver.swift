@@ -152,6 +152,12 @@ public struct BrowserURLResolver {
         return components.string ?? "\(url.scheme ?? "http")://\(url.host ?? "redacted")\(url.path)"
     }
 
+    /// Sanitizes a URL for safe presentation in user-facing UI dialogs,
+    /// masking signed query tokens, auth keys, and credentials.
+    public static func sanitizeURLForDisplay(_ url: URL) -> String {
+        return sanitizeURLForLogging(url)
+    }
+
     /// Proposes a user-friendly destination filename based on URL path components.
     public static func suggestedFilename(from url: URL) -> String {
         let lastComponent = url.lastPathComponent.trimmingCharacters(in: .whitespacesAndNewlines)

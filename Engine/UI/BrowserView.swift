@@ -34,6 +34,12 @@ public final class BrowserViewModel: NSObject, ObservableObject {
     @Published public var downloadCandidateSpeedLimitKBps: String = ""
     @Published public var downloadSuccessNotification: String? = nil
 
+    // Download detection state & prompt deduplication
+    @Published public var detectedDownloadURL: URL? = nil
+    @Published public var detectedDownloadFilename: String = ""
+    public var lastPromptedURL: URL? = nil
+    public var lastPromptedTimestamp: Date? = nil
+
     public weak var downloadDelegate: BrowserDownloadDelegate?
     public var onDownloadInitiated: (() -> Void)? = nil
 
@@ -45,6 +51,30 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         self.downloadDelegate = downloadDelegate
         self.onDownloadInitiated = onDownloadInitiated
         super.init()
+    }
+
+    public func shouldSuppressDuplicatePrompt(for url: URL) -> Bool {
+        if isShowingDownloadSheet { return true }
+        if let lastURL = lastPromptedURL, lastURL == url,
+           let lastTime = lastPromptedTimestamp,
+           Date().timeIntervalSince(lastTime) < 3.0 {
+            return true
+        }
+        return false
+    }
+
+    public func promptDownload(for url: URL, suggestedFilename: String?) {
+        guard !shouldSuppressDuplicatePrompt(for: url) else { return }
+        guard BrowserURLResolver.isValidDownloadURL(url) else { return }
+
+        lastPromptedURL = url
+        lastPromptedTimestamp = Date()
+
+        downloadCandidateURL = url
+        downloadCandidateFilename = suggestedFilename ?? BrowserURLResolver.suggestedFilename(from: url)
+        downloadCandidateThreads = 6
+        downloadCandidateSpeedLimitKBps = ""
+        isShowingDownloadSheet = true
     }
 
     public func navigate(to input: String) {
@@ -568,10 +598,16 @@ public struct BrowserDownloadSheet: View {
         NavigationView {
             Form {
                 Section(header: Text("Source URL")) {
-                    Text(viewModel.downloadCandidateURL?.absoluteString ?? "No URL")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                        .lineLimit(3)
+                    if let url = viewModel.downloadCandidateURL {
+                        Text(BrowserURLResolver.sanitizeURLForDisplay(url))
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                            .lineLimit(3)
+                    } else {
+                        Text("No URL")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
                 }
 
                 Section(header: Text("Destination Filename")) {
@@ -797,6 +833,53 @@ public final class BrowserWebViewCoordinator: NSObject, WKNavigationDelegate {
             decisionHandler(.allow)
         } else {
             decisionHandler(.cancel)
+        }
+    }
+
+    public func webView(
+        _ webView: WKWebView,
+        decidePolicyFor navigationResponse: WKNavigationResponse,
+        decisionHandler: @escaping (WKNavigationResponsePolicy) -> Void
+    ) {
+        guard let response = navigationResponse.response as? HTTPURLResponse,
+              let url = response.url ?? navigationResponse.response.url else {
+            decisionHandler(.allow)
+            return
+        }
+
+        // Case-insensitive header lookup for Content-Disposition and Content-Type
+        var disposition: String? = nil
+        var contentType: String? = nil
+        for (k, v) in response.allHeaderFields {
+            let keyStr = String(describing: k)
+            if keyStr.caseInsensitiveCompare("Content-Disposition") == .orderedSame {
+                disposition = v as? String
+            } else if keyStr.caseInsensitiveCompare("Content-Type") == .orderedSame {
+                contentType = v as? String
+            }
+        }
+        if contentType == nil {
+            contentType = response.mimeType
+        }
+
+        let classification = BrowserDownloadClassifier.classify(
+            url: url,
+            statusCode: response.statusCode,
+            contentDisposition: disposition,
+            mimeType: contentType,
+            canShowMIMEType: navigationResponse.canShowMIMEType
+        )
+
+        if classification.isDownload {
+            // Cancel WebKit from rendering binary content or consuming response body
+            decisionHandler(.cancel)
+
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self, let vm = self.viewModel else { return }
+                vm.promptDownload(for: url, suggestedFilename: classification.suggestedFilename)
+            }
+        } else {
+            decisionHandler(.allow)
         }
     }
 }
