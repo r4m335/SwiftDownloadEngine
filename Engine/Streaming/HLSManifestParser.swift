@@ -301,7 +301,7 @@ public enum HLSManifestParser {
             let key = item[..<equals].trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
             var value = String(item[item.index(after: equals)...].trimmingCharacters(in: .whitespacesAndNewlines))
             if value.count >= 2, (value.first == "\"" && value.last == "\"") || (value.first == "'" && value.last == "'") {
-                value = value.dropFirst().dropLast()
+                value = String(value.dropFirst().dropLast())
             }
             guard !key.isEmpty else { throw ManifestParserError.malformed(reason: "Empty attribute name.") }
             result[key] = value
