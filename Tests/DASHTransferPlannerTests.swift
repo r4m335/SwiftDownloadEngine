@@ -225,7 +225,7 @@ final class DASHTransferPlannerTests: XCTestCase {
                         id: "unsafe",
                         bandwidth: 1,
                         baseURL: URL(string: "file:///private/media")!,
-                        segmentTemplate: DASHSegmentTemplate(duration: 2, media: "segment-$Number$.m4s", initialization: "init.mp4")
+                        segmentTemplate: DASHSegmentTemplate(media: "segment-$Number$.m4s", initialization: "init.mp4", duration: 2)
                     )]
                 )]
             )]
