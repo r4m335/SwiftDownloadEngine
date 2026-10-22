@@ -210,17 +210,19 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         isExecutingStreaming = true
         streamingErrorMessage = nil
         let destination = streamingDestinationDirectoryURL
+        let progressSink: @Sendable (StreamingTransferProgress) -> Void = { [weak self] progress in
+            Task { @MainActor [weak self] in
+                self?.streamingProgress = progress
+            }
+        }
         streamingExecutionTask = Task { @MainActor [weak self] in
             do {
                 let result = try await orchestrator.execute(
                     proposal,
                     approved: true,
-                    destinationDirectory: destination
-                ) { [weak self] progress in
-                    Task { @MainActor in
-                        self?.streamingProgress = progress
-                    }
-                }
+                    destinationDirectory: destination,
+                    progress: progressSink
+                )
                 guard let self else { return }
                 self.isExecutingStreaming = false
                 self.isShowingStreamingConfirmation = false
@@ -340,7 +342,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                 self.isScanningResources = false
 
                 if let error = error {
-                    self.resourceScanError = "Failed to scan webpage: \\(error.localizedDescription)"
+                    self.resourceScanError = "Failed to scan webpage: \(error.localizedDescription)"
                     return
                 }
 

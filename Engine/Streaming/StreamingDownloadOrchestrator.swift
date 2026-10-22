@@ -641,14 +641,11 @@ public actor StreamingDownloadOrchestrator {
         for resource: StreamingTransferResource,
         manifest: StreamingTransferManifest
     ) -> [String: String] {
-        let manifestURL: URL
         let context: BrowserRequestContext?
         switch manifest {
         case .hls(let plan):
-            manifestURL = plan.manifestURL
             context = plan.browserRequestContext
         case .dash(let plan):
-            manifestURL = plan.manifestURL
             context = plan.browserRequestContext
         }
         guard let context else { return [:] }
