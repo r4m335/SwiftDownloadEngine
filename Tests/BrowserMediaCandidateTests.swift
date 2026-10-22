@@ -67,8 +67,8 @@ final class BrowserMediaCandidateTests: XCTestCase {
                 rawURL: pageURL.absoluteString,
                 source: .mediaSource,
                 declaredType: "video/mp4",
-                appendedByteCount: 8_192,
                 documentID: "doc-1",
+                appendedByteCount: 8_192,
                 pageOrigin: pageURL,
                 frameOrigin: pageURL,
                 mayUseBrowserCredentials: false
