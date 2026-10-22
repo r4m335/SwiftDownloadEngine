@@ -424,6 +424,17 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         onDownloadInitiated?()
     }
 
+    /// Converts one discovered browser resource into a streaming proposal. The
+    /// caller owns user confirmation and execution; ordinary HTTP resources keep
+    /// using `downloadSelectedResources()` and the existing download delegate.
+    public func prepareStreamingProposal(
+        for resource: WebpageResource,
+        using orchestrator: StreamingDownloadOrchestrator
+    ) async throws -> StreamingTransferProposal {
+        let candidate = try StreamingManifestCandidate(resource: resource)
+        return try await orchestrator.prepare(candidate: candidate)
+    }
+
     public func navigate(to input: String) {
         let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }

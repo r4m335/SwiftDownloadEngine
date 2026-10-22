@@ -8,6 +8,27 @@ import FoundationNetworking
 import CryptoKit
 #endif
 
+/// A byte interval requested by a streaming resource transfer.
+///
+/// This is separate from `DownloadRequest.headers`: `Range` is a transport-managed
+/// header and must not be persisted or copied across redirects as an ordinary header.
+public struct DownloadByteRange: Sendable, Equatable, Codable, Hashable {
+    public let start: Int64
+    public let end: Int64
+
+    public init(start: Int64, end: Int64) {
+        self.start = start
+        self.end = end
+    }
+
+    public var length: Int64? {
+        guard start >= 0, end >= start else { return nil }
+        let difference = end - start
+        guard difference < Int64.max else { return nil }
+        return difference + 1
+    }
+}
+
 /// Request parameters for a download operation coordinated by `DownloadCoordinator`.
 public struct DownloadRequest: Sendable, Equatable, Codable {
     public let id: String
@@ -27,6 +48,9 @@ public struct DownloadRequest: Sendable, Equatable, Codable {
     public var speedLimitBytesPerSecond: Int64?
     public var resumePolicy: ResumeIntegrityPolicy
     public var transportPolicy: HTTPTransportPolicy
+    /// An optional exact byte range for a standalone streaming resource.
+    /// Ordinary downloads leave this `nil` and use the existing coordinator path.
+    public var requestedByteRange: DownloadByteRange?
 
     public init(
         id: String = UUID().uuidString,
@@ -43,7 +67,8 @@ public struct DownloadRequest: Sendable, Equatable, Codable {
         maxConcurrentRequests: Int? = nil,
         speedLimitBytesPerSecond: Int64? = nil,
         resumePolicy: ResumeIntegrityPolicy = .compatibility,
-        transportPolicy: HTTPTransportPolicy = .foreground
+        transportPolicy: HTTPTransportPolicy = .foreground,
+        requestedByteRange: DownloadByteRange? = nil
     ) {
         self.id = id
         self.url = url
@@ -60,10 +85,11 @@ public struct DownloadRequest: Sendable, Equatable, Codable {
         self.speedLimitBytesPerSecond = speedLimitBytesPerSecond
         self.resumePolicy = resumePolicy
         self.transportPolicy = transportPolicy
+        self.requestedByteRange = requestedByteRange
     }
 
     enum CodingKeys: String, CodingKey {
-        case id, url, destinationURL, headers, persistSensitiveHeaders, configuredThreadCount, advancedMode, storageMode, reserveDiskBytes, retryCount, expectedSHA256, maxConcurrentRequests, speedLimitBytesPerSecond, resumePolicy, transportPolicy
+        case id, url, destinationURL, headers, persistSensitiveHeaders, configuredThreadCount, advancedMode, storageMode, reserveDiskBytes, retryCount, expectedSHA256, maxConcurrentRequests, speedLimitBytesPerSecond, resumePolicy, transportPolicy, requestedByteRange
     }
 
     public init(from decoder: Decoder) throws {
@@ -83,6 +109,7 @@ public struct DownloadRequest: Sendable, Equatable, Codable {
         speedLimitBytesPerSecond = try container.decodeIfPresent(Int64.self, forKey: .speedLimitBytesPerSecond)
         resumePolicy = try container.decodeIfPresent(ResumeIntegrityPolicy.self, forKey: .resumePolicy) ?? .compatibility
         transportPolicy = try container.decodeIfPresent(HTTPTransportPolicy.self, forKey: .transportPolicy) ?? .foreground
+        requestedByteRange = try container.decodeIfPresent(DownloadByteRange.self, forKey: .requestedByteRange)
     }
 }
 
@@ -486,6 +513,15 @@ public actor DownloadCoordinator {
         request: DownloadRequest,
         progress handler: ProgressHandler?
     ) async throws {
+        if let requestedByteRange = request.requestedByteRange {
+            try await executeRequestedByteRange(
+                request: request,
+                byteRange: requestedByteRange,
+                progress: handler
+            )
+            return
+        }
+
         // Configure per-download speed limiter
         if let limit = request.speedLimitBytesPerSecond {
             if let existing = perDownloadLimiters[request.id] {
@@ -715,6 +751,136 @@ public actor DownloadCoordinator {
                     handler: handler
                 )
             }
+            throw error
+        }
+    }
+
+    /// Executes one exact ranged resource atomically. Streaming planners use this
+    /// path for HLS/DASH resources backed by a media-file byte range; normal
+    /// downloads continue through the existing probe/allocator pipeline above.
+    private func executeRequestedByteRange(
+        request: DownloadRequest,
+        byteRange: DownloadByteRange,
+        progress handler: ProgressHandler?
+    ) async throws {
+        guard let expectedLength = byteRange.length else {
+            throw DownloadCoordinatorError.invalidRequest(reason: "Byte range is invalid")
+        }
+
+        let persistedHeaders = headersForPersistence(request)
+        let initialRecord = DownloadRecord(
+            id: request.id,
+            originalURL: request.url,
+            resolvedURL: request.url,
+            destinationURL: request.destinationURL,
+            totalSize: expectedLength,
+            state: .downloading,
+            storageMode: .directSeek,
+            headers: persistedHeaders,
+            segments: [SegmentRecord(segment: DownloadSegment(
+                id: 0,
+                startOffset: 0,
+                endOffset: expectedLength - 1,
+                length: expectedLength
+            ))]
+        )
+        try await persistenceStore.save(initialRecord)
+        updateProgress(
+            downloadID: request.id,
+            state: .downloading,
+            bytesReceived: 0,
+            totalBytes: expectedLength,
+            completedSegments: 0,
+            totalSegments: 1,
+            handler: handler
+        )
+
+        let probe = HTTPRangeProbe(session: session)
+        let probeResult = try await probe.probe(configuration: HTTPRangeProbeConfiguration(
+            url: request.url,
+            customHeaders: request.headers
+        ))
+        guard probeResult.supportsRange else {
+            throw DownloadCoordinatorError.invalidRequest(
+                reason: "The server does not support the requested media byte range"
+            )
+        }
+
+        var rangedRequest = URLRequest(url: probeResult.finalURL)
+        rangedRequest.httpMethod = "GET"
+        rangedRequest.setValue("identity", forHTTPHeaderField: "Accept-Encoding")
+        rangedRequest.setValue("bytes=\(byteRange.start)-\(byteRange.end)", forHTTPHeaderField: "Range")
+        let safeHeaders = BrowserHeaderFilter.stripCredentialsOnRedirect(
+            headers: request.headers,
+            from: request.url,
+            to: probeResult.finalURL
+        )
+        for (name, value) in BrowserHeaderFilter.sanitizeHeaders(safeHeaders) {
+            if name.caseInsensitiveCompare("Range") != .orderedSame &&
+                name.caseInsensitiveCompare("Accept-Encoding") != .orderedSame {
+                rangedRequest.setValue(value, forHTTPHeaderField: name)
+            }
+        }
+
+        let redirectDelegate = DownloadResourceRedirectDelegate(
+            originalURL: request.url,
+            headers: safeHeaders
+        )
+        let temporaryURL = request.destinationURL
+            .deletingLastPathComponent()
+            .appendingPathComponent(".range-\(request.id)-\(UUID().uuidString).tmp")
+        defer { try? FileManager.default.removeItem(at: temporaryURL) }
+
+        do {
+            let (data, response) = try await session.data(for: rangedRequest, delegate: redirectDelegate)
+            try Task.checkCancellation()
+            guard let httpResponse = response as? HTTPURLResponse else {
+                throw DownloadCoordinatorError.unexpectedSingleStreamError(reason: "Ranged resource did not return an HTTP response")
+            }
+            guard httpResponse.statusCode == 206 else {
+                throw DownloadCoordinatorError.unexpectedSingleStreamError(
+                    reason: "Ranged resource returned HTTP \(httpResponse.statusCode) instead of partial content"
+                )
+            }
+            guard Int64(data.count) == expectedLength else {
+                throw DownloadCoordinatorError.unexpectedSingleStreamError(reason: "Ranged resource length did not match the planned byte range")
+            }
+            if let contentRange = httpResponse.value(forHTTPHeaderField: "Content-Range") {
+                let parsed = try BackgroundResponseValidator.parseContentRange(contentRange)
+                guard parsed.start == byteRange.start, parsed.end == byteRange.end else {
+                    throw DownloadCoordinatorError.unexpectedSingleStreamError(reason: "Ranged resource returned an unexpected Content-Range")
+                }
+            } else {
+                throw DownloadCoordinatorError.unexpectedSingleStreamError(reason: "Ranged resource omitted Content-Range")
+            }
+
+            try FileManager.default.createDirectory(
+                at: request.destinationURL.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try data.write(to: temporaryURL, options: .atomic)
+            if FileManager.default.fileExists(atPath: request.destinationURL.path) {
+                try FileManager.default.removeItem(at: request.destinationURL)
+            }
+            try FileManager.default.moveItem(at: temporaryURL, to: request.destinationURL)
+
+            var completedRecord = initialRecord
+            completedRecord.segments[0].completedBytes = expectedLength
+            completedRecord.transition(to: .completed)
+            try await persistenceStore.save(completedRecord)
+            updateProgress(
+                downloadID: request.id,
+                state: .completed,
+                bytesReceived: expectedLength,
+                totalBytes: expectedLength,
+                completedSegments: 1,
+                totalSegments: 1,
+                handler: handler
+            )
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            _ = try? await persistenceStore.updateState(tag: request.id, state: .failed(reason: error.localizedDescription))
             throw error
         }
     }
@@ -1974,6 +2140,37 @@ public actor DownloadCoordinator {
             return s
         }
         return reconciled
+    }
+}
+
+/// Redirect delegate used by exact ranged resource transfers. It preserves the
+/// coordinator's existing origin rule even though the transfer is issued as a
+/// single URLSession request rather than through SegmentDownloader.
+private final class DownloadResourceRedirectDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+    private let originalURL: URL
+    private let headers: [String: String]
+
+    init(originalURL: URL, headers: [String: String]) {
+        self.originalURL = originalURL
+        self.headers = headers
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        willPerformHTTPRedirection response: HTTPURLResponse,
+        newRequest request: URLRequest,
+        completionHandler: @escaping (URLRequest?) -> Void
+    ) {
+        var redirected = request
+        if let destination = request.url {
+            redirected.allHTTPHeaderFields = BrowserHeaderFilter.stripCredentialsOnRedirect(
+                headers: headers,
+                from: originalURL,
+                to: destination
+            )
+        }
+        completionHandler(redirected)
     }
 }
 
