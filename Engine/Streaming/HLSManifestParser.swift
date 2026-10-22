@@ -299,12 +299,12 @@ public enum HLSManifestParser {
                 throw ManifestParserError.malformed(reason: "Invalid attribute without '='.")
             }
             let key = item[..<equals].trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
-            var value = item[item.index(after: equals)...].trimmingCharacters(in: .whitespacesAndNewlines)
+            var value = String(item[item.index(after: equals)...].trimmingCharacters(in: .whitespacesAndNewlines))
             if value.count >= 2, (value.first == "\"" && value.last == "\"") || (value.first == "'" && value.last == "'") {
                 value = value.dropFirst().dropLast()
             }
             guard !key.isEmpty else { throw ManifestParserError.malformed(reason: "Empty attribute name.") }
-            result[key] = String(value)
+            result[key] = value
         }
         return result
     }

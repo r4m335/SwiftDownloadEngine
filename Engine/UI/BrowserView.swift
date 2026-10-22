@@ -1249,11 +1249,13 @@ public final class BrowserWebViewCoordinator: NSObject, WKNavigationDelegate, WK
         }
 
         DispatchQueue.main.async { [weak self] in
-            guard let self = self, let vm = self.viewModel else { return }
+            guard let self = self,
+                  let vm = self.viewModel,
+                  let browser = vm.webView else { return }
             vm.captureBrowserRequestContext(
                 for: destinationURL,
-                pageURL: webView.url,
-                webView: webView,
+                pageURL: browser.url,
+                webView: browser,
                 source: .nativeInterception,
                 customHeaders: download.originalRequest?.allHTTPHeaderFields ?? [:]
             ) { context in

@@ -23,7 +23,7 @@ public enum StreamingManifestClassifier {
         content: Data? = nil,
         limits: ManifestParsingLimits = .default
     ) -> StreamingManifestClassification {
-        let metadataKind = metadataKind(for: url, mimeType: mimeType)
+        let metadataKind = metadataKind(url: url, mimeType: mimeType)
 
         if let content {
             guard content.count <= limits.maxBytes else {
