@@ -357,17 +357,12 @@ private final class DASHXMLTreeBuilder: NSObject, XMLParserDelegate {
     }
 
     func parse() -> Bool {
-        #if canImport(FoundationXML)
         let parser = XMLParser(data: data)
         parser.delegate = self
         parser.shouldProcessNamespaces = true
         parser.shouldResolveExternalEntities = false
         let success = parser.parse()
         return success && failure == nil && stack.isEmpty
-        #else
-        failure = .unsupported(reason: "XML parsing is unavailable on this platform.")
-        return false
-        #endif
     }
 
     func parserDidStartDocument(_ parser: XMLParser) {
