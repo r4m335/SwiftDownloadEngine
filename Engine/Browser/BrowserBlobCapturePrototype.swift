@@ -323,11 +323,12 @@ public actor BrowserBlobCapturePrototypeWriter {
     private static func sanitizeFilename(_ value: String, fallback: String) throws -> String {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         let source = trimmed.isEmpty ? fallback : trimmed
-        let sanitized = String(Array(
-            source
-                .replacingOccurrences(of: "/", with: "_")
-                .replacingOccurrences(of: "\\", with: "_")
-        ).filter { !$0.isNewline && !$0.isControl })
+        let sanitizedCharacters: [Character] = source
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "\\", with: "_")
+            .map { $0 }
+            .filter { character in !character.isNewline && !character.isControl }
+        let sanitized = String(sanitizedCharacters)
         guard !sanitized.isEmpty, sanitized != ".", sanitized != ".." else {
             throw BrowserBlobCapturePrototypeError.invalidFilename
         }
