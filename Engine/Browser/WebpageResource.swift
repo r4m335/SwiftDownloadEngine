@@ -110,6 +110,12 @@ public struct WebpageResourceExtractor {
         let cleanMime = mimeType?.split(separator: ";").first?.trimmingCharacters(in: .whitespaces).lowercased()
 
         if let m = cleanMime {
+            if m == "application/vnd.apple.mpegurl" ||
+                m == "application/x-mpegurl" ||
+                m == "audio/mpegurl" ||
+                m == "application/dash+xml" {
+                return .video
+            }
             if m.hasPrefix("video/") { return .video }
             if m.hasPrefix("audio/") { return .audio }
             if m.hasPrefix("image/") { return .image }
@@ -181,9 +187,18 @@ public struct WebpageResourceExtractor {
     }
 
     /// Determines if a URL represents a supported downloadable candidate.
-    public static func evaluateSupport(for url: URL, rawURL: String) -> (isSupported: Bool, reason: String?) {
+    public static func evaluateSupport(
+        for url: URL,
+        rawURL: String,
+        mimeType: String? = nil
+    ) -> (isSupported: Bool, reason: String?) {
         let scheme = url.scheme?.lowercased() ?? ""
         let lowerRaw = rawURL.lowercased()
+        let normalizedMIME = mimeType?
+            .split(separator: ";", maxSplits: 1, omittingEmptySubsequences: true)
+            .first?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
 
         if scheme == "blob" || lowerRaw.hasPrefix("blob:") {
             return (false, "Blob URLs are memory-backed in the active browser session and cannot be downloaded directly via HTTP.")
@@ -194,8 +209,14 @@ public struct WebpageResourceExtractor {
         }
 
         let pathExt = url.pathExtension.lowercased()
-        if pathExt == "m3u8" || pathExt == "mpd" {
-            return (false, "Streaming playlist manifest (\(pathExt.uppercased())). Segmented stream assembly will be evaluated in Milestone 7F.")
+        let isManifestMIME = normalizedMIME == "application/vnd.apple.mpegurl" ||
+            normalizedMIME == "application/x-mpegurl" ||
+            normalizedMIME == "audio/mpegurl" ||
+            normalizedMIME == "application/dash+xml"
+        if pathExt == "m3u8" || pathExt == "mpd" || isManifestMIME ||
+            lowerRaw.hasPrefix("data:application/vnd.apple.mpegurl") {
+            let manifestName = pathExt.isEmpty ? "manifest" : pathExt.uppercased()
+            return (false, "Streaming playlist manifest (\(manifestName)). Milestone 7F parsing is implemented, but transfer execution is not integrated yet.")
         }
 
         if scheme != "http" && scheme != "https" {
@@ -259,7 +280,11 @@ public struct WebpageResourceExtractor {
 
             seenURLs.insert(normalizedKey)
 
-            let (isSupported, reason) = evaluateSupport(for: resolvedURL, rawURL: candidate.rawURL)
+            let (isSupported, reason) = evaluateSupport(
+                for: resolvedURL,
+                rawURL: candidate.rawURL,
+                mimeType: declaredMIME
+            )
             let filename: String
             if resolvedURL.scheme?.lowercased() == "data" {
                 let subExt = declaredMIME?.split(separator: "/").last.map(String.init) ?? "bin"

@@ -1,17 +1,20 @@
 # Milestone 7F.0 — Streaming Capability Assessment
 
-Status: assessment complete; no HLS/DASH transfer implementation is enabled yet.
+Status: updated after 7F.1–7F.4.1 and 7H.0 implementation work. Parser and
+planner layers are implemented, but stream execution and media assembly are not
+integrated into the download queue. The latest 7H.0 change is awaiting macOS CI.
 
 ## Executive finding
 
-The project has a solid transport foundation for authenticated HTTP file downloads,
-but it does not currently have a streaming-media pipeline. HLS and DASH should be
-added as a validated transfer-plan layer above the existing transport components,
-not by making `DownloadCoordinator` download a manifest as if it were a file.
+The project has a solid transport foundation for authenticated HTTP file downloads
+and now has deterministic HLS/DASH parsing plus VOD transfer-plan models. Those
+plans still stop before execution: the browser must discover dynamic media requests,
+and a future stream job must connect validated plans to the existing coordinator.
+Media assembly remains a later stage and must not be inferred from parser success.
 
-The first implementation target should be finite, clear VOD content. Live playlists,
-DRM, encrypted media, and separate-track muxing need explicit capability states before
-they are allowed into the download queue.
+The supported path remains finite, clear VOD content. Live playlists, DRM,
+encrypted media, separate-track muxing, and arbitrary blob playback are explicit
+unsupported or deferred states.
 
 ## Existing capabilities
 
@@ -19,13 +22,18 @@ they are allowed into the download queue.
 
 - `WebpageResourceExtractor` discovers URLs from DOM candidates and preserves the
   existing 7D behavior.
-- URLs ending in `.m3u8` or `.mpd` are currently marked unsupported with a Milestone
-  7F explanation in `WebpageResourceExtractor.evaluateSupport`.
+- `BrowserMediaDiscoveryBridge` now injects a document-start, all-frame WebKit
+  observer for fetch, XHR, media/source elements, DOM mutations, and resource
+  performance entries. It validates messages in Swift, deduplicates candidates,
+  records sanitized page/frame origins, and never forwards blob URLs as downloads.
+- Extension- and MIME-based HLS/DASH candidates are classified as streaming
+  manifests, while transfer execution remains intentionally unsupported until 7H.1.
 - `BrowserDownloadClassifier` classifies ordinary HTTP responses from status,
   Content-Disposition, MIME type, and URL extension.
-- There is no bounded response-body inspection for extensionless manifests. A later
-  change should inspect only a capped prefix and require protocol markers before
-  classifying a response as HLS or DASH.
+- Dynamic discovery cannot guarantee visibility into service workers, native player
+  networking, browser internals, or inaccessible cross-origin frames. Extensionless
+  responses are useful when the observed request exposes a manifest MIME type; the
+  bridge does not read response bodies.
 
 ### HTTP transfer engine
 
@@ -38,6 +46,8 @@ they are allowed into the download queue.
 - `BackgroundDownloadSessionManager` can schedule independent HTTP segment tasks and
   persist their progress. Its current record model assumes one ordinary download
   destination and needs a stream-specific mapping layer before it can assemble media.
+- 7F.2 and 7F.3 provide validated HLS/DASH VOD plans, but no planner starts a
+  download or owns cancellation, progress, persistence, or queue admission.
 - 7E `BrowserRequestContext` already provides origin-matched cookies, approved headers,
   redaction, and cross-origin redirect credential stripping. Each stream segment must
   call the context’s target-aware header builder rather than reuse one Cookie header
@@ -53,21 +63,25 @@ they are allowed into the download queue.
   assembly needs separate validated segment files or a stream-aware staging directory.
 - `Package.swift` has no FFmpeg, MP4 muxer, MPEG-TS parser, or other media-processing
   dependency. No existing Engine source imports AVFoundation for export or muxing.
+- 7F.4.1 now defines dependency-neutral assembly inputs, outputs, encryption states,
+  track metadata, temporary/output locations, and pure contract validation. It does
+  not inspect bytes or publish output.
 
 ## Capability gaps and constraints
 
 | Area | Current state | Required decision |
 | --- | --- | --- |
-| Manifest detection | Extension/MIME-based only; no body sniffing | Add bounded HLS/DASH inspection with false-positive tests |
-| HLS master playlists | Unsupported | Parse variants, codecs, bandwidth, resolution, and relative URLs |
-| HLS media playlists | Unsupported | Parse finite VOD segments, `EXT-X-MAP`, byte ranges, and end-list state |
-| HLS live playlists | Unsupported | Detect and report live/non-final state; do not enqueue indefinitely |
-| HLS encryption/DRM | Unsupported | Classify `EXT-X-KEY` methods and reject unsupported/DRM cases explicitly |
-| DASH MPD | Unsupported | Parse finite `Period`, `AdaptationSet`, `Representation`, and supported segment models |
-| Multi-track media | Unsupported | Represent audio/video tracks and defer muxing until a compatible implementation exists |
-| Assembly | Unsupported | Validate segment bytes and assemble only formats proven safe |
-| Stream persistence | Unsupported | Persist an immutable plan plus per-segment state, not just a manifest URL |
-| UI | Existing unsupported-resource text only | Add selection UI after planner output is stable |
+| Area | Current state | Required next decision |
+| --- | --- | --- |
+| Dynamic browser discovery | 7H.0 bridge implemented; CI pending | Validate on iOS/macOS WebKit and document blind spots |
+| Manifest classification | Extension/MIME/content classification implemented | Connect discovered manifests to parser loading without ordinary-file fallback |
+| HLS parser/planner | Implemented and CI-validated for finite VOD planning | Add 7H.1 coordinator-owned execution |
+| DASH parser/planner | Implemented and CI-validated for finite VOD planning | Add 7H.1 coordinator-owned execution |
+| Live/encrypted/DRM media | Explicitly detected or rejected by planners | Keep out of finite transfer jobs |
+| Multi-track media | Represented in parser/planner/assembly contracts | Defer muxing until a compatible implementation is selected |
+| Assembly | 7F.4.1 contracts only; no byte validation or publication | Evaluate AVFoundation first, then implement supported containers |
+| Stream persistence | Unsupported | Persist immutable plans and per-segment state in 7H.2 |
+| UI | Existing resource inspector and unsupported-resource messaging | Add stream selection only after execution is stable |
 
 ## Recommended architecture
 
@@ -76,6 +90,9 @@ introduce pure, platform-agnostic planning types:
 
 ```text
 BrowserResource / response metadata
+        |
+        v
+Dynamic browser media discovery
         |
         v
 ManifestInspector
@@ -104,35 +121,54 @@ to an ordinary file download.
 
 ## Proposed staged implementation
 
+### 7H.0 — Dynamic browser media discovery (implemented; CI pending)
+
+1. Inject the `BrowserMediaDiscoveryBridge` at document start in all frames.
+2. Observe fetch, XHR, media/source elements, DOM mutations, and performance
+   resource entries without reading cookies, request bodies, or response bodies.
+3. Validate every message in Swift, resolve only HTTP/HTTPS candidates, reject
+   credential-bearing URLs, deduplicate observations, and retain blob signals only.
+4. Permit browser credentials only for same-origin observations from the main page;
+   cross-origin resources and frames are forwarded without credential inheritance.
+
+The bridge is discovery-only. It does not parse manifests, enqueue downloads, or
+start an independent transfer task. WebKit cannot expose every request made by
+service workers, native players, browser internals, or inaccessible frames.
+
 ### 7F.1 — Intelligence and pure parsers
 
-1. Add protocol classification types and bounded manifest inspection.
-2. Add HLS parsing for master and finite media playlists.
-3. Add DASH parsing for `BaseURL`, `SegmentTemplate`, `SegmentTimeline`, and
-   `SegmentList`.
-4. Add deterministic local fixtures and URL-resolution tests.
-5. Add explicit states for live, encrypted, DRM-protected, malformed, and unsupported
-   manifests.
+Implemented and CI-validated. The classifier, HLS/DASH models, bounded parsers,
+security limits, malformed-input handling, and deterministic fixtures are complete.
 
 No download queue integration should occur until the plans are validated.
 
-### 7F.2 — HLS VOD transfer
+### 7F.2 — HLS VOD transfer planning
 
-1. Add a stream-job record with selected variant, initialization data, and segment list.
-2. Download segments through the existing coordinator-owned request budget and progress
-   path, applying `BrowserRequestContext` separately to each segment origin.
-3. Validate segment completion and assemble clear MPEG-TS or compatible fragmented MP4
-   output.
-4. Keep live, encrypted, DRM, and unsupported codec plans out of the queue.
+Implemented and CI-validated as a pure planner. It resolves resources, preserves
+ordering/ranges, applies target-aware credential restrictions, and returns explicit
+unsupported results. It does not download or assemble segments.
 
-### 7F.3 — DASH VOD transfer
+### 7F.3 — DASH VOD transfer planning
 
-Add finite representation selection and segment transfer after HLS has established the
-stream-job lifecycle. Separate audio/video tracks must remain explicit in the plan.
+Implemented and CI-validated as a pure planner. It models finite representations,
+initialization/media resources, ranges, timelines, and separate audio/video tracks.
 
-### 7F.4+ — Assembly, authentication integration, and UI
+### 7F.4 / 7H.3+ — Assembly, authentication integration, and UI
 
-Only after parser and transfer fixtures are stable should the project choose between:
+### 7H.1 — Connect plans to transfers
+
+Next execution milestone. Add a stream-job adapter owned by the existing download
+coordinator, with per-segment progress, cancellation, retry, staging, and fresh
+browser credential resolution. Do not let the bridge or planner start transfers.
+
+### 7H.2 — Persistence and recovery
+
+Persist an immutable manifest/representation plan plus non-secret segment state and
+validated local locations. Keep cookies, authorization headers, and unnecessary
+signed URLs out of durable history.
+
+7F.4.1 contracts are defined, but byte validation and media publication remain
+unimplemented. Only after transfer fixtures are stable should the project choose between:
 
 - a small iOS-compatible media assembly implementation for the supported containers;
 - an evaluated, licensed media dependency; or
@@ -145,6 +181,12 @@ size for live or variable-duration content.
 ## Security requirements carried forward from 7E
 
 - Resolve every segment URL against the manifest URL before applying cookies.
+- Treat every JavaScript discovery message as untrusted. Validate its URL and
+  source origin in Swift before forwarding it to resource classification.
+- Allow browser credentials only for same-origin main-frame observations; do not
+  inherit credentials for cross-origin frames or resources.
+- Treat `blob:` observations as browser-local signals and never pass them to the
+  HTTP download coordinator.
 - Build headers for that exact segment URL; never copy one host’s Cookie header to all
   CDN origins.
 - Strip sensitive headers across cross-origin redirects and sanitize signed URLs in
@@ -159,6 +201,9 @@ size for live or variable-duration content.
 Use local fixtures and a deterministic test server for:
 
 - HLS master/media playlists, relative paths, query strings, `EXT-X-MAP`, and VOD end;
+- dynamic media elements, fetch/XHR manifest requests, duplicate observations,
+  extensionless MIME-identified manifests, cross-origin frames, malformed messages,
+  unsupported schemes, and blob signals;
 - live playlist detection and unsupported encryption/DRM classification;
 - DASH `SegmentTemplate`, `SegmentTimeline`, `SegmentList`, `BaseURL`, and separate
   adaptation sets;
@@ -169,4 +214,3 @@ Use local fixtures and a deterministic test server for:
 The complete iOS build and real WebKit cookie behavior must still be run by the
 macOS GitHub Actions workflow and later on a physical iPhone. The current Windows
 workspace cannot execute Swift or Xcode locally.
-

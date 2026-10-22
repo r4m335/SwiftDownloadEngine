@@ -54,6 +54,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
     @Published public var discoveredResources: [WebpageResource] = []
     @Published public var selectedResourceIDs: Set<String> = []
     @Published public var resourceScanError: String? = nil
+    public let mediaDiscoveryBridge = BrowserMediaDiscoveryBridge()
 
     public weak var downloadDelegate: BrowserDownloadDelegate?
     public weak var magnetDelegate: (any BrowserMagnetDelegate)?
@@ -72,6 +73,11 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         self.magnetDelegate = magnetDelegate
         self.onDownloadInitiated = onDownloadInitiated
         super.init()
+        mediaDiscoveryBridge.observationHandler = { [weak self] observation in
+            DispatchQueue.main.async { [weak self] in
+                self?.handleMediaDiscoveryObservation(observation)
+            }
+        }
     }
 
     public func shouldSuppressDuplicatePrompt(for url: URL) -> Bool {
@@ -263,6 +269,53 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         isScanningResources = false
         resourceScanError = "WebKit is not available in this environment."
         #endif
+    }
+
+    /// Adds dynamically observed media candidates to the existing resource
+    /// classifier. Blob observations remain signals only and never become
+    /// download candidates.
+    private func handleMediaDiscoveryObservation(_ observation: BrowserMediaDiscoveryObservation) {
+        guard let discoveredURL = observation.url else { return }
+
+        let rawCandidate = WebpageRawResourceCandidate(
+            rawURL: discoveredURL.absoluteString,
+            tag: observation.tag,
+            declaredType: observation.declaredType
+        )
+        let baseURL = currentURL ?? observation.pageOrigin
+        let resources = WebpageResourceExtractor.extractFromRawCandidates(
+            [rawCandidate],
+            baseURL: baseURL
+        )
+        guard let resource = resources.first,
+              !discoveredResources.contains(where: {
+                  $0.url.absoluteString.lowercased() == resource.url.absoluteString.lowercased()
+              }) else {
+            return
+        }
+
+        // A resource observed by a cross-origin frame, or a resource hosted on
+        // another origin, is deliberately added without browser credentials.
+        guard observation.mayUseBrowserCredentials,
+              let wv = webView else {
+            discoveredResources.append(resource)
+            return
+        }
+
+        captureRequestContexts(
+            for: [resource],
+            pageURL: currentURL ?? observation.pageOrigin,
+            webView: wv
+        ) { [weak self] contextualResources in
+            guard let self,
+                  let contextualResource = contextualResources.first,
+                  !self.discoveredResources.contains(where: {
+                      $0.url.absoluteString.lowercased() == contextualResource.url.absoluteString.lowercased()
+                  }) else {
+                return
+            }
+            self.discoveredResources.append(contextualResource)
+        }
     }
 
     #if canImport(WebKit)
@@ -1182,6 +1235,7 @@ public struct PlatformWebView: UIViewRepresentable {
     public func makeUIView(context: Context) -> WKWebView {
         let config = WKWebViewConfiguration()
         config.allowsInlineMediaPlayback = true
+        viewModel.mediaDiscoveryBridge.install(on: config)
         let webView = WKWebView(frame: .zero, configuration: config)
         webView.navigationDelegate = context.coordinator
         context.coordinator.setupProgressObserver(for: webView)
@@ -1207,6 +1261,7 @@ public struct PlatformWebView: NSViewRepresentable {
 
     public func makeNSView(context: Context) -> WKWebView {
         let config = WKWebViewConfiguration()
+        viewModel.mediaDiscoveryBridge.install(on: config)
         let webView = WKWebView(frame: .zero, configuration: config)
         webView.navigationDelegate = context.coordinator
         context.coordinator.setupProgressObserver(for: webView)
@@ -1246,6 +1301,7 @@ public final class BrowserWebViewCoordinator: NSObject, WKNavigationDelegate, WK
             guard let self = self, let vm = self.viewModel else { return }
             vm.isLoading = true
             vm.errorMessage = nil
+            vm.mediaDiscoveryBridge.reset()
             if let url = webView.url, url.absoluteString != "about:blank" {
                 vm.currentURL = url
                 vm.urlInputText = url.absoluteString
