@@ -165,11 +165,16 @@ public enum DirectMediaTransferPlanner {
         }
 
         let filenameResolver = BrowserDownloadInterceptionManager()
-        let filename = filenameResolver.resolveFilename(
-            serverSuggested: response?.suggestedFilename ?? candidate.suggestedFilename,
+        let responseFilename = filenameResolver.resolveFilename(
+            serverSuggested: response?.suggestedFilename,
             contentDisposition: response?.contentDisposition,
             url: transferURL,
             mimeType: mimeType
+        )
+        let filename = preferredFilename(
+            candidateFilename: candidate.suggestedFilename,
+            responseFilename: responseFilename,
+            hasResponseFilename: response?.suggestedFilename != nil || response?.contentDisposition != nil
         )
         let headers: [String: String]
         if let context = candidate.requestContext {
@@ -240,6 +245,19 @@ public enum DirectMediaTransferPlanner {
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
         return result?.isEmpty == false ? result : nil
+    }
+
+    private static func preferredFilename(
+        candidateFilename: String,
+        responseFilename: String,
+        hasResponseFilename: Bool
+    ) -> String {
+        guard !hasResponseFilename else { return responseFilename }
+        let sanitized = BrowserDownloadClassifier.sanitizeFilename(candidateFilename)
+        if sanitized != "download.bin" && sanitized.contains(".") {
+            return sanitized
+        }
+        return responseFilename
     }
 
     private static func isHTMLOrManifest(_ mime: String) -> Bool {
