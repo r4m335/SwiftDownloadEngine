@@ -171,7 +171,7 @@ final class StreamingManifestTests: XCTestCase {
         let manifest = try DASHManifestParser.parse(mpd, baseURL: dashURL)
         XCTAssertEqual(manifest.presentationType, .staticPresentation)
         XCTAssertTrue(manifest.isFinite)
-        XCTAssertEqual(manifest.mediaPresentationDuration, 10.0, accuracy: 0.001)
+        XCTAssertEqual(manifest.mediaPresentationDuration ?? -1, 10.0, accuracy: 0.001)
         XCTAssertEqual(manifest.periods.count, 1)
         XCTAssertEqual(manifest.periods[0].adaptationSets.count, 2)
 

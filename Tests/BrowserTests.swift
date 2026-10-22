@@ -948,7 +948,7 @@ final class BrowserTests: XCTestCase {
     #if canImport(SwiftUI)
     @MainActor
     func testBrowserViewModel_ResourceInspectorState() async throws {
-        let mockDelegate = MockBrowserDownloadDelegate()
+        let mockDelegate = MockDownloadDelegate()
         let vm = BrowserViewModel(downloadDelegate: mockDelegate)
 
         // Initial state
