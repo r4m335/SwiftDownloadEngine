@@ -1954,7 +1954,9 @@ final class BrowserWebViewSession {
     init(tabID: UUID, viewModel: BrowserViewModel) {
         self.tabID = tabID
         let config = WKWebViewConfiguration()
+#if os(iOS)
         config.allowsInlineMediaPlayback = true
+#endif
 
         let bridge = BrowserMediaDiscoveryBridge()
         bridge.observationHandler = { [weak viewModel] observation in
