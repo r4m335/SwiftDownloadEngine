@@ -659,8 +659,6 @@ public struct BrowserView: View {
                     HStack(spacing: 4) {
                         Image(systemName: "arrow.down.circle.fill")
                             .font(.system(size: 18))
-                        Text("Download")
-                            .font(.system(size: 13, weight: .bold))
                     }
                     .foregroundColor(viewModel.currentURL != nil ? .white : .secondary)
                     .padding(.horizontal, 12)
