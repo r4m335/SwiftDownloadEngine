@@ -25,6 +25,9 @@ public final class BrowserViewModel: NSObject, ObservableObject {
     @Published public var estimatedProgress: Double = 0.0
     @Published public var errorMessage: String? = nil
     @Published public var selectedSearchEngine: BrowserSearchEngine = .duckDuckGo
+    @Published public private(set) var tabs: [BrowserTabState] = []
+    @Published public private(set) var activeTabID: UUID?
+    @Published public var isShowingTabSwitcher: Bool = false
 
     // Download modal state
     @Published public var isShowingDownloadSheet: Bool = false
@@ -72,15 +75,22 @@ public final class BrowserViewModel: NSObject, ObservableObject {
     public weak var magnetDelegate: (any BrowserMagnetDelegate)?
     public var onDownloadInitiated: (() -> Void)? = nil
 
+    private var tabManager = BrowserTabManager()
+
     #if canImport(WebKit)
     public weak var webView: WKWebView?
-    private var pendingNavigationURL: URL?
+    private var pendingNavigationURLs: [UUID: URL] = [:]
+    private var tabSessions: [UUID: BrowserWebViewSession] = [:]
 
     /// Attaches the WebKit instance created by SwiftUI and delivers the
     /// navigation requested while the home view was being replaced.
-    func attachWebView(_ webView: WKWebView) {
-        self.webView = webView
-        _ = consumePendingNavigation { request in
+    func attachWebView(_ webView: WKWebView, for tabID: UUID? = nil) {
+        let targetTabID = tabID ?? activeTabID
+        guard let targetTabID else { return }
+        if targetTabID == activeTabID {
+            self.webView = webView
+        }
+        _ = consumePendingNavigation(for: targetTabID) { request in
             webView.load(request)
         }
     }
@@ -90,8 +100,16 @@ public final class BrowserViewModel: NSObject, ObservableObject {
     /// a live WebKit navigation.
     @discardableResult
     func consumePendingNavigation(using load: (URLRequest) -> Void) -> Bool {
-        guard let url = pendingNavigationURL else { return false }
-        pendingNavigationURL = nil
+        guard let activeTabID else { return false }
+        return consumePendingNavigation(for: activeTabID, using: load)
+    }
+
+    @discardableResult
+    private func consumePendingNavigation(
+        for tabID: UUID,
+        using load: (URLRequest) -> Void
+    ) -> Bool {
+        guard let url = pendingNavigationURLs.removeValue(forKey: tabID) else { return false }
         load(URLRequest(url: url))
         return true
     }
@@ -112,12 +130,193 @@ public final class BrowserViewModel: NSObject, ObservableObject {
             FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first?.appendingPathComponent("Downloads", isDirectory: true) ??
             FileManager.default.temporaryDirectory.appendingPathComponent("LIDDownloads", isDirectory: true)
         super.init()
+        publishTabState()
         mediaDiscoveryBridge.observationHandler = { [weak self] observation in
             DispatchQueue.main.async { [weak self] in
                 self?.handleMediaDiscoveryObservation(observation)
             }
         }
     }
+
+    private func publishTabState() {
+        tabs = tabManager.tabs
+        activeTabID = tabManager.activeTabID
+    }
+
+    private func syncActiveTabState() {
+        guard let activeTab = tabManager.activeTab else {
+            currentURL = nil
+            urlInputText = ""
+            pageTitle = ""
+            isLoading = false
+            estimatedProgress = 0
+            canGoBack = false
+            canGoForward = false
+            #if canImport(WebKit)
+            webView = nil
+            #endif
+            return
+        }
+
+        currentURL = activeTab.url
+        urlInputText = activeTab.url?.absoluteString ?? ""
+        pageTitle = activeTab.title == "New Tab" ? "" : activeTab.title
+        isLoading = activeTab.isLoading
+        estimatedProgress = activeTab.estimatedProgress
+        canGoBack = activeTab.canGoBack
+        canGoForward = activeTab.canGoForward
+
+        #if canImport(WebKit)
+        if activeTab.url == nil {
+            webView = nil
+        } else if let activeTabID,
+           let session = tabSessions[activeTabID] {
+            webView = session.webView
+            canGoBack = session.webView.canGoBack
+            canGoForward = session.webView.canGoForward
+        } else {
+            webView = nil
+        }
+        #endif
+    }
+
+    @discardableResult
+    public func createNewTab() -> UUID {
+        let id = tabManager.createTab(select: true)
+        publishTabState()
+        syncActiveTabState()
+        isShowingTabSwitcher = false
+        return id
+    }
+
+    @discardableResult
+    public func selectTab(_ id: UUID) -> Bool {
+        guard tabManager.selectTab(id) else { return false }
+        publishTabState()
+        syncActiveTabState()
+        isShowingTabSwitcher = false
+        errorMessage = nil
+        return true
+    }
+
+    @discardableResult
+    public func closeTab(_ id: UUID) -> UUID? {
+        #if canImport(WebKit)
+        pendingNavigationURLs.removeValue(forKey: id)
+        tabSessions.removeValue(forKey: id)
+        #endif
+        let replacement = tabManager.closeTab(id)
+        publishTabState()
+        syncActiveTabState()
+        if replacement == nil {
+            isShowingTabSwitcher = false
+        }
+        return replacement
+    }
+
+    public func showTabSwitcher() {
+        guard !tabs.isEmpty else { return }
+        isShowingTabSwitcher = true
+    }
+
+    public func handleEdgeGesture(
+        startX: Double,
+        translationX: Double,
+        containerWidth: Double,
+        modalPresented: Bool
+    ) {
+        let policy = BrowserEdgeGesturePolicy()
+        guard let action = policy.action(
+            startX: startX,
+            translationX: translationX,
+            containerWidth: containerWidth,
+            canGoBack: canGoBack,
+            modalPresented: modalPresented
+        ) else { return }
+
+        switch action {
+        case .goBack:
+            goBack()
+        case .showTabSwitcher:
+            showTabSwitcher()
+        }
+    }
+
+    #if canImport(WebKit)
+    func webViewSession(for tabID: UUID) -> BrowserWebViewSession {
+        if let existing = tabSessions[tabID] { return existing }
+        let session = BrowserWebViewSession(tabID: tabID, viewModel: self)
+        tabSessions[tabID] = session
+        return session
+    }
+
+    fileprivate func updateWebViewState(
+        for tabID: UUID,
+        webView: WKWebView,
+        url: URL?,
+        title: String?,
+        isLoading: Bool
+    ) {
+        guard var tab = tabManager.tab(withID: tabID) else { return }
+        if let url, url.absoluteString != "about:blank" {
+            tab.url = url
+        }
+        if let title, !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            tab.title = title
+        } else if !isLoading {
+            tab.title = tab.url?.host ?? "New Tab"
+        }
+        tab.isLoading = isLoading
+        tab.canGoBack = webView.canGoBack
+        tab.canGoForward = webView.canGoForward
+        tab.estimatedProgress = webView.estimatedProgress
+        _ = tabManager.updateTab(tab)
+        publishTabState()
+        if tabID == activeTabID {
+            self.webView = webView
+            syncActiveTabState()
+        }
+    }
+
+    fileprivate func updateWebViewProgress(for tabID: UUID, webView: WKWebView) {
+        guard var tab = tabManager.tab(withID: tabID) else { return }
+        tab.estimatedProgress = webView.estimatedProgress
+        _ = tabManager.updateTab(tab)
+        publishTabState()
+        if tabID == activeTabID {
+            estimatedProgress = webView.estimatedProgress
+        }
+    }
+
+    fileprivate func handleWebViewError(
+        _ error: Error,
+        for tabID: UUID,
+        webView: WKWebView
+    ) {
+        updateWebViewState(
+            for: tabID,
+            webView: webView,
+            url: tabManager.tab(withID: tabID)?.url,
+            title: nil,
+            isLoading: false
+        )
+        if tabID == activeTabID {
+            let nsError = error as NSError
+            if !(nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled) {
+                errorMessage = error.localizedDescription
+            }
+        }
+    }
+
+    fileprivate func resetMediaDiscovery(for tabID: UUID) {
+        tabSessions[tabID]?.mediaDiscoveryBridge.reset()
+    }
+
+    fileprivate func webView(for tabID: UUID?) -> WKWebView? {
+        guard let tabID else { return webView }
+        return tabSessions[tabID]?.webView
+    }
+    #endif
 
     public func shouldSuppressDuplicatePrompt(for url: URL) -> Bool {
         interceptionManager.shouldSuppressDuplicate(for: url, isSheetPresented: isShowingDownloadSheet)
@@ -391,7 +590,11 @@ public final class BrowserViewModel: NSObject, ObservableObject {
     /// Adds dynamically observed media candidates to the existing resource
     /// classifier. Blob observations remain signals only and never become
     /// download candidates.
-    private func handleMediaDiscoveryObservation(_ observation: BrowserMediaDiscoveryObservation) {
+    fileprivate func handleMediaDiscoveryObservation(
+        _ observation: BrowserMediaDiscoveryObservation,
+        tabID: UUID? = nil
+    ) {
+        if let tabID, tabID != activeTabID { return }
         guard let discoveredURL = observation.url else { return }
 
         let rawCandidate = WebpageRawResourceCandidate(
@@ -601,13 +804,26 @@ public final class BrowserViewModel: NSObject, ObservableObject {
 
     public func load(url: URL) {
         errorMessage = nil
-        currentURL = url
-        urlInputText = url.absoluteString
+        let targetTabID: UUID
+        if let existingID = tabManager.activeTabID {
+            targetTabID = existingID
+        } else {
+            targetTabID = tabManager.createTab(select: true)
+            publishTabState()
+        }
+        guard var tab = tabManager.tab(withID: targetTabID) else { return }
+        tab.url = url
+        tab.isLoading = true
+        tab.estimatedProgress = 0
+        tab.title = tab.title == "New Tab" ? "Loading…" : tab.title
+        _ = tabManager.updateTab(tab)
+        publishTabState()
+        syncActiveTabState()
 
         #if canImport(WebKit)
-        pendingNavigationURL = url
+        pendingNavigationURLs[targetTabID] = url
         if let webView {
-            _ = consumePendingNavigation { request in
+            _ = consumePendingNavigation(for: targetTabID) { request in
                 webView.load(request)
             }
         }
@@ -652,17 +868,24 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         if let blank = URL(string: "about:blank") {
             webView?.load(URLRequest(url: blank))
         }
-        pendingNavigationURL = nil
+        if let activeTabID {
+            pendingNavigationURLs.removeValue(forKey: activeTabID)
+        }
         webView = nil
         #endif
-        currentURL = nil
-        urlInputText = ""
-        pageTitle = ""
+        if let activeTabID,
+           var tab = tabManager.tab(withID: activeTabID) {
+            tab.url = nil
+            tab.title = "New Tab"
+            tab.isLoading = false
+            tab.canGoBack = false
+            tab.canGoForward = false
+            tab.estimatedProgress = 0
+            _ = tabManager.updateTab(tab)
+        }
+        publishTabState()
+        syncActiveTabState()
         errorMessage = nil
-        isLoading = false
-        estimatedProgress = 0.0
-        canGoBack = false
-        canGoForward = false
     }
 
     public func prepareDownloadCurrentURL() {
@@ -786,7 +1009,11 @@ public struct BrowserView: View {
                     })
                 } else {
                     #if canImport(WebKit)
-                    PlatformWebView(viewModel: viewModel)
+                    if let activeTabID = viewModel.activeTabID {
+                        PlatformWebView(viewModel: viewModel, tabID: activeTabID)
+                    } else {
+                        BrowserHomeView(viewModel: viewModel)
+                    }
                     #else
                     Text("WebKit is not supported in this environment.")
                         .foregroundColor(.secondary)
@@ -794,6 +1021,50 @@ public struct BrowserView: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .coordinateSpace(name: "browserContent")
+            .overlay {
+                GeometryReader { geometry in
+                    HStack(spacing: 0) {
+                        Color.clear
+                            .contentShape(Rectangle())
+                            .frame(width: 32)
+                            .gesture(
+                                DragGesture(
+                                    minimumDistance: 12,
+                                    coordinateSpace: .named("browserContent")
+                                )
+                                .onEnded { value in
+                                    viewModel.handleEdgeGesture(
+                                        startX: value.startLocation.x,
+                                        translationX: value.translation.width,
+                                        containerWidth: geometry.size.width,
+                                        modalPresented: isModalPresented
+                                    )
+                                }
+                            )
+
+                        Spacer(minLength: 0)
+
+                        Color.clear
+                            .contentShape(Rectangle())
+                            .frame(width: 32)
+                            .gesture(
+                                DragGesture(
+                                    minimumDistance: 12,
+                                    coordinateSpace: .named("browserContent")
+                                )
+                                .onEnded { value in
+                                    viewModel.handleEdgeGesture(
+                                        startX: value.startLocation.x,
+                                        translationX: value.translation.width,
+                                        containerWidth: geometry.size.width,
+                                        modalPresented: isModalPresented
+                                    )
+                                }
+                            )
+                    }
+                }
+            }
 
             // Bottom Navigation Toolbar
             bottomToolbar
@@ -810,9 +1081,20 @@ public struct BrowserView: View {
         .sheet(isPresented: $viewModel.isShowingStreamingConfirmation) {
             BrowserStreamingConfirmationSheet(viewModel: viewModel)
         }
+        .sheet(isPresented: $viewModel.isShowingTabSwitcher) {
+            BrowserTabSwitcherView(viewModel: viewModel)
+        }
         #if canImport(UIKit)
         .background(Color(UIColor.systemBackground))
         #endif
+    }
+
+    private var isModalPresented: Bool {
+        viewModel.isShowingDownloadSheet ||
+        viewModel.isShowingResourceInspector ||
+        viewModel.isShowingMagnetSheet ||
+        viewModel.isShowingStreamingConfirmation ||
+        viewModel.isShowingTabSwitcher
     }
 
     // MARK: - Address Bar Header
@@ -924,6 +1206,16 @@ public struct BrowserView: View {
                     Image(systemName: "house.fill")
                         .font(.system(size: 18))
                 }
+                .frame(maxWidth: .infinity)
+
+                // Tab overview button; edge gestures are an additional path.
+                Button {
+                    viewModel.showTabSwitcher()
+                } label: {
+                    Image(systemName: "square.on.square")
+                        .font(.system(size: 18))
+                }
+                .disabled(viewModel.tabs.isEmpty)
                 .frame(maxWidth: .infinity)
 
                 // Find Resources Button
@@ -1122,6 +1414,117 @@ public struct BrowserHomeView: View {
                 .padding(.bottom, 24)
             }
         }
+    }
+}
+
+// MARK: - Browser Tab Switcher
+
+public struct BrowserTabSwitcherView: View {
+    @ObservedObject public var viewModel: BrowserViewModel
+    @Environment(\.dismiss) private var dismiss
+
+    public init(viewModel: BrowserViewModel) {
+        self.viewModel = viewModel
+    }
+
+    public var body: some View {
+        NavigationView {
+            ScrollView {
+                LazyVStack(spacing: 12) {
+                    ForEach(viewModel.tabs) { tab in
+                        tabCard(for: tab)
+                    }
+
+                    Button {
+                        viewModel.createNewTab()
+                        dismiss()
+                    } label: {
+                        Label("New Tab", systemImage: "plus")
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 12)
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+                .padding(16)
+            }
+            .navigationTitle("Tabs")
+            #if canImport(UIKit)
+            .navigationBarTitleDisplayMode(.inline)
+            #endif
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Done") {
+                        viewModel.isShowingTabSwitcher = false
+                        dismiss()
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func tabCard(for tab: BrowserTabState) -> some View {
+        HStack(spacing: 12) {
+            Button {
+                _ = viewModel.selectTab(tab.id)
+                dismiss()
+            } label: {
+                VStack(alignment: .leading, spacing: 5) {
+                    HStack(spacing: 6) {
+                        if tab.id == viewModel.activeTabID {
+                            Image(systemName: "checkmark.circle.fill")
+                                .foregroundColor(.blue)
+                        }
+                        Text(tab.displayName)
+                            .font(.headline)
+                            .lineLimit(1)
+                        Spacer(minLength: 0)
+                    }
+
+                    Text(displayURL(for: tab))
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .buttonStyle(.plain)
+
+            Button {
+                close(tab.id)
+            } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.title3)
+                    .foregroundColor(.secondary)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Close (tab.displayName)")
+        }
+        .padding(14)
+        .background(
+            RoundedRectangle(cornerRadius: 12)
+                .fill(tab.id == viewModel.activeTabID ? Color.blue.opacity(0.12) : Color.secondary.opacity(0.1))
+        )
+        .simultaneousGesture(
+            DragGesture(minimumDistance: 20)
+                .onEnded { value in
+                    guard value.translation.height < -60,
+                          abs(value.translation.height) > abs(value.translation.width) else { return }
+                    close(tab.id)
+                }
+        )
+    }
+
+    private func close(_ tabID: UUID) {
+        _ = viewModel.closeTab(tabID)
+        if viewModel.tabs.isEmpty {
+            dismiss()
+        }
+    }
+
+    private func displayURL(for tab: BrowserTabState) -> String {
+        guard let url = tab.url else { return "New tab" }
+        return BrowserURLResolver.sanitizeURLForLogging(url)
     }
 }
 
@@ -1492,68 +1895,95 @@ public struct BrowserDownloadSheet: View {
 #if canImport(UIKit)
 public struct PlatformWebView: UIViewRepresentable {
     @ObservedObject public var viewModel: BrowserViewModel
+    public let tabID: UUID
 
-    public init(viewModel: BrowserViewModel) {
+    public init(viewModel: BrowserViewModel, tabID: UUID) {
         self.viewModel = viewModel
+        self.tabID = tabID
     }
 
     public func makeCoordinator() -> BrowserWebViewCoordinator {
-        BrowserWebViewCoordinator(viewModel: viewModel)
+        viewModel.webViewSession(for: tabID).coordinator
     }
 
     public func makeUIView(context: Context) -> WKWebView {
-        let config = WKWebViewConfiguration()
-        config.allowsInlineMediaPlayback = true
-        viewModel.mediaDiscoveryBridge.install(on: config)
-        let webView = WKWebView(frame: .zero, configuration: config)
-        webView.navigationDelegate = context.coordinator
-        context.coordinator.setupProgressObserver(for: webView)
-        viewModel.attachWebView(webView)
+        let webView = viewModel.webViewSession(for: tabID).webView
+        viewModel.attachWebView(webView, for: tabID)
         return webView
     }
 
     public func updateUIView(_ uiView: WKWebView, context: Context) {
         // Reattach only to deliver a request that arrived before makeUIView.
         // attachWebView does not reload when there is no pending request.
-        viewModel.attachWebView(uiView)
+        viewModel.attachWebView(uiView, for: tabID)
     }
 }
 #elseif canImport(AppKit)
 public struct PlatformWebView: NSViewRepresentable {
     @ObservedObject public var viewModel: BrowserViewModel
+    public let tabID: UUID
 
-    public init(viewModel: BrowserViewModel) {
+    public init(viewModel: BrowserViewModel, tabID: UUID) {
         self.viewModel = viewModel
+        self.tabID = tabID
     }
 
     public func makeCoordinator() -> BrowserWebViewCoordinator {
-        BrowserWebViewCoordinator(viewModel: viewModel)
+        viewModel.webViewSession(for: tabID).coordinator
     }
 
     public func makeNSView(context: Context) -> WKWebView {
-        let config = WKWebViewConfiguration()
-        viewModel.mediaDiscoveryBridge.install(on: config)
-        let webView = WKWebView(frame: .zero, configuration: config)
-        webView.navigationDelegate = context.coordinator
-        context.coordinator.setupProgressObserver(for: webView)
-        viewModel.attachWebView(webView)
+        let webView = viewModel.webViewSession(for: tabID).webView
+        viewModel.attachWebView(webView, for: tabID)
         return webView
     }
 
     public func updateNSView(_ nsView: WKWebView, context: Context) {
-        viewModel.attachWebView(nsView)
+        viewModel.attachWebView(nsView, for: tabID)
     }
 }
 #endif
+
+@MainActor
+final class BrowserWebViewSession {
+    let tabID: UUID
+    let mediaDiscoveryBridge: BrowserMediaDiscoveryBridge
+    let webView: WKWebView
+    let coordinator: BrowserWebViewCoordinator
+
+    init(tabID: UUID, viewModel: BrowserViewModel) {
+        self.tabID = tabID
+        let config = WKWebViewConfiguration()
+        config.allowsInlineMediaPlayback = true
+
+        let bridge = BrowserMediaDiscoveryBridge()
+        bridge.observationHandler = { [weak viewModel] observation in
+            DispatchQueue.main.async {
+                viewModel?.handleMediaDiscoveryObservation(observation, tabID: tabID)
+            }
+        }
+        bridge.install(on: config)
+        self.mediaDiscoveryBridge = bridge
+
+        let webView = WKWebView(frame: .zero, configuration: config)
+        self.webView = webView
+        let coordinator = BrowserWebViewCoordinator(viewModel: viewModel, tabID: tabID)
+        self.coordinator = coordinator
+        webView.navigationDelegate = coordinator
+        coordinator.setupProgressObserver(for: webView)
+    }
+}
 
 // MARK: - WKNavigationDelegate Coordinator
 
 public final class BrowserWebViewCoordinator: NSObject, WKNavigationDelegate, WKDownloadDelegate {
     public weak var viewModel: BrowserViewModel?
+    private let tabID: UUID?
     private var progressObserver: NSKeyValueObservation?
 
-    public init(viewModel: BrowserViewModel) {
+    public init(viewModel: BrowserViewModel, tabID: UUID? = nil) {
         self.viewModel = viewModel
+        self.tabID = tabID
         super.init()
     }
 
@@ -1564,7 +1994,12 @@ public final class BrowserWebViewCoordinator: NSObject, WKNavigationDelegate, WK
     public func setupProgressObserver(for webView: WKWebView) {
         progressObserver = webView.observe(\.estimatedProgress, options: [.new]) { [weak self] wv, _ in
             DispatchQueue.main.async {
-                self?.viewModel?.estimatedProgress = wv.estimatedProgress
+                guard let self, let vm = self.viewModel else { return }
+                if let tabID = self.tabID {
+                    vm.updateWebViewProgress(for: tabID, webView: wv)
+                } else {
+                    vm.estimatedProgress = wv.estimatedProgress
+                }
             }
         }
     }
@@ -1572,6 +2007,18 @@ public final class BrowserWebViewCoordinator: NSObject, WKNavigationDelegate, WK
     public func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
         DispatchQueue.main.async { [weak self] in
             guard let self = self, let vm = self.viewModel else { return }
+            if let tabID = self.tabID {
+                vm.updateWebViewState(
+                    for: tabID,
+                    webView: webView,
+                    url: webView.url,
+                    title: nil,
+                    isLoading: true
+                )
+                vm.resetMediaDiscovery(for: tabID)
+                vm.errorMessage = nil
+                return
+            }
             vm.isLoading = true
             vm.errorMessage = nil
             vm.mediaDiscoveryBridge.reset()
@@ -1587,6 +2034,16 @@ public final class BrowserWebViewCoordinator: NSObject, WKNavigationDelegate, WK
     public func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         DispatchQueue.main.async { [weak self] in
             guard let self = self, let vm = self.viewModel else { return }
+            if let tabID = self.tabID {
+                vm.updateWebViewState(
+                    for: tabID,
+                    webView: webView,
+                    url: webView.url,
+                    title: webView.title,
+                    isLoading: false
+                )
+                return
+            }
             vm.isLoading = false
             if let url = webView.url, url.absoluteString != "about:blank" {
                 vm.currentURL = url
@@ -1599,11 +2056,11 @@ public final class BrowserWebViewCoordinator: NSObject, WKNavigationDelegate, WK
     }
 
     public func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
-        handleNavigationError(error)
+        handleNavigationError(error, webView: webView)
     }
 
     public func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
-        handleNavigationError(error)
+        handleNavigationError(error, webView: webView)
     }
 
     private func handleErrorInternal(_ error: Error) {
@@ -1619,8 +2076,14 @@ public final class BrowserWebViewCoordinator: NSObject, WKNavigationDelegate, WK
         }
     }
 
-    private func handleNavigationError(_ error: Error) {
-        handleErrorInternal(error)
+    private func handleNavigationError(_ error: Error, webView: WKWebView) {
+        if let tabID {
+            DispatchQueue.main.async { [weak self] in
+                self?.viewModel?.handleWebViewError(error, for: tabID, webView: webView)
+            }
+        } else {
+            handleErrorInternal(error)
+        }
     }
 
     public func webView(
@@ -1778,7 +2241,7 @@ public final class BrowserWebViewCoordinator: NSObject, WKNavigationDelegate, WK
         DispatchQueue.main.async { [weak self] in
             guard let self = self,
                   let vm = self.viewModel,
-                  let browser = vm.webView else { return }
+                  let browser = vm.webView(for: self.tabID) else { return }
             vm.captureBrowserRequestContext(
                 for: destinationURL,
                 pageURL: browser.url,

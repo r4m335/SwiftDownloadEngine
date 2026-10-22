@@ -800,6 +800,34 @@ final class BrowserTests: XCTestCase {
             XCTFail("Disallowed schemes must not create navigation requests.")
         })
     }
+
+    @MainActor
+    func testBrowserTabsPreserveIndependentURLStateAndFinalHomeNavigation() {
+        let vm = BrowserViewModel()
+        let firstTabID = try! XCTUnwrap(vm.activeTabID)
+        let firstURL = URL(string: "https://example.com/first")!
+        vm.load(url: firstURL)
+
+        let secondTabID = vm.createNewTab()
+        let secondURL = URL(string: "https://example.com/second")!
+        vm.load(url: secondURL)
+
+        XCTAssertTrue(vm.selectTab(firstTabID))
+        XCTAssertEqual(vm.currentURL, firstURL)
+        XCTAssertTrue(vm.selectTab(secondTabID))
+        XCTAssertEqual(vm.currentURL, secondURL)
+
+        _ = vm.closeTab(firstTabID)
+        XCTAssertEqual(vm.activeTabID, secondTabID)
+        _ = vm.closeTab(secondTabID)
+        XCTAssertNil(vm.activeTabID)
+        XCTAssertNil(vm.currentURL)
+
+        // Submitting from the resulting home screen creates a fresh tab.
+        vm.navigate(to: "new search")
+        XCTAssertNotNil(vm.activeTabID)
+        XCTAssertNotNil(vm.currentURL)
+    }
     #endif
     #endif
 
