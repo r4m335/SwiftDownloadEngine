@@ -390,6 +390,21 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         isShowingResourceInspector = false
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
             guard let self = self else { return }
+            let candidate = BrowserMediaCandidateClassifier.classify(resource: resource)
+            if candidate.kind == .directMedia {
+                do {
+                    let plan = try DirectMediaTransferPlanner.makePlan(candidate: candidate)
+                    self.promptDownload(
+                        for: plan.transferURL,
+                        suggestedFilename: plan.filename,
+                        requestContext: plan.requestContext
+                    )
+                } catch {
+                    self.errorMessage = error.localizedDescription
+                }
+                return
+            }
+
             self.promptDownload(
                 for: resource.url,
                 suggestedFilename: resource.suggestedFilename,
