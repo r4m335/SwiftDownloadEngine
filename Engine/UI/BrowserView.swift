@@ -985,16 +985,21 @@ public struct BrowserView: View {
 
     public var body: some View {
         VStack(spacing: 0) {
-            // Address & Navigation Header
-            addressBarHeader
+            // Keep one navigation menu at the top, like a compact browser toolbar.
+            topNavigationToolbar
 
-            // Loading Progress Bar
-            if viewModel.isLoading {
-                ProgressView(value: max(0.05, viewModel.estimatedProgress), total: 1.0)
-                    .progressViewStyle(LinearProgressViewStyle(tint: .blue))
-                    .frame(height: 2)
-            } else {
-                Divider()
+            // The home page owns its centered search field. Once a page is open,
+            // the browser header is the single address/search field.
+            if viewModel.currentURL != nil {
+                addressBarHeader
+
+                if viewModel.isLoading {
+                    ProgressView(value: max(0.05, viewModel.estimatedProgress), total: 1.0)
+                        .progressViewStyle(LinearProgressViewStyle(tint: .blue))
+                        .frame(height: 2)
+                } else {
+                    Divider()
+                }
             }
 
             // Main View Area: Home Screen, Error Screen, or Active Web View
@@ -1066,8 +1071,6 @@ public struct BrowserView: View {
                 }
             }
 
-            // Bottom Navigation Toolbar
-            bottomToolbar
         }
         .sheet(isPresented: $viewModel.isShowingDownloadSheet) {
             BrowserDownloadSheet(viewModel: viewModel)
@@ -1173,11 +1176,10 @@ public struct BrowserView: View {
         .padding(.vertical, 8)
     }
 
-    // MARK: - Bottom Toolbar
+    // MARK: - Top Navigation Toolbar
 
-    private var bottomToolbar: some View {
+    private var topNavigationToolbar: some View {
         VStack(spacing: 0) {
-            Divider()
             HStack {
                 // Back Button
                 Button {
@@ -1186,8 +1188,9 @@ public struct BrowserView: View {
                     Image(systemName: "chevron.backward")
                         .font(.system(size: 18, weight: .semibold))
                 }
+                .accessibilityLabel("Back")
                 .disabled(!viewModel.canGoBack)
-                .frame(maxWidth: .infinity)
+                .frame(minWidth: 44, minHeight: 44)
 
                 // Forward Button
                 Button {
@@ -1196,8 +1199,9 @@ public struct BrowserView: View {
                     Image(systemName: "chevron.forward")
                         .font(.system(size: 18, weight: .semibold))
                 }
+                .accessibilityLabel("Forward")
                 .disabled(!viewModel.canGoForward)
-                .frame(maxWidth: .infinity)
+                .frame(minWidth: 44, minHeight: 44)
 
                 // Home Button
                 Button {
@@ -1206,7 +1210,8 @@ public struct BrowserView: View {
                     Image(systemName: "house.fill")
                         .font(.system(size: 18))
                 }
-                .frame(maxWidth: .infinity)
+                .accessibilityLabel("Home")
+                .frame(minWidth: 44, minHeight: 44)
 
                 // Tab overview button; edge gestures are an additional path.
                 Button {
@@ -1215,40 +1220,21 @@ public struct BrowserView: View {
                     Image(systemName: "square.on.square")
                         .font(.system(size: 18))
                 }
+                .accessibilityLabel("Tabs")
                 .disabled(viewModel.tabs.isEmpty)
-                .frame(maxWidth: .infinity)
+                .frame(minWidth: 44, minHeight: 44)
 
                 // Find Resources Button
                 Button {
                     viewModel.openResourceInspector()
                 } label: {
-                    VStack(spacing: 2) {
-                        Image(systemName: "doc.text.magnifyingglass")
-                            .font(.system(size: 18))
-                        Text("Resources")
-                            .font(.system(size: 10, weight: .medium))
-                    }
-                    .foregroundColor(viewModel.currentURL != nil ? .blue : .secondary)
+                    Image(systemName: "doc.text.magnifyingglass")
+                        .font(.system(size: 18))
+                        .foregroundColor(viewModel.currentURL != nil ? .blue : .secondary)
                 }
+                .accessibilityLabel("Resources")
                 .disabled(viewModel.currentURL == nil)
-                .frame(maxWidth: .infinity)
-
-                // Download Page URL Button
-                Button {
-                    viewModel.prepareDownloadCurrentURL()
-                } label: {
-                    HStack(spacing: 4) {
-                        Image(systemName: "arrow.down.circle.fill")
-                            .font(.system(size: 18))
-                    }
-                    .foregroundColor(viewModel.currentURL != nil ? .white : .secondary)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 6)
-                    .background(viewModel.currentURL != nil ? Color.blue : Color.gray.opacity(0.2))
-                    .cornerRadius(16)
-                }
-                .disabled(viewModel.currentURL == nil)
-                .frame(maxWidth: .infinity)
+                .frame(minWidth: 44, minHeight: 44)
 
                 // Reload Button
                 Button {
@@ -1257,13 +1243,18 @@ public struct BrowserView: View {
                     Image(systemName: "arrow.clockwise")
                         .font(.system(size: 18))
                 }
+                .accessibilityLabel("Reload")
                 .disabled(viewModel.currentURL == nil)
-                .frame(maxWidth: .infinity)
+                .frame(minWidth: 44, minHeight: 44)
             }
-            .padding(.vertical, 10)
+            .frame(maxWidth: .infinity)
+            .padding(.horizontal, 4)
             #if canImport(UIKit)
             .background(Color(UIColor.secondarySystemBackground))
+            #else
+            .background(Color.secondary.opacity(0.15))
             #endif
+            Divider()
         }
     }
 }
@@ -1272,7 +1263,6 @@ public struct BrowserView: View {
 
 public struct BrowserHomeView: View {
     @ObservedObject public var viewModel: BrowserViewModel
-    @State private var quickSearchText: String = ""
 
     public var body: some View {
         ScrollView {
@@ -1304,18 +1294,18 @@ public struct BrowserHomeView: View {
                     HStack {
                         Image(systemName: "magnifyingglass")
                             .foregroundColor(.secondary)
-                        TextField("Search the web or type a URL...", text: $quickSearchText)
+                        TextField("Search the web or type a URL...", text: $viewModel.urlInputText)
                             #if canImport(UIKit)
                             .keyboardType(.webSearch)
                             .autocapitalization(.none)
                             #endif
                             .disableAutocorrection(true)
                             .onSubmit {
-                                viewModel.navigate(to: quickSearchText)
+                                viewModel.navigate(to: viewModel.urlInputText)
                             }
-                        if !quickSearchText.isEmpty {
+                        if !viewModel.urlInputText.isEmpty {
                             Button {
-                                viewModel.navigate(to: quickSearchText)
+                                viewModel.navigate(to: viewModel.urlInputText)
                             } label: {
                                 Text("Search")
                                     .bold()
