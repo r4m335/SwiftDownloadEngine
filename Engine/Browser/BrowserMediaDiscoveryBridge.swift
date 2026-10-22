@@ -309,8 +309,8 @@ public final class BrowserMediaDiscoveryBridge: NSObject, @unchecked Sendable {
             url: isBlob ? nil : resolved,
             rawURL: rawURL,
             source: message.source,
-            tag: normalizedMetadata(message.tag),
-            declaredType: normalizedMetadata(message.declaredType),
+            tag: Self.normalizedMetadata(message.tag),
+            declaredType: Self.normalizedMetadata(message.declaredType),
             pageOrigin: pageOrigin,
             frameOrigin: frameOrigin,
             mayUseBrowserCredentials: mayUseCredentials
