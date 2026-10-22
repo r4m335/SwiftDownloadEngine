@@ -733,7 +733,10 @@ public enum BrowserBlobCapturePrototypeBridge {
     }
 
     private static func jsString(_ value: String) -> String {
-        let data = try? JSONSerialization.data(withJSONObject: [value])
+        let data = try? JSONSerialization.data(
+            withJSONObject: [value],
+            options: [.withoutEscapingSlashes]
+        )
         let encoded = data.flatMap { String(data: $0, encoding: .utf8) } ?? "[\"\"]"
         return String(encoded.dropFirst().dropLast())
     }
