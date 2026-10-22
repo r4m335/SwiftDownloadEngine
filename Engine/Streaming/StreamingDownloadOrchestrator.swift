@@ -10,11 +10,13 @@ public struct StreamingManifestCandidate: Sendable, Equatable {
     public let url: URL
     public let mimeType: String?
     public let browserRequestContext: BrowserRequestContext?
+    public let hlsVariantPreferences: HLSVariantSelectionPreferences
 
     public init(
         url: URL,
         mimeType: String? = nil,
-        browserRequestContext: BrowserRequestContext? = nil
+        browserRequestContext: BrowserRequestContext? = nil,
+        hlsVariantPreferences: HLSVariantSelectionPreferences = HLSVariantSelectionPreferences()
     ) throws {
         guard BrowserURLResolver.isValidDownloadURL(url) else {
             throw StreamingDownloadOrchestratorError.invalidManifestURL
@@ -22,13 +24,15 @@ public struct StreamingManifestCandidate: Sendable, Equatable {
         self.url = url
         self.mimeType = mimeType
         self.browserRequestContext = browserRequestContext
+        self.hlsVariantPreferences = hlsVariantPreferences
     }
 
     public init(resource: WebpageResource) throws {
         try self.init(
             url: resource.url,
             mimeType: resource.mimeType,
-            browserRequestContext: resource.requestContext
+            browserRequestContext: resource.requestContext,
+            hlsVariantPreferences: HLSVariantSelectionPreferences()
         )
     }
 }
@@ -344,6 +348,7 @@ public enum StreamingDownloadOrchestratorError: Error, LocalizedError, Sendable,
     case manifestNotRecognized
     case unsupportedManifest(StreamingManifestKind)
     case playlistRequiresVariantSelection
+    case hlsVariantSelectionFailed(HLSVariantSelectionError)
     case manifestParseFailed(ManifestParserError)
     case hlsPlanningFailed(HLSVODTransferPlanError)
     case dashPlanningFailed(DASHVODTransferPlanError)
@@ -354,6 +359,7 @@ public enum StreamingDownloadOrchestratorError: Error, LocalizedError, Sendable,
     case transferAlreadyRunning
     case segmentTransferFailed(order: Int)
     case cancelled
+    case hlsReconstructionFailed(HLSVODReconstructionError)
 
     public var errorDescription: String? {
         switch self {
@@ -365,6 +371,8 @@ public enum StreamingDownloadOrchestratorError: Error, LocalizedError, Sendable,
             return "The discovered manifest is unsupported (\(kind.rawValue))."
         case .playlistRequiresVariantSelection:
             return "The HLS master playlist requires an explicit variant selection."
+        case .hlsVariantSelectionFailed(let error):
+            return error.localizedDescription
         case .manifestParseFailed(let error):
             return error.localizedDescription
         case .hlsPlanningFailed(let error):
@@ -385,12 +393,15 @@ public enum StreamingDownloadOrchestratorError: Error, LocalizedError, Sendable,
             return "Streaming segment \(order) could not be downloaded."
         case .cancelled:
             return "The streaming transfer was cancelled; completed segments were preserved."
+        case .hlsReconstructionFailed(let error):
+            return error.localizedDescription
         }
     }
 }
 
-/// Coordinates browser discovery, manifest loading/parsing, planning, and
-/// segment submission. It does not assemble media or own application download state.
+/// Coordinates browser discovery, manifest loading/parsing, planning, segment
+/// submission, and the supported HLS VOD assembly handoff. It does not own
+/// application download state.
 public actor StreamingDownloadOrchestrator {
     private let manifestLoader: any StreamingManifestLoader
     private let segmentExecutor: any StreamingSegmentExecutor
@@ -435,7 +446,7 @@ public actor StreamingDownloadOrchestrator {
         }
 
         let headers = manifestHeaders(for: candidate)
-        let response: StreamingManifestResponse
+        var response: StreamingManifestResponse
         do {
             response = try await manifestLoader.load(
                 candidate: candidate,
@@ -469,11 +480,51 @@ public actor StreamingDownloadOrchestrator {
         do {
             switch classification.kind {
             case .hls:
-                let parsed = try HLSManifestParser.parse(
+                var parsed = try HLSManifestParser.parse(
                     response.data,
                     baseURL: response.finalURL,
                     limits: parsingLimits
                 )
+                if parsed.playlistType == .master {
+                    let variant: HLSVariant
+                    do {
+                        variant = try HLSVariantSelector.select(
+                            from: parsed,
+                            preferences: candidate.hlsVariantPreferences
+                        )
+                        try HLSVariantSelector.validateAudioLayout(
+                            selectedVariant: variant,
+                            master: parsed
+                        )
+                    } catch let error as HLSVariantSelectionError {
+                        throw StreamingDownloadOrchestratorError.hlsVariantSelectionFailed(error)
+                    }
+                    let variantCandidate = try StreamingManifestCandidate(
+                        url: variant.uri,
+                        mimeType: "application/vnd.apple.mpegurl",
+                        browserRequestContext: candidate.browserRequestContext,
+                        hlsVariantPreferences: candidate.hlsVariantPreferences
+                    )
+                    response = try await manifestLoader.load(
+                        candidate: variantCandidate,
+                        headers: manifestHeaders(for: variantCandidate),
+                        limits: parsingLimits
+                    )
+                    let variantClassification = StreamingManifestClassifier.classify(
+                        url: response.finalURL,
+                        mimeType: response.mimeType ?? variantCandidate.mimeType,
+                        content: response.data,
+                        limits: parsingLimits
+                    )
+                    guard variantClassification.kind == .hls else {
+                        throw StreamingDownloadOrchestratorError.manifestNotRecognized
+                    }
+                    parsed = try HLSManifestParser.parse(
+                        response.data,
+                        baseURL: response.finalURL,
+                        limits: parsingLimits
+                    )
+                }
                 guard parsed.playlistType == .media else {
                     throw StreamingDownloadOrchestratorError.playlistRequiresVariantSelection
                 }
@@ -621,6 +672,45 @@ public actor StreamingDownloadOrchestrator {
         )
         completedTransfers[proposal.transferID] = result
         return result
+    }
+
+    /// Executes a finite HLS proposal through the existing segment executor and
+    /// then reconstructs the downloaded resources into one validated media file.
+    /// DASH remains on the segment-result boundary until its reconstruction
+    /// strategy is implemented in 7H.2C.
+    public func executeAndAssembleHLS(
+        _ proposal: StreamingTransferProposal,
+        approved: Bool,
+        destinationDirectory: URL,
+        outputURL: URL,
+        progress: (@Sendable (StreamingTransferProgress) -> Void)? = nil
+    ) async throws -> MediaAssemblyOutput {
+        guard case .hls(let transferPlan) = proposal.manifest else {
+            throw StreamingDownloadOrchestratorError.unsupportedManifest(.dash)
+        }
+        let result = try await execute(
+            proposal,
+            approved: approved,
+            destinationDirectory: destinationDirectory,
+            progress: progress
+        )
+        try Task.checkCancellation()
+        let completed = zip(transferPlan.resources, result.localFiles).map {
+            HLSCompletedResource(resource: $0.0, fileURL: $0.1)
+        }
+        do {
+            return try HLSVODReconstructor.assemble(
+                transferPlan: transferPlan,
+                completedResources: completed,
+                destinationURL: outputURL,
+                temporaryDirectoryURL: destinationDirectory.appendingPathComponent(
+                    ".media-assembly",
+                    isDirectory: true
+                )
+            )
+        } catch let error as HLSVODReconstructionError {
+            throw StreamingDownloadOrchestratorError.hlsReconstructionFailed(error)
+        }
     }
 
     public func cancel(transferID: String) async {

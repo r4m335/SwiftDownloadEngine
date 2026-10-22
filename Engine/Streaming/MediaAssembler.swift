@@ -1,18 +1,18 @@
 import Foundation
 
-/// Execution boundary for a future media assembler. Implementations must not
-/// download resources or mutate download state; they consume completed local
-/// segment files and return a published, validated output.
+/// Execution boundary for a media assembler. Implementations must not download
+/// resources or mutate download state; they consume completed local segment
+/// files and return a published, validated output.
 public protocol MediaAssemblyExecutor: Sendable {
     func assemble(_ request: MediaAssemblyRequest) async throws -> MediaAssemblyOutput
 }
 
-/// 7F.4.1 contract validation.
+/// Validates and assembles supported clear VOD segment sets.
 ///
-/// This method validates the request's declared structure only. It deliberately
-/// does not read files, inspect media bytes, create directories, publish output,
-/// or select AVFoundation/FFmpeg/a different media-processing strategy. Those
-/// concerns belong to the later assembly and output-validation stages.
+/// The first implementation intentionally supports one compatible track. MPEG-TS
+/// inputs are packet-validated before ordered concatenation. Fragmented MP4 inputs
+/// require an `ftyp`/`moov` initialization segment and `moof`/`mdat` media fragments;
+/// arbitrary MP4 bytes are never blindly published.
 public enum MediaAssembler {
     public static func validateInput(
         _ request: MediaAssemblyRequest
@@ -120,6 +120,92 @@ public enum MediaAssembler {
         )
     }
 
+    /// Copies validated segments to a temporary output and publishes it only after
+    /// the resulting container structure has been checked.
+    public static func assemble(
+        _ request: MediaAssemblyRequest
+    ) throws -> MediaAssemblyOutput {
+        let validation = try validateInput(request)
+        guard request.tracks.count == 1 else {
+            throw MediaAssemblyError.multipleTracksNotSupported
+        }
+
+        let fileManager = FileManager.default
+        do {
+            try fileManager.createDirectory(
+                at: request.temporaryDirectoryURL,
+                withIntermediateDirectories: true
+            )
+            try fileManager.createDirectory(
+                at: request.destinationURL.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+        } catch {
+            throw MediaAssemblyError.fileOperationFailed
+        }
+
+        let temporaryOutput = request.temporaryDirectoryURL
+            .appendingPathComponent("assembly-\(UUID().uuidString).part", isDirectory: false)
+        defer { try? fileManager.removeItem(at: temporaryOutput) }
+
+        do {
+            fileManager.createFile(atPath: temporaryOutput.path, contents: nil)
+            guard let output = FileHandle(forWritingAtPath: temporaryOutput.path) else {
+                throw MediaAssemblyError.fileOperationFailed
+            }
+            defer { output.closeFile() }
+
+            let track = request.tracks[0]
+            if let initialization = track.initializationSegment {
+                try copyValidatedSegment(
+                    initialization,
+                    kind: track.kind,
+                    container: request.container,
+                    output: output
+                )
+            }
+            for segment in track.mediaSegments {
+                try copyValidatedSegment(
+                    segment,
+                    kind: track.kind,
+                    container: request.container,
+                    output: output
+                )
+            }
+            output.synchronizeFile()
+        } catch let error as MediaAssemblyError {
+            throw error
+        } catch {
+            throw MediaAssemblyError.fileOperationFailed
+        }
+
+        guard validateOutput(temporaryOutput, container: request.container) else {
+            throw MediaAssemblyError.invalidMediaData(request.container)
+        }
+
+        do {
+            if fileManager.fileExists(atPath: request.destinationURL.path) {
+                try fileManager.removeItem(at: request.destinationURL)
+            }
+            try fileManager.moveItem(at: temporaryOutput, to: request.destinationURL)
+            let attributes = try fileManager.attributesOfItem(atPath: request.destinationURL.path)
+            guard let byteCount = (attributes[.size] as? NSNumber)?.int64Value, byteCount > 0 else {
+                throw MediaAssemblyError.fileOperationFailed
+            }
+            return MediaAssemblyOutput(
+                destinationURL: request.destinationURL,
+                container: request.container,
+                trackCount: request.tracks.count,
+                byteCount: byteCount,
+                validation: validation
+            )
+        } catch let error as MediaAssemblyError {
+            throw error
+        } catch {
+            throw MediaAssemblyError.fileOperationFailed
+        }
+    }
+
     private static func isSupported(_ container: MediaAssemblyContainer) -> Bool {
         switch container {
         case .mpegTS, .fragmentedMP4:
@@ -187,5 +273,126 @@ public enum MediaAssembler {
 
     private static func knownByteCount(for segment: MediaAssemblySegment) -> Int64? {
         segment.actualByteCount ?? segment.expectedByteCount
+    }
+
+    private static func copyValidatedSegment(
+        _ segment: MediaAssemblySegment,
+        kind: MediaAssemblyTrackKind,
+        container: MediaAssemblyContainer,
+        output: FileHandle
+    ) throws {
+        let fileManager = FileManager.default
+        guard fileManager.fileExists(atPath: segment.fileURL.path),
+              let attributes = try? fileManager.attributesOfItem(atPath: segment.fileURL.path),
+              let actualSize = (attributes[.size] as? NSNumber)?.int64Value,
+              actualSize > 0 else {
+            throw MediaAssemblyError.invalidSegmentSize(kind, order: segment.order)
+        }
+        if let expected = segment.expectedByteCount, expected != actualSize {
+            throw MediaAssemblyError.invalidSegmentSize(kind, order: segment.order)
+        }
+        if let declaredActual = segment.actualByteCount, declaredActual != actualSize {
+            throw MediaAssemblyError.invalidSegmentSize(kind, order: segment.order)
+        }
+
+        switch container {
+        case .mpegTS:
+            guard validateMPEGTSFile(segment.fileURL) else {
+                throw MediaAssemblyError.invalidMediaData(container)
+            }
+        case .fragmentedMP4:
+            let required: Set<String> = segment.role == .initialization
+                ? ["ftyp", "moov"]
+                : ["moof", "mdat"]
+            guard validateISOBaseMediaFile(segment.fileURL, requiredBoxes: required) else {
+                throw MediaAssemblyError.invalidMediaData(container)
+            }
+        }
+
+        guard let input = FileHandle(forReadingAtPath: segment.fileURL.path) else {
+            throw MediaAssemblyError.fileOperationFailed
+        }
+        defer { input.closeFile() }
+        while true {
+            let chunk = input.readData(ofLength: 1_048_576)
+            if chunk.isEmpty { break }
+            output.write(chunk)
+        }
+    }
+
+    private static func validateOutput(_ url: URL, container: MediaAssemblyContainer) -> Bool {
+        switch container {
+        case .mpegTS:
+            return validateMPEGTSFile(url)
+        case .fragmentedMP4:
+            return validateISOBaseMediaFile(url, requiredBoxes: ["ftyp", "moov", "moof", "mdat"])
+        }
+    }
+
+    private static func validateMPEGTSFile(_ url: URL) -> Bool {
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
+              let size = (attributes[.size] as? NSNumber)?.int64Value,
+              size > 0,
+              size % 188 == 0,
+              let handle = FileHandle(forReadingAtPath: url.path) else {
+            return false
+        }
+        defer { handle.closeFile() }
+        var remaining = size
+        while remaining > 0 {
+            let packet = handle.readData(ofLength: 188)
+            guard packet.count == 188, packet.first == 0x47 else { return false }
+            remaining -= 188
+        }
+        return true
+    }
+
+    private static func validateISOBaseMediaFile(
+        _ url: URL,
+        requiredBoxes: Set<String>
+    ) -> Bool {
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
+              let fileSize = (attributes[.size] as? NSNumber)?.uint64Value,
+              fileSize > 0,
+              let handle = FileHandle(forReadingAtPath: url.path) else {
+            return false
+        }
+        defer { handle.closeFile() }
+
+        var offset: UInt64 = 0
+        var boxes = Set<String>()
+        while offset < fileSize {
+            guard fileSize - offset >= 8 else { return false }
+            handle.seek(toFileOffset: offset)
+            let header = handle.readData(ofLength: 8)
+            guard header.count == 8 else { return false }
+            var boxSize = UInt64(header[0]) << 24 | UInt64(header[1]) << 16 |
+                UInt64(header[2]) << 8 | UInt64(header[3])
+            let type = String(bytes: header[4...7], encoding: .ascii) ?? ""
+            guard !type.isEmpty else { return false }
+            var headerSize: UInt64 = 8
+            if boxSize == 1 {
+                guard fileSize - offset >= 16 else { return false }
+                let extended = handle.readData(ofLength: 8)
+                guard extended.count == 8 else { return false }
+                boxSize = extended.reduce(UInt64(0)) { ($0 << 8) | UInt64($1) }
+                headerSize = 16
+            } else if boxSize == 0 {
+                boxSize = fileSize - offset
+            }
+            guard boxSize >= headerSize, boxSize <= fileSize - offset else { return false }
+            boxes.insert(type)
+            offset += boxSize
+        }
+        return requiredBoxes.isSubset(of: boxes)
+    }
+}
+
+/// Adapter for callers that use the common media-assembly executor boundary.
+public struct FileMediaAssemblyExecutor: MediaAssemblyExecutor, Sendable {
+    public init() {}
+
+    public func assemble(_ request: MediaAssemblyRequest) async throws -> MediaAssemblyOutput {
+        try MediaAssembler.assemble(request)
     }
 }

@@ -1,9 +1,6 @@
 import Foundation
 
-/// Media containers that the first assembly implementation is expected to support.
-///
-/// This is a contract for the future assembler; it does not imply that either
-/// container can be assembled by the current implementation yet.
+/// Media containers supported by the current validated assembly boundary.
 public enum MediaAssemblyContainer: String, Codable, Sendable, Equatable {
     case mpegTS
     case fragmentedMP4
@@ -173,8 +170,8 @@ public struct MediaAssemblyValidationReport: Codable, Sendable, Equatable {
     }
 }
 
-/// A successful result is only constructible by a future assembler after it has
-/// published and validated the final output. The model intentionally contains no
+/// A successful result is constructible only after the assembler has published
+/// and validated the final output. The model intentionally contains no
 /// download state or browser credentials.
 public struct MediaAssemblyOutput: Codable, Sendable, Equatable {
     public let destinationURL: URL
@@ -215,6 +212,9 @@ public enum MediaAssemblyError: Error, LocalizedError, Equatable, Sendable {
     case incompleteSegment(MediaAssemblyTrackKind, order: Int)
     case invalidSegmentSize(MediaAssemblyTrackKind, order: Int)
     case invalidSegmentFileURL(MediaAssemblyTrackKind, order: Int)
+    case multipleTracksNotSupported
+    case invalidMediaData(MediaAssemblyContainer)
+    case fileOperationFailed
 
     public var errorDescription: String? {
         switch self {
@@ -250,6 +250,12 @@ public enum MediaAssemblyError: Error, LocalizedError, Equatable, Sendable {
             return "The \(kind.rawValue) segment at order \(order) has invalid or mismatched size metadata."
         case .invalidSegmentFileURL(let kind, let order):
             return "The \(kind.rawValue) segment at order \(order) does not identify a local file."
+        case .multipleTracksNotSupported:
+            return "This reconstruction path supports one compatible media track at a time."
+        case .invalidMediaData(let container):
+            return "Downloaded media does not contain a valid \(container.rawValue) structure."
+        case .fileOperationFailed:
+            return "Media assembly could not safely create or publish the output file."
         }
     }
 }

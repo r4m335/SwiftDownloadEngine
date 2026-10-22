@@ -459,16 +459,33 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         }
         streamingExecutionTask = Task { @MainActor [weak self] in
             do {
-                let result = try await orchestrator.execute(
-                    proposal,
-                    approved: true,
-                    destinationDirectory: destination,
-                    progress: progressSink
-                )
+                let completionMessage: String
+                if case .hls(let transferPlan) = proposal.manifest {
+                    let outputURL = destination.appendingPathComponent(
+                        HLSVODReconstructionPlanner.suggestedFilename(for: transferPlan),
+                        isDirectory: false
+                    )
+                    let result = try await orchestrator.executeAndAssembleHLS(
+                        proposal,
+                        approved: true,
+                        destinationDirectory: destination,
+                        outputURL: outputURL,
+                        progress: progressSink
+                    )
+                    completionMessage = "Streaming download completed: \(result.destinationURL.lastPathComponent)."
+                } else {
+                    let result = try await orchestrator.execute(
+                        proposal,
+                        approved: true,
+                        destinationDirectory: destination,
+                        progress: progressSink
+                    )
+                    completionMessage = "Streaming download completed (\(result.localFiles.count) resources)."
+                }
                 guard let self else { return }
                 self.isExecutingStreaming = false
                 self.isShowingStreamingConfirmation = false
-                self.downloadSuccessNotification = "Streaming download completed (\(result.localFiles.count) resources)."
+                self.downloadSuccessNotification = completionMessage
                 self.onDownloadInitiated?()
             } catch is CancellationError {
                 self?.isExecutingStreaming = false
