@@ -398,6 +398,7 @@ public struct DASHRepresentation: Codable, Sendable, Equatable {
     public let height: Int?
     public let mimeType: String?
     public let codecs: String?
+    public let hasContentProtection: Bool
     public let baseURL: URL?
     public let segmentTemplate: DASHSegmentTemplate?
     public let segmentList: DASHSegmentList?
@@ -409,6 +410,7 @@ public struct DASHRepresentation: Codable, Sendable, Equatable {
         height: Int? = nil,
         mimeType: String? = nil,
         codecs: String? = nil,
+        hasContentProtection: Bool = false,
         baseURL: URL? = nil,
         segmentTemplate: DASHSegmentTemplate? = nil,
         segmentList: DASHSegmentList? = nil
@@ -419,6 +421,7 @@ public struct DASHRepresentation: Codable, Sendable, Equatable {
         self.height = height
         self.mimeType = mimeType
         self.codecs = codecs
+        self.hasContentProtection = hasContentProtection
         self.baseURL = baseURL
         self.segmentTemplate = segmentTemplate
         self.segmentList = segmentList
@@ -431,6 +434,7 @@ public struct DASHAdaptationSet: Codable, Sendable, Equatable {
     public let mimeType: String?
     public let codecs: String?
     public let language: String?
+    public let hasContentProtection: Bool
     public let baseURL: URL?
     public let segmentTemplate: DASHSegmentTemplate?
     public let segmentList: DASHSegmentList?
@@ -442,6 +446,7 @@ public struct DASHAdaptationSet: Codable, Sendable, Equatable {
         mimeType: String? = nil,
         codecs: String? = nil,
         language: String? = nil,
+        hasContentProtection: Bool = false,
         baseURL: URL? = nil,
         segmentTemplate: DASHSegmentTemplate? = nil,
         segmentList: DASHSegmentList? = nil,
@@ -452,6 +457,7 @@ public struct DASHAdaptationSet: Codable, Sendable, Equatable {
         self.mimeType = mimeType
         self.codecs = codecs
         self.language = language
+        self.hasContentProtection = hasContentProtection
         self.baseURL = baseURL
         self.segmentTemplate = segmentTemplate
         self.segmentList = segmentList

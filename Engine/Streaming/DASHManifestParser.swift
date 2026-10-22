@@ -117,6 +117,7 @@ public enum DASHManifestParser {
             mimeType: node.attribute("mimeType"),
             codecs: node.attribute("codecs"),
             language: node.attribute("lang"),
+            hasContentProtection: node.child(named: "ContentProtection") != nil,
             baseURL: resolvedBase,
             segmentTemplate: segmentTemplate,
             segmentList: segmentList,
@@ -143,6 +144,7 @@ public enum DASHManifestParser {
             height: try parseOptionalPositiveInt(node.attribute("height"), name: "Representation@height"),
             mimeType: node.attribute("mimeType"),
             codecs: node.attribute("codecs"),
+            hasContentProtection: node.child(named: "ContentProtection") != nil,
             baseURL: resolvedBase,
             segmentTemplate: ownTemplate ?? inheritedTemplate,
             segmentList: ownList ?? inheritedList
