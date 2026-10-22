@@ -193,6 +193,45 @@ final class StreamingDownloadOrchestratorTests: XCTestCase {
         XCTAssertEqual(result.byteCount, 188)
         XCTAssertTrue(FileManager.default.fileExists(atPath: output.path))
     }
+
+    func testDASHExecutionAssemblesSingleVideoThroughExistingExecutor() async throws {
+        let url = URL(string: "https://video.example/vod/manifest.mpd")!
+        let mpd = """
+        <MPD type="static" mediaPresentationDuration="PT2S">
+          <Period duration="PT2S">
+            <AdaptationSet contentType="video" mimeType="video/mp4" codecs="avc1">
+              <Representation id="v1" bandwidth="1000">
+                <SegmentTemplate timescale="1" duration="2" initialization="init.mp4" media="segment-$Number$.m4s"/>
+              </Representation>
+            </AdaptationSet>
+          </Period>
+        </MPD>
+        """
+        let orchestrator = StreamingDownloadOrchestrator(
+            manifestLoader: RecordingManifestLoader(
+                data: Data(mpd.utf8),
+                finalURL: url,
+                mimeType: "application/dash+xml"
+            ),
+            segmentExecutor: DASHWritingSegmentExecutor()
+        )
+        let proposal = try await orchestrator.prepare(candidate: StreamingManifestCandidate(url: url))
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("dash-execution-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let output = directory.appendingPathComponent("assembled.mp4")
+
+        let result = try await orchestrator.executeAndAssembleDASH(
+            proposal,
+            approved: true,
+            destinationDirectory: directory,
+            outputURL: output
+        )
+
+        XCTAssertEqual(result.container, .fragmentedMP4)
+        XCTAssertEqual(result.trackCount, 1)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: output.path))
+    }
 }
 
 private actor RecordingManifestLoader: StreamingManifestLoader {
@@ -268,4 +307,40 @@ private actor WritingSegmentExecutor: StreamingSegmentExecutor {
     }
 
     func cancel(transferID: String) async {}
+}
+
+private actor DASHWritingSegmentExecutor: StreamingSegmentExecutor {
+    func execute(
+        _ request: StreamingSegmentTransferRequest,
+        progress: (@Sendable (Double) -> Void)?
+    ) async throws {
+        try FileManager.default.createDirectory(
+            at: request.destinationURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        let bytes: Data
+        if request.url.path.contains("init") {
+            bytes = isoBox("ftyp", payload: Data([1])) + isoBox("moov", payload: Data([2]))
+        } else {
+            bytes = isoBox("moof", payload: Data([3])) + isoBox("mdat", payload: Data([4]))
+        }
+        try bytes.write(to: request.destinationURL)
+        progress?(1)
+    }
+
+    func cancel(transferID: String) async {}
+
+    private func isoBox(_ type: String, payload: Data) -> Data {
+        let typeBytes = Array(type.utf8)
+        let size = UInt32(8 + payload.count)
+        var data = Data([
+            UInt8((size >> 24) & 0xff),
+            UInt8((size >> 16) & 0xff),
+            UInt8((size >> 8) & 0xff),
+            UInt8(size & 0xff)
+        ])
+        data.append(contentsOf: typeBytes)
+        data.append(payload)
+        return data
+    }
 }

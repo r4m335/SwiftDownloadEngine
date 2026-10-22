@@ -360,6 +360,7 @@ public enum StreamingDownloadOrchestratorError: Error, LocalizedError, Sendable,
     case segmentTransferFailed(order: Int)
     case cancelled
     case hlsReconstructionFailed(HLSVODReconstructionError)
+    case dashReconstructionFailed(DASHVODReconstructionError)
 
     public var errorDescription: String? {
         switch self {
@@ -395,13 +396,15 @@ public enum StreamingDownloadOrchestratorError: Error, LocalizedError, Sendable,
             return "The streaming transfer was cancelled; completed segments were preserved."
         case .hlsReconstructionFailed(let error):
             return error.localizedDescription
+        case .dashReconstructionFailed(let error):
+            return error.localizedDescription
         }
     }
 }
 
 /// Coordinates browser discovery, manifest loading/parsing, planning, segment
-/// submission, and the supported HLS VOD assembly handoff. It does not own
-/// application download state.
+/// submission, and supported VOD assembly handoffs. It does not own application
+/// download state.
 public actor StreamingDownloadOrchestrator {
     private let manifestLoader: any StreamingManifestLoader
     private let segmentExecutor: any StreamingSegmentExecutor
@@ -676,8 +679,6 @@ public actor StreamingDownloadOrchestrator {
 
     /// Executes a finite HLS proposal through the existing segment executor and
     /// then reconstructs the downloaded resources into one validated media file.
-    /// DASH remains on the segment-result boundary until its reconstruction
-    /// strategy is implemented in 7H.2C.
     public func executeAndAssembleHLS(
         _ proposal: StreamingTransferProposal,
         approved: Bool,
@@ -710,6 +711,43 @@ public actor StreamingDownloadOrchestrator {
             )
         } catch let error as HLSVODReconstructionError {
             throw StreamingDownloadOrchestratorError.hlsReconstructionFailed(error)
+        }
+    }
+
+    /// Executes a finite DASH proposal through the existing segment executor and
+    /// then reconstructs clear video/audio resources into a validated output.
+    public func executeAndAssembleDASH(
+        _ proposal: StreamingTransferProposal,
+        approved: Bool,
+        destinationDirectory: URL,
+        outputURL: URL,
+        progress: (@Sendable (StreamingTransferProgress) -> Void)? = nil
+    ) async throws -> MediaAssemblyOutput {
+        guard case .dash(let transferPlan) = proposal.manifest else {
+            throw StreamingDownloadOrchestratorError.unsupportedManifest(.hls)
+        }
+        let result = try await execute(
+            proposal,
+            approved: approved,
+            destinationDirectory: destinationDirectory,
+            progress: progress
+        )
+        try Task.checkCancellation()
+        let completed = zip(transferPlan.resources, result.localFiles).map {
+            DASHCompletedResource(resource: $0.0, fileURL: $0.1)
+        }
+        do {
+            return try DASHVODReconstructor.assemble(
+                transferPlan: transferPlan,
+                completedResources: completed,
+                destinationURL: outputURL,
+                temporaryDirectoryURL: destinationDirectory.appendingPathComponent(
+                    ".media-assembly",
+                    isDirectory: true
+                )
+            )
+        } catch let error as DASHVODReconstructionError {
+            throw StreamingDownloadOrchestratorError.dashReconstructionFailed(error)
         }
     }
 

@@ -213,6 +213,8 @@ public enum MediaAssemblyError: Error, LocalizedError, Equatable, Sendable {
     case invalidSegmentSize(MediaAssemblyTrackKind, order: Int)
     case invalidSegmentFileURL(MediaAssemblyTrackKind, order: Int)
     case multipleTracksNotSupported
+    case muxingUnavailable
+    case muxingFailed
     case invalidMediaData(MediaAssemblyContainer)
     case fileOperationFailed
 
@@ -251,7 +253,11 @@ public enum MediaAssemblyError: Error, LocalizedError, Equatable, Sendable {
         case .invalidSegmentFileURL(let kind, let order):
             return "The \(kind.rawValue) segment at order \(order) does not identify a local file."
         case .multipleTracksNotSupported:
-            return "This reconstruction path supports one compatible media track at a time."
+            return "This reconstruction path cannot combine the requested media tracks."
+        case .muxingUnavailable:
+            return "This platform does not provide the media muxing support required for separate tracks."
+        case .muxingFailed:
+            return "Separate media tracks could not be muxed into a validated output."
         case .invalidMediaData(let container):
             return "Downloaded media does not contain a valid \(container.rawValue) structure."
         case .fileOperationFailed:

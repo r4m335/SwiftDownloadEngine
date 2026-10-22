@@ -460,7 +460,8 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         streamingExecutionTask = Task { @MainActor [weak self] in
             do {
                 let completionMessage: String
-                if case .hls(let transferPlan) = proposal.manifest {
+                switch proposal.manifest {
+                case .hls(let transferPlan):
                     let outputURL = destination.appendingPathComponent(
                         HLSVODReconstructionPlanner.suggestedFilename(for: transferPlan),
                         isDirectory: false
@@ -473,14 +474,19 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                         progress: progressSink
                     )
                     completionMessage = "Streaming download completed: \(result.destinationURL.lastPathComponent)."
-                } else {
-                    let result = try await orchestrator.execute(
+                case .dash(let transferPlan):
+                    let outputURL = destination.appendingPathComponent(
+                        DASHVODReconstructionPlanner.suggestedFilename(for: transferPlan),
+                        isDirectory: false
+                    )
+                    let result = try await orchestrator.executeAndAssembleDASH(
                         proposal,
                         approved: true,
                         destinationDirectory: destination,
+                        outputURL: outputURL,
                         progress: progressSink
                     )
-                    completionMessage = "Streaming download completed (\(result.localFiles.count) resources)."
+                    completionMessage = "Streaming download completed: \(result.destinationURL.lastPathComponent)."
                 }
                 guard let self else { return }
                 self.isExecutingStreaming = false

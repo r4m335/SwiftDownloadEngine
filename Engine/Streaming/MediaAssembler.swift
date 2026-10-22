@@ -1,5 +1,9 @@
 import Foundation
 
+#if canImport(AVFoundation)
+import AVFoundation
+#endif
+
 /// Execution boundary for a media assembler. Implementations must not download
 /// resources or mutate download state; they consume completed local segment
 /// files and return a published, validated output.
@@ -126,8 +130,12 @@ public enum MediaAssembler {
         _ request: MediaAssemblyRequest
     ) throws -> MediaAssemblyOutput {
         let validation = try validateInput(request)
-        guard request.tracks.count == 1 else {
-            throw MediaAssemblyError.multipleTracksNotSupported
+        if request.tracks.count > 1 {
+#if canImport(AVFoundation)
+            return try assembleMultipleTracks(request, validation: validation)
+#else
+            throw MediaAssemblyError.muxingUnavailable
+#endif
         }
 
         let fileManager = FileManager.default
@@ -205,6 +213,191 @@ public enum MediaAssembler {
             throw MediaAssemblyError.fileOperationFailed
         }
     }
+
+#if canImport(AVFoundation)
+    private final class MuxState: @unchecked Sendable {
+        let lock = NSLock()
+        var appendFailed = false
+    }
+
+    private static func assembleMultipleTracks(
+        _ request: MediaAssemblyRequest,
+        validation: MediaAssemblyValidationReport
+    ) throws -> MediaAssemblyOutput {
+        let fileManager = FileManager.default
+        do {
+            try fileManager.createDirectory(
+                at: request.temporaryDirectoryURL,
+                withIntermediateDirectories: true
+            )
+            try fileManager.createDirectory(
+                at: request.destinationURL.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+        } catch {
+            throw MediaAssemblyError.fileOperationFailed
+        }
+
+        let sourceURLs = request.tracks.enumerated().map { index, _ in
+            request.temporaryDirectoryURL
+                .appendingPathComponent("track-\(index)-\(UUID().uuidString).mp4", isDirectory: false)
+        }
+        let temporaryOutput = request.temporaryDirectoryURL
+            .appendingPathComponent("muxed-\(UUID().uuidString).part", isDirectory: false)
+        defer {
+            for sourceURL in sourceURLs { try? fileManager.removeItem(at: sourceURL) }
+            try? fileManager.removeItem(at: temporaryOutput)
+        }
+
+        do {
+            for (track, sourceURL) in zip(request.tracks, sourceURLs) {
+                fileManager.createFile(atPath: sourceURL.path, contents: nil)
+                guard let handle = FileHandle(forWritingAtPath: sourceURL.path) else {
+                    throw MediaAssemblyError.fileOperationFailed
+                }
+                defer { handle.closeFile() }
+                if let initialization = track.initializationSegment {
+                    try copyValidatedSegment(
+                        initialization,
+                        kind: track.kind,
+                        container: request.container,
+                        output: handle
+                    )
+                }
+                for segment in track.mediaSegments {
+                    try copyValidatedSegment(
+                        segment,
+                        kind: track.kind,
+                        container: request.container,
+                        output: handle
+                    )
+                }
+                handle.synchronizeFile()
+            }
+        } catch let error as MediaAssemblyError {
+            throw error
+        } catch {
+            throw MediaAssemblyError.fileOperationFailed
+        }
+
+        do {
+            let writer = try AVAssetWriter(outputURL: temporaryOutput, fileType: .mp4)
+            writer.movieFragmentInterval = CMTime(seconds: 2, preferredTimescale: 600)
+            var readers: [AVAssetReader] = []
+            var outputs: [AVAssetReaderTrackOutput] = []
+            var inputs: [AVAssetWriterInput] = []
+
+            for (track, sourceURL) in zip(request.tracks, sourceURLs) {
+                let asset = AVURLAsset(url: sourceURL)
+                let mediaType: AVMediaType = track.kind == .video ? .video : .audio
+                guard let sourceTrack = asset.tracks(withMediaType: mediaType).first else {
+                    throw MediaAssemblyError.muxingFailed
+                }
+                let reader = try AVAssetReader(asset: asset)
+                let output = AVAssetReaderTrackOutput(track: sourceTrack, outputSettings: nil)
+                guard reader.canAdd(output) else { throw MediaAssemblyError.muxingFailed }
+                reader.add(output)
+                let input = AVAssetWriterInput(mediaType: mediaType, outputSettings: nil)
+                input.expectsMediaDataInRealTime = false
+                guard writer.canAdd(input) else { throw MediaAssemblyError.muxingFailed }
+                writer.add(input)
+                readers.append(reader)
+                outputs.append(output)
+                inputs.append(input)
+            }
+
+            guard writer.startWriting() else { throw MediaAssemblyError.muxingFailed }
+            writer.startSession(atSourceTime: .zero)
+            let group = DispatchGroup()
+            let state = MuxState()
+
+            for index in inputs.indices {
+                let input = inputs[index]
+                let output = outputs[index]
+                let reader = readers[index]
+                group.enter()
+                input.requestMediaDataWhenReady(on: DispatchQueue(label: "media-mux-\(index)")) {
+                    while input.isReadyForMoreMediaData {
+                        guard let sample = output.copyNextSampleBuffer() else {
+                            input.markAsFinished()
+                            group.leave()
+                            return
+                        }
+                        if !input.append(sample) {
+                            state.lock.lock()
+                            state.appendFailed = true
+                            state.lock.unlock()
+                            reader.cancelReading()
+                            input.markAsFinished()
+                            group.leave()
+                            return
+                        }
+                    }
+                }
+            }
+
+            group.wait()
+            state.lock.lock()
+            let failed = state.appendFailed
+            state.lock.unlock()
+            guard !failed,
+                  readers.allSatisfy({ $0.status == .completed }) else {
+                writer.cancelWriting()
+                throw MediaAssemblyError.muxingFailed
+            }
+
+            let finishSemaphore = DispatchSemaphore(value: 0)
+            writer.finishWriting { finishSemaphore.signal() }
+            finishSemaphore.wait()
+            guard writer.status == .completed,
+                  validateMuxedOutput(temporaryOutput, expectedKinds: request.tracks.map(\.kind)) else {
+                throw MediaAssemblyError.muxingFailed
+            }
+        } catch let error as MediaAssemblyError {
+            throw error
+        } catch {
+            throw MediaAssemblyError.muxingFailed
+        }
+
+        do {
+            if fileManager.fileExists(atPath: request.destinationURL.path) {
+                try fileManager.removeItem(at: request.destinationURL)
+            }
+            try fileManager.moveItem(at: temporaryOutput, to: request.destinationURL)
+            let attributes = try fileManager.attributesOfItem(atPath: request.destinationURL.path)
+            guard let byteCount = (attributes[.size] as? NSNumber)?.int64Value, byteCount > 0 else {
+                throw MediaAssemblyError.fileOperationFailed
+            }
+            return MediaAssemblyOutput(
+                destinationURL: request.destinationURL,
+                container: request.container,
+                trackCount: request.tracks.count,
+                byteCount: byteCount,
+                validation: validation
+            )
+        } catch let error as MediaAssemblyError {
+            throw error
+        } catch {
+            throw MediaAssemblyError.fileOperationFailed
+        }
+    }
+
+    private static func validateMuxedOutput(
+        _ url: URL,
+        expectedKinds: [MediaAssemblyTrackKind]
+    ) -> Bool {
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
+              let size = (attributes[.size] as? NSNumber)?.int64Value,
+              size > 0 else { return false }
+        let asset = AVURLAsset(url: url)
+        guard !asset.tracks.isEmpty else { return false }
+        let hasVideo = asset.tracks(withMediaType: .video).isEmpty == false
+        let hasAudio = asset.tracks(withMediaType: .audio).isEmpty == false
+        if expectedKinds.contains(.video) && !hasVideo { return false }
+        if expectedKinds.contains(.audio) && !hasAudio { return false }
+        return asset.duration.isNumeric && asset.duration.seconds > 0
+    }
+#endif
 
     private static func isSupported(_ container: MediaAssemblyContainer) -> Bool {
         switch container {
