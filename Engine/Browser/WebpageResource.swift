@@ -34,6 +34,9 @@ public struct WebpageResource: Identifiable, Hashable, Sendable {
     public let estimatedSize: Int64?
     public let isSupported: Bool
     public let unsupportedReason: String?
+    /// Request context captured from the page that exposed this resource.
+    /// Credentials are filtered again when headers are assembled for a target URL.
+    public let requestContext: BrowserRequestContext?
 
     public init(
         id: String = UUID().uuidString,
@@ -44,7 +47,8 @@ public struct WebpageResource: Identifiable, Hashable, Sendable {
         mimeType: String? = nil,
         estimatedSize: Int64? = nil,
         isSupported: Bool = true,
-        unsupportedReason: String? = nil
+        unsupportedReason: String? = nil,
+        requestContext: BrowserRequestContext? = nil
     ) {
         self.id = id
         self.url = url
@@ -55,6 +59,7 @@ public struct WebpageResource: Identifiable, Hashable, Sendable {
         self.estimatedSize = estimatedSize
         self.isSupported = isSupported
         self.unsupportedReason = unsupportedReason
+        self.requestContext = requestContext
     }
 }
 

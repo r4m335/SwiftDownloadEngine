@@ -30,6 +30,8 @@ public final class BrowserViewModel: NSObject, ObservableObject {
     @Published public var isShowingDownloadSheet: Bool = false
     @Published public var downloadCandidateURL: URL? = nil
     @Published public var downloadCandidateFilename: String = ""
+    @Published public var downloadCandidateRequestContext: BrowserRequestContext? = nil
+    @Published public var useBrowserCredentials: Bool = true
     @Published public var downloadCandidateThreads: Int = 6
     @Published public var downloadCandidateSpeedLimitKBps: String = ""
     @Published public var downloadSuccessNotification: String? = nil
@@ -71,7 +73,8 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         contentDisposition: String? = nil,
         mimeType: String? = nil,
         expectedLength: Int64? = nil,
-        source: BrowserDownloadHandoffSource = .nativeWebKitDownload
+        source: BrowserDownloadHandoffSource = .nativeWebKitDownload,
+        requestContext: BrowserRequestContext? = nil
     ) {
         let dest = finalURL ?? originalURL
         guard !interceptionManager.shouldSuppressDuplicate(for: dest, isSheetPresented: isShowingDownloadSheet) else {
@@ -84,7 +87,8 @@ public final class BrowserViewModel: NSObject, ObservableObject {
             contentDisposition: contentDisposition,
             mimeType: mimeType,
             expectedLength: expectedLength,
-            source: source
+            source: source,
+            requestContext: requestContext
         ) else {
             return
         }
@@ -93,17 +97,24 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         activeHandoff = handoff
         downloadCandidateURL = handoff.finalURL
         downloadCandidateFilename = handoff.suggestedFilename
+        downloadCandidateRequestContext = handoff.requestContext
+        useBrowserCredentials = handoff.requestContext != nil
         downloadCandidateThreads = 6
         downloadCandidateSpeedLimitKBps = ""
         isShowingDownloadSheet = true
     }
 
-    public func promptDownload(for url: URL, suggestedFilename: String?) {
+    public func promptDownload(
+        for url: URL,
+        suggestedFilename: String?,
+        requestContext: BrowserRequestContext? = nil
+    ) {
         handleNativeDownloadHandoff(
             originalURL: url,
             finalURL: url,
             suggestedFilename: suggestedFilename,
-            source: .responseAttachment
+            source: .responseAttachment,
+            requestContext: requestContext
         )
     }
 
@@ -116,7 +127,11 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         isShowingResourceInspector = false
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
             guard let self = self else { return }
-            self.promptDownload(for: resource.url, suggestedFilename: resource.suggestedFilename)
+            self.promptDownload(
+                for: resource.url,
+                suggestedFilename: resource.suggestedFilename,
+                requestContext: resource.requestContext
+            )
         }
     }
 
@@ -183,8 +198,12 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                     return
                 }
 
-                self.discoveredResources = WebpageResourceExtractor.extractFromRawCandidates(rawCandidates, baseURL: url)
-                self.selectedResourceIDs = []
+                let resources = WebpageResourceExtractor.extractFromRawCandidates(rawCandidates, baseURL: url)
+                self.captureRequestContexts(for: resources, pageURL: url, webView: wv) { [weak self] contextualResources in
+                    guard let self = self else { return }
+                    self.discoveredResources = contextualResources
+                    self.selectedResourceIDs = []
+                }
             }
         }
         #else
@@ -192,6 +211,86 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         resourceScanError = "WebKit is not available in this environment."
         #endif
     }
+
+    #if canImport(WebKit)
+    /// Captures only cookies that can match each discovered resource. The WebKit
+    /// store is never copied into the download engine wholesale.
+    private func captureRequestContexts(
+        for resources: [WebpageResource],
+        pageURL: URL,
+        webView: WKWebView,
+        completion: @escaping ([WebpageResource]) -> Void
+    ) {
+        let userAgentScript = "navigator.userAgent"
+        webView.evaluateJavaScript(userAgentScript) { [weak self] result, _ in
+            guard self != nil else { return }
+            let userAgent = (result as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+            webView.configuration.websiteDataStore.httpCookieStore.getAllCookies { cookies in
+                let browserCookies = cookies.compactMap(BrowserCookie.init(from:))
+                let contextualResources = resources.map { resource in
+                    guard resource.isSupported else { return resource }
+                    let matchingCookies = browserCookies.filter { $0.matches(url: resource.url) }
+                    let context = BrowserRequestContext(
+                        url: resource.url,
+                        pageURL: pageURL,
+                        userAgent: userAgent,
+                        cookies: matchingCookies,
+                        source: .webpageResource
+                    )
+                    return WebpageResource(
+                        id: resource.id,
+                        url: resource.url,
+                        title: resource.title,
+                        suggestedFilename: resource.suggestedFilename,
+                        resourceType: resource.resourceType,
+                        mimeType: resource.mimeType,
+                        estimatedSize: resource.estimatedSize,
+                        isSupported: resource.isSupported,
+                        unsupportedReason: resource.unsupportedReason,
+                        requestContext: context
+                    )
+                }
+                DispatchQueue.main.async {
+                    completion(contextualResources)
+                }
+            }
+        }
+    }
+
+    public func captureBrowserRequestContext(
+        for resourceURL: URL,
+        pageURL: URL?,
+        webView: WKWebView,
+        source: BrowserRequestContextSource,
+        customHeaders: [String: String] = [:],
+        completion: @escaping (BrowserRequestContext?) -> Void
+    ) {
+        let page = pageURL ?? webView.url
+        webView.evaluateJavaScript("navigator.userAgent") { result, _ in
+            let userAgent = (result as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+            webView.configuration.websiteDataStore.httpCookieStore.getAllCookies { cookies in
+                let matchingCookies = cookies
+                    .compactMap(BrowserCookie.init(from:))
+                    .filter { $0.matches(url: resourceURL) }
+                let context = BrowserRequestContext(
+                    url: resourceURL,
+                    pageURL: page,
+                    userAgent: userAgent,
+                    cookies: matchingCookies,
+                    customHeaders: BrowserHeaderFilter.sanitizeHeaders(customHeaders).filter {
+                        let key = $0.key.lowercased()
+                        return BrowserHeaderFilter.isApprovedForwardedHeader(key) &&
+                            key != "cookie" && key != "referer" && key != "user-agent"
+                    },
+                    source: source
+                )
+                DispatchQueue.main.async {
+                    completion(context)
+                }
+            }
+        }
+    }
+    #endif
 
     public func downloadSelectedResources() async throws {
         let targets = discoveredResources.filter { res in
@@ -205,7 +304,11 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                 url: resource.url,
                 filename: resource.suggestedFilename.isEmpty ? nil : resource.suggestedFilename,
                 threadCount: 6,
-                speedLimitBytesPerSecond: nil
+                speedLimitBytesPerSecond: nil,
+                headers: resource.requestContext?.effectiveHeaders(
+                    for: resource.url,
+                    includeCredentials: useBrowserCredentials
+                )
             )
         }
 
@@ -292,8 +395,32 @@ public final class BrowserViewModel: NSObject, ObservableObject {
             errorMessage = "The current page URL cannot be downloaded directly."
             return
         }
+
+        #if canImport(WebKit)
+        if let wv = webView {
+            captureBrowserRequestContext(
+                for: url,
+                pageURL: wv.url ?? currentURL,
+                webView: wv,
+                source: .directLink
+            ) { [weak self] context in
+                guard let self = self else { return }
+                self.handleNativeDownloadHandoff(
+                    originalURL: url,
+                    finalURL: url,
+                    suggestedFilename: BrowserURLResolver.suggestedFilename(from: url),
+                    source: .manualUserAction,
+                    requestContext: context
+                )
+            }
+            return
+        }
+        #endif
+
         downloadCandidateURL = url
         downloadCandidateFilename = BrowserURLResolver.suggestedFilename(from: url)
+        downloadCandidateRequestContext = nil
+        useBrowserCredentials = false
         downloadCandidateThreads = 6
         downloadCandidateSpeedLimitKBps = ""
         isShowingDownloadSheet = true
@@ -312,7 +439,11 @@ public final class BrowserViewModel: NSObject, ObservableObject {
             url: url,
             filename: downloadCandidateFilename.isEmpty ? nil : downloadCandidateFilename,
             threadCount: downloadCandidateThreads,
-            speedLimitBytesPerSecond: limit
+            speedLimitBytesPerSecond: limit,
+            headers: downloadCandidateRequestContext?.effectiveHeaders(
+                for: url,
+                includeCredentials: useBrowserCredentials
+            )
         )
 
         isShowingDownloadSheet = false
@@ -774,6 +905,15 @@ public struct BrowserDownloadSheet: View {
                         .disableAutocorrection(true)
                 }
 
+                if viewModel.downloadCandidateRequestContext != nil {
+                    Section(
+                        header: Text("Browser Session"),
+                        footer: Text("Cookies and authentication headers are limited to the captured resource origin and are not retained in download history.")
+                    ) {
+                        Toggle("Use browser credentials", isOn: $viewModel.useBrowserCredentials)
+                    }
+                }
+
                 Section(header: Text("Acceleration & Threads"), footer: Text("The download coordinator will allocate parallel segmented workers if the host server supports HTTP range requests.")) {
                     Stepper("Worker Threads: \(viewModel.downloadCandidateThreads)", value: $viewModel.downloadCandidateThreads, in: 1...32)
 
@@ -1060,7 +1200,18 @@ public final class BrowserWebViewCoordinator: NSObject, WKNavigationDelegate, WK
                 decisionHandler(.cancel)
                 DispatchQueue.main.async { [weak self] in
                     guard let self = self, let vm = self.viewModel else { return }
-                    vm.promptDownload(for: url, suggestedFilename: classification.suggestedFilename)
+                    vm.captureBrowserRequestContext(
+                        for: url,
+                        pageURL: webView.url,
+                        webView: webView,
+                        source: .nativeInterception
+                    ) { context in
+                        vm.promptDownload(
+                            for: url,
+                            suggestedFilename: classification.suggestedFilename,
+                            requestContext: context
+                        )
+                    }
                 }
             }
         } else {
@@ -1099,14 +1250,23 @@ public final class BrowserWebViewCoordinator: NSObject, WKNavigationDelegate, WK
 
         DispatchQueue.main.async { [weak self] in
             guard let self = self, let vm = self.viewModel else { return }
-            vm.handleNativeDownloadHandoff(
-                originalURL: originalURL ?? destinationURL,
-                finalURL: destinationURL,
-                suggestedFilename: suggestedFilename,
-                mimeType: response.mimeType,
-                expectedLength: response.expectedContentLength > 0 ? response.expectedContentLength : nil,
-                source: .nativeWebKitDownload
-            )
+            vm.captureBrowserRequestContext(
+                for: destinationURL,
+                pageURL: webView.url,
+                webView: webView,
+                source: .nativeInterception,
+                customHeaders: download.originalRequest?.allHTTPHeaderFields ?? [:]
+            ) { context in
+                vm.handleNativeDownloadHandoff(
+                    originalURL: originalURL ?? destinationURL,
+                    finalURL: destinationURL,
+                    suggestedFilename: suggestedFilename,
+                    mimeType: response.mimeType,
+                    expectedLength: response.expectedContentLength > 0 ? response.expectedContentLength : nil,
+                    source: .nativeWebKitDownload,
+                    requestContext: context
+                )
+            }
         }
     }
 

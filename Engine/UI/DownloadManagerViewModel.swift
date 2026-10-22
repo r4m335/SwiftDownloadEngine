@@ -426,6 +426,8 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
         filename: String? = nil,
         threadCount: Int = 6,
         speedLimitBytesPerSecond: Int64? = nil,
+        headers: [String: String] = [:],
+        persistSensitiveHeaders: Bool = true,
         transportPolicy: HTTPTransportPolicy = .foreground,
         autoStart: Bool = true
     ) async throws -> DownloadSnapshot {
@@ -452,6 +454,8 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
         let request = DownloadRequest(
             url: url,
             destinationURL: destURL,
+            headers: headers,
+            persistSensitiveHeaders: persistSensitiveHeaders,
             configuredThreadCount: max(1, min(32, threadCount)),
             speedLimitBytesPerSecond: sanitizedLimit,
             transportPolicy: transportPolicy
@@ -958,11 +962,29 @@ extension DownloadManagerViewModel: BrowserDownloadDelegate {
         threadCount: Int,
         speedLimitBytesPerSecond: Int64?
     ) async throws {
+        try await handleDownloadRequest(
+            url: url,
+            filename: filename,
+            threadCount: threadCount,
+            speedLimitBytesPerSecond: speedLimitBytesPerSecond,
+            headers: nil
+        )
+    }
+
+    public func handleDownloadRequest(
+        url: URL,
+        filename: String?,
+        threadCount: Int,
+        speedLimitBytesPerSecond: Int64?,
+        headers: [String: String]?
+    ) async throws {
         _ = try await addDownload(
             urlText: url.absoluteString,
             filename: filename,
             threadCount: threadCount,
             speedLimitBytesPerSecond: speedLimitBytesPerSecond,
+            headers: headers ?? [:],
+            persistSensitiveHeaders: false,
             transportPolicy: .foreground,
             autoStart: true
         )

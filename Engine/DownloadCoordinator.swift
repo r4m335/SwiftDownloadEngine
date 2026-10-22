@@ -14,6 +14,9 @@ public struct DownloadRequest: Sendable, Equatable, Codable {
     public let url: URL
     public let destinationURL: URL
     public var headers: [String: String]
+    /// Runtime headers may include browser credentials; this controls whether those
+    /// sensitive values are copied into the durable download record.
+    public var persistSensitiveHeaders: Bool
     public var configuredThreadCount: Int
     public var advancedMode: Bool
     public var storageMode: DownloadStorageMode
@@ -30,6 +33,7 @@ public struct DownloadRequest: Sendable, Equatable, Codable {
         url: URL,
         destinationURL: URL,
         headers: [String: String] = [:],
+        persistSensitiveHeaders: Bool = true,
         configuredThreadCount: Int = 10,
         advancedMode: Bool = false,
         storageMode: DownloadStorageMode = .directSeek,
@@ -45,6 +49,7 @@ public struct DownloadRequest: Sendable, Equatable, Codable {
         self.url = url
         self.destinationURL = destinationURL
         self.headers = headers
+        self.persistSensitiveHeaders = persistSensitiveHeaders
         self.configuredThreadCount = configuredThreadCount
         self.advancedMode = advancedMode
         self.storageMode = storageMode
@@ -58,7 +63,7 @@ public struct DownloadRequest: Sendable, Equatable, Codable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case id, url, destinationURL, headers, configuredThreadCount, advancedMode, storageMode, reserveDiskBytes, retryCount, expectedSHA256, maxConcurrentRequests, speedLimitBytesPerSecond, resumePolicy, transportPolicy
+        case id, url, destinationURL, headers, persistSensitiveHeaders, configuredThreadCount, advancedMode, storageMode, reserveDiskBytes, retryCount, expectedSHA256, maxConcurrentRequests, speedLimitBytesPerSecond, resumePolicy, transportPolicy
     }
 
     public init(from decoder: Decoder) throws {
@@ -67,6 +72,7 @@ public struct DownloadRequest: Sendable, Equatable, Codable {
         url = try container.decode(URL.self, forKey: .url)
         destinationURL = try container.decode(URL.self, forKey: .destinationURL)
         headers = try container.decodeIfPresent([String: String].self, forKey: .headers) ?? [:]
+        persistSensitiveHeaders = try container.decodeIfPresent(Bool.self, forKey: .persistSensitiveHeaders) ?? true
         configuredThreadCount = try container.decodeIfPresent(Int.self, forKey: .configuredThreadCount) ?? 10
         advancedMode = try container.decodeIfPresent(Bool.self, forKey: .advancedMode) ?? false
         storageMode = try container.decodeIfPresent(DownloadStorageMode.self, forKey: .storageMode) ?? .directSeek
@@ -260,6 +266,14 @@ public actor DownloadCoordinator {
         self.requestBudget = requestBudget ?? SharedRequestBudget(maxGlobalRequests: 12)
         self.globalBandwidthLimiter = globalBandwidthLimiter ?? BandwidthLimiter(bytesPerSecond: nil)
         self.backgroundSessionManager = backgroundSessionManager
+    }
+
+    private func headersForPersistence(_ request: DownloadRequest) -> [String: String] {
+        guard !request.persistSensitiveHeaders else { return request.headers }
+        return request.headers.filter {
+            let name = $0.key.trimmingCharacters(in: .whitespaces).lowercased()
+            return !BrowserHeaderFilter.isSensitiveHeader(name) && name != "referer"
+        }
     }
 
     /// Sets or updates the associated background session manager.
@@ -497,7 +511,7 @@ public actor DownloadCoordinator {
                 totalSize: 0,
                 state: .downloading,
                 storageMode: request.storageMode,
-                headers: request.headers,
+                headers: headersForPersistence(request),
                 segments: []
             )
             try await persistenceStore.save(initialRecord)
@@ -623,10 +637,20 @@ public actor DownloadCoordinator {
             }
 
             // Step 4: Dispatch strategy based on server capabilities and transport policy
+            // The probe delegate strips credentials on cross-origin redirects. Apply the
+            // same decision to every later segment/stream request, otherwise a later
+            // request could reintroduce the original Cookie or Authorization header.
+            var executionRequest = request
+            executionRequest.headers = BrowserHeaderFilter.stripCredentialsOnRedirect(
+                headers: request.headers,
+                from: request.url,
+                to: probeResult.finalURL
+            )
+
             if request.transportPolicy == .background {
                 if probeResult.supportsRange, let totalSize = probeResult.totalSize, totalSize > 0 {
                     try await runMultiSegmentBackgroundDownload(
-                        request: request,
+                        request: executionRequest,
                         probeResult: probeResult,
                         existingRecord: isResume ? record : nil,
                         progress: handler
@@ -634,9 +658,9 @@ public actor DownloadCoordinator {
                 } else {
                     // Ranged background download unsupported (server ignores range or indeterminate length)
                     // Fall back cleanly to foreground single-stream transport as per Milestone 6B Requirement 4
-                    print("[DownloadCoordinator] Server does not support byte ranges for \(request.url); falling back to foreground single-stream transport.")
+                    print("[DownloadCoordinator] Server does not support byte ranges for \(BrowserURLResolver.sanitizeURLForLogging(request.url)); falling back to foreground single-stream transport.")
                     try await runSingleStreamDownload(
-                        request: request,
+                        request: executionRequest,
                         probeResult: probeResult,
                         progress: handler
                     )
@@ -645,7 +669,7 @@ public actor DownloadCoordinator {
                 if probeResult.supportsRange, let totalSize = probeResult.totalSize, totalSize > 0 {
                     do {
                         try await runMultiSegmentDownload(
-                            request: request,
+                            request: executionRequest,
                             probeResult: probeResult,
                             existingRecord: isResume ? record : nil,
                             progress: handler
@@ -659,7 +683,7 @@ public actor DownloadCoordinator {
                             }
                             // Safe fallback for fresh downloads: Server returned 200 after ranged request
                             try await runSingleStreamFallback(
-                                request: request,
+                                request: executionRequest,
                                 probeResult: probeResult,
                                 progress: handler
                             )
@@ -670,7 +694,7 @@ public actor DownloadCoordinator {
                 } else {
                     // Linear single-stream download (ranges unsupported or indeterminate length)
                     try await runSingleStreamDownload(
-                        request: request,
+                        request: executionRequest,
                         probeResult: probeResult,
                         progress: handler
                     )
@@ -742,7 +766,7 @@ public actor DownloadCoordinator {
             lastModified: probeResult.lastModified,
             suggestedFilename: probeResult.suggestedFilename,
             mimeType: probeResult.mimeType,
-            headers: request.headers,
+            headers: headersForPersistence(request),
             segments: segmentRecords
         )
         try await persistenceStore.save(currentRecord)
@@ -1098,7 +1122,7 @@ public actor DownloadCoordinator {
             lastModified: probeResult.lastModified,
             suggestedFilename: probeResult.suggestedFilename,
             mimeType: probeResult.mimeType,
-            headers: request.headers,
+            headers: headersForPersistence(request),
             segments: [SegmentRecord(segment: singleSegment)]
         )
         try await persistenceStore.save(record)
@@ -1392,7 +1416,7 @@ public actor DownloadCoordinator {
             lastModified: probeResult.lastModified,
             suggestedFilename: probeResult.suggestedFilename,
             mimeType: probeResult.mimeType,
-            headers: request.headers,
+            headers: headersForPersistence(request),
             segments: segmentRecords
         )
         try await persistenceStore.save(currentRecord)

@@ -40,6 +40,46 @@ public protocol BrowserDownloadDelegate: AnyObject {
         threadCount: Int,
         speedLimitBytesPerSecond: Int64?
     ) async throws
+
+    func handleDownloadRequest(
+        url: URL,
+        filename: String?,
+        threadCount: Int,
+        speedLimitBytesPerSecond: Int64?,
+        headers: [String: String]?
+    ) async throws
+}
+
+public extension BrowserDownloadDelegate {
+    func handleDownloadRequest(
+        url: URL,
+        filename: String?,
+        threadCount: Int,
+        speedLimitBytesPerSecond: Int64?
+    ) async throws {
+        try await handleDownloadRequest(
+            url: url,
+            filename: filename,
+            threadCount: threadCount,
+            speedLimitBytesPerSecond: speedLimitBytesPerSecond,
+            headers: nil
+        )
+    }
+
+    func handleDownloadRequest(
+        url: URL,
+        filename: String?,
+        threadCount: Int,
+        speedLimitBytesPerSecond: Int64?,
+        headers: [String: String]?
+    ) async throws {
+        try await handleDownloadRequest(
+            url: url,
+            filename: filename,
+            threadCount: threadCount,
+            speedLimitBytesPerSecond: speedLimitBytesPerSecond
+        )
+    }
 }
 
 /// Quick-access shortcut item displayed on the browser home/new-tab screen.

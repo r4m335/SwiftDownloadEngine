@@ -353,4 +353,25 @@ final class HTTPRangeProbeTests: XCTestCase {
             XCTFail("Unexpected error type: \(error)")
         }
     }
+
+    func testHTTP401DescriptionRedactsSignedQueryValues() async {
+        let testURL = URL(string: "https://example.com/protected.zip?token=do-not-log")!
+
+        MockURLProtocol.setHandler(for: testURL) { _ in
+            let response = HTTPURLResponse(url: testURL, statusCode: 401, httpVersion: "HTTP/1.1", headerFields: [:])!
+            return (response, Data())
+        }
+
+        do {
+            _ = try await probe.probe(url: testURL)
+            XCTFail("Expected unauthorized error")
+        } catch let error as HTTPRangeProbeError {
+            let description = error.localizedDescription
+            XCTAssertTrue(description.contains("Authentication required"))
+            XCTAssertFalse(description.contains("do-not-log"))
+            XCTAssertTrue(description.contains("REDACTED"))
+        } catch {
+            XCTFail("Unexpected error type: \(error)")
+        }
+    }
 }

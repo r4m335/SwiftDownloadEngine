@@ -164,6 +164,7 @@ final class BrowserTests: XCTestCase {
         var recordedFilename: String?
         var recordedThreads: Int?
         var recordedSpeedLimit: Int64?
+        var recordedHeaders: [String: String]?
         var didCallHandler = false
 
         func handleDownloadRequest(
@@ -177,6 +178,21 @@ final class BrowserTests: XCTestCase {
             recordedFilename = filename
             recordedThreads = threadCount
             recordedSpeedLimit = speedLimitBytesPerSecond
+        }
+
+        func handleDownloadRequest(
+            url: URL,
+            filename: String?,
+            threadCount: Int,
+            speedLimitBytesPerSecond: Int64?,
+            headers: [String: String]?
+        ) async throws {
+            didCallHandler = true
+            recordedURL = url
+            recordedFilename = filename
+            recordedThreads = threadCount
+            recordedSpeedLimit = speedLimitBytesPerSecond
+            recordedHeaders = headers
         }
     }
 
@@ -196,6 +212,107 @@ final class BrowserTests: XCTestCase {
         XCTAssertEqual(mock.recordedFilename, "custom_archive.iso")
         XCTAssertEqual(mock.recordedThreads, 8)
         XCTAssertEqual(mock.recordedSpeedLimit, 10 * 1024 * 1024)
+    }
+
+    // MARK: - 7E: Browser request context safety
+
+    func testBrowserRequestContextMatchesCookiesAndFiltersHeaders() {
+        let pageURL = URL(string: "https://example.com/account/view")!
+        let resourceURL = URL(string: "https://cdn.example.com/private/file.zip")!
+        let context = BrowserRequestContext(
+            url: resourceURL,
+            pageURL: pageURL,
+            userAgent: "BrowserTest/1.0",
+            cookies: [
+                BrowserCookie(name: "session", value: "secret", domain: ".example.com", path: "/private", isSecure: true),
+                BrowserCookie(name: "wrong-host", value: "must-not-forward", domain: "other.example", isSecure: true),
+                BrowserCookie(name: "expired", value: "old", domain: ".example.com", expiresDate: Date(timeIntervalSince1970: 1)),
+                BrowserCookie(name: "insecure", value: "no", domain: ".example.com", isSecure: false)
+            ],
+            customHeaders: [
+                "X-Trace-ID": "trace-1",
+                "Host": "attacker.example",
+                "Range": "bytes=0-10",
+                "Cookie": "forged=value",
+                "Authorization": "Bearer secret-token"
+            ],
+            source: .webpageResource
+        )
+
+        let headers = context.effectiveHeaders()
+        XCTAssertEqual(headers["Cookie"], "session=secret; insecure=no")
+        XCTAssertEqual(headers["Referer"], pageURL.absoluteString)
+        XCTAssertEqual(headers["User-Agent"], "BrowserTest/1.0")
+        XCTAssertEqual(headers["X-Trace-ID"], "trace-1")
+        XCTAssertEqual(headers["Authorization"], "Bearer secret-token")
+        XCTAssertNil(headers["Host"])
+        XCTAssertNil(headers["Range"])
+        XCTAssertFalse(headers["Cookie"]?.contains("forged") == true)
+
+        let publicHeaders = context.effectiveHeaders(includeCredentials: false)
+        XCTAssertNil(publicHeaders["Cookie"])
+        XCTAssertNil(publicHeaders["Authorization"])
+        XCTAssertEqual(publicHeaders["User-Agent"], "BrowserTest/1.0")
+    }
+
+    func testBrowserRequestContextRedactsSensitiveValues() {
+        let url = URL(string: "https://example.com/download.zip?token=private-value")!
+        let context = BrowserRequestContext(
+            url: url,
+            cookies: [BrowserCookie(name: "session", value: "cookie-private", domain: "example.com")],
+            customHeaders: ["Authorization": "Bearer header-private", "X-Trace": "safe"]
+        )
+
+        let redacted = context.redactedDescription
+        XCTAssertFalse(redacted.contains("cookie-private"))
+        XCTAssertFalse(redacted.contains("header-private"))
+        XCTAssertFalse(redacted.contains("private-value"))
+        XCTAssertTrue(redacted.contains("REDACTED"))
+        XCTAssertTrue(redacted.contains("safe"))
+        XCTAssertTrue(BrowserHeaderFilter.isApprovedForwardedHeader("Authorization"))
+        XCTAssertTrue(BrowserHeaderFilter.isApprovedForwardedHeader("X-CSRF-Token"))
+        XCTAssertFalse(BrowserHeaderFilter.isApprovedForwardedHeader("Sec-Fetch-Site"))
+    }
+
+    func testBrowserCredentialsAreRemovedOnCrossOriginRedirect() {
+        let original = URL(string: "https://example.com/file.zip")!
+        let sameOrigin = URL(string: "https://example.com:443/other.zip")!
+        let crossOrigin = URL(string: "https://cdn.example.net/file.zip")!
+        let headers = [
+            "Cookie": "session=private",
+            "Authorization": "Bearer private",
+            "Referer": "https://example.com/account",
+            "User-Agent": "BrowserTest/1.0",
+            "X-Trace-ID": "trace-1"
+        ]
+
+        XCTAssertEqual(BrowserHeaderFilter.stripCredentialsOnRedirect(headers: headers, from: original, to: sameOrigin), headers)
+
+        let stripped = BrowserHeaderFilter.stripCredentialsOnRedirect(headers: headers, from: original, to: crossOrigin)
+        XCTAssertNil(stripped["Cookie"])
+        XCTAssertNil(stripped["Authorization"])
+        XCTAssertNil(stripped["Referer"])
+        XCTAssertEqual(stripped["User-Agent"], "BrowserTest/1.0")
+        XCTAssertEqual(stripped["X-Trace-ID"], "trace-1")
+    }
+
+    func testBrowserRequestContextCanBeAttachedToResourceAndHandoff() {
+        let url = URL(string: "https://example.com/file.pdf")!
+        let context = BrowserRequestContext(url: url, source: .webpageResource)
+        let resource = WebpageResource(
+            url: url,
+            title: "Report",
+            suggestedFilename: "file.pdf",
+            resourceType: .document,
+            requestContext: context
+        )
+        let handoff = BrowserDownloadInterceptionManager().prepareHandoff(
+            originalURL: url,
+            requestContext: resource.requestContext
+        )
+
+        XCTAssertEqual(resource.requestContext, context)
+        XCTAssertEqual(handoff?.requestContext, context)
     }
 
     // MARK: - 8. Browser Navigation State & Quick Links

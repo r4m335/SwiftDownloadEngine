@@ -18,6 +18,7 @@ public struct BrowserDownloadHandoff: Equatable, Sendable {
     public let expectedContentLength: Int64?
     public let source: BrowserDownloadHandoffSource
     public let timestamp: Date
+    public let requestContext: BrowserRequestContext?
 
     public init(
         originalURL: URL,
@@ -26,7 +27,8 @@ public struct BrowserDownloadHandoff: Equatable, Sendable {
         mimeType: String? = nil,
         expectedContentLength: Int64? = nil,
         source: BrowserDownloadHandoffSource = .nativeWebKitDownload,
-        timestamp: Date = Date()
+        timestamp: Date = Date(),
+        requestContext: BrowserRequestContext? = nil
     ) {
         self.originalURL = originalURL
         self.finalURL = finalURL
@@ -35,6 +37,7 @@ public struct BrowserDownloadHandoff: Equatable, Sendable {
         self.expectedContentLength = expectedContentLength
         self.source = source
         self.timestamp = timestamp
+        self.requestContext = requestContext
     }
 }
 
@@ -116,7 +119,8 @@ public final class BrowserDownloadInterceptionManager: @unchecked Sendable {
         contentDisposition: String? = nil,
         mimeType: String? = nil,
         expectedLength: Int64? = nil,
-        source: BrowserDownloadHandoffSource = .nativeWebKitDownload
+        source: BrowserDownloadHandoffSource = .nativeWebKitDownload,
+        requestContext: BrowserRequestContext? = nil
     ) -> BrowserDownloadHandoff? {
         let destinationURL = finalURL ?? originalURL
 
@@ -137,7 +141,8 @@ public final class BrowserDownloadInterceptionManager: @unchecked Sendable {
             suggestedFilename: filename,
             mimeType: mimeType,
             expectedContentLength: expectedLength,
-            source: source
+            source: source,
+            requestContext: requestContext
         )
     }
 

@@ -100,7 +100,7 @@ enum HTTPRangeProbeError: Error, LocalizedError, Equatable {
     var errorDescription: String? {
         switch self {
         case .invalidURL(let url):
-            return "Invalid URL: \(url.absoluteString)"
+            return "Invalid URL: \(BrowserURLResolver.sanitizeURLForLogging(url))"
         case .unsupportedResponse(let code, let msg):
             return "Unsupported HTTP response (\(code)): \(msg)"
         case .rateLimited(_, let retryAfter):
@@ -110,13 +110,13 @@ enum HTTPRangeProbeError: Error, LocalizedError, Equatable {
                 return "Server rate limit exceeded (HTTP 429). Please wait before retrying."
             }
         case .resourceNotFound(let url):
-            return "Resource not found (404): \(url.absoluteString)"
+            return "Resource not found (404): \(BrowserURLResolver.sanitizeURLForLogging(url))"
         case .unauthorized(let url):
-            return "Unauthorized access (401): \(url.absoluteString)"
+            return "Authentication required (HTTP 401). The server rejected the request. Ensure session cookies or required authentication headers are enabled: \(BrowserURLResolver.sanitizeURLForLogging(url))"
         case .forbidden(let url):
-            return "Forbidden access (403): \(url.absoluteString)"
+            return "Access forbidden (HTTP 403). The server denied access to this resource. The download link may be expired, signed, or require active session cookies: \(BrowserURLResolver.sanitizeURLForLogging(url))"
         case .rangeNotSatisfiable(let url):
-            return "Requested byte range not satisfiable (416): \(url.absoluteString)"
+            return "Requested byte range not satisfiable (416): \(BrowserURLResolver.sanitizeURLForLogging(url))"
         case .networkError(let message):
             return "Network error: \(message)"
         case .invalidResponseFormat:
@@ -162,7 +162,7 @@ final class HTTPRangeProbe: Sendable {
             request.setValue("bytes=0-", forHTTPHeaderField: "Range")
         }
 
-        for (key, value) in configuration.customHeaders {
+        for (key, value) in BrowserHeaderFilter.sanitizeHeaders(configuration.customHeaders) {
             request.setValue(value, forHTTPHeaderField: key)
         }
 
@@ -442,6 +442,16 @@ private final class RedirectCaptureDelegate: NSObject, URLSessionTaskDelegate, @
         _resolvedFinalURL = request.url
         lock.unlock()
 
-        completionHandler(request)
+        var safeRequest = request
+        if let originalURL = task.originalRequest?.url, let newURL = request.url {
+            let sanitizedHeaders = BrowserHeaderFilter.stripCredentialsOnRedirect(
+                headers: safeRequest.allHTTPHeaderFields ?? [:],
+                from: originalURL,
+                to: newURL
+            )
+            safeRequest.allHTTPHeaderFields = sanitizedHeaders
+        }
+
+        completionHandler(safeRequest)
     }
 }

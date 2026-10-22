@@ -279,6 +279,13 @@ public struct BrowserResourceInspectorSheet: View {
                     .foregroundColor(.red)
             }
 
+            if viewModel.discoveredResources.contains(where: {
+                viewModel.selectedResourceIDs.contains($0.id) && $0.requestContext != nil
+            }) {
+                Toggle("Use browser session credentials", isOn: $viewModel.useBrowserCredentials)
+                    .font(.caption)
+            }
+
             Button {
                 startBatchDownload()
             } label: {
