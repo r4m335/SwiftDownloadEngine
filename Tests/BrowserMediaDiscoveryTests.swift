@@ -126,8 +126,75 @@ final class BrowserMediaDiscoveryTests: XCTestCase {
         XCTAssertTrue(script.contains("getReader"))
         XCTAssertTrue(script.contains("responseURL"))
         XCTAssertTrue(script.contains("contentLength"))
+        XCTAssertTrue(script.contains("documentID"))
+        XCTAssertTrue(script.contains("createObjectURL"))
+        XCTAssertTrue(script.contains("requestMediaKeySystemAccess"))
+        XCTAssertTrue(script.contains("addSourceBuffer"))
+        XCTAssertTrue(script.contains("appendBuffer"))
         XCTAssertFalse(script.contains("document.cookie"))
         XCTAssertFalse(script.contains("Authorization"))
+    }
+
+    func testBlobMetadataIsRetainedWithoutCopyingBlobBytes() throws {
+        let bridge = BrowserMediaDiscoveryBridge()
+        let observation = try XCTUnwrap(bridge.accept(
+            payload: [
+                "rawURL": "blob:https://video.example/1234",
+                "source": "blob",
+                "tag": "blob",
+                "declaredType": "video/mp4",
+                "contentLength": 4096,
+                "documentID": "document-1"
+            ],
+            pageURL: pageURL
+        ))
+
+        XCTAssertTrue(observation.isBlobSignal)
+        XCTAssertNil(observation.url)
+        XCTAssertEqual(observation.declaredType, "video/mp4")
+        XCTAssertEqual(observation.contentLength, 4096)
+        XCTAssertEqual(observation.documentID, "document-1")
+        XCTAssertFalse(observation.mayUseBrowserCredentials)
+    }
+
+    func testMSEAndProtectionObservationsAreMetadataOnly() throws {
+        let bridge = BrowserMediaDiscoveryBridge()
+        let mse = try XCTUnwrap(bridge.accept(
+            payload: [
+                "rawURL": pageURL.absoluteString,
+                "source": "mediaSource",
+                "tag": "appendBuffer",
+                "declaredType": "video/mp4; codecs=\"avc1.4d401f\"",
+                "contentLength": 1024,
+                "appendedByteCount": 4096,
+                "eventID": "mse-1",
+                "documentID": "document-1"
+            ],
+            pageURL: pageURL
+        ))
+
+        XCTAssertTrue(mse.isMetadataOnlySignal)
+        XCTAssertNil(mse.url)
+        XCTAssertEqual(mse.appendedByteCount, 4096)
+        XCTAssertFalse(mse.isPotentiallyProtected)
+
+        let protection = try XCTUnwrap(bridge.accept(
+            payload: [
+                "rawURL": pageURL.absoluteString,
+                "source": "protection",
+                "tag": "eme",
+                "declaredType": "com.widevine.alpha",
+                "isPotentiallyProtected": true,
+                "eventID": "eme-1",
+                "documentID": "document-1"
+            ],
+            pageURL: pageURL
+        ))
+
+        XCTAssertTrue(protection.isMetadataOnlySignal)
+        XCTAssertNil(protection.url)
+        XCTAssertTrue(protection.isPotentiallyProtected)
+        XCTAssertFalse(protection.mayUseBrowserCredentials)
     }
 
     func testManifestMetadataIsBoundedAndClassifiedWithoutFetching() throws {

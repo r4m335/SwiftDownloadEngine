@@ -11,6 +11,9 @@ public enum BrowserMediaDiscoverySource: String, Codable, Sendable, Equatable {
     case sourceElement
     case domMutation
     case performanceResource
+    case blob
+    case mediaSource
+    case protection
 }
 
 /// A discovery event from page JavaScript. `url == nil` is intentional for a
@@ -29,6 +32,9 @@ public struct BrowserMediaDiscoveryObservation: Codable, Sendable, Equatable {
     public let contentLength: Int64?
     public let manifestKind: StreamingManifestKind?
     public let manifestPrefix: String?
+    public let documentID: String?
+    public let appendedByteCount: Int64?
+    public let isPotentiallyProtected: Bool
     public let pageOrigin: URL
     public let frameOrigin: URL
     public let mayUseBrowserCredentials: Bool
@@ -39,6 +45,10 @@ public struct BrowserMediaDiscoveryObservation: Codable, Sendable, Equatable {
 
     public var isManifestSignal: Bool {
         manifestKind == .hls || manifestKind == .dash
+    }
+
+    public var isMetadataOnlySignal: Bool {
+        source == .mediaSource || source == .protection
     }
 
     public init(
@@ -54,6 +64,9 @@ public struct BrowserMediaDiscoveryObservation: Codable, Sendable, Equatable {
         contentLength: Int64? = nil,
         manifestKind: StreamingManifestKind? = nil,
         manifestPrefix: String? = nil,
+        documentID: String? = nil,
+        appendedByteCount: Int64? = nil,
+        isPotentiallyProtected: Bool = false,
         pageOrigin: URL,
         frameOrigin: URL,
         mayUseBrowserCredentials: Bool
@@ -70,6 +83,9 @@ public struct BrowserMediaDiscoveryObservation: Codable, Sendable, Equatable {
         self.contentLength = contentLength
         self.manifestKind = manifestKind
         self.manifestPrefix = manifestPrefix
+        self.documentID = documentID
+        self.appendedByteCount = appendedByteCount
+        self.isPotentiallyProtected = isPotentiallyProtected
         self.pageOrigin = pageOrigin
         self.frameOrigin = frameOrigin
         self.mayUseBrowserCredentials = mayUseBrowserCredentials
@@ -134,6 +150,13 @@ public final class BrowserMediaDiscoveryBridge: NSObject, @unchecked Sendable {
         var handler = window.webkit && window.webkit.messageHandlers &&
             window.webkit.messageHandlers.browserMediaDiscovery;
         if (!handler) { return; }
+
+        var documentID = "document-" + Math.random().toString(36).slice(2) + "-" + Date.now().toString(36);
+        try {
+            if (window.crypto && typeof window.crypto.randomUUID === "function") {
+                documentID = window.crypto.randomUUID();
+            }
+        } catch (_) {}
 
         function absoluteURL(value) {
             if (value === null || value === undefined) { return null; }
@@ -222,13 +245,16 @@ public final class BrowserMediaDiscoveryBridge: NSObject, @unchecked Sendable {
                     source: source,
                     tag: metadata.tag || null,
                     declaredType: declaredType,
-                    responseURL: metadata.responseURL || null,
-                    method: metadata.method || "GET",
-                    status: metadata.status === undefined ? null : metadata.status,
-                    contentLength: metadata.contentLength === undefined ? null : metadata.contentLength,
-                    manifestKind: kind,
-                    manifestPrefix: prefix
-                };
+                responseURL: metadata.responseURL || null,
+                method: metadata.method || "GET",
+                status: metadata.status === undefined ? null : metadata.status,
+                contentLength: metadata.contentLength === undefined ? null : metadata.contentLength,
+                documentID: metadata.documentID || documentID,
+                appendedByteCount: metadata.appendedByteCount === undefined ? null : metadata.appendedByteCount,
+                isPotentiallyProtected: metadata.isPotentiallyProtected === true,
+                manifestKind: kind,
+                manifestPrefix: prefix
+            };
                 handler.postMessage(message);
             } catch (_) {}
         }
@@ -294,6 +320,96 @@ public final class BrowserMediaDiscoveryBridge: NSObject, @unchecked Sendable {
                         return mediaSourceDescriptor.set.call(this, value);
                     }
                 });
+            }
+        } catch (_) {}
+
+        // Blob object URLs are reported as metadata only. The Blob bytes stay
+        // owned by the page until a later, explicit capture workflow.
+        try {
+            if (window.URL && typeof window.URL.createObjectURL === "function") {
+                var originalCreateObjectURL = window.URL.createObjectURL;
+                window.URL.createObjectURL = function(object) {
+                    var objectURL = originalCreateObjectURL.apply(this, arguments);
+                    try {
+                        if (window.Blob && object instanceof window.Blob) {
+                            emit(objectURL, "blob", {
+                                tag: "blob",
+                                declaredType: object.type || null,
+                                contentLength: isFinite(object.size) ? Math.floor(object.size) : null,
+                                method: "GET"
+                            });
+                        } else if (window.MediaSource && object instanceof window.MediaSource) {
+                            emit(objectURL, "mediaSource", {
+                                tag: "mediaSource",
+                                method: "GET"
+                            });
+                        }
+                    } catch (_) {}
+                    return objectURL;
+                };
+            }
+        } catch (_) {}
+
+        // EME is an observation of possible protection, not proof that every
+        // resource on the page is DRM protected. Never inspect key-system
+        // configuration or license data here.
+        try {
+            if (navigator && typeof navigator.requestMediaKeySystemAccess === "function") {
+                var originalRequestMediaKeySystemAccess = navigator.requestMediaKeySystemAccess;
+                navigator.requestMediaKeySystemAccess = function(keySystem, configurations) {
+                    try {
+                        emit(window.location.href, "protection", {
+                            tag: "eme",
+                            declaredType: String(keySystem || "unknown").slice(0, 128),
+                            isPotentiallyProtected: true,
+                            method: "GET"
+                        });
+                    } catch (_) {}
+                    return originalRequestMediaKeySystemAccess.apply(this, arguments);
+                };
+            }
+        } catch (_) {}
+
+        // MSE instrumentation records buffer metadata only. It does not copy
+        // or retain appendBuffer payloads, so playback remains the page's job.
+        try {
+            var sourceBufferBytes = typeof WeakMap === "function" ? new WeakMap() : null;
+            if (window.MediaSource && window.MediaSource.prototype) {
+                var originalAddSourceBuffer = window.MediaSource.prototype.addSourceBuffer;
+                if (typeof originalAddSourceBuffer === "function") {
+                    window.MediaSource.prototype.addSourceBuffer = function(mimeType) {
+                        var buffer = originalAddSourceBuffer.apply(this, arguments);
+                        emit(window.location.href, "mediaSource", {
+                            tag: "sourceBuffer",
+                            declaredType: String(mimeType || "").slice(0, 128),
+                            method: "GET"
+                        });
+                        return buffer;
+                    };
+                }
+            }
+            if (window.SourceBuffer && window.SourceBuffer.prototype) {
+                var originalAppendBuffer = window.SourceBuffer.prototype.appendBuffer;
+                if (typeof originalAppendBuffer === "function") {
+                    window.SourceBuffer.prototype.appendBuffer = function(data) {
+                        var chunkBytes = data && typeof data.byteLength === "number" ? data.byteLength : 0;
+                        var totalBytes = chunkBytes;
+                        if (sourceBufferBytes) {
+                            totalBytes += sourceBufferBytes.get(this) || 0;
+                            sourceBufferBytes.set(this, totalBytes);
+                        }
+                        try {
+                            emit(window.location.href, "mediaSource", {
+                                tag: "appendBuffer",
+                                declaredType: this.type || null,
+                                contentLength: chunkBytes,
+                                appendedByteCount: totalBytes,
+                                method: "GET"
+                            });
+                        } catch (_) {}
+                        return originalAppendBuffer.apply(this, arguments);
+                    };
+                }
             }
         } catch (_) {}
 
@@ -429,6 +545,8 @@ public final class BrowserMediaDiscoveryBridge: NSObject, @unchecked Sendable {
             throw BrowserMediaDiscoveryBridgeError.unsupportedCandidateScheme
         }
 
+        let metadataOnly = message.source == .mediaSource || message.source == .protection
+
         let method = (message.method ?? "GET").trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
         guard method == "GET" else {
             throw BrowserMediaDiscoveryBridgeError.unsupportedHTTPMethod
@@ -436,6 +554,10 @@ public final class BrowserMediaDiscoveryBridge: NSObject, @unchecked Sendable {
 
         if let eventID = message.eventID,
            eventID.utf8.count > 128 {
+            throw BrowserMediaDiscoveryBridgeError.metadataTooLong
+        }
+        if let documentID = message.documentID,
+           documentID.utf8.count > 128 {
             throw BrowserMediaDiscoveryBridgeError.metadataTooLong
         }
         if let prefix = message.manifestPrefix,
@@ -448,6 +570,10 @@ public final class BrowserMediaDiscoveryBridge: NSObject, @unchecked Sendable {
         }
         if let contentLength = message.contentLength,
            contentLength < 0 {
+            throw BrowserMediaDiscoveryBridgeError.malformedMessage
+        }
+        if let appendedByteCount = message.appendedByteCount,
+           appendedByteCount < 0 {
             throw BrowserMediaDiscoveryBridgeError.malformedMessage
         }
 
@@ -490,8 +616,15 @@ public final class BrowserMediaDiscoveryBridge: NSObject, @unchecked Sendable {
             candidateOriginMatchesPage = Self.originKey(for: resolved) == Self.originKey(for: pageURL)
         }
         let trustedFrame = Self.originKey(for: frameOrigin) == Self.originKey(for: pageOrigin)
-        let mayUseCredentials = !isBlob && trustedFrame && candidateOriginMatchesPage
-        let dedupeKey = isBlob ? "blob:\(rawURL)" : resolved.absoluteString
+        let mayUseCredentials = !isBlob && !metadataOnly && trustedFrame && candidateOriginMatchesPage
+        let dedupeKey: String
+        if metadataOnly {
+            // Metadata events are observations, not resource candidates. Keep
+            // their event identity so multiple MSE buffers are not collapsed.
+            dedupeKey = "metadata:\(message.eventID ?? UUID().uuidString)"
+        } else {
+            dedupeKey = isBlob ? "blob:\(rawURL)" : resolved.absoluteString
+        }
 
         lock.lock()
         let isNew = seenKeys.insert(dedupeKey.lowercased()).inserted
@@ -523,7 +656,7 @@ public final class BrowserMediaDiscoveryBridge: NSObject, @unchecked Sendable {
         }
 
         return BrowserMediaDiscoveryObservation(
-            url: isBlob ? nil : resolved,
+            url: isBlob || metadataOnly ? nil : resolved,
             rawURL: rawURL,
             source: message.source,
             tag: Self.normalizedMetadata(message.tag),
@@ -535,6 +668,9 @@ public final class BrowserMediaDiscoveryBridge: NSObject, @unchecked Sendable {
             contentLength: message.contentLength,
             manifestKind: classifiedKind,
             manifestPrefix: manifestPrefix,
+            documentID: Self.normalizedMetadata(message.documentID),
+            appendedByteCount: message.appendedByteCount,
+            isPotentiallyProtected: message.isPotentiallyProtected == true || message.source == .protection,
             pageOrigin: pageOrigin,
             frameOrigin: frameOrigin,
             mayUseBrowserCredentials: mayUseCredentials
@@ -593,6 +729,9 @@ public final class BrowserMediaDiscoveryBridge: NSObject, @unchecked Sendable {
         let contentLength: Int64?
         let manifestKind: String?
         let manifestPrefix: String?
+        let documentID: String?
+        let appendedByteCount: Int64?
+        let isPotentiallyProtected: Bool?
     }
 
     private static func normalizedMetadata(_ value: String?) -> String? {
