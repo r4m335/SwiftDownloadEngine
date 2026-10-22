@@ -154,7 +154,7 @@ public enum DASHVODReconstructionPlanner {
             timescale: timescale,
             duration: representation.estimatedDurationSeconds
         )
-        let initializationSegment = initialization.map {
+        let initializationSegment = initialization.first.map {
             MediaAssemblySegment(
                 fileURL: $0.fileURL,
                 role: .initialization,
