@@ -57,6 +57,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
     @Published public var discoveredResources: [WebpageResource] = []
     @Published public var selectedResourceIDs: Set<String> = []
     @Published public var resourceScanError: String? = nil
+    @Published public private(set) var mediaCandidates: [BrowserMediaCandidate] = []
     public let mediaDiscoveryBridge = BrowserMediaDiscoveryBridge()
 
     // Streaming proposal/execution state. The orchestrator remains the only
@@ -76,6 +77,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
     public var onDownloadInitiated: (() -> Void)? = nil
 
     private var tabManager = BrowserTabManager()
+    private var mediaCandidateCatalogs: [UUID: BrowserMediaCandidateCatalog] = [:]
 
     #if canImport(WebKit)
     public weak var webView: WKWebView?
@@ -185,6 +187,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         let id = tabManager.createTab(select: true)
         publishTabState()
         syncActiveTabState()
+        publishMediaCandidates()
         isShowingTabSwitcher = false
         return id
     }
@@ -194,6 +197,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         guard tabManager.selectTab(id) else { return false }
         publishTabState()
         syncActiveTabState()
+        publishMediaCandidates()
         isShowingTabSwitcher = false
         errorMessage = nil
         return true
@@ -205,9 +209,11 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         pendingNavigationURLs.removeValue(forKey: id)
         tabSessions.removeValue(forKey: id)
         #endif
+        mediaCandidateCatalogs.removeValue(forKey: id)
         let replacement = tabManager.closeTab(id)
         publishTabState()
         syncActiveTabState()
+        publishMediaCandidates()
         if replacement == nil {
             isShowingTabSwitcher = false
         }
@@ -310,6 +316,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
 
     fileprivate func resetMediaDiscovery(for tabID: UUID) {
         tabSessions[tabID]?.mediaDiscoveryBridge.reset()
+        resetMediaCandidateCatalog(for: tabID)
     }
 
     fileprivate func webView(for tabID: UUID?) -> WKWebView? {
@@ -515,6 +522,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
             resourceScanError = "No active webpage is currently loaded."
             discoveredResources = []
             selectedResourceIDs = []
+            resetMediaCandidateCatalog(for: activeTabID)
             return
         }
 
@@ -578,6 +586,8 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                     guard let self = self else { return }
                     self.discoveredResources = contextualResources
                     self.selectedResourceIDs = []
+                    self.resetMediaCandidateCatalog(for: self.activeTabID)
+                    self.ingestMediaResources(contextualResources, tabID: self.activeTabID)
                 }
             }
         }
@@ -594,6 +604,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         _ observation: BrowserMediaDiscoveryObservation,
         tabID: UUID? = nil
     ) {
+        ingestMediaObservation(observation, tabID: tabID)
         if let tabID, tabID != activeTabID { return }
         guard let discoveredURL = observation.url else { return }
 
@@ -654,6 +665,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         guard observation.mayUseBrowserCredentials,
               let wv = webView else {
             discoveredResources.append(resource)
+            ingestMediaResource(resource, tabID: tabID ?? activeTabID)
             return
         }
 
@@ -670,7 +682,56 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                 return
             }
             self.discoveredResources.append(contextualResource)
+            self.ingestMediaResource(contextualResource, tabID: tabID ?? self.activeTabID)
         }
+    }
+
+    private func publishMediaCandidates() {
+        guard let activeTabID else {
+            mediaCandidates = []
+            return
+        }
+        mediaCandidates = mediaCandidateCatalogs[activeTabID]?.candidates ?? []
+    }
+
+    private func ingestMediaObservation(
+        _ observation: BrowserMediaDiscoveryObservation,
+        tabID: UUID?
+    ) {
+        guard let targetTabID = tabID ?? activeTabID else { return }
+        var catalog = mediaCandidateCatalogs[targetTabID] ?? BrowserMediaCandidateCatalog()
+        _ = catalog.ingest(observation: observation)
+        mediaCandidateCatalogs[targetTabID] = catalog
+        if targetTabID == activeTabID { publishMediaCandidates() }
+    }
+
+    private func ingestMediaResources(
+        _ resources: [WebpageResource],
+        tabID: UUID?
+    ) {
+        guard let targetTabID = tabID ?? activeTabID else { return }
+        var catalog = mediaCandidateCatalogs[targetTabID] ?? BrowserMediaCandidateCatalog()
+        for resource in resources {
+            _ = catalog.ingest(resource: resource)
+        }
+        mediaCandidateCatalogs[targetTabID] = catalog
+        if targetTabID == activeTabID { publishMediaCandidates() }
+    }
+
+    private func ingestMediaResource(
+        _ resource: WebpageResource,
+        tabID: UUID?
+    ) {
+        ingestMediaResources([resource], tabID: tabID)
+    }
+
+    private func resetMediaCandidateCatalog(for tabID: UUID?) {
+        guard let tabID else {
+            mediaCandidates = []
+            return
+        }
+        mediaCandidateCatalogs[tabID] = BrowserMediaCandidateCatalog()
+        if tabID == activeTabID { publishMediaCandidates() }
     }
 
     #if canImport(WebKit)
@@ -885,6 +946,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         }
         publishTabState()
         syncActiveTabState()
+        resetMediaCandidateCatalog(for: activeTabID)
         errorMessage = nil
     }
 
