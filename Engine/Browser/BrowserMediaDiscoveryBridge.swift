@@ -323,15 +323,26 @@ public final class BrowserMediaDiscoveryBridge: NSObject, @unchecked Sendable {
             }
         } catch (_) {}
 
-        // Blob object URLs are reported as metadata only. The Blob bytes stay
-        // owned by the page until a later, explicit capture workflow.
+        // Blob object URLs are reported as metadata only. The page-local
+        // registry retains the opaque Blob object, never its bytes, so an
+        // explicit capture can read bounded slices later without relying on
+        // fetch() to expose Content-Length.
         try {
+            window.__lidBlobRegistry = window.__lidBlobRegistry || Object.create(null);
+            var blobRegistry = window.__lidBlobRegistry;
             if (window.URL && typeof window.URL.createObjectURL === "function") {
                 var originalCreateObjectURL = window.URL.createObjectURL;
                 window.URL.createObjectURL = function(object) {
                     var objectURL = originalCreateObjectURL.apply(this, arguments);
                     try {
                         if (window.Blob && object instanceof window.Blob) {
+                            blobRegistry[objectURL] = {
+                                kind: "blob",
+                                blob: object,
+                                size: isFinite(object.size) ? Math.floor(object.size) : null,
+                                type: object.type || null,
+                                documentID: documentID
+                            };
                             emit(objectURL, "blob", {
                                 tag: "blob",
                                 declaredType: object.type || null,
@@ -339,6 +350,10 @@ public final class BrowserMediaDiscoveryBridge: NSObject, @unchecked Sendable {
                                 method: "GET"
                             });
                         } else if (window.MediaSource && object instanceof window.MediaSource) {
+                            blobRegistry[objectURL] = {
+                                kind: "mediaSource",
+                                documentID: documentID
+                            };
                             emit(objectURL, "mediaSource", {
                                 tag: "mediaSource",
                                 method: "GET"
@@ -346,6 +361,13 @@ public final class BrowserMediaDiscoveryBridge: NSObject, @unchecked Sendable {
                         }
                     } catch (_) {}
                     return objectURL;
+                };
+            }
+            if (window.URL && typeof window.URL.revokeObjectURL === "function") {
+                var originalRevokeObjectURL = window.URL.revokeObjectURL;
+                window.URL.revokeObjectURL = function(objectURL) {
+                    try { delete blobRegistry[String(objectURL)]; } catch (_) {}
+                    return originalRevokeObjectURL.apply(this, arguments);
                 };
             }
         } catch (_) {}

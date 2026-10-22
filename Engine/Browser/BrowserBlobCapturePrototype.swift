@@ -34,6 +34,7 @@ public struct BrowserBlobCaptureLimits: Sendable, Equatable {
 public struct BrowserBlobCaptureMetadata: Codable, Sendable, Equatable {
     public let captureID: String
     public let sourceURL: URL
+    public let documentID: String?
     public let mimeType: String?
     public let expectedSize: Int64?
     public let kind: BrowserBlobCaptureResourceKind
@@ -42,6 +43,7 @@ public struct BrowserBlobCaptureMetadata: Codable, Sendable, Equatable {
     public init(
         captureID: String,
         sourceURL: URL,
+        documentID: String? = nil,
         mimeType: String? = nil,
         expectedSize: Int64? = nil,
         kind: BrowserBlobCaptureResourceKind,
@@ -49,6 +51,7 @@ public struct BrowserBlobCaptureMetadata: Codable, Sendable, Equatable {
     ) {
         self.captureID = captureID
         self.sourceURL = sourceURL
+        self.documentID = documentID
         self.mimeType = mimeType
         self.expectedSize = expectedSize
         self.kind = kind
@@ -87,6 +90,7 @@ public struct BrowserBlobCaptureSnapshot: Sendable, Equatable {
 public enum BrowserBlobCapturePrototypeError: Error, LocalizedError, Sendable, Equatable {
     case invalidCaptureID
     case invalidBlobURL
+    case documentMismatch
     case unreadableBlob
     case incompleteOrStreamingResource
     case invalidExpectedSize
@@ -107,6 +111,7 @@ public enum BrowserBlobCapturePrototypeError: Error, LocalizedError, Sendable, E
         switch self {
         case .invalidCaptureID: return "The blob capture identifier is invalid."
         case .invalidBlobURL: return "The capture source is not a valid blob URL."
+        case .documentMismatch: return "The blob capture belongs to a different browser document."
         case .unreadableBlob: return "The browser blob is unavailable or cannot be read."
         case .incompleteOrStreamingResource: return "The resource may be a live or MediaSource-backed stream and cannot be exported as a complete blob."
         case .invalidExpectedSize: return "The browser reported an invalid blob size."
@@ -140,14 +145,17 @@ public actor BrowserBlobCapturePrototypeWriter {
 
     private let destinationDirectoryURL: URL
     private let limits: BrowserBlobCaptureLimits
+    private let expectedDocumentID: String?
     private var sessions: [String: Session] = [:]
 
     public init(
         destinationDirectoryURL: URL,
-        limits: BrowserBlobCaptureLimits = .default
+        limits: BrowserBlobCaptureLimits = .default,
+        expectedDocumentID: String? = nil
     ) {
         self.destinationDirectoryURL = destinationDirectoryURL
         self.limits = limits
+        self.expectedDocumentID = expectedDocumentID
     }
 
     public func begin(
@@ -156,6 +164,10 @@ public actor BrowserBlobCapturePrototypeWriter {
     ) throws -> BrowserBlobCaptureSnapshot {
         guard validCaptureID(metadata.captureID) else {
             throw BrowserBlobCapturePrototypeError.invalidCaptureID
+        }
+        if let expectedDocumentID,
+           metadata.documentID != expectedDocumentID {
+            throw BrowserBlobCapturePrototypeError.documentMismatch
         }
         guard metadata.sourceURL.scheme?.lowercased() == "blob" else {
             throw BrowserBlobCapturePrototypeError.invalidBlobURL
@@ -370,6 +382,7 @@ public struct BrowserBlobCapturePrototypeMessage: Codable, Sendable, Equatable {
 
     public let kind: Kind
     public let captureID: String
+    public let documentID: String?
     public let url: String?
     public let mimeType: String?
     public let size: Int64?
@@ -384,6 +397,7 @@ public struct BrowserBlobCapturePrototypeMessage: Codable, Sendable, Equatable {
     public init(
         kind: Kind,
         captureID: String,
+        documentID: String? = nil,
         url: String? = nil,
         mimeType: String? = nil,
         size: Int64? = nil,
@@ -397,6 +411,7 @@ public struct BrowserBlobCapturePrototypeMessage: Codable, Sendable, Equatable {
     ) {
         self.kind = kind
         self.captureID = captureID
+        self.documentID = documentID
         self.url = url
         self.mimeType = mimeType
         self.size = size
@@ -433,9 +448,23 @@ public struct BrowserBlobCapturePrototypeAck: Sendable, Equatable {
 /// adapter. It decodes and validates the same envelopes that WebKit emits.
 public actor BrowserBlobCapturePrototypeReceiver {
     private let writer: BrowserBlobCapturePrototypeWriter
+    private var expectedDocumentIDs: [String: String] = [:]
 
     public init(writer: BrowserBlobCapturePrototypeWriter) {
         self.writer = writer
+    }
+
+    /// Binds a capture to the document that supplied the candidate. The
+    /// binding is consumed when the capture ends and prevents a stale or
+    /// cross-document page message from opening a native output file.
+    public func register(captureID: String, documentID: String?) {
+        guard let documentID, !documentID.isEmpty else { return }
+        expectedDocumentIDs[captureID] = documentID
+    }
+
+    public func cancel(captureID: String) async {
+        expectedDocumentIDs.removeValue(forKey: captureID)
+        await writer.cancel(captureID: captureID)
     }
 
     public nonisolated func receive(payload: Any) async -> BrowserBlobCapturePrototypeAck {
@@ -459,6 +488,10 @@ public actor BrowserBlobCapturePrototypeReceiver {
             captureID = message.captureID
             switch message.kind {
             case .metadata:
+                if let expectedDocumentID = expectedDocumentIDs[message.captureID],
+                   message.documentID != expectedDocumentID {
+                    throw BrowserBlobCapturePrototypeError.documentMismatch
+                }
                 guard let rawURL = message.url,
                       let url = URL(string: rawURL),
                       let resourceKind = message.resourceKind,
@@ -468,6 +501,7 @@ public actor BrowserBlobCapturePrototypeReceiver {
                 let metadata = BrowserBlobCaptureMetadata(
                     captureID: message.captureID,
                     sourceURL: url,
+                    documentID: message.documentID,
                     mimeType: message.mimeType,
                     expectedSize: message.size,
                     kind: resourceKind,
@@ -476,6 +510,10 @@ public actor BrowserBlobCapturePrototypeReceiver {
                 let snapshot = try await writer.begin(metadata: metadata, filename: suggestedFilename(mimeType: message.mimeType))
                 return BrowserBlobCapturePrototypeAck(captureID: message.captureID, accepted: true, snapshot: snapshot)
             case .chunk:
+                if let expectedDocumentID = expectedDocumentIDs[message.captureID],
+                   message.documentID != expectedDocumentID {
+                    throw BrowserBlobCapturePrototypeError.documentMismatch
+                }
                 guard let index = message.chunkIndex,
                       let offset = message.offset,
                       let base64 = message.base64,
@@ -492,6 +530,10 @@ public actor BrowserBlobCapturePrototypeReceiver {
                 )
                 return BrowserBlobCapturePrototypeAck(captureID: message.captureID, accepted: true, snapshot: snapshot)
             case .complete:
+                if let expectedDocumentID = expectedDocumentIDs[message.captureID],
+                   message.documentID != expectedDocumentID {
+                    throw BrowserBlobCapturePrototypeError.documentMismatch
+                }
                 guard let index = message.chunkIndex, let offset = message.offset else {
                     throw BrowserBlobCapturePrototypeError.incompleteCapture
                 }
@@ -500,14 +542,24 @@ public actor BrowserBlobCapturePrototypeReceiver {
                     finalChunkIndex: index,
                     finalOffset: offset
                 )
+                expectedDocumentIDs.removeValue(forKey: message.captureID)
                 return BrowserBlobCapturePrototypeAck(captureID: message.captureID, accepted: true, snapshot: snapshot)
             case .failure, .cancel:
+                expectedDocumentIDs.removeValue(forKey: message.captureID)
                 await writer.cancel(captureID: message.captureID)
                 return BrowserBlobCapturePrototypeAck(captureID: message.captureID, accepted: true)
             }
         } catch let error as BrowserBlobCapturePrototypeError {
+            if !captureID.isEmpty {
+                expectedDocumentIDs.removeValue(forKey: captureID)
+                await writer.cancel(captureID: captureID)
+            }
             return BrowserBlobCapturePrototypeAck(captureID: captureID, accepted: false, error: error)
         } catch {
+            if !captureID.isEmpty {
+                expectedDocumentIDs.removeValue(forKey: captureID)
+                await writer.cancel(captureID: captureID)
+            }
             return BrowserBlobCapturePrototypeAck(captureID: captureID, accepted: false, error: .fileOperationFailed)
         }
     }
@@ -526,12 +578,44 @@ public actor BrowserBlobCapturePrototypeReceiver {
     }
 }
 
+/// Coordinates the bounded browser-to-file protocol for one WebKit session.
+/// It deliberately exposes the existing receiver/writer instead of owning a
+/// download coordinator or a download-history record.
+public actor BrowserBlobCaptureService {
+    public nonisolated let receiver: BrowserBlobCapturePrototypeReceiver
+
+    public init(
+        destinationDirectoryURL: URL,
+        limits: BrowserBlobCaptureLimits = .default
+    ) {
+        let writer = BrowserBlobCapturePrototypeWriter(
+            destinationDirectoryURL: destinationDirectoryURL,
+            limits: limits
+        )
+        self.receiver = BrowserBlobCapturePrototypeReceiver(writer: writer)
+    }
+
+    public func register(captureID: String, documentID: String?) async {
+        await receiver.register(captureID: captureID, documentID: documentID)
+    }
+
+    public func cancel(captureID: String) async {
+        await receiver.cancel(captureID: captureID)
+    }
+
+    public func receive(data: Data) async -> BrowserBlobCapturePrototypeAck {
+        await receiver.receive(data: data)
+    }
+
+}
+
 #if canImport(WebKit)
 /// Thin WKWebView adapter for the prototype. It keeps the WebKit callback
 /// responsible for JavaScript acknowledgement while the actor owns all file
 /// writes and protocol validation.
 public final class BrowserBlobCapturePrototypeWebKitHandler: NSObject, WKScriptMessageHandler, @unchecked Sendable {
     public let receiver: BrowserBlobCapturePrototypeReceiver
+    public var acknowledgementHandler: ((BrowserBlobCapturePrototypeAck) -> Void)?
 
     public init(receiver: BrowserBlobCapturePrototypeReceiver) {
         self.receiver = receiver
@@ -561,6 +645,7 @@ public final class BrowserBlobCapturePrototypeWebKitHandler: NSObject, WKScriptM
         let webView = message.webView
         Task { @MainActor [weak webView] in
             let acknowledgement = await receiver.receive(data: data)
+            self.acknowledgementHandler?(acknowledgement)
             guard let webView,
                   !acknowledgement.captureID.isEmpty else { return }
             _ = try? await webView.evaluateJavaScript(
@@ -621,6 +706,13 @@ public enum BrowserBlobCapturePrototypeBridge {
                 session.pending = null;
                 return Promise.resolve(pending);
             }
+            if (session.blob) {
+                if (session.offset >= session.size) { return Promise.resolve(null); }
+                var end = Math.min(session.offset + session.chunkSize, session.size);
+                return session.blob.slice(session.offset, end).arrayBuffer().then(function(buffer) {
+                    return new Uint8Array(buffer);
+                });
+            }
             return session.reader.read().then(function(result) {
                 if (result.done) { return null; }
                 var bytes = result.value || new Uint8Array(0);
@@ -634,7 +726,7 @@ public enum BrowserBlobCapturePrototypeBridge {
             if (session.awaitingAck) { return; }
             nextBytes(session).then(function(bytes) {
                 if (!bytes) {
-                    post({ type: "complete", captureID: session.captureID, chunkIndex: session.chunkIndex, offset: session.offset });
+                    post({ type: "complete", captureID: session.captureID, documentID: session.documentID, chunkIndex: session.chunkIndex, offset: session.offset });
                     session.awaitingAck = true;
                     return;
                 }
@@ -643,6 +735,7 @@ public enum BrowserBlobCapturePrototypeBridge {
                     post({
                         type: "chunk",
                         captureID: session.captureID,
+                        documentID: session.documentID,
                         chunkIndex: session.chunkIndex,
                         offset: session.offset,
                         base64: bytesToBase64(bytes),
@@ -658,8 +751,42 @@ public enum BrowserBlobCapturePrototypeBridge {
             });
         }
 
-        function start(blobURL, captureID, requestedChunkSize) {
+        function start(blobURL, captureID, requestedChunkSize, requestedDocumentID) {
             var chunkSize = Math.max(1, Math.min(MAX_CHUNK_BYTES, Number(requestedChunkSize) || MAX_CHUNK_BYTES));
+            var registry = window.__lidBlobRegistry || null;
+            var registered = null;
+            try { registered = registry && registry[String(blobURL)]; } catch (_) {}
+            if (registered && registered.kind === "blob" && registered.blob) {
+                var registeredSize = Number(registered.size);
+                if (!isFinite(registeredSize) || registeredSize < 0) {
+                    post({ type: "failure", captureID: captureID, reason: "blob size is unavailable" });
+                    return;
+                }
+                registeredSize = Math.floor(registeredSize);
+                sessions[captureID] = {
+                    captureID: captureID,
+                    documentID: requestedDocumentID || registered.documentID || null,
+                    blob: registered.blob,
+                    size: registeredSize,
+                    reader: null,
+                    chunkSize: chunkSize,
+                    chunkIndex: 0,
+                    offset: 0,
+                    pending: null,
+                    awaitingAck: true
+                };
+                post({
+                    type: "metadata",
+                    captureID: captureID,
+                    documentID: requestedDocumentID || registered.documentID || null,
+                    url: String(blobURL),
+                    mimeType: registered.type || null,
+                    size: registeredSize,
+                    readable: true,
+                    resourceKind: "completeBlobCandidate"
+                });
+                return;
+            }
             fetch(String(blobURL)).then(function(response) {
                 if (!response.ok || !response.body || !response.body.getReader) {
                     throw new Error("blob response is not readable");
@@ -670,6 +797,7 @@ public enum BrowserBlobCapturePrototypeBridge {
                 var kind = knownSize === null ? "streamOrUnknown" : "completeBlobCandidate";
                 sessions[captureID] = {
                     captureID: captureID,
+                    documentID: requestedDocumentID || null,
                     reader: response.body.getReader(),
                     chunkSize: chunkSize,
                     chunkIndex: 0,
@@ -680,6 +808,7 @@ public enum BrowserBlobCapturePrototypeBridge {
                 post({
                     type: "metadata",
                     captureID: captureID,
+                    documentID: requestedDocumentID || null,
                     url: String(blobURL),
                     mimeType: response.headers.get("content-type"),
                     size: knownSize,
@@ -695,7 +824,7 @@ public enum BrowserBlobCapturePrototypeBridge {
             var session = sessions[captureID];
             if (!session) { return; }
             if (!accepted) {
-                try { session.reader.cancel(); } catch (_) {}
+                if (session.reader) { try { session.reader.cancel(); } catch (_) {} }
                 delete sessions[captureID];
                 return;
             }
@@ -705,7 +834,7 @@ public enum BrowserBlobCapturePrototypeBridge {
 
         function cancel(captureID) {
             var session = sessions[captureID];
-            if (session) { try { session.reader.cancel(); } catch (_) {} }
+            if (session && session.reader) { try { session.reader.cancel(); } catch (_) {} }
             delete sessions[captureID];
             post({ type: "cancel", captureID: captureID });
         }
@@ -718,10 +847,16 @@ public enum BrowserBlobCapturePrototypeBridge {
     })();
     """#
 
-    public static func startCommand(blobURL: URL, captureID: String, chunkSize: Int = maximumChunkBytes) -> String {
+    public static func startCommand(
+        blobURL: URL,
+        captureID: String,
+        documentID: String? = nil,
+        chunkSize: Int = maximumChunkBytes
+    ) -> String {
         let escapedURL = jsString(blobURL.absoluteString)
         let escapedID = jsString(captureID)
-        return "window.__lidBlobCapture.start(\(escapedURL), \(escapedID), \(min(maximumChunkBytes, max(1, chunkSize))));"
+        let escapedDocumentID = documentID.map(jsString) ?? "null"
+        return "window.__lidBlobCapture.start(\(escapedURL), \(escapedID), \(min(maximumChunkBytes, max(1, chunkSize))), \(escapedDocumentID));"
     }
 
     public static func acknowledgeCommand(captureID: String, accepted: Bool) -> String {

@@ -72,6 +72,14 @@ public final class BrowserViewModel: NSObject, ObservableObject {
     public let streamingDestinationDirectoryURL: URL
     private var streamingExecutionTask: Task<Void, Never>?
 
+    // Bounded Blob export state. Blob bytes are written by the per-tab
+    // capture service; the view model only presents progress and lifecycle.
+    @Published public private(set) var blobCaptureSnapshot: BrowserBlobCaptureSnapshot?
+    @Published public var blobCaptureErrorMessage: String?
+    @Published public private(set) var isCapturingBlob: Bool = false
+    private var activeBlobCaptureID: String?
+    private var activeBlobCaptureTabID: UUID?
+
     public weak var downloadDelegate: BrowserDownloadDelegate?
     public weak var magnetDelegate: (any BrowserMagnetDelegate)?
     public var onDownloadInitiated: (() -> Void)? = nil
@@ -206,6 +214,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
     @discardableResult
     public func closeTab(_ id: UUID) -> UUID? {
         #if canImport(WebKit)
+        cancelBlobCapture(for: id)
         pendingNavigationURLs.removeValue(forKey: id)
         tabSessions.removeValue(forKey: id)
         #endif
@@ -315,6 +324,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
     }
 
     fileprivate func resetMediaDiscovery(for tabID: UUID) {
+        cancelBlobCapture(for: tabID)
         tabSessions[tabID]?.mediaDiscoveryBridge.reset()
         resetMediaCandidateCatalog(for: tabID)
     }
@@ -322,6 +332,109 @@ public final class BrowserViewModel: NSObject, ObservableObject {
     fileprivate func webView(for tabID: UUID?) -> WKWebView? {
         guard let tabID else { return webView }
         return tabSessions[tabID]?.webView
+    }
+
+    /// Starts an explicitly requested export for a complete, readable Blob
+    /// candidate. The page reads bounded Blob slices; this method never asks
+    /// WebKit to materialize the complete object in native memory.
+    public func exportBlobCandidate(_ candidate: BrowserMediaCandidate) {
+        guard candidate.kind == .completeBlob,
+              candidate.availability == .captureCandidate,
+              let blobURL = URL(string: candidate.rawURL),
+              blobURL.scheme?.lowercased() == "blob",
+              let tabID = activeTabID,
+              let session = tabSessions[tabID] else {
+            blobCaptureErrorMessage = "This browser resource is not available for bounded Blob export."
+            return
+        }
+
+        if isCapturingBlob {
+            blobCaptureErrorMessage = "Another Blob export is already in progress."
+            return
+        }
+
+        let captureID = "blob-" + UUID().uuidString.lowercased()
+        activeBlobCaptureID = captureID
+        activeBlobCaptureTabID = tabID
+        blobCaptureSnapshot = nil
+        blobCaptureErrorMessage = nil
+        isCapturingBlob = true
+
+        let documentID = candidate.documentID
+        let service = session.blobCaptureService
+        let webView = session.webView
+        Task { @MainActor [weak self] in
+            await service.register(captureID: captureID, documentID: documentID)
+            guard let self,
+                  self.activeBlobCaptureID == captureID,
+                  self.activeBlobCaptureTabID == tabID else {
+                await service.cancel(captureID: captureID)
+                return
+            }
+            do {
+                _ = try await webView.evaluateJavaScript(
+                    BrowserBlobCapturePrototypeBridge.startCommand(
+                        blobURL: blobURL,
+                        captureID: captureID,
+                        documentID: documentID
+                    )
+                )
+            } catch {
+                await service.cancel(captureID: captureID)
+                self.blobCaptureErrorMessage = "The browser Blob capture could not start."
+                self.isCapturingBlob = false
+                self.activeBlobCaptureID = nil
+                self.activeBlobCaptureTabID = nil
+            }
+        }
+    }
+
+    /// Cancels the active page reader and removes the native partial file.
+    public func cancelBlobCapture(for tabID: UUID? = nil) {
+        guard let captureID = activeBlobCaptureID else { return }
+        if let tabID, activeBlobCaptureTabID != tabID { return }
+        let targetTabID = activeBlobCaptureTabID
+        if let targetTabID, let session = tabSessions[targetTabID] {
+            _ = try? session.webView.evaluateJavaScript(
+                BrowserBlobCapturePrototypeBridge.cancelCommand(captureID: captureID)
+            )
+            let service = session.blobCaptureService
+            Task { await service.cancel(captureID: captureID) }
+        }
+        activeBlobCaptureID = nil
+        activeBlobCaptureTabID = nil
+        isCapturingBlob = false
+    }
+
+    fileprivate func handleBlobCaptureAcknowledgement(
+        _ acknowledgement: BrowserBlobCapturePrototypeAck,
+        tabID: UUID
+    ) {
+        guard acknowledgement.captureID == activeBlobCaptureID,
+              activeBlobCaptureTabID == tabID else { return }
+
+        if let snapshot = acknowledgement.snapshot {
+            blobCaptureSnapshot = snapshot
+        }
+        guard acknowledgement.accepted else {
+            blobCaptureErrorMessage = acknowledgement.error?.localizedDescription ??
+                "The browser Blob could not be exported."
+            isCapturingBlob = false
+            activeBlobCaptureID = nil
+            activeBlobCaptureTabID = nil
+            return
+        }
+        if acknowledgement.snapshot?.isComplete == true {
+            isCapturingBlob = false
+            activeBlobCaptureID = nil
+            activeBlobCaptureTabID = nil
+            downloadSuccessNotification = "Blob export completed."
+        }
+    }
+
+    public func inspectStreamCandidate(_ candidate: BrowserMediaCandidate) {
+        guard candidate.kind == .mediaSource else { return }
+        blobCaptureErrorMessage = "This MediaSource stream requires manifest discovery; it cannot be exported as an arbitrary Blob."
     }
     #endif
 
@@ -636,8 +749,8 @@ public final class BrowserViewModel: NSObject, ObservableObject {
     }
 
     /// Adds dynamically observed media candidates to the existing resource
-    /// classifier. Blob observations remain signals only and never become
-    /// download candidates.
+    /// classifier. Complete Blobs remain page-owned until the user explicitly
+    /// starts the bounded capture workflow.
     fileprivate func handleMediaDiscoveryObservation(
         _ observation: BrowserMediaDiscoveryObservation,
         tabID: UUID? = nil
@@ -2038,6 +2151,7 @@ public struct PlatformWebView: NSViewRepresentable {
 final class BrowserWebViewSession {
     let tabID: UUID
     let mediaDiscoveryBridge: BrowserMediaDiscoveryBridge
+    let blobCaptureService: BrowserBlobCaptureService
     let webView: WKWebView
     let coordinator: BrowserWebViewCoordinator
 
@@ -2056,6 +2170,21 @@ final class BrowserWebViewSession {
         }
         bridge.install(on: config)
         self.mediaDiscoveryBridge = bridge
+
+        let blobCaptureService = BrowserBlobCaptureService(
+            destinationDirectoryURL: viewModel.streamingDestinationDirectoryURL
+                .appendingPathComponent("BlobExports", isDirectory: true)
+        )
+        self.blobCaptureService = blobCaptureService
+        let blobHandler = BrowserBlobCapturePrototypeWebKitHandler(
+            receiver: blobCaptureService.receiver
+        )
+        blobHandler.acknowledgementHandler = { [weak viewModel] acknowledgement in
+            DispatchQueue.main.async {
+                viewModel?.handleBlobCaptureAcknowledgement(acknowledgement, tabID: tabID)
+            }
+        }
+        blobHandler.install(on: config)
 
         let webView = WKWebView(frame: .zero, configuration: config)
         self.webView = webView
