@@ -323,10 +323,11 @@ public actor BrowserBlobCapturePrototypeWriter {
     private static func sanitizeFilename(_ value: String, fallback: String) throws -> String {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         let source = trimmed.isEmpty ? fallback : trimmed
-        let sanitized = source
-            .replacingOccurrences(of: "/", with: "_")
-            .replacingOccurrences(of: "\\", with: "_")
-            .filter { !$0.isNewline && !$0.isControl }
+        let sanitized = String(Array(
+            source
+                .replacingOccurrences(of: "/", with: "_")
+                .replacingOccurrences(of: "\\", with: "_")
+        ).filter { !$0.isNewline && !$0.isControl })
         guard !sanitized.isEmpty, sanitized != ".", sanitized != ".." else {
             throw BrowserBlobCapturePrototypeError.invalidFilename
         }
@@ -553,7 +554,7 @@ public final class BrowserBlobCapturePrototypeWebKitHandler: NSObject, WKScriptM
             let acknowledgement = await receiver.receive(data: data)
             guard let webView,
                   !acknowledgement.captureID.isEmpty else { return }
-            webView.evaluateJavaScript(
+            _ = try? await webView.evaluateJavaScript(
                 BrowserBlobCapturePrototypeBridge.acknowledgeCommand(
                     captureID: acknowledgement.captureID,
                     accepted: acknowledgement.accepted
