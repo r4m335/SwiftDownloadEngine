@@ -607,6 +607,10 @@ public actor BrowserBlobCaptureService {
         await receiver.receive(data: data)
     }
 
+    public nonisolated func receive(payload: Any) async -> BrowserBlobCapturePrototypeAck {
+        await receiver.receive(payload: payload)
+    }
+
 }
 
 #if canImport(WebKit)
