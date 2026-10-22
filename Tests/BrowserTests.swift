@@ -160,11 +160,17 @@ final class BrowserTests: XCTestCase {
     // MARK: - 7. BrowserDownloadDelegate Boundary
 
     private final class MockDownloadDelegate: BrowserDownloadDelegate {
+        struct DownloadRequest {
+            let url: URL
+            let filename: String?
+        }
+
         var recordedURL: URL?
         var recordedFilename: String?
         var recordedThreads: Int?
         var recordedSpeedLimit: Int64?
         var recordedHeaders: [String: String]?
+        var downloadRequests: [DownloadRequest] = []
         var didCallHandler = false
 
         func handleDownloadRequest(
@@ -178,6 +184,7 @@ final class BrowserTests: XCTestCase {
             recordedFilename = filename
             recordedThreads = threadCount
             recordedSpeedLimit = speedLimitBytesPerSecond
+            downloadRequests.append(DownloadRequest(url: url, filename: filename))
         }
 
         func handleDownloadRequest(
@@ -193,6 +200,7 @@ final class BrowserTests: XCTestCase {
             recordedThreads = threadCount
             recordedSpeedLimit = speedLimitBytesPerSecond
             recordedHeaders = headers
+            downloadRequests.append(DownloadRequest(url: url, filename: filename))
         }
     }
 
