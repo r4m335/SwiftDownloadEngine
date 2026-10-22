@@ -36,6 +36,12 @@ public final class BrowserViewModel: NSObject, ObservableObject {
     @Published public var downloadCandidateSpeedLimitKBps: String = ""
     @Published public var downloadSuccessNotification: String? = nil
 
+    // Magnet-link interception state
+    @Published public var magnetCandidate: MagnetLink? = nil
+    @Published public var magnetSourcePageURL: URL? = nil
+    @Published public var isShowingMagnetSheet: Bool = false
+    @Published public var magnetErrorMessage: String? = nil
+
     // Download detection & interception state (Milestone 7B / 7C)
     @Published public var detectedDownloadURL: URL? = nil
     @Published public var detectedDownloadFilename: String = ""
@@ -50,14 +56,20 @@ public final class BrowserViewModel: NSObject, ObservableObject {
     @Published public var resourceScanError: String? = nil
 
     public weak var downloadDelegate: BrowserDownloadDelegate?
+    public weak var magnetDelegate: (any BrowserMagnetDelegate)?
     public var onDownloadInitiated: (() -> Void)? = nil
 
     #if canImport(WebKit)
     public weak var webView: WKWebView?
     #endif
 
-    public init(downloadDelegate: BrowserDownloadDelegate? = nil, onDownloadInitiated: (() -> Void)? = nil) {
+    public init(
+        downloadDelegate: BrowserDownloadDelegate? = nil,
+        magnetDelegate: (any BrowserMagnetDelegate)? = nil,
+        onDownloadInitiated: (() -> Void)? = nil
+    ) {
         self.downloadDelegate = downloadDelegate
+        self.magnetDelegate = magnetDelegate
         self.onDownloadInitiated = onDownloadInitiated
         super.init()
     }
@@ -133,6 +145,47 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                 requestContext: resource.requestContext
             )
         }
+    }
+
+    public func presentMagnetLink(_ magnet: MagnetLink, sourcePageURL: URL?) {
+        guard !isShowingMagnetSheet || magnetCandidate?.uri != magnet.uri else { return }
+        magnetCandidate = magnet
+        magnetSourcePageURL = sourcePageURL.flatMap {
+            BrowserURLResolver.isValidWebNavigationURL($0) ? $0 : nil
+        }
+        magnetErrorMessage = nil
+        isShowingMagnetSheet = true
+    }
+
+    public var isTorrentEngineAvailable: Bool {
+        magnetDelegate?.isTorrentEngineAvailable == true
+    }
+
+    public func confirmMagnetLink() async throws {
+        guard let magnet = magnetCandidate else {
+            throw MagnetLinkError.invalidStructure
+        }
+        guard let delegate = magnetDelegate, delegate.isTorrentEngineAvailable else {
+            throw MagnetLinkError.torrentEngineUnavailable
+        }
+        try await delegate.handleMagnetLink(magnet)
+        magnetErrorMessage = nil
+        isShowingMagnetSheet = false
+        magnetCandidate = nil
+        magnetSourcePageURL = nil
+    }
+
+    @discardableResult
+    public func openMagnetExternally() -> Bool {
+        guard let url = magnetCandidate?.uri else { return false }
+        #if canImport(UIKit)
+        UIApplication.shared.open(url)
+        return true
+        #elseif canImport(AppKit)
+        return NSWorkspace.shared.open(url)
+        #else
+        return false
+        #endif
     }
 
     public func inspectCurrentPageResources() {
@@ -463,9 +516,14 @@ public struct BrowserView: View {
         _viewModel = StateObject(wrappedValue: viewModel)
     }
 
-    public init(downloadDelegate: BrowserDownloadDelegate? = nil, onDownloadInitiated: (() -> Void)? = nil) {
+    public init(
+        downloadDelegate: BrowserDownloadDelegate? = nil,
+        magnetDelegate: (any BrowserMagnetDelegate)? = nil,
+        onDownloadInitiated: (() -> Void)? = nil
+    ) {
         _viewModel = StateObject(wrappedValue: BrowserViewModel(
             downloadDelegate: downloadDelegate,
+            magnetDelegate: magnetDelegate,
             onDownloadInitiated: onDownloadInitiated
         ))
     }
@@ -473,6 +531,7 @@ public struct BrowserView: View {
     public init(viewModel: DownloadManagerViewModel, onDownloadInitiated: (() -> Void)? = nil) {
         _viewModel = StateObject(wrappedValue: BrowserViewModel(
             downloadDelegate: viewModel,
+            magnetDelegate: viewModel,
             onDownloadInitiated: onDownloadInitiated
         ))
     }
@@ -520,6 +579,9 @@ public struct BrowserView: View {
         }
         .sheet(isPresented: $viewModel.isShowingResourceInspector) {
             BrowserResourceInspectorSheet(viewModel: viewModel)
+        }
+        .sheet(isPresented: $viewModel.isShowingMagnetSheet) {
+            BrowserMagnetConfirmationSheet(viewModel: viewModel)
         }
         #if canImport(UIKit)
         .background(Color(UIColor.systemBackground))
@@ -873,6 +935,126 @@ public struct BrowserErrorView: View {
 
 // MARK: - Browser Download Modal Sheet
 
+public struct BrowserMagnetConfirmationSheet: View {
+    @ObservedObject public var viewModel: BrowserViewModel
+    @Environment(\.presentationMode) private var presentationMode
+    @State private var isSubmitting = false
+
+    public init(viewModel: BrowserViewModel) {
+        self.viewModel = viewModel
+    }
+
+    public var body: some View {
+        NavigationView {
+            Form {
+                if let magnet = viewModel.magnetCandidate {
+                    Section(header: Text("Resource")) {
+                        magnetDetailRow(label: "Resource type", value: "BitTorrent magnet link")
+                        magnetDetailRow(label: "Name", value: magnet.presentationName)
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Identifier")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                            Text(magnet.identifier)
+                                .font(.caption.monospaced())
+                                .textSelection(.enabled)
+                                .lineLimit(4)
+                        }
+                        magnetDetailRow(
+                            label: "Source",
+                            value: viewModel.magnetSourcePageURL.map(BrowserURLResolver.sanitizeURLForDisplay) ?? "Current webpage"
+                        )
+                        if let length = magnet.contentLength {
+                            magnetDetailRow(label: "Declared size", value: "\(length) bytes")
+                        }
+                    }
+
+                    if viewModel.isTorrentEngineAvailable {
+                        Section {
+                            Button {
+                                submitMagnet()
+                            } label: {
+                                HStack {
+                                    Spacer()
+                                    if isSubmitting {
+                                        ProgressView()
+                                            .padding(.trailing, 8)
+                                    }
+                                    Text("Add to Torrent Queue")
+                                        .bold()
+                                    Spacer()
+                                }
+                            }
+                            .disabled(isSubmitting)
+                        }
+                    } else {
+                        Section {
+                            Text("Built-in torrent downloading is unavailable. You can hand this magnet link to an installed torrent application instead.")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                            Button("Open in External Torrent App") {
+                                openExternally()
+                            }
+                        }
+                    }
+                } else {
+                    Text("No magnet link is awaiting confirmation.")
+                        .foregroundColor(.secondary)
+                }
+
+                if let error = viewModel.magnetErrorMessage {
+                    Section {
+                        Text(error)
+                            .foregroundColor(.red)
+                            .font(.caption)
+                    }
+                }
+            }
+            .navigationTitle("Torrent Link")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") {
+                        presentationMode.wrappedValue.dismiss()
+                    }
+                }
+            }
+        }
+    }
+
+    private func submitMagnet() {
+        viewModel.magnetErrorMessage = nil
+        isSubmitting = true
+        Task { @MainActor in
+            do {
+                try await viewModel.confirmMagnetLink()
+                isSubmitting = false
+                presentationMode.wrappedValue.dismiss()
+            } catch {
+                isSubmitting = false
+                viewModel.magnetErrorMessage = error.localizedDescription
+            }
+        }
+    }
+
+    private func openExternally() {
+        guard viewModel.openMagnetExternally() else {
+            viewModel.magnetErrorMessage = "No external torrent application could be opened."
+            return
+        }
+        presentationMode.wrappedValue.dismiss()
+    }
+
+    private func magnetDetailRow(label: String, value: String) -> some View {
+        HStack(alignment: .top) {
+            Text(label)
+                .foregroundColor(.secondary)
+            Spacer(minLength: 12)
+            Text(value)
+                .multilineTextAlignment(.trailing)
+        }
+    }
+}
+
 public struct BrowserDownloadSheet: View {
     @ObservedObject public var viewModel: BrowserViewModel
     @Environment(\.presentationMode) private var presentationMode
@@ -1119,6 +1301,24 @@ public final class BrowserWebViewCoordinator: NSObject, WKNavigationDelegate, WK
     ) {
         guard let url = navigationAction.request.url else {
             decisionHandler(.cancel)
+            return
+        }
+
+        // Magnet links identify torrent metadata rather than HTTP resources.
+        // Intercept them before the normal web-navigation scheme check so
+        // WebKit cannot hand them to an unrelated URL-scheme handler.
+        if url.scheme?.lowercased() == "magnet" {
+            decisionHandler(.cancel)
+            guard let magnet = try? MagnetLinkParser.parse(url) else {
+                DispatchQueue.main.async { [weak self] in
+                    self?.viewModel?.errorMessage = "This magnet link is invalid or unsupported."
+                }
+                return
+            }
+            DispatchQueue.main.async { [weak self, weak webView] in
+                guard let self, let vm = self.viewModel else { return }
+                vm.presentMagnetLink(magnet, sourcePageURL: webView?.url)
+            }
             return
         }
 

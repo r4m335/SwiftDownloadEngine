@@ -556,17 +556,20 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
         }
 
         let trimmed = magnetURI.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard trimmed.lowercased().hasPrefix("magnet:?"),
-              trimmed.lowercased().contains("xt=urn:btih:") else {
-            let error = "Invalid Magnet URI: Must start with 'magnet:?' and contain an info-hash parameter ('xt=urn:btih:')."
-            self.errorMessage = error
-            throw TorrentEngineError.invalidMagnetURI(trimmed)
+        let parsedMagnet: MagnetLink
+        do {
+            parsedMagnet = try MagnetLinkParser.parse(trimmed)
+        } catch {
+            let message = "Invalid Magnet URI: provide a magnet link with a supported BitTorrent info-hash."
+            self.errorMessage = message
+            throw TorrentEngineError.invalidMagnetURI("redacted")
         }
+        let normalizedMagnetURI = parsedMagnet.uri.absoluteString
 
         let resolvedPriority = priority ?? defaultTorrentPriority
         do {
             let task = try await te.addTorrent(
-                magnetURI: trimmed,
+                magnetURI: normalizedMagnetURI,
                 saveDirectoryURL: saveDirectoryURL ?? downloadsDirectoryURL,
                 priority: resolvedPriority
             )
@@ -988,5 +991,17 @@ extension DownloadManagerViewModel: BrowserDownloadDelegate {
             transportPolicy: .foreground,
             autoStart: true
         )
+    }
+}
+
+// MARK: - BrowserMagnetDelegate Conformance
+
+extension DownloadManagerViewModel: BrowserMagnetDelegate {
+    public var isTorrentEngineAvailable: Bool {
+        torrentEngine != nil
+    }
+
+    public func handleMagnetLink(_ magnet: MagnetLink) async throws {
+        _ = try await addTorrent(magnetURI: magnet.uri.absoluteString)
     }
 }

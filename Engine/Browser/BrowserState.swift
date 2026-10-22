@@ -82,6 +82,14 @@ public extension BrowserDownloadDelegate {
     }
 }
 
+/// Integration boundary for user-confirmed magnet links. Magnet links are
+/// intentionally kept separate from the HTTP download delegate.
+@MainActor
+public protocol BrowserMagnetDelegate: AnyObject {
+    var isTorrentEngineAvailable: Bool { get }
+    func handleMagnetLink(_ magnet: MagnetLink) async throws
+}
+
 /// Quick-access shortcut item displayed on the browser home/new-tab screen.
 public struct BrowserQuickLink: Identifiable, Hashable {
     public let id: String

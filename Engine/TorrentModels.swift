@@ -337,8 +337,8 @@ public enum TorrentEngineError: LocalizedError, Equatable, Sendable {
             return "Unsupported persistence schema version: \(ver)"
         case .duplicateTorrent(let hash):
             return "Torrent with info-hash \(hash) already exists."
-        case .invalidMagnetURI(let uri):
-            return "Invalid magnet URI: \(uri)"
+        case .invalidMagnetURI:
+            return "Invalid magnet URI."
         case .invalidTorrentFile(let msg):
             return "Invalid .torrent file: \(msg)"
         }
