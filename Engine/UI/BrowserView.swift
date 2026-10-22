@@ -74,6 +74,27 @@ public final class BrowserViewModel: NSObject, ObservableObject {
 
     #if canImport(WebKit)
     public weak var webView: WKWebView?
+    private var pendingNavigationURL: URL?
+
+    /// Attaches the WebKit instance created by SwiftUI and delivers the
+    /// navigation requested while the home view was being replaced.
+    func attachWebView(_ webView: WKWebView) {
+        self.webView = webView
+        _ = consumePendingNavigation { request in
+            webView.load(request)
+        }
+    }
+
+    /// Delivers a pending request at most once. The injectable loader keeps
+    /// the lifecycle behavior deterministic in unit tests without requiring
+    /// a live WebKit navigation.
+    @discardableResult
+    func consumePendingNavigation(using load: (URLRequest) -> Void) -> Bool {
+        guard let url = pendingNavigationURL else { return false }
+        pendingNavigationURL = nil
+        load(URLRequest(url: url))
+        return true
+    }
     #endif
 
     public init(
@@ -584,8 +605,12 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         urlInputText = url.absoluteString
 
         #if canImport(WebKit)
-        let request = URLRequest(url: url)
-        webView?.load(request)
+        pendingNavigationURL = url
+        if let webView {
+            _ = consumePendingNavigation { request in
+                webView.load(request)
+            }
+        }
         #endif
     }
 
@@ -627,6 +652,8 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         if let blank = URL(string: "about:blank") {
             webView?.load(URLRequest(url: blank))
         }
+        pendingNavigationURL = nil
+        webView = nil
         #endif
         currentURL = nil
         urlInputText = ""
@@ -1481,12 +1508,14 @@ public struct PlatformWebView: UIViewRepresentable {
         let webView = WKWebView(frame: .zero, configuration: config)
         webView.navigationDelegate = context.coordinator
         context.coordinator.setupProgressObserver(for: webView)
-        viewModel.webView = webView
+        viewModel.attachWebView(webView)
         return webView
     }
 
     public func updateUIView(_ uiView: WKWebView, context: Context) {
-        // Navigation is triggered explicitly via BrowserViewModel to avoid unnecessary re-creation.
+        // Reattach only to deliver a request that arrived before makeUIView.
+        // attachWebView does not reload when there is no pending request.
+        viewModel.attachWebView(uiView)
     }
 }
 #elseif canImport(AppKit)
@@ -1507,11 +1536,13 @@ public struct PlatformWebView: NSViewRepresentable {
         let webView = WKWebView(frame: .zero, configuration: config)
         webView.navigationDelegate = context.coordinator
         context.coordinator.setupProgressObserver(for: webView)
-        viewModel.webView = webView
+        viewModel.attachWebView(webView)
         return webView
     }
 
-    public func updateNSView(_ nsView: WKWebView, context: Context) {}
+    public func updateNSView(_ nsView: WKWebView, context: Context) {
+        viewModel.attachWebView(nsView)
+    }
 }
 #endif
 

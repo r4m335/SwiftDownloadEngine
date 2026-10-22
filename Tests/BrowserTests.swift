@@ -757,6 +757,50 @@ final class BrowserTests: XCTestCase {
         let otherURL = URL(string: "https://example.com/another.zip")!
         XCTAssertFalse(vm.shouldSuppressDuplicatePrompt(for: otherURL))
     }
+
+    #if canImport(WebKit)
+    @MainActor
+    func testHomeSearchNavigationIsQueuedUntilWebViewIsReady() {
+        let vm = BrowserViewModel()
+        vm.navigate(to: "best free download managers")
+
+        var deliveredRequest: URLRequest?
+        XCTAssertTrue(vm.consumePendingNavigation { deliveredRequest = $0 })
+        guard let searchURL = deliveredRequest?.url else {
+            XCTFail("The pending search request did not contain a URL.")
+            return
+        }
+        XCTAssertEqual(searchURL.host, "duckduckgo.com")
+        XCTAssertEqual(
+            URLComponents(url: searchURL, resolvingAgainstBaseURL: false)?
+                .queryItems?.first(where: { $0.name == "q" })?.value,
+            "best free download managers"
+        )
+
+        // SwiftUI updates must not replay the same initial request.
+        XCTAssertFalse(vm.consumePendingNavigation { _ in
+            XCTFail("The initial navigation must be consumed only once.")
+        })
+    }
+
+    @MainActor
+    func testDirectHomeNavigationAndDisallowedSchemesRemainValidated() {
+        let vm = BrowserViewModel()
+        let directURL = URL(string: "https://example.com/library")!
+        vm.load(url: directURL)
+
+        var deliveredRequest: URLRequest?
+        XCTAssertTrue(vm.consumePendingNavigation { deliveredRequest = $0 })
+        XCTAssertEqual(deliveredRequest?.url, directURL)
+
+        let invalidVM = BrowserViewModel()
+        invalidVM.navigate(to: "javascript:alert(document.cookie)")
+        XCTAssertNil(invalidVM.currentURL)
+        XCTAssertFalse(invalidVM.consumePendingNavigation { _ in
+            XCTFail("Disallowed schemes must not create navigation requests.")
+        })
+    }
+    #endif
     #endif
 
     // MARK: - Milestone 7D: Webpage Resource & Media Discovery Tests
