@@ -329,7 +329,10 @@ public actor BrowserBlobCapturePrototypeWriter {
         var sanitizedCharacters: [Character] = []
         sanitizedCharacters.reserveCapacity(normalizedSource.count)
         for character in normalizedSource {
-            if !character.isNewline && !character.isControl {
+            let containsControlCharacter = character.unicodeScalars.contains {
+                CharacterSet.controlCharacters.contains($0)
+            }
+            if !character.isNewline && !containsControlCharacter {
                 sanitizedCharacters.append(character)
             }
         }
