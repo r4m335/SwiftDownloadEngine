@@ -895,13 +895,13 @@ final class BrowserTests: XCTestCase {
         let hls = results.first { $0.url.absoluteString.contains("master.m3u8") }
         XCTAssertNotNil(hls)
         XCTAssertFalse(hls!.isSupported)
-        XCTAssertTrue(hls!.unsupportedReason?.contains("Milestone 7F") == true)
+        XCTAssertTrue(hls!.unsupportedReason?.contains("manifest-aware") == true)
 
         // 4. DASH mpd Manifest
         let dash = results.first { $0.url.absoluteString.contains("dash.mpd") }
         XCTAssertNotNil(dash)
         XCTAssertFalse(dash!.isSupported)
-        XCTAssertTrue(dash!.unsupportedReason?.contains("Milestone 7F") == true)
+        XCTAssertTrue(dash!.unsupportedReason?.contains("manifest-aware") == true)
 
         // 5. FTP scheme
         let ftp = results.first { $0.url.absoluteString.hasPrefix("ftp:") }

@@ -191,7 +191,11 @@ public struct BrowserResourceInspectorSheet: View {
                         }
                     },
                     onDownload: {
-                        viewModel.promptDownloadFromInspector(for: resource)
+                        if resource.isStreamingManifest {
+                            viewModel.promptStreamingDownload(for: resource)
+                        } else {
+                            viewModel.promptDownloadFromInspector(for: resource)
+                        }
                     }
                 )
             }
@@ -412,7 +416,7 @@ public struct ResourceRowView: View {
             Spacer(minLength: 8)
 
             // Individual Download Action Button
-            if resource.isSupported {
+            if resource.isSupported || resource.isStreamingManifest {
                 Button(action: onDownload) {
                     Image(systemName: "arrow.down.circle.fill")
                         .font(.system(size: 24))

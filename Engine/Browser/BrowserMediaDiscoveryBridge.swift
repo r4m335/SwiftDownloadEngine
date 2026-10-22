@@ -17,11 +17,18 @@ public enum BrowserMediaDiscoverySource: String, Codable, Sendable, Equatable {
 /// `blob:` signal: blob URLs are browser-managed resources and must not be sent
 /// to the HTTP download coordinator.
 public struct BrowserMediaDiscoveryObservation: Codable, Sendable, Equatable {
+    public let eventID: String?
     public let url: URL?
+    public let responseURL: URL?
     public let rawURL: String
     public let source: BrowserMediaDiscoverySource
     public let tag: String?
     public let declaredType: String?
+    public let method: String?
+    public let statusCode: Int?
+    public let contentLength: Int64?
+    public let manifestKind: StreamingManifestKind?
+    public let manifestPrefix: String?
     public let pageOrigin: URL
     public let frameOrigin: URL
     public let mayUseBrowserCredentials: Bool
@@ -30,21 +37,39 @@ public struct BrowserMediaDiscoveryObservation: Codable, Sendable, Equatable {
         url == nil && rawURL.lowercased().hasPrefix("blob:")
     }
 
+    public var isManifestSignal: Bool {
+        manifestKind == .hls || manifestKind == .dash
+    }
+
     public init(
         url: URL?,
         rawURL: String,
         source: BrowserMediaDiscoverySource,
         tag: String? = nil,
         declaredType: String? = nil,
+        eventID: String? = nil,
+        responseURL: URL? = nil,
+        method: String? = nil,
+        statusCode: Int? = nil,
+        contentLength: Int64? = nil,
+        manifestKind: StreamingManifestKind? = nil,
+        manifestPrefix: String? = nil,
         pageOrigin: URL,
         frameOrigin: URL,
         mayUseBrowserCredentials: Bool
     ) {
+        self.eventID = eventID
         self.url = url
+        self.responseURL = responseURL
         self.rawURL = rawURL
         self.source = source
         self.tag = tag
         self.declaredType = declaredType
+        self.method = method
+        self.statusCode = statusCode
+        self.contentLength = contentLength
+        self.manifestKind = manifestKind
+        self.manifestPrefix = manifestPrefix
         self.pageOrigin = pageOrigin
         self.frameOrigin = frameOrigin
         self.mayUseBrowserCredentials = mayUseBrowserCredentials
@@ -59,6 +84,8 @@ public enum BrowserMediaDiscoveryBridgeError: Error, LocalizedError, Equatable, 
     case candidateURLTooLong
     case unsupportedCandidateScheme
     case credentialedCandidateURL
+    case unsupportedHTTPMethod
+    case metadataTooLong
 
     public var errorDescription: String? {
         switch self {
@@ -76,6 +103,10 @@ public enum BrowserMediaDiscoveryBridgeError: Error, LocalizedError, Equatable, 
             return "The browser media discovery URL uses an unsupported scheme."
         case .credentialedCandidateURL:
             return "Credential-bearing URLs are not accepted from browser media discovery."
+        case .unsupportedHTTPMethod:
+            return "Only GET resources are eligible for browser media discovery."
+        case .metadataTooLong:
+            return "Browser media discovery metadata exceeded the safety limit."
         }
     }
 }
@@ -88,9 +119,12 @@ public enum BrowserMediaDiscoveryBridgeError: Error, LocalizedError, Equatable, 
 public final class BrowserMediaDiscoveryBridge: NSObject, @unchecked Sendable {
     public static let messageName = "browserMediaDiscovery"
     public static let maximumCandidateLength = 8_192
+    public static let maximumMetadataLength = 65_536
 
     /// This script observes page-owned resource signals only. It does not read
-    /// cookies, request bodies, response bodies, or authorization headers.
+    /// cookies, request bodies, or authorization headers. Possible manifests get
+    /// only a bounded text prefix from a cloned response; ordinary responses are
+    /// never copied or inspected.
     public static let observerScript = #"""
     (function() {
         "use strict";
@@ -108,17 +142,122 @@ public final class BrowserMediaDiscoveryBridge: NSObject, @unchecked Sendable {
             try { return new URL(text, document.baseURI).href; } catch (_) { return null; }
         }
 
-        function emit(value, source, tag, declaredType) {
+        var nextEventID = 0;
+        var MAX_INSPECTION_BYTES = 65536;
+
+        function manifestKindFor(url, declaredType, prefix) {
+            var mime = declaredType ? String(declaredType).toLowerCase().split(";", 1)[0].trim() : "";
+            var lowerURL = url ? String(url).toLowerCase() : "";
+            var urlPath = lowerURL;
+            try { urlPath = new URL(lowerURL).pathname.toLowerCase(); } catch (_) {}
+            var text = prefix ? String(prefix).replace(/^\uFEFF/, "").trim() : "";
+            var hls = text.indexOf("#EXTM3U") === 0 ||
+                mime.indexOf("mpegurl") >= 0 || /(?:^|[./])m3u8$/.test(urlPath);
+            var dash = /<\s*(?:[a-z_][a-z0-9_.-]*:)?mpd(?:\s|>)/i.test(text) ||
+                mime === "application/dash+xml" || mime === "video/vnd.mpeg.dash.mpd" ||
+                /(?:^|[./])mpd$/.test(urlPath);
+            if (hls && dash) { return "unsupported"; }
+            if (hls) { return "hls"; }
+            if (dash) { return "dash"; }
+            return null;
+        }
+
+        function shouldInspect(url, declaredType) {
+            return manifestKindFor(url, declaredType, null) !== null;
+        }
+
+        function headerContentLength(headers) {
+            try {
+                var value = headers && headers.get ? headers.get("content-length") : null;
+                var parsed = value === null ? NaN : Number(value);
+                return isFinite(parsed) && parsed >= 0 ? Math.floor(parsed) : null;
+            } catch (_) { return null; }
+        }
+
+        function inspectResponsePrefix(response) {
+            if (!response || !response.clone || !response.body || !window.TextDecoder) {
+                return Promise.resolve(null);
+            }
+            var clone;
+            try { clone = response.clone(); } catch (_) { return Promise.resolve(null); }
+            var reader;
+            try { reader = clone.body.getReader(); } catch (_) { return Promise.resolve(null); }
+            var decoder = new TextDecoder();
+            var text = "";
+            var total = 0;
+            function readNext() {
+                return reader.read().then(function(part) {
+                    if (!part || part.done) { return text; }
+                    var bytes = part.value || new Uint8Array(0);
+                    var remaining = MAX_INSPECTION_BYTES - total;
+                    if (remaining <= 0) {
+                        try { reader.cancel(); } catch (_) {}
+                        return text;
+                    }
+                    if (bytes.byteLength > remaining) { bytes = bytes.slice(0, remaining); }
+                    total += bytes.byteLength;
+                    text += decoder.decode(bytes);
+                    if (total >= MAX_INSPECTION_BYTES) {
+                        try { reader.cancel(); } catch (_) {}
+                        return text;
+                    }
+                    return readNext();
+                }).catch(function() { return text || null; });
+            }
+            return readNext();
+        }
+
+        function emit(value, source, metadata) {
             var url = absoluteURL(value);
             if (!url) { return; }
+            metadata = metadata || {};
+            var eventID = metadata.eventID || (source + "-" + (++nextEventID));
+            var declaredType = metadata.declaredType || null;
+            var prefix = metadata.manifestPrefix || null;
+            var kind = metadata.manifestKind || manifestKindFor(url, declaredType, prefix);
             try {
-                handler.postMessage({
+                var message = {
+                    eventID: eventID,
                     rawURL: url,
                     source: source,
-                    tag: tag || null,
-                    declaredType: declaredType || null
-                });
+                    tag: metadata.tag || null,
+                    declaredType: declaredType,
+                    responseURL: metadata.responseURL || null,
+                    method: metadata.method || "GET",
+                    status: metadata.status === undefined ? null : metadata.status,
+                    contentLength: metadata.contentLength === undefined ? null : metadata.contentLength,
+                    manifestKind: kind,
+                    manifestPrefix: prefix
+                };
+                handler.postMessage(message);
             } catch (_) {}
+        }
+
+        function emitResponse(response, requestURL, source, method) {
+            var type = null;
+            var responseURL = null;
+            var status = null;
+            var contentLength = null;
+            try { type = response.headers.get("content-type"); } catch (_) {}
+            try { responseURL = response.url || null; } catch (_) {}
+            try { status = response.status; } catch (_) {}
+            try { contentLength = headerContentLength(response.headers); } catch (_) {}
+            var metadata = {
+                method: method || "GET",
+                declaredType: type,
+                responseURL: responseURL,
+                status: status,
+                contentLength: contentLength
+            };
+            if (!shouldInspect(requestURL, type)) {
+                emit(requestURL, source, metadata);
+                return;
+            }
+            inspectResponsePrefix(response).then(function(prefix) {
+                metadata.manifestPrefix = prefix ? String(prefix).slice(0, MAX_INSPECTION_BYTES) : null;
+                metadata.manifestKind = manifestKindFor(requestURL, type, metadata.manifestPrefix);
+                emit(requestURL, source, metadata);
+            });
         }
 
         function inspectElement(element, source) {
@@ -126,10 +265,10 @@ public final class BrowserMediaDiscoveryBridge: NSObject, @unchecked Sendable {
             var name = element.tagName.toLowerCase();
             var tag = (name === "video" || name === "audio") ? name : "source";
             var type = element.getAttribute("type") || null;
-            if (element.currentSrc) { emit(element.currentSrc, source, tag, type); }
-            if (element.src) { emit(element.src, source, tag, type); }
+            if (element.currentSrc) { emit(element.currentSrc, source, { tag: tag, declaredType: type, method: "GET" }); }
+            if (element.src) { emit(element.src, source, { tag: tag, declaredType: type, method: "GET" }); }
             var raw = element.getAttribute("src");
-            if (raw) { emit(raw, source, tag, type); }
+            if (raw) { emit(raw, source, { tag: tag, declaredType: type, method: "GET" }); }
         }
 
         function inspectTree(root) {
@@ -151,7 +290,7 @@ public final class BrowserMediaDiscoveryBridge: NSObject, @unchecked Sendable {
                     get: mediaSourceDescriptor.get,
                     set: function(value) {
                         var tag = this.tagName ? this.tagName.toLowerCase() : "media";
-                        emit(value, "mediaElement", tag, null);
+                        emit(value, "mediaElement", { tag: tag, method: "GET" });
                         return mediaSourceDescriptor.set.call(this, value);
                     }
                 });
@@ -161,13 +300,12 @@ public final class BrowserMediaDiscoveryBridge: NSObject, @unchecked Sendable {
         try {
             var originalFetch = window.fetch;
             if (typeof originalFetch === "function") {
-                window.fetch = function(input) {
+                window.fetch = function(input, init) {
                     var requestURL = input && input.url ? input.url : input;
+                    var method = (input && input.method) || (init && init.method) || "GET";
                     var promise = originalFetch.apply(this, arguments);
                     return promise.then(function(response) {
-                        var type = null;
-                        try { type = response.headers.get("content-type"); } catch (_) {}
-                        emit(requestURL, "fetch", null, type);
+                        emitResponse(response, requestURL, "fetch", method);
                         return response;
                     });
                 };
@@ -179,6 +317,7 @@ public final class BrowserMediaDiscoveryBridge: NSObject, @unchecked Sendable {
             var originalSend = XMLHttpRequest.prototype.send;
             XMLHttpRequest.prototype.open = function(method, url) {
                 this.__lidMediaURL = url;
+                this.__lidMediaMethod = method || "GET";
                 return originalOpen.apply(this, arguments);
             };
             XMLHttpRequest.prototype.send = function() {
@@ -186,7 +325,21 @@ public final class BrowserMediaDiscoveryBridge: NSObject, @unchecked Sendable {
                 this.addEventListener("loadend", function() {
                     var type = null;
                     try { type = request.getResponseHeader("content-type"); } catch (_) {}
-                    emit(request.__lidMediaURL, "xmlHttpRequest", null, type);
+                    var prefix = null;
+                    try {
+                        if ((request.responseType === "" || request.responseType === "text") && shouldInspect(request.__lidMediaURL, type)) {
+                            prefix = String(request.responseText || "").slice(0, MAX_INSPECTION_BYTES);
+                        }
+                    } catch (_) {}
+                    emit(request.__lidMediaURL, "xmlHttpRequest", {
+                        method: request.__lidMediaMethod || "GET",
+                        declaredType: type,
+                        responseURL: request.responseURL || null,
+                        status: request.status,
+                        contentLength: headerContentLength({ get: function(name) { return request.getResponseHeader(name); } }),
+                        manifestPrefix: prefix,
+                        manifestKind: manifestKindFor(request.__lidMediaURL, type, prefix)
+                    });
                 }, { once: true });
                 return originalSend.apply(this, arguments);
             };
@@ -196,7 +349,7 @@ public final class BrowserMediaDiscoveryBridge: NSObject, @unchecked Sendable {
             if (window.PerformanceObserver) {
                 var observer = new PerformanceObserver(function(list) {
                     list.getEntries().forEach(function(entry) {
-                        if (entry && entry.name) { emit(entry.name, "performanceResource", null, null); }
+                        if (entry && entry.name) { emit(entry.name, "performanceResource", { method: "GET" }); }
                     });
                 });
                 observer.observe({ type: "resource", buffered: true });
@@ -276,6 +429,28 @@ public final class BrowserMediaDiscoveryBridge: NSObject, @unchecked Sendable {
             throw BrowserMediaDiscoveryBridgeError.unsupportedCandidateScheme
         }
 
+        let method = (message.method ?? "GET").trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        guard method == "GET" else {
+            throw BrowserMediaDiscoveryBridgeError.unsupportedHTTPMethod
+        }
+
+        if let eventID = message.eventID,
+           eventID.utf8.count > 128 {
+            throw BrowserMediaDiscoveryBridgeError.metadataTooLong
+        }
+        if let prefix = message.manifestPrefix,
+           prefix.utf8.count > Self.maximumMetadataLength {
+            throw BrowserMediaDiscoveryBridgeError.metadataTooLong
+        }
+        if let statusCode = message.status,
+           !(100...599).contains(statusCode) {
+            throw BrowserMediaDiscoveryBridgeError.malformedMessage
+        }
+        if let contentLength = message.contentLength,
+           contentLength < 0 {
+            throw BrowserMediaDiscoveryBridgeError.malformedMessage
+        }
+
         let lowerScheme = resolved.scheme?.lowercased() ?? ""
         let isBlob = lowerScheme == "blob"
         if !isBlob {
@@ -288,6 +463,24 @@ public final class BrowserMediaDiscoveryBridge: NSObject, @unchecked Sendable {
                   components.password == nil else {
                 throw BrowserMediaDiscoveryBridgeError.credentialedCandidateURL
             }
+        }
+
+        let responseURL: URL?
+        if let rawResponseURL = message.responseURL?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !rawResponseURL.isEmpty {
+            guard rawResponseURL.utf8.count <= Self.maximumCandidateLength,
+                  let candidateResponseURL = WebpageResourceExtractor.resolveURL(rawResponseURL, baseURL: pageURL),
+                  let responseScheme = candidateResponseURL.scheme?.lowercased(),
+                  responseScheme == "http" || responseScheme == "https",
+                  BrowserURLResolver.isValidDownloadURL(candidateResponseURL),
+                  let responseComponents = URLComponents(url: candidateResponseURL, resolvingAgainstBaseURL: false),
+                  responseComponents.user == nil,
+                  responseComponents.password == nil else {
+                throw BrowserMediaDiscoveryBridgeError.unsupportedCandidateScheme
+            }
+            responseURL = candidateResponseURL
+        } else {
+            responseURL = nil
         }
 
         let candidateOriginMatchesPage: Bool
@@ -305,12 +498,43 @@ public final class BrowserMediaDiscoveryBridge: NSObject, @unchecked Sendable {
         lock.unlock()
         guard isNew else { return nil }
 
+        let declaredType = Self.normalizedMetadata(message.declaredType)
+        let manifestPrefix = message.manifestPrefix.map {
+            String($0.prefix(Self.maximumMetadataLength))
+        }
+        let classifiedKind: StreamingManifestKind?
+        if let manifestPrefix,
+           let prefixData = manifestPrefix.data(using: .utf8) {
+            let classification = StreamingManifestClassifier.classify(
+                url: resolved,
+                mimeType: declaredType,
+                content: prefixData,
+                limits: ManifestParsingLimits(maxBytes: Self.maximumMetadataLength)
+            )
+            classifiedKind = classification.kind == .hls || classification.kind == .dash
+                ? classification.kind
+                : nil
+        } else if let advertisedKind = message.manifestKind,
+                  let kind = StreamingManifestKind(rawValue: advertisedKind),
+                  kind == .hls || kind == .dash {
+            classifiedKind = kind
+        } else {
+            classifiedKind = nil
+        }
+
         return BrowserMediaDiscoveryObservation(
             url: isBlob ? nil : resolved,
             rawURL: rawURL,
             source: message.source,
             tag: Self.normalizedMetadata(message.tag),
-            declaredType: Self.normalizedMetadata(message.declaredType),
+            declaredType: declaredType,
+            eventID: Self.normalizedMetadata(message.eventID),
+            responseURL: responseURL,
+            method: method,
+            statusCode: message.status,
+            contentLength: message.contentLength,
+            manifestKind: classifiedKind,
+            manifestPrefix: manifestPrefix,
             pageOrigin: pageOrigin,
             frameOrigin: frameOrigin,
             mayUseBrowserCredentials: mayUseCredentials
@@ -362,6 +586,13 @@ public final class BrowserMediaDiscoveryBridge: NSObject, @unchecked Sendable {
         let source: BrowserMediaDiscoverySource
         let tag: String?
         let declaredType: String?
+        let eventID: String?
+        let responseURL: String?
+        let method: String?
+        let status: Int?
+        let contentLength: Int64?
+        let manifestKind: String?
+        let manifestPrefix: String?
     }
 
     private static func normalizedMetadata(_ value: String?) -> String? {

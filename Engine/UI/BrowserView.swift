@@ -56,6 +56,18 @@ public final class BrowserViewModel: NSObject, ObservableObject {
     @Published public var resourceScanError: String? = nil
     public let mediaDiscoveryBridge = BrowserMediaDiscoveryBridge()
 
+    // Streaming proposal/execution state. The orchestrator remains the only
+    // owner of transfer execution; the browser owns confirmation presentation.
+    @Published public var streamingProposal: StreamingTransferProposal? = nil
+    @Published public var isPreparingStreaming: Bool = false
+    @Published public var isShowingStreamingConfirmation: Bool = false
+    @Published public var isExecutingStreaming: Bool = false
+    @Published public var streamingProgress: StreamingTransferProgress? = nil
+    @Published public var streamingErrorMessage: String? = nil
+    public let streamingOrchestrator: StreamingDownloadOrchestrator?
+    public let streamingDestinationDirectoryURL: URL
+    private var streamingExecutionTask: Task<Void, Never>?
+
     public weak var downloadDelegate: BrowserDownloadDelegate?
     public weak var magnetDelegate: (any BrowserMagnetDelegate)?
     public var onDownloadInitiated: (() -> Void)? = nil
@@ -67,11 +79,17 @@ public final class BrowserViewModel: NSObject, ObservableObject {
     public init(
         downloadDelegate: BrowserDownloadDelegate? = nil,
         magnetDelegate: (any BrowserMagnetDelegate)? = nil,
-        onDownloadInitiated: (() -> Void)? = nil
+        onDownloadInitiated: (() -> Void)? = nil,
+        streamingOrchestrator: StreamingDownloadOrchestrator? = nil,
+        streamingDestinationDirectoryURL: URL? = nil
     ) {
         self.downloadDelegate = downloadDelegate
         self.magnetDelegate = magnetDelegate
         self.onDownloadInitiated = onDownloadInitiated
+        self.streamingOrchestrator = streamingOrchestrator
+        self.streamingDestinationDirectoryURL = streamingDestinationDirectoryURL ??
+            FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first?.appendingPathComponent("Downloads", isDirectory: true) ??
+            FileManager.default.temporaryDirectory.appendingPathComponent("LIDDownloads", isDirectory: true)
         super.init()
         mediaDiscoveryBridge.observationHandler = { [weak self] observation in
             DispatchQueue.main.async { [weak self] in
@@ -151,6 +169,82 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                 requestContext: resource.requestContext
             )
         }
+    }
+
+    public func promptStreamingDownload(for resource: WebpageResource) {
+        guard resource.isStreamingManifest else {
+            streamingErrorMessage = "This resource is not a recognized HLS or DASH manifest."
+            return
+        }
+        guard let orchestrator = streamingOrchestrator else {
+            streamingErrorMessage = "Streaming downloads are unavailable in this browser configuration."
+            return
+        }
+        guard !isPreparingStreaming, !isExecutingStreaming else { return }
+
+        isShowingResourceInspector = false
+        isPreparingStreaming = true
+        streamingErrorMessage = nil
+        streamingProposal = nil
+        streamingProgress = nil
+
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                let candidate = try StreamingManifestCandidate(resource: resource)
+                let proposal = try await orchestrator.prepare(candidate: candidate)
+                self.streamingProposal = proposal
+                self.isShowingStreamingConfirmation = true
+            } catch {
+                self.streamingErrorMessage = error.localizedDescription
+            }
+            self.isPreparingStreaming = false
+        }
+    }
+
+    public func executeStreamingProposal() {
+        guard let proposal = streamingProposal,
+              let orchestrator = streamingOrchestrator,
+              !isExecutingStreaming else { return }
+
+        isExecutingStreaming = true
+        streamingErrorMessage = nil
+        let destination = streamingDestinationDirectoryURL
+        streamingExecutionTask = Task { @MainActor [weak self] in
+            do {
+                let result = try await orchestrator.execute(
+                    proposal,
+                    approved: true,
+                    destinationDirectory: destination
+                ) { [weak self] progress in
+                    Task { @MainActor in
+                        self?.streamingProgress = progress
+                    }
+                }
+                guard let self else { return }
+                self.isExecutingStreaming = false
+                self.isShowingStreamingConfirmation = false
+                self.downloadSuccessNotification = "Streaming download completed (\(result.localFiles.count) resources)."
+                self.onDownloadInitiated?()
+            } catch is CancellationError {
+                self?.isExecutingStreaming = false
+            } catch {
+                self?.isExecutingStreaming = false
+                self?.streamingErrorMessage = error.localizedDescription
+            }
+        }
+    }
+
+    public func cancelStreamingDownload() {
+        streamingExecutionTask?.cancel()
+        streamingExecutionTask = nil
+        if let transferID = streamingProposal?.transferID,
+           let orchestrator = streamingOrchestrator {
+            Task { await orchestrator.cancel(transferID: transferID) }
+        }
+        isPreparingStreaming = false
+        isExecutingStreaming = false
+        isShowingStreamingConfirmation = false
     }
 
     public func presentMagnetLink(_ magnet: MagnetLink, sourcePageURL: URL?) {
@@ -279,19 +373,54 @@ public final class BrowserViewModel: NSObject, ObservableObject {
 
         let rawCandidate = WebpageRawResourceCandidate(
             rawURL: discoveredURL.absoluteString,
-            tag: observation.tag,
+            tag: observation.tag ?? (observation.isManifestSignal ? "video" : nil),
             declaredType: observation.declaredType
         )
         let baseURL = currentURL ?? observation.pageOrigin
-        let resources = WebpageResourceExtractor.extractFromRawCandidates(
+        var resources = WebpageResourceExtractor.extractFromRawCandidates(
             [rawCandidate],
             baseURL: baseURL
         )
-        guard let resource = resources.first,
+        // A fetch/XHR response can identify a manifest even when its URL has
+        // no useful extension and the media element has not yet attached it.
+        // Preserve that signal as a candidate; the orchestrator performs the
+        // authoritative fetch, classification, and parsing later.
+        if resources.isEmpty, observation.isManifestSignal {
+            let manifestType = observation.manifestKind == .dash
+                ? "application/dash+xml"
+                : "application/vnd.apple.mpegurl"
+            resources = [WebpageResource(
+                url: discoveredURL,
+                title: BrowserURLResolver.suggestedFilename(from: discoveredURL),
+                suggestedFilename: BrowserURLResolver.suggestedFilename(from: discoveredURL),
+                resourceType: .video,
+                mimeType: observation.declaredType ?? manifestType,
+                isSupported: false,
+                unsupportedReason: "Streaming playlist manifest. Prepare a manifest-aware transfer to continue."
+            )]
+        }
+        guard var resource = resources.first,
               !discoveredResources.contains(where: {
                   $0.url.absoluteString.lowercased() == resource.url.absoluteString.lowercased()
               }) else {
             return
+        }
+
+        if observation.isManifestSignal && !resource.isStreamingManifest {
+            let manifestType = observation.manifestKind == .dash
+                ? "application/dash+xml"
+                : "application/vnd.apple.mpegurl"
+            resource = WebpageResource(
+                id: resource.id,
+                url: resource.url,
+                title: resource.title,
+                suggestedFilename: resource.suggestedFilename,
+                resourceType: .video,
+                mimeType: resource.mimeType ?? observation.declaredType ?? manifestType,
+                estimatedSize: observation.contentLength ?? resource.estimatedSize,
+                isSupported: false,
+                unsupportedReason: "Streaming playlist manifest. Prepare a manifest-aware transfer to continue."
+            )
         }
 
         // A resource observed by a cross-origin frame, or a resource hosted on
@@ -334,7 +463,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
             webView.configuration.websiteDataStore.httpCookieStore.getAllCookies { cookies in
                 let browserCookies = cookies.compactMap(BrowserCookie.init(from:))
                 let contextualResources = resources.map { resource in
-                    guard resource.isSupported else { return resource }
+                    guard resource.isSupported || resource.isStreamingManifest else { return resource }
                     let matchingCookies = browserCookies.filter { $0.matches(url: resource.url) }
                     let context = BrowserRequestContext(
                         url: resource.url,
@@ -596,7 +725,9 @@ public struct BrowserView: View {
         _viewModel = StateObject(wrappedValue: BrowserViewModel(
             downloadDelegate: viewModel,
             magnetDelegate: viewModel,
-            onDownloadInitiated: onDownloadInitiated
+            onDownloadInitiated: onDownloadInitiated,
+            streamingOrchestrator: StreamingDownloadOrchestrator(downloadCoordinator: viewModel.engine.coordinator),
+            streamingDestinationDirectoryURL: viewModel.downloadsDirectoryURL
         ))
     }
 
@@ -646,6 +777,9 @@ public struct BrowserView: View {
         }
         .sheet(isPresented: $viewModel.isShowingMagnetSheet) {
             BrowserMagnetConfirmationSheet(viewModel: viewModel)
+        }
+        .sheet(isPresented: $viewModel.isShowingStreamingConfirmation) {
+            BrowserStreamingConfirmationSheet(viewModel: viewModel)
         }
         #if canImport(UIKit)
         .background(Color(UIColor.systemBackground))
@@ -1109,6 +1243,101 @@ public struct BrowserMagnetConfirmationSheet: View {
     }
 
     private func magnetDetailRow(label: String, value: String) -> some View {
+        HStack(alignment: .top) {
+            Text(label)
+                .foregroundColor(.secondary)
+            Spacer(minLength: 12)
+            Text(value)
+                .multilineTextAlignment(.trailing)
+        }
+    }
+}
+
+/// Confirms a prepared, finite streaming proposal before its resources are
+/// submitted through the existing download coordinator.
+public struct BrowserStreamingConfirmationSheet: View {
+    @ObservedObject public var viewModel: BrowserViewModel
+    @Environment(\.presentationMode) private var presentationMode
+
+    public init(viewModel: BrowserViewModel) {
+        self.viewModel = viewModel
+    }
+
+    public var body: some View {
+        NavigationView {
+            Form {
+                if let proposal = viewModel.streamingProposal {
+                    Section(header: Text("Stream")) {
+                        detailRow(label: "Type", value: proposal.manifest.kind.rawValue.uppercased())
+                        detailRow(label: "Resources", value: "\(proposal.resources.count) ordered segments")
+                        if let bytes = proposal.estimatedTransferBytes {
+                            detailRow(label: "Estimated size", value: ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file))
+                        }
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Manifest")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                            Text(BrowserURLResolver.sanitizeURLForDisplay(proposal.manifest.manifestURL))
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                                .lineLimit(3)
+                        }
+                    }
+
+                    if let progress = viewModel.streamingProgress {
+                        Section(header: Text("Progress")) {
+                            ProgressView(value: progress.currentFraction)
+                            Text("Segment \(progress.currentOrder) of \(progress.totalSegments)")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+
+                    if let error = viewModel.streamingErrorMessage {
+                        Section {
+                            Text(error)
+                                .foregroundColor(.red)
+                                .font(.caption)
+                        }
+                    }
+
+                    Section {
+                        Button {
+                            viewModel.executeStreamingProposal()
+                        } label: {
+                            HStack {
+                                Spacer()
+                                if viewModel.isExecutingStreaming {
+                                    ProgressView()
+                                        .padding(.trailing, 8)
+                                }
+                                Text(viewModel.isExecutingStreaming ? "Downloading Stream" : "Start Stream")
+                                    .bold()
+                                Spacer()
+                            }
+                        }
+                        .disabled(viewModel.isExecutingStreaming)
+                    }
+                } else if viewModel.isPreparingStreaming {
+                    ProgressView("Preparing manifest")
+                } else {
+                    Text("No streaming proposal is awaiting confirmation.")
+                        .foregroundColor(.secondary)
+                }
+            }
+            .navigationTitle("Streaming Download")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") {
+                        viewModel.cancelStreamingDownload()
+                        presentationMode.wrappedValue.dismiss()
+                    }
+                }
+            }
+        }
+    }
+
+    private func detailRow(label: String, value: String) -> some View {
         HStack(alignment: .top) {
             Text(label)
                 .foregroundColor(.secondary)

@@ -37,7 +37,7 @@ final class BrowserMediaDiscoveryTests: XCTestCase {
         )
         XCTAssertEqual(resources.first?.resourceType, .video)
         XCTAssertFalse(resources.first?.isSupported ?? true)
-        XCTAssertTrue(resources.first?.unsupportedReason?.contains("transfer execution") ?? false)
+        XCTAssertTrue(resources.first?.unsupportedReason?.contains("manifest-aware") ?? false)
 
         let duplicate = try bridge.accept(payload: payload, pageURL: pageURL, frameURL: pageURL)
         XCTAssertNil(duplicate)
@@ -123,7 +123,54 @@ final class BrowserMediaDiscoveryTests: XCTestCase {
         XCTAssertTrue(script.contains("MutationObserver"))
         XCTAssertTrue(script.contains("PerformanceObserver"))
         XCTAssertTrue(script.contains("video, audio, source"))
+        XCTAssertTrue(script.contains("getReader"))
+        XCTAssertTrue(script.contains("responseURL"))
+        XCTAssertTrue(script.contains("contentLength"))
         XCTAssertFalse(script.contains("document.cookie"))
         XCTAssertFalse(script.contains("Authorization"))
+    }
+
+    func testManifestMetadataIsBoundedAndClassifiedWithoutFetching() throws {
+        let bridge = BrowserMediaDiscoveryBridge()
+        let payload: [String: Any] = [
+            "rawURL": "/play?token=signed-value",
+            "source": "fetch",
+            "method": "GET",
+            "status": 200,
+            "responseURL": "https://video.example/play?token=signed-value",
+            "contentLength": 42,
+            "declaredType": "application/vnd.apple.mpegurl; charset=utf-8",
+            "manifestPrefix": "#EXTM3U\n#EXT-X-ENDLIST"
+        ]
+
+        let observation = try XCTUnwrap(bridge.accept(payload: payload, pageURL: pageURL))
+        XCTAssertEqual(observation.method, "GET")
+        XCTAssertEqual(observation.statusCode, 200)
+        XCTAssertEqual(observation.contentLength, 42)
+        XCTAssertEqual(observation.responseURL?.absoluteString, "https://video.example/play?token=signed-value")
+        XCTAssertEqual(observation.manifestKind, .hls)
+        XCTAssertEqual(observation.manifestPrefix, "#EXTM3U\n#EXT-X-ENDLIST")
+        XCTAssertTrue(observation.isManifestSignal)
+    }
+
+    func testNonGETAndOversizedInspectionMetadataAreRejected() {
+        let bridge = BrowserMediaDiscoveryBridge()
+        let postPayload: [String: Any] = [
+            "rawURL": "https://video.example/manifest.m3u8",
+            "source": "fetch",
+            "method": "POST"
+        ]
+        XCTAssertThrowsError(try bridge.accept(payload: postPayload, pageURL: pageURL)) { error in
+            XCTAssertEqual(error as? BrowserMediaDiscoveryBridgeError, .unsupportedHTTPMethod)
+        }
+
+        let oversizedPayload: [String: Any] = [
+            "rawURL": "https://video.example/manifest.m3u8",
+            "source": "fetch",
+            "manifestPrefix": String(repeating: "x", count: BrowserMediaDiscoveryBridge.maximumMetadataLength + 1)
+        ]
+        XCTAssertThrowsError(try bridge.accept(payload: oversizedPayload, pageURL: pageURL)) { error in
+            XCTAssertEqual(error as? BrowserMediaDiscoveryBridgeError, .metadataTooLong)
+        }
     }
 }

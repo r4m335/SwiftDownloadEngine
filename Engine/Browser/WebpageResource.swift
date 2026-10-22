@@ -38,6 +38,17 @@ public struct WebpageResource: Identifiable, Hashable, Sendable {
     /// Credentials are filtered again when headers are assembled for a target URL.
     public let requestContext: BrowserRequestContext?
 
+    /// Manifest candidates are intentionally kept outside the ordinary
+    /// `isSupported` download path. They require planning and coordinator-
+    /// backed execution before they can be offered as a stream download.
+    public var isStreamingManifest: Bool {
+        let classification = StreamingManifestClassifier.classify(
+            url: url,
+            mimeType: mimeType
+        )
+        return classification.kind == .hls || classification.kind == .dash
+    }
+
     public init(
         id: String = UUID().uuidString,
         url: URL,
@@ -209,14 +220,18 @@ public struct WebpageResourceExtractor {
         }
 
         let pathExt = url.pathExtension.lowercased()
-        let isManifestMIME = normalizedMIME == "application/vnd.apple.mpegurl" ||
-            normalizedMIME == "application/x-mpegurl" ||
-            normalizedMIME == "audio/mpegurl" ||
-            normalizedMIME == "application/dash+xml"
-        if pathExt == "m3u8" || pathExt == "mpd" || isManifestMIME ||
+        let manifestClassification = StreamingManifestClassifier.classify(
+            url: url,
+            mimeType: normalizedMIME
+        )
+        if manifestClassification.kind == .hls || manifestClassification.kind == .dash ||
+            manifestClassification.kind == .unsupported ||
             lowerRaw.hasPrefix("data:application/vnd.apple.mpegurl") {
             let manifestName = pathExt.isEmpty ? "manifest" : pathExt.uppercased()
-            return (false, "Streaming playlist manifest (\(manifestName)). Milestone 7F parsing is implemented, but transfer execution is not integrated yet.")
+            if manifestClassification.kind == .unsupported {
+                return (false, "Streaming manifest metadata conflicts (\(manifestName)); it cannot be downloaded safely.")
+            }
+            return (false, "Streaming playlist manifest (\(manifestName)). Use the manifest-aware streaming workflow.")
         }
 
         if scheme != "http" && scheme != "https" {
