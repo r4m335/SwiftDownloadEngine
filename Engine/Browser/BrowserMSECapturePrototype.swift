@@ -45,6 +45,34 @@ public struct BrowserMSECaptureSupport: Sendable, Equatable {
     public var isCapturable: Bool { status == .capturable }
 }
 
+public struct BrowserMSECaptureBufferMetadata: Sendable, Equatable {
+    public let trackIndex: Int
+    public let mimeType: String
+    public let codecs: [String]
+    public let kind: BrowserMSECaptureTrackKind
+
+    public init(trackIndex: Int, mimeType: String, codecs: [String], kind: BrowserMSECaptureTrackKind) {
+        self.trackIndex = trackIndex
+        self.mimeType = mimeType
+        self.codecs = codecs
+        self.kind = kind
+    }
+}
+
+public struct BrowserMSECaptureAppendEvent: Sendable, Equatable {
+    public let chunkIndex: Int
+    public let trackIndex: Int
+    public let segmentIndex: Int
+    public let byteCount: Int64
+
+    public init(chunkIndex: Int, trackIndex: Int, segmentIndex: Int, byteCount: Int64) {
+        self.chunkIndex = chunkIndex
+        self.trackIndex = trackIndex
+        self.segmentIndex = segmentIndex
+        self.byteCount = byteCount
+    }
+}
+
 public enum BrowserMSECaptureSupportClassifier {
     /// Evaluates whether a MediaSource MIME list can be reconstructed by the
     /// current prototype. Protection always wins over codec support.
@@ -141,6 +169,19 @@ public enum BrowserMSECaptureSupportClassifier {
         return .unknown
     }
 
+    public static func codecs(in mimeType: String) -> [String] {
+        guard let parameter = mimeType.split(separator: ";", maxSplits: 1).dropFirst().first else {
+            return []
+        }
+        let value = parameter.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard value.lowercased().hasPrefix("codecs=") else { return [] }
+        return value.dropFirst("codecs=".count)
+            .trimmingCharacters(in: CharacterSet(charactersIn: " \t\""))
+            .split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+    }
+
     public static func normalizeMIME(_ value: String?) -> String? {
         guard let value else { return nil }
         let result = value.split(separator: ";", maxSplits: 1).first?
@@ -189,6 +230,8 @@ public struct BrowserMSECaptureSnapshot: Sendable, Equatable {
     public let supportReason: String?
     public let reconstructedURL: URL?
     public let temporaryDirectoryURL: URL?
+    public let bufferMetadata: [BrowserMSECaptureBufferMetadata]
+    public let appendSequence: [BrowserMSECaptureAppendEvent]
 
     public init(
         captureID: String,
@@ -197,7 +240,9 @@ public struct BrowserMSECaptureSnapshot: Sendable, Equatable {
         lifecycle: BrowserMSECaptureLifecycle,
         supportReason: String? = nil,
         reconstructedURL: URL? = nil,
-        temporaryDirectoryURL: URL? = nil
+        temporaryDirectoryURL: URL? = nil,
+        bufferMetadata: [BrowserMSECaptureBufferMetadata] = [],
+        appendSequence: [BrowserMSECaptureAppendEvent] = []
     ) {
         self.captureID = captureID
         self.bytesCaptured = bytesCaptured
@@ -206,6 +251,8 @@ public struct BrowserMSECaptureSnapshot: Sendable, Equatable {
         self.supportReason = supportReason
         self.reconstructedURL = reconstructedURL
         self.temporaryDirectoryURL = temporaryDirectoryURL
+        self.bufferMetadata = bufferMetadata
+        self.appendSequence = appendSequence
     }
 
     /// True only after reconstruction validation publishes a playable file.
@@ -310,6 +357,7 @@ public actor BrowserMSECapturePrototypeWriter {
         var segmentCount: Int
         var nextChunkIndex: Int
         var nextChunkOffset: Int64
+        var appendSequence: [BrowserMSECaptureAppendEvent]
         var lifecycle: BrowserMSECaptureLifecycle
     }
 
@@ -378,6 +426,7 @@ public actor BrowserMSECapturePrototypeWriter {
             segmentCount: 0,
             nextChunkIndex: 0,
             nextChunkOffset: 0,
+            appendSequence: [],
             lifecycle: .capturing
         )
 
@@ -462,6 +511,12 @@ public actor BrowserMSECapturePrototypeWriter {
             session.bytesCaptured += Int64(data.count)
             session.nextChunkIndex += 1
             session.nextChunkOffset += Int64(data.count)
+            session.appendSequence.append(BrowserMSECaptureAppendEvent(
+                chunkIndex: chunkIndex,
+                trackIndex: trackIndex,
+                segmentIndex: segmentIndex,
+                byteCount: Int64(data.count)
+            ))
 
             if isSegmentEnd {
                 try closeOpenSegment(track: &track, container: session.support.container)
@@ -508,7 +563,9 @@ public actor BrowserMSECapturePrototypeWriter {
                 lifecycle: .completed,
                 supportReason: session.support.reason,
                 reconstructedURL: output,
-                temporaryDirectoryURL: session.stagingDirectoryURL
+                temporaryDirectoryURL: session.stagingDirectoryURL,
+                bufferMetadata: bufferMetadata(for: session),
+                appendSequence: session.appendSequence
             )
             cleanupStaging(session: session, keepOutput: output)
             sessions.removeValue(forKey: captureID)
@@ -707,8 +764,22 @@ public actor BrowserMSECapturePrototypeWriter {
             segmentCount: session.segmentCount,
             lifecycle: session.lifecycle,
             supportReason: session.support.reason,
-            temporaryDirectoryURL: session.stagingDirectoryURL
+            temporaryDirectoryURL: session.stagingDirectoryURL,
+            bufferMetadata: bufferMetadata(for: session),
+            appendSequence: session.appendSequence
         )
+    }
+
+    private func bufferMetadata(for session: Session) -> [BrowserMSECaptureBufferMetadata] {
+        session.tracks.keys.sorted().compactMap { index in
+            guard let track = session.tracks[index] else { return nil }
+            return BrowserMSECaptureBufferMetadata(
+                trackIndex: index,
+                mimeType: track.mimeType,
+                codecs: BrowserMSECaptureSupportClassifier.codecs(in: track.mimeType),
+                kind: track.kind
+            )
+        }
     }
 
     private func abort(captureID: String) {

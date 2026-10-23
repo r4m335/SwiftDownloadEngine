@@ -40,7 +40,7 @@ final class BrowserMSECapturePrototypeTests: XCTestCase {
         let metadata = BrowserMSECaptureMetadata(
             captureID: "mse-1",
             mediaSourceURL: "blob:https://video.example/ms-1",
-            mimeTypes: ["video/mp4"]
+            mimeTypes: ["video/mp4; codecs=\"avc1.4d401f\""]
         )
         _ = try await writer.begin(metadata: metadata)
 
@@ -73,6 +73,18 @@ final class BrowserMSECapturePrototypeTests: XCTestCase {
         let output = try XCTUnwrap(completed.reconstructedURL)
         XCTAssertEqual(try Data(contentsOf: output), initBytes + mediaBytes)
         XCTAssertEqual(completed.lifecycle, .completed)
+        XCTAssertEqual(completed.bufferMetadata, [
+            BrowserMSECaptureBufferMetadata(
+                trackIndex: 0,
+                mimeType: "video/mp4; codecs=\"avc1.4d401f\"",
+                codecs: ["avc1.4d401f"],
+                kind: .video
+            )
+        ])
+        XCTAssertEqual(completed.appendSequence, [
+            BrowserMSECaptureAppendEvent(chunkIndex: 0, trackIndex: 0, segmentIndex: 0, byteCount: Int64(initBytes.count)),
+            BrowserMSECaptureAppendEvent(chunkIndex: 1, trackIndex: 0, segmentIndex: 1, byteCount: Int64(mediaBytes.count))
+        ])
     }
 
     func testProtectedAndUnsupportedSessionsNeverOpenWriters() async {
