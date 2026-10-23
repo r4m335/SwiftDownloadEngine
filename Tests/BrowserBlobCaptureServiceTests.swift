@@ -132,7 +132,7 @@ final class BrowserBlobCaptureServiceTests: XCTestCase {
         ]
         let ack = await receiver.receive(payload: chunkPayload)
         XCTAssertFalse(ack.accepted)
-        XCTAssertEqual(ack.error, .unknownTransferID)
+        XCTAssertEqual(ack.error, .tabMismatch)
     }
 
     func testUnknownTransferIDIsRejected() async throws {
