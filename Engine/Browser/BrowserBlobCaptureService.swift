@@ -425,7 +425,7 @@ public struct EngineSHA256Hasher {
         0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
         0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19
     ]
-    private var pending = Data()
+    private var pending: [UInt8] = []
     private var byteCount: UInt64 = 0
 
     public init() {}
@@ -433,10 +433,10 @@ public struct EngineSHA256Hasher {
     public mutating func update(data: Data) {
         guard !data.isEmpty else { return }
         byteCount += UInt64(data.count)
-        pending.append(data)
+        pending.append(contentsOf: data)
         while pending.count >= 64 {
-            compress(Array(pending.prefix(64)))
-            pending.removeFirst(64)
+            compress(pending, start: 0)
+            pending.removeSubrange(0..<64)
         }
     }
 
@@ -451,7 +451,7 @@ public struct EngineSHA256Hasher {
             tail.append(UInt8((bitCount >> UInt64(shift)) & 0xff))
         }
         for start in stride(from: 0, to: tail.count, by: 64) {
-            compress(Array(tail[start..<(start + 64)]))
+            compress(tail, start: start)
         }
         let result = state.map { word in
             let hex = String(word, radix: 16)
@@ -461,7 +461,7 @@ public struct EngineSHA256Hasher {
         return result
     }
 
-    private mutating func compress(_ block: [UInt8]) {
+    private mutating func compress(_ block: [UInt8], start: Int) {
         let k: [UInt32] = [
             0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b,
             0x59f111f1, 0x923f82a4, 0xab1c5ed5, 0xd807aa98, 0x12835b01,
@@ -479,7 +479,7 @@ public struct EngineSHA256Hasher {
         ]
         var w = [UInt32](repeating: 0, count: 64)
         for i in 0..<16 {
-            let index = i * 4
+            let index = start + i * 4
             w[i] = (UInt32(block[index]) << 24) | (UInt32(block[index + 1]) << 16) |
                 (UInt32(block[index + 2]) << 8) | UInt32(block[index + 3])
         }
