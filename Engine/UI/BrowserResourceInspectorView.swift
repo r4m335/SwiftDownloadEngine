@@ -36,16 +36,12 @@ public struct BrowserResourceInspectorSheet: View {
                 // Search & Quick Selection Bar
                 searchAndSelectionHeader
 
-                if !viewModel.mediaCandidates.isEmpty {
-                    mediaCandidateSection
-                }
-
                 // Main Content: Loading, Empty, or List
                 if viewModel.isScanningResources {
                     loadingView
                 } else if let error = viewModel.resourceScanError {
                     errorView(error)
-                } else if filteredResources.isEmpty && viewModel.mediaCandidates.isEmpty {
+                } else if filteredResources.isEmpty {
                     emptyView
                 } else if !filteredResources.isEmpty {
                     resourceList
@@ -208,141 +204,6 @@ public struct BrowserResourceInspectorSheet: View {
         #if canImport(UIKit)
         .listStyle(InsetGroupedListStyle())
         #endif
-    }
-
-    private var mediaCandidateSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Browser Media")
-                .font(.headline)
-                .padding(.horizontal, 16)
-
-            if viewModel.isCapturingBlob {
-                HStack(spacing: 8) {
-                    ProgressView()
-                    if let snapshot = viewModel.blobCaptureSnapshot {
-                        Text("Capturing blob… \(ByteCountFormatter.string(fromByteCount: snapshot.bytesWritten, countStyle: .file))")
-                    } else {
-                        Text("Capturing blob…")
-                    }
-                }
-                .font(.caption)
-                .padding(.horizontal, 16)
-            }
-            if viewModel.isCapturingMSE {
-                HStack(spacing: 8) {
-                    ProgressView()
-                    if let snapshot = viewModel.mseCaptureSnapshot {
-                        Text("Capturing MSE… \(ByteCountFormatter.string(fromByteCount: snapshot.bytesCaptured, countStyle: .file))")
-                    } else {
-                        Text("Capturing MSE…")
-                    }
-                }
-                .font(.caption)
-                .padding(.horizontal, 16)
-            }
-            if let error = viewModel.blobCaptureErrorMessage {
-                Text(error)
-                    .font(.caption)
-                    .foregroundColor(.orange)
-                    .padding(.horizontal, 16)
-            }
-            if let error = viewModel.mseCaptureErrorMessage {
-                Text(error)
-                    .font(.caption)
-                    .foregroundColor(.orange)
-                    .padding(.horizontal, 16)
-            }
-
-            ForEach(viewModel.mediaCandidates) { candidate in
-                HStack(alignment: .top, spacing: 10) {
-                    Image(systemName: candidate.kind == .completeBlob ? "shippingbox" : "waveform")
-                        .foregroundColor(.blue)
-                        .frame(width: 24)
-
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(candidate.suggestedFilename)
-                            .font(.subheadline.weight(.semibold))
-                            .lineLimit(1)
-                        Text(candidate.mimeType ?? candidate.kind.rawValue)
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                        if let size = candidate.estimatedSize {
-                            Text(ByteCountFormatter.string(fromByteCount: size, countStyle: .file))
-                                .font(.caption2)
-                                .foregroundColor(.secondary)
-                        }
-                    }
-
-                    Spacer(minLength: 8)
-
-                    candidateAction(for: candidate)
-                }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 6)
-            }
-        }
-        .padding(.vertical, 8)
-        #if canImport(UIKit)
-        .background(Color(UIColor.secondarySystemBackground))
-        #else
-        .background(Color.secondary.opacity(0.1))
-        #endif
-    }
-
-    @ViewBuilder
-    private func candidateAction(for candidate: BrowserMediaCandidate) -> some View {
-        if candidate.kind == .completeBlob && candidate.availability == .captureCandidate {
-            if viewModel.isCapturingBlob {
-                Button("Cancel") {
-                    viewModel.cancelBlobCapture()
-                }
-                .font(.caption.weight(.semibold))
-                .buttonStyle(.bordered)
-            } else {
-                Button("Export Blob") {
-                    viewModel.exportBlobCandidate(candidate)
-                }
-                .font(.caption.weight(.semibold))
-                .buttonStyle(.borderedProminent)
-            }
-        } else if candidate.kind == .mediaSource {
-            if candidate.availability == .captureCandidate {
-                if viewModel.isCapturingMSE {
-                    HStack(spacing: 6) {
-                        Button("Stop") {
-                            viewModel.stopMSECapture()
-                        }
-                        .font(.caption.weight(.semibold))
-                        .buttonStyle(.borderedProminent)
-                        Button("Cancel") {
-                            viewModel.cancelMSECapture()
-                        }
-                        .font(.caption.weight(.semibold))
-                        .buttonStyle(.bordered)
-                    }
-                } else {
-                    Button("Capture MSE") {
-                        viewModel.startMSECapture(candidate)
-                    }
-                    .font(.caption.weight(.semibold))
-                    .buttonStyle(.borderedProminent)
-                }
-            } else {
-                Button("Inspect Stream") {
-                    viewModel.inspectStreamCandidate(candidate)
-                }
-                .font(.caption.weight(.semibold))
-                .buttonStyle(.bordered)
-            }
-        } else if candidate.availability == .unsupported {
-            Text("Unavailable")
-                .font(.caption)
-                .foregroundColor(.secondary)
-        } else {
-            Text(candidate.availability == .uncertain ? "Inspecting…" : "Not ready")
-                .font(.caption)
-                .foregroundColor(.secondary)
-        }
     }
 
     // MARK: - Empty & Loading States
@@ -556,10 +417,10 @@ public struct ResourceRowView: View {
             Spacer(minLength: 8)
 
             // Individual Download Action Button
-            let isBlobCaptureCandidate = resource.url.scheme?.lowercased() == "blob"
-            if resource.isSupported || resource.isStreamingManifest || isBlobCaptureCandidate {
+            if resource.isSupported || resource.isStreamingManifest ||
+                resource.url.scheme?.lowercased() == "blob" {
                 Button(action: onDownload) {
-                    Image(systemName: isBlobCaptureCandidate ? "camera.circle.fill" : "arrow.down.circle.fill")
+                    Image(systemName: "arrow.down.circle.fill")
                         .font(.system(size: 24))
                         .foregroundColor(.blue)
                 }

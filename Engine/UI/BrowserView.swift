@@ -645,7 +645,10 @@ public final class BrowserViewModel: NSObject, ObservableObject {
             guard let self = self else { return }
             let candidate = BrowserMediaCandidateClassifier.classify(resource: resource)
             if candidate.kind == .completeBlob {
-                self.exportBlobCandidate(candidate)
+                let discoveredCandidate = self.mediaCandidates.first {
+                    $0.rawURL.caseInsensitiveCompare(resource.url.absoluteString) == .orderedSame
+                }
+                self.exportBlobCandidate(discoveredCandidate ?? candidate)
                 return
             }
             if candidate.kind == .directMedia {
