@@ -453,7 +453,10 @@ public struct EngineSHA256Hasher {
         for start in stride(from: 0, to: tail.count, by: 64) {
             compress(Array(tail[start..<(start + 64)]))
         }
-        let result = state.map { String(format: "%08x", $0) }.joined()
+        let result = state.map { word in
+            let hex = String(word, radix: 16)
+            return String(repeating: "0", count: max(0, 8 - hex.count)) + hex
+        }.joined()
         self = Self()
         return result
     }
