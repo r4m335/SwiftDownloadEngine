@@ -1078,7 +1078,6 @@ public final class BlobCaptureWebKitHandler: NSObject, WKScriptMessageHandler, @
 }
 
 /// Backward-compatible alias so existing BrowserView code compiles unchanged.
-public typealias BrowserBlobCapturePrototypeWebKitHandler = BlobCaptureWebKitHandler
 #endif
 
 // MARK: - JavaScript Bridge v2
