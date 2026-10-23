@@ -74,7 +74,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
 
     // Bounded Blob export state. Blob bytes are written by the per-tab
     // capture service; the view model only presents progress and lifecycle.
-    @Published public private(set) var blobCaptureSnapshot: BrowserBlobCaptureSnapshot?
+    @Published public private(set) var blobCaptureSnapshot: BlobExportSnapshot?
     @Published public var blobCaptureErrorMessage: String?
     @Published public private(set) var isCapturingBlob: Bool = false
     private var activeBlobCaptureID: String?
