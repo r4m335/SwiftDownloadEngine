@@ -1,4 +1,4 @@
-﻿import Foundation
+import Foundation
 import XCTest
 @testable import DM_Reverse_engineering
 
@@ -46,6 +46,20 @@ final class BrowserBlobCaptureServiceTests: XCTestCase {
     }
 
     private func sha(_ data: Data) -> String { EngineSHA256.hash(data: data) }
+
+    func testIncrementalHasherMatchesKnownVectorsAcrossChunkBoundaries() {
+        let vectors: [(Data, String)] = [
+            (Data(), "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"),
+            (Data(repeating: 0x61, count: 65), "635361c48bb9eab14198e76ea8ab7f1a41685d6ad62aa9146d301d4f17eb0ae0"),
+        ]
+        for (data, expected) in vectors {
+            var hasher = EngineSHA256Hasher()
+            for byte in data {
+                hasher.update(data: Data([byte]))
+            }
+            XCTAssertEqual(hasher.finalize(), expected)
+        }
+    }
 
     // MARK: - 1. Happy path
 
@@ -289,6 +303,24 @@ final class BrowserBlobCaptureServiceTests: XCTestCase {
         } catch let e as BlobExportError { XCTAssertEqual(e, .wholeFileDigestMismatch) }
     }
 
+    func testMalformedWholeFileDigestIsRejected() async throws {
+        let dir = tmpDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let writer = makeWriter(dir: dir)
+        let data = Data("malformed".utf8)
+        _ = try await writer.begin(authorization: makeAuth(), envelope: makeEnvelope(size: Int64(data.count)), suggestedFilename: "malformed.mp4")
+        _ = try await writer.append(transferID: "t1", chunkIndex: 0, offset: 0, data: data, sha256: sha(data))
+        do {
+            _ = try await writer.complete(
+                transferID: "t1", finalChunkIndex: 1, finalOffset: Int64(data.count),
+                declaredFileDigest: "not-a-sha256"
+            )
+            XCTFail("Expected invalidWholeFileDigest")
+        } catch let error as BlobExportError {
+            XCTAssertEqual(error, .invalidWholeFileDigest)
+        }
+    }
+
     func testChunkExceedingMaxChunkBytesIsRejected() async throws {
         let dir = tmpDir()
         defer { try? FileManager.default.removeItem(at: dir) }
@@ -516,6 +548,11 @@ final class BrowserBlobCaptureServiceTests: XCTestCase {
         XCTAssertTrue(cmd.contains("262144"))   // clamped to MAX_CHUNK_BYTES
         XCTAssertTrue(cmd.contains("video.example"))
         XCTAssertTrue(cmd.contains("t-start"))
+    }
+
+    func testJavaScriptRollingDigestUsesStandardSHA256Constants() {
+        XCTAssertTrue(BlobCaptureBridge.script.contains("0x3956c25b"))
+        XCTAssertFalse(BlobCaptureBridge.script.contains("0x3956c25,"))
     }
 
     func testAcknowledgeAndCancelCommandsAreWellFormed() {
