@@ -552,7 +552,7 @@ public actor BlobExportWriter {
             throw BlobExportError.unknownTransferID
         }
         guard validIdentifier(authorization.transferID),
-              validIdentifier(authorization.tabID),
+              authorization.tabID.isEmpty || validIdentifier(authorization.tabID),
               authorization.documentID.map(validIdentifier) ?? true else {
             throw BlobExportError.invalidTransferID
         }
