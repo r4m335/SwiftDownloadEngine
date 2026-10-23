@@ -80,6 +80,14 @@ public final class BrowserViewModel: NSObject, ObservableObject {
     private var activeBlobCaptureID: String?
     private var activeBlobCaptureTabID: UUID?
 
+    // Optional MSE capture state (7H.4). Metadata observation remains the
+    // default; bytes are retained only while an explicit capture is active.
+    @Published public private(set) var mseCaptureSnapshot: BrowserMSECaptureSnapshot?
+    @Published public var mseCaptureErrorMessage: String?
+    @Published public private(set) var isCapturingMSE: Bool = false
+    private var activeMSECaptureID: String?
+    private var activeMSECaptureTabID: UUID?
+
     public weak var downloadDelegate: BrowserDownloadDelegate?
     public weak var magnetDelegate: (any BrowserMagnetDelegate)?
     public var onDownloadInitiated: (() -> Void)? = nil
@@ -215,6 +223,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
     public func closeTab(_ id: UUID) -> UUID? {
         #if canImport(WebKit)
         cancelBlobCapture(for: id)
+        cancelMSECapture(for: id)
         pendingNavigationURLs.removeValue(forKey: id)
         tabSessions.removeValue(forKey: id)
         #endif
@@ -325,6 +334,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
 
     fileprivate func resetMediaDiscovery(for tabID: UUID) {
         cancelBlobCapture(for: tabID)
+        cancelMSECapture(for: tabID)
         tabSessions[tabID]?.mediaDiscoveryBridge.reset()
         resetMediaCandidateCatalog(for: tabID)
     }
@@ -348,8 +358,8 @@ public final class BrowserViewModel: NSObject, ObservableObject {
             return
         }
 
-        if isCapturingBlob {
-            blobCaptureErrorMessage = "Another Blob export is already in progress."
+        if isCapturingBlob || isCapturingMSE {
+            blobCaptureErrorMessage = "Another browser capture is already in progress."
             return
         }
 
@@ -373,9 +383,9 @@ public final class BrowserViewModel: NSObject, ObservableObject {
             }
             do {
                 _ = try await webView.evaluateJavaScript(
-                    BrowserBlobCapturePrototypeBridge.startCommand(
+                    BlobCaptureBridge.startCommand(
                         blobURL: blobURL,
-                        captureID: captureID,
+                        transferID: captureID,
                         documentID: documentID
                     )
                 )
@@ -396,7 +406,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         let targetTabID = activeBlobCaptureTabID
         if let targetTabID, let session = tabSessions[targetTabID] {
             _ = try? session.webView.evaluateJavaScript(
-                BrowserBlobCapturePrototypeBridge.cancelCommand(captureID: captureID)
+                BlobCaptureBridge.cancelCommand(transferID: captureID)
             )
             let service = session.blobCaptureService
             Task { await service.cancel(captureID: captureID) }
@@ -407,10 +417,10 @@ public final class BrowserViewModel: NSObject, ObservableObject {
     }
 
     fileprivate func handleBlobCaptureAcknowledgement(
-        _ acknowledgement: BrowserBlobCapturePrototypeAck,
+        _ acknowledgement: BlobCaptureAck,
         tabID: UUID
     ) {
-        guard acknowledgement.captureID == activeBlobCaptureID,
+        guard acknowledgement.transferID == activeBlobCaptureID,
               activeBlobCaptureTabID == tabID else { return }
 
         if let snapshot = acknowledgement.snapshot {
@@ -432,9 +442,132 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         }
     }
 
+    /// Starts an explicit MSE capture for a supported MediaSource candidate.
+    /// Observation remains metadata-only until this method runs.
+    public func startMSECapture(_ candidate: BrowserMediaCandidate) {
+        guard candidate.kind == .mediaSource,
+              candidate.availability == .captureCandidate,
+              candidate.rawURL.lowercased().hasPrefix("blob:"),
+              let tabID = activeTabID,
+              let session = tabSessions[tabID] else {
+            mseCaptureErrorMessage = "This MediaSource session is not available for bounded capture."
+            return
+        }
+
+        let support = BrowserMSECaptureSupportClassifier.evaluate(mimeType: candidate.mimeType)
+        guard support.isCapturable else {
+            mseCaptureErrorMessage = support.reason
+            return
+        }
+
+        if isCapturingBlob || isCapturingMSE {
+            mseCaptureErrorMessage = "Another browser capture is already in progress."
+            return
+        }
+
+        let captureID = "mse-" + UUID().uuidString.lowercased()
+        activeMSECaptureID = captureID
+        activeMSECaptureTabID = tabID
+        mseCaptureSnapshot = nil
+        mseCaptureErrorMessage = nil
+        isCapturingMSE = true
+
+        let documentID = candidate.documentID
+        let service = session.mseCaptureService
+        let webView = session.webView
+        let mediaSourceURL = candidate.rawURL
+        Task { @MainActor [weak self] in
+            await service.register(captureID: captureID, documentID: documentID)
+            guard let self,
+                  self.activeMSECaptureID == captureID,
+                  self.activeMSECaptureTabID == tabID else {
+                await service.cancel(captureID: captureID)
+                return
+            }
+            do {
+                _ = try await webView.evaluateJavaScript(
+                    BrowserMSECapturePrototypeBridge.startCommand(
+                        mediaSourceURL: mediaSourceURL,
+                        captureID: captureID,
+                        documentID: documentID
+                    )
+                )
+            } catch {
+                await service.cancel(captureID: captureID)
+                self.mseCaptureErrorMessage = "The MediaSource capture could not start."
+                self.isCapturingMSE = false
+                self.activeMSECaptureID = nil
+                self.activeMSECaptureTabID = nil
+            }
+        }
+    }
+
+    /// Stops capture and attempts reconstruction. Success requires validated output.
+    public func stopMSECapture() {
+        guard let captureID = activeMSECaptureID,
+              let tabID = activeMSECaptureTabID,
+              let session = tabSessions[tabID] else { return }
+        _ = try? session.webView.evaluateJavaScript(
+            BrowserMSECapturePrototypeBridge.stopCommand(captureID: captureID)
+        )
+    }
+
+    public func cancelMSECapture(for tabID: UUID? = nil) {
+        guard let captureID = activeMSECaptureID else { return }
+        if let tabID, activeMSECaptureTabID != tabID { return }
+        let targetTabID = activeMSECaptureTabID
+        if let targetTabID, let session = tabSessions[targetTabID] {
+            _ = try? session.webView.evaluateJavaScript(
+                BrowserMSECapturePrototypeBridge.cancelCommand(captureID: captureID)
+            )
+            let service = session.mseCaptureService
+            Task { await service.cancel(captureID: captureID) }
+        }
+        activeMSECaptureID = nil
+        activeMSECaptureTabID = nil
+        isCapturingMSE = false
+    }
+
+    fileprivate func handleMSECaptureAcknowledgement(
+        _ acknowledgement: BrowserMSECapturePrototypeAck,
+        tabID: UUID
+    ) {
+        guard acknowledgement.captureID == activeMSECaptureID,
+              activeMSECaptureTabID == tabID else { return }
+
+        if let snapshot = acknowledgement.snapshot {
+            mseCaptureSnapshot = snapshot
+        }
+        guard acknowledgement.accepted else {
+            mseCaptureErrorMessage = acknowledgement.error?.localizedDescription ??
+                "The MediaSource session could not be captured."
+            isCapturingMSE = false
+            activeMSECaptureID = nil
+            activeMSECaptureTabID = nil
+            return
+        }
+        if let snapshot = acknowledgement.snapshot, snapshot.isSuccessfullyReconstructed {
+            isCapturingMSE = false
+            activeMSECaptureID = nil
+            activeMSECaptureTabID = nil
+            downloadSuccessNotification = "MSE capture reconstructed a validated media file."
+        } else if acknowledgement.snapshot?.lifecycle == .cancelled {
+            isCapturingMSE = false
+            activeMSECaptureID = nil
+            activeMSECaptureTabID = nil
+        }
+    }
+
     public func inspectStreamCandidate(_ candidate: BrowserMediaCandidate) {
         guard candidate.kind == .mediaSource else { return }
-        blobCaptureErrorMessage = "This MediaSource stream requires manifest discovery; it cannot be exported as an arbitrary Blob."
+        let support = BrowserMSECaptureSupportClassifier.evaluate(mimeType: candidate.mimeType)
+        if support.status == .protectedMedia {
+            mseCaptureErrorMessage = support.reason
+        } else if support.isCapturable {
+            mseCaptureErrorMessage = support.reason + " Start capture to retain appendBuffer payloads."
+        } else {
+            mseCaptureErrorMessage = support.reason + " Prefer HLS/DASH manifest discovery when available."
+        }
     }
     #endif
 
@@ -2152,6 +2285,7 @@ final class BrowserWebViewSession {
     let tabID: UUID
     let mediaDiscoveryBridge: BrowserMediaDiscoveryBridge
     let blobCaptureService: BrowserBlobCaptureService
+    let mseCaptureService: BrowserMSECaptureService
     let webView: WKWebView
     let coordinator: BrowserWebViewCoordinator
 
@@ -2176,7 +2310,7 @@ final class BrowserWebViewSession {
                 .appendingPathComponent("BlobExports", isDirectory: true)
         )
         self.blobCaptureService = blobCaptureService
-        let blobHandler = BrowserBlobCapturePrototypeWebKitHandler(
+        let blobHandler = BlobCaptureWebKitHandler(
             receiver: blobCaptureService.receiver
         )
         blobHandler.acknowledgementHandler = { [weak viewModel] acknowledgement in
@@ -2185,6 +2319,21 @@ final class BrowserWebViewSession {
             }
         }
         blobHandler.install(on: config)
+
+        let mseCaptureService = BrowserMSECaptureService(
+            destinationDirectoryURL: viewModel.streamingDestinationDirectoryURL
+                .appendingPathComponent("MSEExports", isDirectory: true)
+        )
+        self.mseCaptureService = mseCaptureService
+        let mseHandler = BrowserMSECapturePrototypeWebKitHandler(
+            receiver: mseCaptureService.receiver
+        )
+        mseHandler.acknowledgementHandler = { [weak viewModel] acknowledgement in
+            DispatchQueue.main.async {
+                viewModel?.handleMSECaptureAcknowledgement(acknowledgement, tabID: tabID)
+            }
+        }
+        mseHandler.install(on: config)
 
         let webView = WKWebView(frame: .zero, configuration: config)
         self.webView = webView

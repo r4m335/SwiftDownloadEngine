@@ -1,3 +1,7 @@
+﻿// This file is superseded by BrowserBlobCaptureService.swift (7H.3P).
+// All types have been moved or typealiased there.
+// This file is retained only to preserve git history.
+// Do not add new features here.
 import Foundation
 
 #if canImport(WebKit)
@@ -423,6 +427,49 @@ public struct BrowserBlobCapturePrototypeMessage: Codable, Sendable, Equatable {
         self.sha256 = sha256
         self.reason = reason
     }
+
+    private enum CodingKeys: String, CodingKey {
+        case kind, type, captureID, documentID, url, mimeType, size, readable
+        case resourceKind, chunkIndex, offset, base64, sha256, reason
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        if let decoded = try container.decodeIfPresent(Kind.self, forKey: .kind) {
+            kind = decoded
+        } else {
+            kind = try container.decode(Kind.self, forKey: .type)
+        }
+        captureID = try container.decode(String.self, forKey: .captureID)
+        documentID = try container.decodeIfPresent(String.self, forKey: .documentID)
+        url = try container.decodeIfPresent(String.self, forKey: .url)
+        mimeType = try container.decodeIfPresent(String.self, forKey: .mimeType)
+        size = try container.decodeIfPresent(Int64.self, forKey: .size)
+        readable = try container.decodeIfPresent(Bool.self, forKey: .readable)
+        resourceKind = try container.decodeIfPresent(BrowserBlobCaptureResourceKind.self, forKey: .resourceKind)
+        chunkIndex = try container.decodeIfPresent(Int.self, forKey: .chunkIndex)
+        offset = try container.decodeIfPresent(Int64.self, forKey: .offset)
+        base64 = try container.decodeIfPresent(String.self, forKey: .base64)
+        sha256 = try container.decodeIfPresent(String.self, forKey: .sha256)
+        reason = try container.decodeIfPresent(String.self, forKey: .reason)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(kind, forKey: .kind)
+        try container.encode(captureID, forKey: .captureID)
+        try container.encodeIfPresent(documentID, forKey: .documentID)
+        try container.encodeIfPresent(url, forKey: .url)
+        try container.encodeIfPresent(mimeType, forKey: .mimeType)
+        try container.encodeIfPresent(size, forKey: .size)
+        try container.encodeIfPresent(readable, forKey: .readable)
+        try container.encodeIfPresent(resourceKind, forKey: .resourceKind)
+        try container.encodeIfPresent(chunkIndex, forKey: .chunkIndex)
+        try container.encodeIfPresent(offset, forKey: .offset)
+        try container.encodeIfPresent(base64, forKey: .base64)
+        try container.encodeIfPresent(sha256, forKey: .sha256)
+        try container.encodeIfPresent(reason, forKey: .reason)
+    }
 }
 
 public struct BrowserBlobCapturePrototypeAck: Sendable, Equatable {
@@ -730,14 +777,14 @@ public enum BrowserBlobCapturePrototypeBridge {
             if (session.awaitingAck) { return; }
             nextBytes(session).then(function(bytes) {
                 if (!bytes) {
-                    post({ type: "complete", captureID: session.captureID, documentID: session.documentID, chunkIndex: session.chunkIndex, offset: session.offset });
+                    post({ kind: "complete", captureID: session.captureID, documentID: session.documentID, chunkIndex: session.chunkIndex, offset: session.offset });
                     session.awaitingAck = true;
                     return;
                 }
                 if (bytes.length > MAX_CHUNK_BYTES) { throw new Error("chunk exceeds safety limit"); }
                 return digestHex(bytes).then(function(checksum) {
                     post({
-                        type: "chunk",
+                        kind: "chunk",
                         captureID: session.captureID,
                         documentID: session.documentID,
                         chunkIndex: session.chunkIndex,
@@ -750,7 +797,7 @@ public enum BrowserBlobCapturePrototypeBridge {
                     session.offset += bytes.length;
                 });
             }).catch(function(error) {
-                post({ type: "failure", captureID: session.captureID, reason: String(error && error.message || error) });
+                post({ kind: "failure", captureID: session.captureID, reason: String(error && error.message || error) });
                 delete sessions[session.captureID];
             });
         }
@@ -763,7 +810,7 @@ public enum BrowserBlobCapturePrototypeBridge {
             if (registered && registered.kind === "blob" && registered.blob) {
                 var registeredSize = Number(registered.size);
                 if (!isFinite(registeredSize) || registeredSize < 0) {
-                    post({ type: "failure", captureID: captureID, reason: "blob size is unavailable" });
+                    post({ kind: "failure", captureID: captureID, reason: "blob size is unavailable" });
                     return;
                 }
                 registeredSize = Math.floor(registeredSize);
@@ -780,7 +827,7 @@ public enum BrowserBlobCapturePrototypeBridge {
                     awaitingAck: true
                 };
                 post({
-                    type: "metadata",
+                    kind: "metadata",
                     captureID: captureID,
                     documentID: requestedDocumentID || registered.documentID || null,
                     url: String(blobURL),
@@ -810,7 +857,7 @@ public enum BrowserBlobCapturePrototypeBridge {
                     awaitingAck: true
                 };
                 post({
-                    type: "metadata",
+                    kind: "metadata",
                     captureID: captureID,
                     documentID: requestedDocumentID || null,
                     url: String(blobURL),
@@ -820,7 +867,7 @@ public enum BrowserBlobCapturePrototypeBridge {
                     resourceKind: kind
                 });
             }).catch(function(error) {
-                post({ type: "failure", captureID: captureID, reason: String(error && error.message || error) });
+                post({ kind: "failure", captureID: captureID, reason: String(error && error.message || error) });
             });
         }
 
@@ -840,7 +887,7 @@ public enum BrowserBlobCapturePrototypeBridge {
             var session = sessions[captureID];
             if (session && session.reader) { try { session.reader.cancel(); } catch (_) {} }
             delete sessions[captureID];
-            post({ type: "cancel", captureID: captureID });
+            post({ kind: "cancel", captureID: captureID });
         }
 
         window.__lidBlobCapture = {
