@@ -78,7 +78,7 @@ public enum DetectedFileType: Equatable, Sendable {
     /// True for containers that `MediaAssembler` can validate natively.
     public var isNativelyAssemblable: Bool {
         switch self {
-        case .fragmentedMP4, .mpegTS: return true
+        case .isoBaseMediaFile, .fragmentedMP4, .mpegTS: return true
         default: return false
         }
     }
