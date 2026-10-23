@@ -263,6 +263,7 @@ public struct BrowserMSECaptureSnapshot: Sendable, Equatable {
 
 public enum BrowserMSECapturePrototypeError: Error, LocalizedError, Sendable, Equatable {
     case invalidCaptureID
+    case captureNotAuthorized
     case documentMismatch
     case protectedMedia
     case unsupportedSession
@@ -286,6 +287,7 @@ public enum BrowserMSECapturePrototypeError: Error, LocalizedError, Sendable, Eq
     public var errorDescription: String? {
         switch self {
         case .invalidCaptureID: return "The MSE capture identifier is invalid."
+        case .captureNotAuthorized: return "The MSE capture is not authorized for this browser session."
         case .documentMismatch: return "The MSE capture belongs to a different browser document."
         case .protectedMedia: return "Protected or DRM-backed media cannot be captured."
         case .unsupportedSession: return "This MediaSource session is outside the supported capture set."
@@ -978,6 +980,7 @@ public struct BrowserMSECapturePrototypeAck: Sendable, Equatable {
 
 public actor BrowserMSECapturePrototypeReceiver {
     private let writer: BrowserMSECapturePrototypeWriter
+    private var authorizedCaptureIDs: Set<String> = []
     private var expectedDocumentIDs: [String: String] = [:]
 
     public init(writer: BrowserMSECapturePrototypeWriter) {
@@ -985,11 +988,16 @@ public actor BrowserMSECapturePrototypeReceiver {
     }
 
     public func register(captureID: String, documentID: String?) {
-        guard let documentID, !documentID.isEmpty else { return }
-        expectedDocumentIDs[captureID] = documentID
+        authorizedCaptureIDs.insert(captureID)
+        if let documentID, !documentID.isEmpty {
+            expectedDocumentIDs[captureID] = documentID
+        } else {
+            expectedDocumentIDs.removeValue(forKey: captureID)
+        }
     }
 
     public func cancel(captureID: String) async {
+        authorizedCaptureIDs.remove(captureID)
         expectedDocumentIDs.removeValue(forKey: captureID)
         await writer.cancel(captureID: captureID)
     }
@@ -1013,6 +1021,9 @@ public actor BrowserMSECapturePrototypeReceiver {
                 throw BrowserMSECapturePrototypeError.fileOperationFailed
             }
             captureID = message.captureID
+            guard authorizedCaptureIDs.contains(message.captureID) else {
+                throw BrowserMSECapturePrototypeError.captureNotAuthorized
+            }
             if let expectedDocumentID = expectedDocumentIDs[message.captureID],
                message.documentID != expectedDocumentID {
                 throw BrowserMSECapturePrototypeError.documentMismatch
@@ -1056,15 +1067,18 @@ public actor BrowserMSECapturePrototypeReceiver {
                 return BrowserMSECapturePrototypeAck(captureID: message.captureID, accepted: true, snapshot: snapshot)
             case .complete:
                 let snapshot = try await writer.complete(captureID: message.captureID)
+                authorizedCaptureIDs.remove(message.captureID)
                 expectedDocumentIDs.removeValue(forKey: message.captureID)
                 return BrowserMSECapturePrototypeAck(captureID: message.captureID, accepted: true, snapshot: snapshot)
             case .failure, .cancel:
+                authorizedCaptureIDs.remove(message.captureID)
                 expectedDocumentIDs.removeValue(forKey: message.captureID)
                 await writer.cancel(captureID: message.captureID)
                 return BrowserMSECapturePrototypeAck(captureID: message.captureID, accepted: true)
             }
         } catch let error as BrowserMSECapturePrototypeError {
             if !captureID.isEmpty {
+                authorizedCaptureIDs.remove(captureID)
                 expectedDocumentIDs.removeValue(forKey: captureID)
                 await writer.cancel(captureID: captureID)
             }

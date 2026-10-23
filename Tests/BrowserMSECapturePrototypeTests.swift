@@ -183,6 +183,33 @@ final class BrowserMSECapturePrototypeTests: XCTestCase {
         XCTAssertEqual(unsupported.error, .unsupportedSession)
     }
 
+    func testReceiverRejectsUnregisteredAndLateMessages() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("mse-capture-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let writer = BrowserMSECapturePrototypeWriter(destinationDirectoryURL: directory)
+        let receiver = BrowserMSECapturePrototypeReceiver(writer: writer)
+        let metadata: [String: Any] = [
+            "kind": "metadata",
+            "captureID": "mse-unauthorized",
+            "mediaSourceURL": "blob:https://video.example/ms",
+            "mimeTypes": ["video/mp4"]
+        ]
+
+        let unregistered = await receiver.receive(payload: metadata)
+        XCTAssertFalse(unregistered.accepted)
+        XCTAssertEqual(unregistered.error, .captureNotAuthorized)
+
+        await receiver.register(captureID: "mse-unauthorized", documentID: nil)
+        let started = await receiver.receive(payload: metadata)
+        XCTAssertTrue(started.accepted)
+        await receiver.cancel(captureID: "mse-unauthorized")
+
+        let late = await receiver.receive(payload: metadata)
+        XCTAssertFalse(late.accepted)
+        XCTAssertEqual(late.error, .captureNotAuthorized)
+    }
+
     func testBridgeScriptCopiesBytesOnlyWhileCaptureIsActive() {
         let script = BrowserMSECapturePrototypeBridge.script
         XCTAssertTrue(script.contains("browserMSECapture"))
