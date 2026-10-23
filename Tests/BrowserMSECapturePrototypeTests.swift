@@ -216,6 +216,11 @@ final class BrowserMSECapturePrototypeTests: XCTestCase {
         XCTAssertTrue(script.contains("appendBuffer"))
         XCTAssertTrue(script.contains("activeCaptureForMediaSourceURL"))
         XCTAssertTrue(script.contains("protectionObserved"))
+        XCTAssertTrue(script.contains("SourceBuffer error"))
+        XCTAssertTrue(script.contains("MediaSource was detached"))
+        XCTAssertTrue(script.contains("Document navigation interrupted MSE capture"))
+        XCTAssertTrue(script.contains("sourceended"))
+        XCTAssertTrue(script.contains("updateend"))
         XCTAssertFalse(script.contains("document.cookie"))
         XCTAssertTrue(script.contains("__lidMSECapture"))
     }

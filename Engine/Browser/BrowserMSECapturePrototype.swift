@@ -1236,6 +1236,32 @@ public enum BrowserMSECapturePrototypeBridge {
             return null;
         }
 
+        function failCapture(session, reason) {
+            if (!session || session.finishing) { return; }
+            delete captures[session.captureID];
+            post({
+                kind: "failure",
+                captureID: session.captureID,
+                documentID: session.documentID,
+                reason: reason
+            });
+        }
+
+        function cancelAllCaptures(reason) {
+            var keys = Object.keys(captures);
+            for (var i = 0; i < keys.length; i++) {
+                var session = captures[keys[i]];
+                if (!session) { continue; }
+                delete captures[keys[i]];
+                post({
+                    kind: "cancel",
+                    captureID: session.captureID,
+                    documentID: session.documentID,
+                    reason: reason
+                });
+            }
+        }
+
         function enqueueSegment(session, trackIndex, bytes) {
             if (!bytes || bytes.length === 0) { return; }
             var segmentIndex = session.nextSegmentIndex[trackIndex] || 0;
@@ -1362,6 +1388,21 @@ public enum BrowserMSECapturePrototypeBridge {
                 completedPosted: false,
                 metadataAcked: false
             };
+            var session = captures[captureID];
+            try {
+                mediaSource.addEventListener("sourceended", function() {
+                    if (session && !session.completedPosted) {
+                        session.finishing = true;
+                        pump(session);
+                    }
+                });
+                mediaSource.addEventListener("sourceclose", function() {
+                    failCapture(session, "MediaSource was detached from the document");
+                });
+                mediaSource.addEventListener("error", function() {
+                    failCapture(session, "MediaSource error");
+                });
+            } catch (_) {}
             post({
                 kind: "metadata",
                 captureID: captureID,
@@ -1448,6 +1489,20 @@ public enum BrowserMSECapturePrototypeBridge {
                                     mediaSource: this
                                 });
                             }
+                            buffer.addEventListener("error", function() {
+                                var info = sourceBufferInfo && sourceBufferInfo.get(buffer);
+                                var objectURL = info && info.mediaSourceURL;
+                                failCapture(
+                                    objectURL ? activeCaptureForMediaSourceURL(objectURL) : null,
+                                    "SourceBuffer error"
+                                );
+                            });
+                            buffer.addEventListener("updateend", function() {
+                                var info = sourceBufferInfo && sourceBufferInfo.get(buffer);
+                                var objectURL = info && info.mediaSourceURL;
+                                var session = objectURL ? activeCaptureForMediaSourceURL(objectURL) : null;
+                                if (session && session.finishing) { pump(session); }
+                            });
                         } catch (_) {}
                         return buffer;
                     };
@@ -1462,6 +1517,17 @@ public enum BrowserMSECapturePrototypeBridge {
                             if (session) { session.finishing = true; pump(session); }
                         } catch (_) {}
                         return originalEndOfStream.apply(this, arguments);
+                    };
+                }
+                var originalRemoveSourceBuffer = window.MediaSource.prototype.removeSourceBuffer;
+                if (typeof originalRemoveSourceBuffer === "function") {
+                    window.MediaSource.prototype.removeSourceBuffer = function(buffer) {
+                        try {
+                            var objectURL = mediaSourceURLs ? mediaSourceURLs.get(this) : null;
+                            var session = objectURL ? activeCaptureForMediaSourceURL(objectURL) : null;
+                            if (session) { failCapture(session, "SourceBuffer was detached"); }
+                        } catch (_) {}
+                        return originalRemoveSourceBuffer.apply(this, arguments);
                     };
                 }
             }
@@ -1505,6 +1571,12 @@ public enum BrowserMSECapturePrototypeBridge {
             stop: stop,
             cancel: cancel
         };
+
+        try {
+            window.addEventListener("pagehide", function() {
+                cancelAllCaptures("Document navigation interrupted MSE capture");
+            });
+        } catch (_) {}
     })();
     """#
 
