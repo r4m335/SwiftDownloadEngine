@@ -845,11 +845,12 @@ public actor BlobExportWriter {
             if !FileManager.default.fileExists(atPath: candidate.path) { return candidate }
         }
 
-        private func validIdentifier(_ value: String) -> Bool {
-            !value.isEmpty && value.count <= limits.maximumIdentifierLength &&
-                !value.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains)
-        }
         return directory.appendingPathComponent("blob-\(UUID().uuidString).\(ext.isEmpty ? "bin" : ext)")
+    }
+
+    private func validIdentifier(_ value: String) -> Bool {
+        !value.isEmpty && value.count <= limits.maximumIdentifierLength &&
+            !value.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains)
     }
 
     var activeSessionCount: Int { sessions.count }
@@ -1267,13 +1268,3 @@ public enum BlobCaptureBridge {
 // MARK: - Backward compatibility type aliases
 // Keep old names so BrowserView and any surviving prototype-era call sites compile
 // unchanged while the production rename propagates incrementally.
-
-public typealias BrowserBlobCaptureLimits = BlobExportLimits
-public typealias BrowserBlobCapturePrototypeBridge = BlobCaptureBridge
-public typealias BrowserBlobCapturePrototypeAck = BlobCaptureAck
-public typealias BrowserBlobCaptureSnapshot = BlobExportSnapshot
-public typealias BrowserBlobCapturePrototypeError = BlobExportError
-public typealias BrowserBlobCapturePrototypeWriter = BlobExportWriter
-public typealias BrowserBlobCapturePrototypeReceiver = BrowserBlobCaptureReceiver
-public typealias BrowserBlobCaptureResourceKind = BlobCaptureResourceKind
-public typealias BrowserBlobCaptureMetadata = BlobCaptureMetadataEnvelope
