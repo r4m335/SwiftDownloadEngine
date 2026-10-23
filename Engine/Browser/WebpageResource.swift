@@ -305,7 +305,7 @@ public struct WebpageResourceExtractor {
                 let subExt = declaredMIME?.split(separator: "/").last.map(String.init) ?? "bin"
                 filename = "embedded_resource.\(subExt)"
             } else if resolvedURL.scheme?.lowercased() == "blob" {
-                filename = "blob_stream.bin"
+                filename = blobFilename(mimeType: declaredMIME)
             } else {
                 filename = BrowserDownloadClassifier.suggestedFilenameFromURL(resolvedURL, mimeType: declaredMIME)
             }
@@ -326,6 +326,20 @@ public struct WebpageResourceExtractor {
         }
 
         return results
+    }
+
+    private static func blobFilename(mimeType: String?) -> String {
+        let extensionName: String
+        switch mimeType?.lowercased() {
+        case "video/mp4": extensionName = "mp4"
+        case "video/webm": extensionName = "webm"
+        case "audio/mpeg": extensionName = "mp3"
+        case "audio/mp4", "audio/x-m4a": extensionName = "m4a"
+        case "audio/webm": extensionName = "webm"
+        case "audio/ogg": extensionName = "ogg"
+        default: extensionName = "bin"
+        }
+        return "blob_stream.\(extensionName)"
     }
 
     /// Pure Swift HTML parser extracting resource candidates using regex scanning.

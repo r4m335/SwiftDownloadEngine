@@ -220,15 +220,33 @@ public struct BrowserResourceInspectorSheet: View {
                 HStack(spacing: 8) {
                     ProgressView()
                     if let snapshot = viewModel.blobCaptureSnapshot {
-                        Text("Capturing… \(ByteCountFormatter.string(fromByteCount: snapshot.bytesWritten, countStyle: .file))")
+                        Text("Capturing blob… \(ByteCountFormatter.string(fromByteCount: snapshot.bytesWritten, countStyle: .file))")
                     } else {
-                        Text("Capturing…")
+                        Text("Capturing blob…")
+                    }
+                }
+                .font(.caption)
+                .padding(.horizontal, 16)
+            }
+            if viewModel.isCapturingMSE {
+                HStack(spacing: 8) {
+                    ProgressView()
+                    if let snapshot = viewModel.mseCaptureSnapshot {
+                        Text("Capturing MSE… \(ByteCountFormatter.string(fromByteCount: snapshot.bytesCaptured, countStyle: .file))")
+                    } else {
+                        Text("Capturing MSE…")
                     }
                 }
                 .font(.caption)
                 .padding(.horizontal, 16)
             }
             if let error = viewModel.blobCaptureErrorMessage {
+                Text(error)
+                    .font(.caption)
+                    .foregroundColor(.orange)
+                    .padding(.horizontal, 16)
+            }
+            if let error = viewModel.mseCaptureErrorMessage {
                 Text(error)
                     .font(.caption)
                     .foregroundColor(.orange)
@@ -288,11 +306,34 @@ public struct BrowserResourceInspectorSheet: View {
                 .buttonStyle(.borderedProminent)
             }
         } else if candidate.kind == .mediaSource {
-            Button("Inspect Stream") {
-                viewModel.inspectStreamCandidate(candidate)
+            if candidate.availability == .captureCandidate {
+                if viewModel.isCapturingMSE {
+                    HStack(spacing: 6) {
+                        Button("Stop") {
+                            viewModel.stopMSECapture()
+                        }
+                        .font(.caption.weight(.semibold))
+                        .buttonStyle(.borderedProminent)
+                        Button("Cancel") {
+                            viewModel.cancelMSECapture()
+                        }
+                        .font(.caption.weight(.semibold))
+                        .buttonStyle(.bordered)
+                    }
+                } else {
+                    Button("Capture MSE") {
+                        viewModel.startMSECapture(candidate)
+                    }
+                    .font(.caption.weight(.semibold))
+                    .buttonStyle(.borderedProminent)
+                }
+            } else {
+                Button("Inspect Stream") {
+                    viewModel.inspectStreamCandidate(candidate)
+                }
+                .font(.caption.weight(.semibold))
+                .buttonStyle(.bordered)
             }
-            .font(.caption.weight(.semibold))
-            .buttonStyle(.bordered)
         } else if candidate.availability == .unsupported {
             Text("Unavailable")
                 .font(.caption)
@@ -515,9 +556,10 @@ public struct ResourceRowView: View {
             Spacer(minLength: 8)
 
             // Individual Download Action Button
-            if resource.isSupported || resource.isStreamingManifest {
+            let isBlobCaptureCandidate = resource.url.scheme?.lowercased() == "blob"
+            if resource.isSupported || resource.isStreamingManifest || isBlobCaptureCandidate {
                 Button(action: onDownload) {
-                    Image(systemName: "arrow.down.circle.fill")
+                    Image(systemName: isBlobCaptureCandidate ? "camera.circle.fill" : "arrow.down.circle.fill")
                         .font(.system(size: 24))
                         .foregroundColor(.blue)
                 }

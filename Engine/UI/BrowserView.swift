@@ -644,6 +644,10 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
             guard let self = self else { return }
             let candidate = BrowserMediaCandidateClassifier.classify(resource: resource)
+            if candidate.kind == .completeBlob {
+                self.exportBlobCandidate(candidate)
+                return
+            }
             if candidate.kind == .directMedia {
                 do {
                     let plan = try DirectMediaTransferPlanner.makePlan(candidate: candidate)
@@ -1341,18 +1345,12 @@ public struct BrowserView: View {
             // Keep one navigation menu at the top, like a compact browser toolbar.
             topNavigationToolbar
 
-            // The home page owns its centered search field. Once a page is open,
-            // the browser header is the single address/search field.
-            if viewModel.currentURL != nil {
-                addressBarHeader
-
-                if viewModel.isLoading {
-                    ProgressView(value: max(0.05, viewModel.estimatedProgress), total: 1.0)
-                        .progressViewStyle(LinearProgressViewStyle(tint: .blue))
-                        .frame(height: 2)
-                } else {
-                    Divider()
-                }
+            if viewModel.isLoading {
+                ProgressView(value: max(0.05, viewModel.estimatedProgress), total: 1.0)
+                    .progressViewStyle(LinearProgressViewStyle(tint: .blue))
+                    .frame(height: 2)
+            } else {
+                Divider()
             }
 
             // Main View Area: Home Screen, Error Screen, or Active Web View
@@ -1386,7 +1384,7 @@ public struct BrowserView: View {
                         Color.clear
                             .contentShape(Rectangle())
                             .frame(width: 32)
-                            .gesture(
+                            .highPriorityGesture(
                                 DragGesture(
                                     minimumDistance: 12,
                                     coordinateSpace: .named("browserContent")
@@ -1406,7 +1404,7 @@ public struct BrowserView: View {
                         Color.clear
                             .contentShape(Rectangle())
                             .frame(width: 32)
-                            .gesture(
+                            .highPriorityGesture(
                                 DragGesture(
                                     minimumDistance: 12,
                                     coordinateSpace: .named("browserContent")
@@ -1439,6 +1437,9 @@ public struct BrowserView: View {
         }
         .sheet(isPresented: $viewModel.isShowingTabSwitcher) {
             BrowserTabSwitcherView(viewModel: viewModel)
+        }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            addressBarHeader
         }
         #if canImport(UIKit)
         .background(Color(UIColor.systemBackground))
@@ -1641,53 +1642,6 @@ public struct BrowserHomeView: View {
                         .multilineTextAlignment(.center)
                         .padding(.horizontal, 24)
                 }
-
-                // Quick Search Box
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack {
-                        Image(systemName: "magnifyingglass")
-                            .foregroundColor(.secondary)
-                        TextField("Search the web or type a URL...", text: $viewModel.urlInputText)
-                            #if canImport(UIKit)
-                            .keyboardType(.webSearch)
-                            .autocapitalization(.none)
-                            #endif
-                            .disableAutocorrection(true)
-                            .onSubmit {
-                                viewModel.navigate(to: viewModel.urlInputText)
-                            }
-                        if !viewModel.urlInputText.isEmpty {
-                            Button {
-                                viewModel.navigate(to: viewModel.urlInputText)
-                            } label: {
-                                Text("Search")
-                                    .bold()
-                                    .foregroundColor(.blue)
-                            }
-                        }
-                    }
-                    .padding(12)
-                    #if canImport(UIKit)
-                    .background(Color(UIColor.secondarySystemBackground))
-                    #else
-                    .background(Color.secondary.opacity(0.15))
-                    #endif
-                    .cornerRadius(12)
-
-                    // Search engine selection picker
-                    HStack {
-                        Text("Search with:")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                        Picker("Search Engine", selection: $viewModel.selectedSearchEngine) {
-                            ForEach(BrowserSearchEngine.allCases) { engine in
-                                Text(engine.rawValue).tag(engine)
-                            }
-                        }
-                        .pickerStyle(SegmentedPickerStyle())
-                    }
-                }
-                .padding(.horizontal, 16)
 
                 // Quick Links Grid
                 VStack(alignment: .leading, spacing: 12) {

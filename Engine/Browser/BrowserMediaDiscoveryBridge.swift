@@ -157,6 +157,9 @@ public final class BrowserMediaDiscoveryBridge: NSObject, @unchecked Sendable {
                 documentID = window.crypto.randomUUID();
             }
         } catch (_) {}
+        try { window.__lidMediaDocumentID = documentID; } catch (_) {}
+        var mediaSourceObjectURLs = typeof WeakMap === "function" ? new WeakMap() : null;
+        var sourceBufferMediaSourceURLs = typeof WeakMap === "function" ? new WeakMap() : null;
 
         function absoluteURL(value) {
             if (value === null || value === undefined) { return null; }
@@ -326,7 +329,8 @@ public final class BrowserMediaDiscoveryBridge: NSObject, @unchecked Sendable {
         // Blob object URLs are reported as metadata only. The page-local
         // registry retains the opaque Blob object, never its bytes, so an
         // explicit capture can read bounded slices later without relying on
-        // fetch() to expose Content-Length.
+        // fetch() to expose Content-Length. MediaSource entries retain the
+        // object handle for optional capture without retaining append payloads.
         try {
             window.__lidBlobRegistry = window.__lidBlobRegistry || Object.create(null);
             var blobRegistry = window.__lidBlobRegistry;
@@ -350,8 +354,10 @@ public final class BrowserMediaDiscoveryBridge: NSObject, @unchecked Sendable {
                                 method: "GET"
                             });
                         } else if (window.MediaSource && object instanceof window.MediaSource) {
+                            if (mediaSourceObjectURLs) { mediaSourceObjectURLs.set(object, objectURL); }
                             blobRegistry[objectURL] = {
                                 kind: "mediaSource",
+                                mediaSource: object,
                                 documentID: documentID
                             };
                             emit(objectURL, "mediaSource", {
@@ -394,6 +400,8 @@ public final class BrowserMediaDiscoveryBridge: NSObject, @unchecked Sendable {
 
         // MSE instrumentation records buffer metadata only. It does not copy
         // or retain appendBuffer payloads, so playback remains the page's job.
+        // Optional capture lives in a separate bridge and copies bytes only
+        // after an explicit user start.
         try {
             var sourceBufferBytes = typeof WeakMap === "function" ? new WeakMap() : null;
             if (window.MediaSource && window.MediaSource.prototype) {
@@ -401,7 +409,14 @@ public final class BrowserMediaDiscoveryBridge: NSObject, @unchecked Sendable {
                 if (typeof originalAddSourceBuffer === "function") {
                     window.MediaSource.prototype.addSourceBuffer = function(mimeType) {
                         var buffer = originalAddSourceBuffer.apply(this, arguments);
-                        emit(window.location.href, "mediaSource", {
+                        var objectURL = null;
+                        try {
+                            objectURL = mediaSourceObjectURLs ? mediaSourceObjectURLs.get(this) : null;
+                            if (sourceBufferMediaSourceURLs && objectURL) {
+                                sourceBufferMediaSourceURLs.set(buffer, objectURL);
+                            }
+                        } catch (_) {}
+                        emit(objectURL || window.location.href, "mediaSource", {
                             tag: "sourceBuffer",
                             declaredType: String(mimeType || "").slice(0, 128),
                             method: "GET"
@@ -421,7 +436,8 @@ public final class BrowserMediaDiscoveryBridge: NSObject, @unchecked Sendable {
                             sourceBufferBytes.set(this, totalBytes);
                         }
                         try {
-                            emit(window.location.href, "mediaSource", {
+                            var objectURL = sourceBufferMediaSourceURLs ? sourceBufferMediaSourceURLs.get(this) : null;
+                            emit(objectURL || window.location.href, "mediaSource", {
                                 tag: "appendBuffer",
                                 declaredType: this.type || null,
                                 contentLength: chunkBytes,

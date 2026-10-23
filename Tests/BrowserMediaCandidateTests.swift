@@ -6,6 +6,24 @@ final class BrowserMediaCandidateTests: XCTestCase {
     private let pageURL = URL(string: "https://video.example/watch")!
     private let now = Date(timeIntervalSince1970: 1_700_000_000)
 
+    func testBlobResourceIsAnActionableCaptureCandidate() throws {
+        let resource = WebpageResource(
+            url: URL(string: "blob:https://video.example/blob-1")!,
+            title: "captured video",
+            suggestedFilename: "blob_stream.mp4",
+            resourceType: .video,
+            mimeType: "video/mp4",
+            isSupported: false,
+            unsupportedReason: "Blob URLs are not HTTP downloads"
+        )
+
+        let candidate = BrowserMediaCandidateClassifier.classify(resource: resource, now: now)
+
+        XCTAssertEqual(candidate.kind, .completeBlob)
+        XCTAssertEqual(candidate.availability, .captureCandidate)
+        XCTAssertEqual(candidate.suggestedFilename, "blob_stream.mp4")
+    }
+
     func testDirectMediaAndManifestObservationsUseDistinctStrategies() throws {
         let direct = try XCTUnwrap(BrowserMediaCandidateClassifier.classify(
             observation: BrowserMediaDiscoveryObservation(
@@ -61,7 +79,7 @@ final class BrowserMediaCandidateTests: XCTestCase {
         XCTAssertEqual(blob.availability, .captureCandidate)
         XCTAssertNil(blob.url)
 
-        let mse = try XCTUnwrap(BrowserMediaCandidateClassifier.classify(
+        let mseWithoutObjectURL = try XCTUnwrap(BrowserMediaCandidateClassifier.classify(
             observation: BrowserMediaDiscoveryObservation(
                 url: nil,
                 rawURL: pageURL.absoluteString,
@@ -75,8 +93,26 @@ final class BrowserMediaCandidateTests: XCTestCase {
             ),
             now: now
         ))
+        XCTAssertEqual(mseWithoutObjectURL.kind, .mediaSource)
+        XCTAssertEqual(mseWithoutObjectURL.availability, .metadataOnly)
+        XCTAssertNil(mseWithoutObjectURL.url)
+
+        let mse = try XCTUnwrap(BrowserMediaCandidateClassifier.classify(
+            observation: BrowserMediaDiscoveryObservation(
+                url: nil,
+                rawURL: "blob:https://video.example/ms-1",
+                source: .mediaSource,
+                declaredType: "video/mp4",
+                documentID: "doc-1",
+                appendedByteCount: 8_192,
+                pageOrigin: pageURL,
+                frameOrigin: pageURL,
+                mayUseBrowserCredentials: false
+            ),
+            now: now
+        ))
         XCTAssertEqual(mse.kind, .mediaSource)
-        XCTAssertEqual(mse.availability, .metadataOnly)
+        XCTAssertEqual(mse.availability, .captureCandidate)
         XCTAssertNil(mse.url)
 
         let protected = try XCTUnwrap(BrowserMediaCandidateClassifier.classify(

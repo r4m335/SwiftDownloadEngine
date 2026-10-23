@@ -113,6 +113,40 @@ public enum BrowserMediaCandidateClassifier {
         }
 
         if observation.source == .mediaSource {
+            let support = BrowserMSECaptureSupportClassifier.evaluate(
+                mimeType: mime,
+                isPotentiallyProtected: false
+            )
+            let availability: BrowserMediaCandidateAvailability
+            let evidence: [String]
+            let hasMediaSourceObjectURL = observation.rawURL.lowercased().hasPrefix("blob:")
+            switch support.status {
+            case .capturable:
+                if hasMediaSourceObjectURL {
+                    availability = .captureCandidate
+                    evidence = [
+                        support.reason,
+                        "MediaSource metadata only until an explicit capture starts"
+                    ]
+                } else {
+                    availability = .metadataOnly
+                    evidence = [
+                        support.reason,
+                        "Waiting for a MediaSource object URL before capture can start"
+                    ]
+                }
+            case .protectedMedia:
+                availability = .unsupported
+                evidence = [support.reason]
+            case .unsupported:
+                if mime == nil {
+                    availability = .metadataOnly
+                    evidence = ["MediaSource activity was observed; wait for SourceBuffer MIME types"]
+                } else {
+                    availability = .unsupported
+                    evidence = [support.reason]
+                }
+            }
             return BrowserMediaCandidate(
                 id: identity,
                 url: nil,
@@ -122,8 +156,8 @@ public enum BrowserMediaCandidateClassifier {
                 mimeType: mime,
                 suggestedFilename: "media_source_capture",
                 estimatedSize: observation.appendedByteCount ?? observation.contentLength,
-                availability: .metadataOnly,
-                evidence: ["MediaSource activity was observed; bytes were not captured"],
+                availability: availability,
+                evidence: evidence,
                 documentID: observation.documentID,
                 lastObserved: now
             )
@@ -248,8 +282,8 @@ public enum BrowserMediaCandidateClassifier {
 
         if resource.url.scheme?.lowercased() == "blob" {
             kind = .completeBlob
-            availability = .uncertain
-            evidence = ["Blob resource requires explicit browser capture inspection"]
+            availability = .captureCandidate
+            evidence = ["Blob data can be exported through the active browser session"]
         } else if manifest.kind == .hls {
             kind = .hlsManifest
             availability = .requiresPlanning

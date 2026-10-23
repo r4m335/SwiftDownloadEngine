@@ -131,6 +131,8 @@ final class BrowserMediaDiscoveryTests: XCTestCase {
         XCTAssertTrue(script.contains("requestMediaKeySystemAccess"))
         XCTAssertTrue(script.contains("addSourceBuffer"))
         XCTAssertTrue(script.contains("appendBuffer"))
+        XCTAssertTrue(script.contains("mediaSourceObjectURLs"))
+        XCTAssertTrue(script.contains("__lidMediaDocumentID"))
         XCTAssertFalse(script.contains("document.cookie"))
         XCTAssertFalse(script.contains("Authorization"))
     }
