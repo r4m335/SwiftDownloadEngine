@@ -374,7 +374,12 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         let service = session.blobCaptureService
         let webView = session.webView
         Task { @MainActor [weak self] in
-            await service.register(captureID: captureID, documentID: documentID)
+            await service.authorize(
+                transferID: captureID,
+                tabID: tabID.uuidString,
+                documentID: documentID,
+                candidateID: candidate.id
+            )
             guard let self,
                   self.activeBlobCaptureID == captureID,
                   self.activeBlobCaptureTabID == tabID else {
@@ -386,7 +391,9 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                     BlobCaptureBridge.startCommand(
                         blobURL: blobURL,
                         transferID: captureID,
-                        documentID: documentID
+                        documentID: documentID,
+                        tabID: tabID.uuidString,
+                        candidateID: candidate.id
                     )
                 )
             } catch {

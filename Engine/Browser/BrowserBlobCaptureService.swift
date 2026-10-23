@@ -221,7 +221,7 @@ public struct BlobExportSnapshot: Sendable, Equatable {
 // MARK: - Acknowledgement
 
 /// Returned to the JS bridge after each message.
-/// `accepted == true` guarantees the chunk reached the fsync durability boundary.
+/// `accepted == true` for a chunk means the write and synchronization succeeded.
 /// The JS side MUST NOT send the next chunk until this arrives.
 public struct BlobCaptureAck: Sendable, Equatable {
     public let transferID: String
@@ -334,6 +334,8 @@ public struct BlobCaptureWireMessage: Codable, Sendable, Equatable {
     public let version: Int?
     public let kind: Kind
     public let transferID: String
+    public let tabID: String?
+    public let candidateID: String?
     public let documentID: String?
     public let url: String?
     public let mimeType: String?
@@ -347,20 +349,22 @@ public struct BlobCaptureWireMessage: Codable, Sendable, Equatable {
     public let reason: String?
 
     private enum CodingKeys: String, CodingKey {
-        case version, kind, type, transferID, captureID, documentID
+        case version, kind, type, transferID, captureID, tabID, candidateID, documentID
         case url, mimeType, size, readable, resourceKind
         case chunkIndex, offset, base64, sha256, reason
     }
 
     public init(
         version: Int? = BlobCaptureProtocolVersion,
-        kind: Kind, transferID: String, documentID: String? = nil,
+        kind: Kind, transferID: String, tabID: String? = nil, candidateID: String? = nil,
+        documentID: String? = nil,
         url: String? = nil, mimeType: String? = nil, size: Int64? = nil,
         readable: Bool? = nil, resourceKind: BlobCaptureResourceKind? = nil,
         chunkIndex: Int? = nil, offset: Int64? = nil,
         base64: String? = nil, sha256: String? = nil, reason: String? = nil
     ) {
         self.version = version; self.kind = kind; self.transferID = transferID
+        self.tabID = tabID; self.candidateID = candidateID
         self.documentID = documentID; self.url = url; self.mimeType = mimeType
         self.size = size; self.readable = readable; self.resourceKind = resourceKind
         self.chunkIndex = chunkIndex; self.offset = offset; self.base64 = base64
@@ -374,6 +378,8 @@ public struct BlobCaptureWireMessage: Codable, Sendable, Equatable {
         else { kind = try c.decode(Kind.self, forKey: .type) }
         if let tid = try c.decodeIfPresent(String.self, forKey: .transferID) { transferID = tid }
         else { transferID = try c.decode(String.self, forKey: .captureID) }
+        tabID = try c.decodeIfPresent(String.self, forKey: .tabID)
+        candidateID = try c.decodeIfPresent(String.self, forKey: .candidateID)
         documentID = try c.decodeIfPresent(String.self, forKey: .documentID)
         url = try c.decodeIfPresent(String.self, forKey: .url)
         mimeType = try c.decodeIfPresent(String.self, forKey: .mimeType)
@@ -392,6 +398,8 @@ public struct BlobCaptureWireMessage: Codable, Sendable, Equatable {
         try c.encodeIfPresent(version, forKey: .version)
         try c.encode(kind, forKey: .kind)
         try c.encode(transferID, forKey: .transferID)
+        try c.encodeIfPresent(tabID, forKey: .tabID)
+        try c.encodeIfPresent(candidateID, forKey: .candidateID)
         try c.encodeIfPresent(documentID, forKey: .documentID)
         try c.encodeIfPresent(url, forKey: .url)
         try c.encodeIfPresent(mimeType, forKey: .mimeType)
@@ -411,16 +419,80 @@ public struct BlobCaptureWireMessage: Codable, Sendable, Equatable {
 /// Computes SHA-256 incrementally over a stream of chunks without materialising
 /// the full file in memory. Each chunk feeds the running digest.
 public struct EngineSHA256Hasher {
-    private var chunks: [Data] = []
+    private var state: [UInt32] = [
+        0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
+        0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19
+    ]
+    private var pending = Data()
+    private var byteCount: UInt64 = 0
+
     public init() {}
-    public mutating func update(data: Data) { chunks.append(data) }
-    /// Returns lowercase hex SHA-256 of all accumulated data and resets state.
+
+    public mutating func update(data: Data) {
+        guard !data.isEmpty else { return }
+        byteCount += UInt64(data.count)
+        pending.append(data)
+        while pending.count >= 64 {
+            compress(pending.prefix(64))
+            pending.removeFirst(64)
+        }
+    }
+
+    /// Returns lowercase hex SHA-256 and resets the accumulator without
+    /// retaining the complete input.
     public mutating func finalize() -> String {
-        var combined = Data()
-        combined.reserveCapacity(chunks.reduce(0) { $0 + $1.count })
-        for chunk in chunks { combined.append(chunk) }
-        chunks = []
-        return EngineSHA256.hash(data: combined)
+        var tail = pending
+        tail.append(0x80)
+        while tail.count % 64 != 56 { tail.append(0) }
+        let bitCount = byteCount * 8
+        for shift in stride(from: 56, through: 0, by: -8) {
+            tail.append(UInt8((bitCount >> UInt64(shift)) & 0xff))
+        }
+        for start in stride(from: 0, to: tail.count, by: 64) {
+            compress(tail[start..<(start + 64)])
+        }
+        let result = state.map { String(format: "%08x", $0) }.joined()
+        self = Self()
+        return result
+    }
+
+    private mutating func compress(_ block: Data.SubSequence) {
+        let k: [UInt32] = [
+            0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b,
+            0x59f111f1, 0x923f82a4, 0xab1c5ed5, 0xd807aa98, 0x12835b01,
+            0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7,
+            0xc19bf174, 0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc,
+            0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da, 0x983e5152,
+            0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147,
+            0x06ca6351, 0x14292967, 0x27b70a85, 0x2e1b2138, 0x4d2c6dfc,
+            0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3, 0x748f82ee, 0x78a5636f,
+            0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7,
+            0xc67178f2
+        ]
+        var w = [UInt32](repeating: 0, count: 64)
+        for i in 0..<16 {
+            let index = block.startIndex + i * 4
+            w[i] = (UInt32(block[index]) << 24) | (UInt32(block[index + 1]) << 16) |
+                (UInt32(block[index + 2]) << 8) | UInt32(block[index + 3])
+        }
+        for i in 16..<64 {
+            let s0 = (w[i - 15] >> 7 | w[i - 15] << 25) ^ (w[i - 15] >> 18 | w[i - 15] << 14) ^ (w[i - 15] >> 3)
+            let s1 = (w[i - 2] >> 17 | w[i - 2] << 15) ^ (w[i - 2] >> 19 | w[i - 2] << 13) ^ (w[i - 2] >> 10)
+            w[i] = w[i - 16] &+ s0 &+ w[i - 7] &+ s1
+        }
+        var a = state[0], b = state[1], c = state[2], d = state[3]
+        var e = state[4], f = state[5], g = state[6], h = state[7]
+        for i in 0..<64 {
+            let s1 = (e >> 6 | e << 26) ^ (e >> 11 | e << 21) ^ (e >> 25 | e << 7)
+            let temp1 = h &+ s1 &+ ((e & f) ^ (~e & g)) &+ k[i] &+ w[i]
+            let s0 = (a >> 2 | a << 30) ^ (a >> 13 | a << 19) ^ (a >> 22 | a << 10)
+            let temp2 = s0 &+ ((a & b) ^ (a & c) ^ (b & c))
+            h = g; g = f; f = e; e = d &+ temp1; d = c; c = b; b = a; a = temp1 &+ temp2
+        }
+        state[0] = state[0] &+ a; state[1] = state[1] &+ b
+        state[2] = state[2] &+ c; state[3] = state[3] &+ d
+        state[4] = state[4] &+ e; state[5] = state[5] &+ f
+        state[6] = state[6] &+ g; state[7] = state[7] &+ h
     }
 }
 
@@ -428,9 +500,9 @@ public struct EngineSHA256Hasher {
 
 /// Owns all file I/O for active Blob export sessions.
 ///
-/// Durability: append() does not return until bytes are written and flushed at
-/// each checkpoint interval. Callers must NOT acknowledge the JS bridge before
-/// append() returns successfully.
+/// Durability: append() does not return until the chunk is written and the
+/// staging file is synchronized. Callers must NOT acknowledge the JS bridge
+/// before append() returns successfully.
 ///
 /// Memory: at most limits.maximumChunkBytes are held per chunk. No whole-file
 /// buffer is ever created.
@@ -442,6 +514,7 @@ public actor BlobExportWriter {
         let stagingHandle: FileHandle
         var state: BlobTransferState
         var outputHasher: EngineSHA256Hasher
+        var reservedStagingBytes: Int64
     }
 
     private let destinationDirectoryURL: URL
@@ -449,7 +522,6 @@ public actor BlobExportWriter {
     private let limits: BlobExportLimits
     private var sessions: [String: Session] = [:]
     private var totalStagingBytes: Int64 = 0
-    private let checkpointInterval: Int
 
     public init(
         destinationDirectoryURL: URL,
@@ -460,7 +532,7 @@ public actor BlobExportWriter {
         self.recordDirectoryURL = destinationDirectoryURL
             .appendingPathComponent(".transfer-records", isDirectory: true)
         self.limits = limits
-        self.checkpointInterval = max(1, checkpointInterval)
+        _ = checkpointInterval
     }
 
     // MARK: Begin
@@ -471,6 +543,14 @@ public actor BlobExportWriter {
         suggestedFilename: String
     ) throws -> BlobExportSnapshot {
         guard !authorization.isExpired else { throw BlobExportError.authorizationExpired }
+        guard authorization.transferID == envelope.transferID else {
+            throw BlobExportError.unknownTransferID
+        }
+        guard validIdentifier(authorization.transferID),
+              validIdentifier(authorization.tabID),
+              authorization.documentID.map(validIdentifier) ?? true else {
+            throw BlobExportError.invalidTransferID
+        }
         guard sessions[authorization.transferID] == nil else { throw BlobExportError.duplicateTransfer }
         if let docID = authorization.documentID,
            let envDocID = envelope.documentID,
@@ -536,7 +616,8 @@ public actor BlobExportWriter {
             record: record,
             stagingHandle: handle,
             state: .receivingChunks,
-            outputHasher: EngineSHA256Hasher()
+            outputHasher: EngineSHA256Hasher(),
+            reservedStagingBytes: expectedStaging
         )
         return snapshot(for: record, state: .receivingChunks)
     }
@@ -560,6 +641,11 @@ public actor BlobExportWriter {
         guard session.record.bytesWritten + Int64(data.count) <= limits.maximumBytesPerTransfer else {
             throw BlobExportError.sizeLimitExceeded
         }
+        let newBytesWritten = session.record.bytesWritten + Int64(data.count)
+        let additionalReservation = max(0, newBytesWritten - session.reservedStagingBytes)
+        guard totalStagingBytes + additionalReservation <= limits.maximumStagingBytes else {
+            throw BlobExportError.stagingStorageLimitExceeded
+        }
         guard sha256.count == 64, sha256.allSatisfy(\.isHexDigit) else { throw BlobExportError.invalidChecksum }
         guard EngineSHA256.hash(data: data).caseInsensitiveCompare(sha256) == .orderedSame else {
             abort(transferID: transferID, reason: "chunk \(chunkIndex) SHA-256 mismatch")
@@ -568,6 +654,7 @@ public actor BlobExportWriter {
         do {
             try session.stagingHandle.seek(toOffset: UInt64(offset))
             try session.stagingHandle.write(contentsOf: data)
+            try session.stagingHandle.synchronize()
         } catch {
             abort(transferID: transferID, reason: "write failure at chunk \(chunkIndex)")
             throw BlobExportError.writeFailure
@@ -575,11 +662,10 @@ public actor BlobExportWriter {
         session.outputHasher.update(data: data)
         session.record.bytesWritten += Int64(data.count)
         session.record.chunksReceived += 1
-        if session.record.chunksReceived % checkpointInterval == 0 {
-            try? session.stagingHandle.synchronize()
-            session.record.lastCheckpoint = Date()
-            persistRecord(session.record)
-        }
+        totalStagingBytes += additionalReservation
+        session.reservedStagingBytes += additionalReservation
+        session.record.lastCheckpoint = Date()
+        persistRecord(session.record)
         sessions[transferID] = session
         return snapshot(for: session.record, state: session.state)
     }
@@ -630,8 +716,8 @@ public actor BlobExportWriter {
             }
         }
         do {
-            if FileManager.default.fileExists(atPath: session.record.finalURL.path) {
-                try FileManager.default.removeItem(at: session.record.finalURL)
+            guard !FileManager.default.fileExists(atPath: session.record.finalURL.path) else {
+                throw BlobExportError.finalizationFailure
             }
             try FileManager.default.moveItem(at: session.record.stagingURL, to: session.record.finalURL)
         } catch {
@@ -641,7 +727,7 @@ public actor BlobExportWriter {
         session.record.state = .completed
         session.record.lastCheckpoint = Date()
         persistRecord(session.record)
-        totalStagingBytes -= (session.record.expectedSize ?? session.record.bytesWritten)
+        totalStagingBytes -= session.reservedStagingBytes
         sessions.removeValue(forKey: transferID)
         return BlobExportSnapshot(
             transferID: transferID, state: .completed,
@@ -698,7 +784,7 @@ public actor BlobExportWriter {
         if var session = sessions.removeValue(forKey: transferID) {
             try? session.stagingHandle.close()
             try? FileManager.default.removeItem(at: session.record.stagingURL)
-            totalStagingBytes -= (session.record.expectedSize ?? session.record.bytesWritten)
+            totalStagingBytes -= session.reservedStagingBytes
             session.record.state = .failed
             session.record.failureReason = reason
             persistRecord(session.record)
@@ -752,6 +838,11 @@ public actor BlobExportWriter {
             let name = ext.isEmpty ? "\(stem)-\(i)" : "\(stem)-\(i).\(ext)"
             let candidate = directory.appendingPathComponent(name)
             if !FileManager.default.fileExists(atPath: candidate.path) { return candidate }
+        }
+
+        private func validIdentifier(_ value: String) -> Bool {
+            !value.isEmpty && value.count <= limits.maximumIdentifierLength &&
+                !value.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains)
         }
         return directory.appendingPathComponent("blob-\(UUID().uuidString).\(ext.isEmpty ? "bin" : ext)")
     }
@@ -816,8 +907,17 @@ public actor BrowserBlobCaptureReceiver {
                 await writer.cancel(transferID: transferID)
                 return BlobCaptureAck.rejected(transferID: transferID, error: .authorizationExpired)
             }
-            if let authDocID = auth.documentID, let msgDocID = message.documentID,
-               authDocID != msgDocID {
+            if !auth.tabID.isEmpty, message.tabID != auth.tabID {
+                authorizations.removeValue(forKey: transferID)
+                await writer.cancel(transferID: transferID)
+                return BlobCaptureAck.rejected(transferID: transferID, error: .tabMismatch)
+            }
+            if let authCandidateID = auth.candidateID, message.candidateID != authCandidateID {
+                authorizations.removeValue(forKey: transferID)
+                await writer.cancel(transferID: transferID)
+                return BlobCaptureAck.rejected(transferID: transferID, error: .captureNotAuthorized)
+            }
+            if let authDocID = auth.documentID, message.documentID != authDocID {
                 authorizations.removeValue(forKey: transferID)
                 await writer.cancel(transferID: transferID)
                 return BlobCaptureAck.rejected(transferID: transferID, error: .documentMismatch)
@@ -1015,20 +1115,31 @@ public enum BlobCaptureBridge {
         });
     }
     function makeRollingDigest() {
-        var parts = [];
-        return {
-            update: function(bytes) { parts.push(bytes.slice().buffer); },
-            finalize: function() {
-                if (!window.crypto || !window.crypto.subtle) { return Promise.resolve(null); }
-                var total = parts.reduce(function(a,b){return a+b.byteLength;},0);
-                var merged = new Uint8Array(total); var off=0;
-                parts.forEach(function(ab){ merged.set(new Uint8Array(ab),off); off+=ab.byteLength; });
-                parts=[];
-                return window.crypto.subtle.digest("SHA-256", merged.buffer).then(function(ab){
-                    return Array.prototype.map.call(new Uint8Array(ab),function(b){return b.toString(16).padStart(2,"0");}).join("");
-                });
-            }
-        };
+        var h=[0x6a09e667,0xbb67ae85,0x3c6ef372,0xa54ff53,0x510e527f,0x9b05688c,0x1f83d9ab,0x5be0cd19];
+        var k=[0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25,0x59f111f1,0x923f82a4,0xab1c5ed5,0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x4a7484aa,0x5cb0a9dc,0x76f988da,0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2];
+        var pending=new Uint8Array(0), total=0;
+        function rotr(x,n){return (x>>>n)|(x<<(32-n));}
+        function block(bytes) {
+            var w=new Uint32Array(64), i, a,b,c,d,e,f,g,x;
+            for(i=0;i<16;i++) w[i]=((bytes[i*4]<<24)|(bytes[i*4+1]<<16)|(bytes[i*4+2]<<8)|bytes[i*4+3])>>>0;
+            for(i=16;i<64;i++){var s0=rotr(w[i-15],7)^rotr(w[i-15],18)^(w[i-15]>>>3),s1=rotr(w[i-2],17)^rotr(w[i-2],19)^(w[i-2]>>>10);w[i]=(w[i-16]+s0+w[i-7]+s1)>>>0;}
+            a=h[0];b=h[1];c=h[2];d=h[3];e=h[4];f=h[5];g=h[6];x=h[7];
+            for(i=0;i<64;i++){var S1=rotr(e,6)^rotr(e,11)^rotr(e,25),t1=(x+S1+((e&f)^(~e&g))+k[i]+w[i])>>>0,S0=rotr(a,2)^rotr(a,13)^rotr(a,22),t2=(S0+((a&b)^(a&c)^(b&c)))>>>0;x=g;g=f;f=e;e=(d+t1)>>>0;d=c;c=b;b=a;a=(t1+t2)>>>0;}
+            h[0]=(h[0]+a)>>>0;h[1]=(h[1]+b)>>>0;h[2]=(h[2]+c)>>>0;h[3]=(h[3]+d)>>>0;h[4]=(h[4]+e)>>>0;h[5]=(h[5]+f)>>>0;h[6]=(h[6]+g)>>>0;h[7]=(h[7]+x)>>>0;
+        }
+        function update(bytes) {
+            total+=bytes.length;
+            var merged=new Uint8Array(pending.length+bytes.length); merged.set(pending); merged.set(bytes,pending.length);
+            var off=0; while(merged.length-off>=64){block(merged.subarray(off,off+64));off+=64;}
+            pending=merged.slice(off);
+        }
+        return {update:update,finalize:function(){
+            var pad=new Uint8Array(pending.length+1);pad.set(pending);pad[pending.length]=128;
+            var size=pad.length;while(size%64!==56)size++;var tail=new Uint8Array(size+8);tail.set(pad);
+            var bits=total*8;for(var j=0;j<8;j++)tail[size+7-j]=bits%256,bits=Math.floor(bits/256);
+            for(var off=0;off<tail.length;off+=64)block(tail.subarray(off,off+64));
+            var out="";for(var q=0;q<8;q++)out+=("00000000"+h[q].toString(16)).slice(-8);return Promise.resolve(out);
+        }};
     }
     function nextBytes(s) {
         if (s.pending && s.pending.length>0) { var p=s.pending; s.pending=null; return Promise.resolve(p); }
@@ -1049,7 +1160,7 @@ public enum BlobCaptureBridge {
         nextBytes(s).then(function(bytes){
             if (!bytes) {
                 return s.rollingDigest.finalize().then(function(digest){
-                    post({version:PROTOCOL_VERSION,kind:"complete",transferID:s.transferID,
+                    post({version:PROTOCOL_VERSION,kind:"complete",transferID:s.transferID,tabID:s.tabID,candidateID:s.candidateID,
                           documentID:s.documentID,chunkIndex:s.chunkIndex,offset:s.offset,
                           sha256:digest||undefined});
                     s.awaitingAck=true;
@@ -1058,7 +1169,7 @@ public enum BlobCaptureBridge {
             if (bytes.length>MAX_CHUNK_BYTES){throw new Error("chunk too large");}
             return digestHex(bytes).then(function(cksum){
                 s.rollingDigest.update(bytes);
-                post({version:PROTOCOL_VERSION,kind:"chunk",transferID:s.transferID,
+                post({version:PROTOCOL_VERSION,kind:"chunk",transferID:s.transferID,tabID:s.tabID,candidateID:s.candidateID,
                       documentID:s.documentID,chunkIndex:s.chunkIndex,offset:s.offset,
                       base64:bytesToBase64(bytes),sha256:cksum});
                 s.awaitingAck=true; s.chunkIndex+=1; s.offset+=bytes.length;
@@ -1069,18 +1180,18 @@ public enum BlobCaptureBridge {
             delete sessions[s.transferID];
         });
     }
-    function start(blobURL,transferID,chunkSize,docID) {
+    function start(blobURL,transferID,chunkSize,docID,tabID,candidateID) {
         var sz=Math.max(1,Math.min(MAX_CHUNK_BYTES,Number(chunkSize)||MAX_CHUNK_BYTES));
         var reg=window.__lidBlobRegistry||null, entry=null;
         try{entry=reg&&reg[String(blobURL)];}catch(_){}
         var rd=makeRollingDigest();
         if (entry&&entry.kind==="blob"&&entry.blob) {
             var esz=Math.floor(Number(entry.size));
-            if (!isFinite(esz)||esz<0){post({version:PROTOCOL_VERSION,kind:"failure",transferID:transferID,reason:"blob size unavailable"});return;}
-            sessions[transferID]={transferID:transferID,documentID:docID||entry.documentID||null,
+            if (!isFinite(esz)||esz<0){            post({version:PROTOCOL_VERSION,kind:"failure",transferID:transferID,tabID:s.tabID,candidateID:s.candidateID,reason:"blob size unavailable"});return;}
+            sessions[transferID]={transferID:transferID,tabID:tabID,candidateID:candidateID,documentID:docID||entry.documentID||null,
                 blob:entry.blob,size:esz,reader:null,chunkSize:sz,chunkIndex:0,offset:0,
                 pending:null,awaitingAck:true,rollingDigest:rd};
-            post({version:PROTOCOL_VERSION,kind:"metadata",transferID:transferID,
+            post({version:PROTOCOL_VERSION,kind:"metadata",transferID:transferID,tabID:tabID,candidateID:candidateID,
                   documentID:docID||entry.documentID||null,url:String(blobURL),
                   mimeType:entry.type||null,size:esz,readable:true,resourceKind:"completeBlobCandidate"});
             return;
@@ -1090,10 +1201,10 @@ public enum BlobCaptureBridge {
             var len=r.headers.get("content-length"),parsed=len===null?null:Number(len);
             var ksz=(isFinite(parsed)&&parsed>=0)?Math.floor(parsed):null;
             var kind=ksz===null?"streamOrUnknown":"completeBlobCandidate";
-            sessions[transferID]={transferID:transferID,documentID:docID||null,
+            sessions[transferID]={transferID:transferID,tabID:tabID,candidateID:candidateID,documentID:docID||null,
                 reader:r.body.getReader(),chunkSize:sz,chunkIndex:0,offset:0,
                 pending:null,awaitingAck:true,rollingDigest:rd};
-            post({version:PROTOCOL_VERSION,kind:"metadata",transferID:transferID,
+            post({version:PROTOCOL_VERSION,kind:"metadata",transferID:transferID,tabID:tabID,candidateID:candidateID,
                   documentID:docID||null,url:String(blobURL),
                   mimeType:r.headers.get("content-type"),size:ksz,readable:true,resourceKind:kind});
         }).catch(function(err){
@@ -1109,7 +1220,7 @@ public enum BlobCaptureBridge {
         var s=sessions[transferID];
         if(s&&s.reader){try{s.reader.cancel();}catch(_){}}
         delete sessions[transferID];
-        post({version:PROTOCOL_VERSION,kind:"cancel",transferID:transferID});
+        post({version:PROTOCOL_VERSION,kind:"cancel",transferID:transferID,tabID:s&&s.tabID,candidateID:s&&s.candidateID});
     }
     window.__lidBlobCapture={start:start,acknowledge:acknowledge,cancel:cancel};
 })();
@@ -1120,13 +1231,17 @@ public enum BlobCaptureBridge {
         blobURL: URL,
         transferID: String,
         documentID: String? = nil,
+        tabID: String? = nil,
+        candidateID: String? = nil,
         chunkSize: Int = maximumChunkBytes
     ) -> String {
         let eu = jsString(blobURL.absoluteString)
         let ei = jsString(transferID)
         let ed = documentID.map(jsString) ?? "null"
         let sc = min(maximumChunkBytes, max(1, chunkSize))
-        return "window.__lidBlobCapture.start(\(eu),\(ei),\(sc),\(ed));"
+        let et = tabID.map(jsString) ?? "null"
+        let ec = candidateID.map(jsString) ?? "null"
+        return "window.__lidBlobCapture.start(\(eu),\(ei),\(sc),\(ed),\(et),\(ec));"
     }
 
     public static func acknowledgeCommand(transferID: String, accepted: Bool) -> String {
