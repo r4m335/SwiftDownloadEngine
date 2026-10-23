@@ -107,7 +107,7 @@ final class BrowserBlobCapturePrototypeTests: XCTestCase {
         let writer = BrowserBlobCapturePrototypeWriter(destinationDirectoryURL: directory)
         let receiver = BrowserBlobCapturePrototypeReceiver(writer: writer)
         let metadata: [String: Any] = [
-            "kind": "metadata",
+            "type": "metadata",
             "captureID": "capture-4",
             "url": "blob:https://video.example/4",
             "mimeType": "video/mp4",
@@ -152,7 +152,7 @@ final class BrowserBlobCapturePrototypeTests: XCTestCase {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }
 
-        let service = BrowserBlobCaptureService(destinationDirectoryURL: directory)
+        let service = BrowserBlobCapturePrototypeService(destinationDirectoryURL: directory)
         await service.register(captureID: "capture-doc", documentID: "document-a")
 
         let rejected = await service.receive(payload: [

@@ -1,4 +1,4 @@
-﻿// This file is superseded by BrowserBlobCaptureService.swift (7H.3P).
+// This file is superseded by BrowserBlobCaptureService.swift (7H.3P).
 // All types have been moved or typealiased there.
 // This file is retained only to preserve git history.
 // Do not add new features here.
@@ -628,7 +628,7 @@ public actor BrowserBlobCapturePrototypeReceiver {
 /// Coordinates the bounded browser-to-file protocol for one WebKit session.
 /// It deliberately exposes the existing receiver/writer instead of owning a
 /// download coordinator or a download-history record.
-public actor BrowserBlobCaptureService {
+public actor BrowserBlobCapturePrototypeService {
     public nonisolated let receiver: BrowserBlobCapturePrototypeReceiver
 
     public init(
