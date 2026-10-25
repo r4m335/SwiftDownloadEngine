@@ -197,10 +197,6 @@ public actor DownloadQueueManager {
         guard items[request.id] == nil else {
             throw DownloadQueueError.downloadAlreadyExists(id: request.id)
         }
-        if items.values.contains(where: { $0.request.destinationURL == record.destinationURL }) {
-            throw DownloadQueueError.downloadAlreadyExists(id: record.destinationURL.path)
-        }
-
         sequenceCounter += 1
         let newItem = QueueItem(
             request: request,
@@ -256,9 +252,11 @@ public actor DownloadQueueManager {
         guard items[request.id] == nil else {
             throw DownloadQueueError.downloadAlreadyExists(id: request.id)
         }
+        if items.values.contains(where: { $0.request.destinationURL == record.destinationURL }) {
+            throw DownloadQueueError.downloadAlreadyExists(id: record.destinationURL.path)
+        }
 
         sequenceCounter += 1
-        let now = Date()
         let item = QueueItem(
             request: request,
             priority: .normal,
