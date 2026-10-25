@@ -34,6 +34,14 @@ public struct BrowserNavigationState: Equatable {
 /// Ensures the browser does not create a duplicate HTTP downloader, but instead routes
 /// user-initiated downloads directly into the established `DownloadCoordinator` workflow.
 public protocol BrowserDownloadDelegate: AnyObject {
+    func importCompletedBrowserFile(
+        fileURL: URL,
+        filename: String,
+        expectedSize: Int64?,
+        originalURL: URL? = nil,
+        mimeType: String? = nil
+    ) async throws
+
     func handleDownloadRequest(
         url: URL,
         filename: String?,
@@ -51,6 +59,16 @@ public protocol BrowserDownloadDelegate: AnyObject {
 }
 
 public extension BrowserDownloadDelegate {
+    func importCompletedBrowserFile(
+        fileURL: URL,
+        filename: String,
+        expectedSize: Int64?,
+        originalURL: URL?,
+        mimeType: String?
+    ) async throws {
+        throw BrowserDownloadDelegateError.completedFileImportUnavailable
+    }
+
     func handleDownloadRequest(
         url: URL,
         filename: String?,
@@ -79,6 +97,14 @@ public extension BrowserDownloadDelegate {
             threadCount: threadCount,
             speedLimitBytesPerSecond: speedLimitBytesPerSecond
         )
+    }
+}
+
+public enum BrowserDownloadDelegateError: Error, LocalizedError, Sendable, Equatable {
+    case completedFileImportUnavailable
+
+    public var errorDescription: String? {
+        "The completed browser file could not be added to Downloads."
     }
 }
 

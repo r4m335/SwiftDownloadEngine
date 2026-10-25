@@ -959,6 +959,67 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
 // MARK: - BrowserDownloadDelegate Conformance
 
 extension DownloadManagerViewModel: BrowserDownloadDelegate {
+    private func uniqueDownloadURL(in directory: URL, filename: String) -> URL {
+        let original = URL(fileURLWithPath: filename).lastPathComponent
+        let base = URL(fileURLWithPath: original).deletingPathExtension().lastPathComponent
+        let ext = URL(fileURLWithPath: original).pathExtension
+        var candidate = directory.appendingPathComponent(original)
+        var suffix = 2
+        while FileManager.default.fileExists(atPath: candidate.path) {
+            let name = ext.isEmpty ? "\(base) (\(suffix))" : "\(base) (\(suffix)).\(ext)"
+            candidate = directory.appendingPathComponent(name)
+            suffix += 1
+        }
+        return candidate
+    }
+
+    public func importCompletedBrowserFile(
+        fileURL: URL,
+        filename: String,
+        expectedSize: Int64?,
+        originalURL: URL? = nil,
+        mimeType: String? = nil
+    ) async throws {
+        guard fileURL.isFileURL,
+              FileManager.default.fileExists(atPath: fileURL.path) else {
+            throw BrowserDownloadDelegateError.completedFileImportUnavailable
+        }
+        if let expectedSize,
+           expectedSize != (try FileManager.default.attributesOfItem(atPath: fileURL.path)[.size] as? NSNumber)?.int64Value {
+            throw BrowserDownloadDelegateError.completedFileImportUnavailable
+        }
+
+        try FileManager.default.createDirectory(
+            at: downloadsDirectoryURL,
+            withIntermediateDirectories: true
+        )
+        let destination = uniqueDownloadURL(
+            in: downloadsDirectoryURL,
+            filename: filename
+        )
+        let temporaryDestination = downloadsDirectoryURL
+            .appendingPathComponent(".\(destination.lastPathComponent).\(UUID().uuidString).partial")
+        do {
+            try FileManager.default.copyItem(at: fileURL, to: temporaryDestination)
+            try FileManager.default.moveItem(at: temporaryDestination, to: destination)
+        } catch {
+            try? FileManager.default.removeItem(at: temporaryDestination)
+            throw error
+        }
+        do {
+            _ = try await engine.importCompletedFile(
+                fileURL: destination,
+                originalURL: originalURL ?? fileURL,
+                filename: filename,
+                mimeType: mimeType
+            )
+        } catch {
+            try? FileManager.default.removeItem(at: destination)
+            throw error
+        }
+        await refreshSnapshots()
+    }
+
     public func handleDownloadRequest(
         url: URL,
         filename: String?,

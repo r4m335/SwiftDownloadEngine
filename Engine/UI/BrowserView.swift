@@ -92,6 +92,8 @@ public final class BrowserViewModel: NSObject, ObservableObject {
     @Published public private(set) var isCapturingBlob: Bool = false
     private var activeBlobCaptureID: String?
     private var activeBlobCaptureTabID: UUID?
+    private var activeBlobCaptureOriginalURL: URL?
+    private var activeBlobCaptureMIMEType: String?
 
     // Optional MSE capture state (7H.4). Metadata observation remains the
     // default; bytes are retained only while an explicit capture is active.
@@ -440,6 +442,8 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         let captureID = "blob-" + UUID().uuidString.lowercased()
         activeBlobCaptureID = captureID
         activeBlobCaptureTabID = tabID
+        activeBlobCaptureOriginalURL = blobURL
+        activeBlobCaptureMIMEType = candidate.mimeType
         blobCaptureSnapshot = nil
         blobCaptureErrorMessage = nil
         isCapturingBlob = true
@@ -494,6 +498,8 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         }
         activeBlobCaptureID = nil
         activeBlobCaptureTabID = nil
+        activeBlobCaptureOriginalURL = nil
+        activeBlobCaptureMIMEType = nil
         isCapturingBlob = false
     }
 
@@ -513,13 +519,60 @@ public final class BrowserViewModel: NSObject, ObservableObject {
             isCapturingBlob = false
             activeBlobCaptureID = nil
             activeBlobCaptureTabID = nil
+            activeBlobCaptureOriginalURL = nil
+            activeBlobCaptureMIMEType = nil
             return
         }
         if acknowledgement.snapshot?.isComplete == true {
-            isCapturingBlob = false
-            activeBlobCaptureID = nil
-            activeBlobCaptureTabID = nil
-            downloadSuccessNotification = "Blob export completed."
+            guard let snapshot = acknowledgement.snapshot,
+                  let finalURL = snapshot.finalURL else {
+                blobCaptureErrorMessage = "The Blob was captured but no finalized output file was produced."
+                isCapturingBlob = false
+                activeBlobCaptureID = nil
+                activeBlobCaptureTabID = nil
+                activeBlobCaptureOriginalURL = nil
+                activeBlobCaptureMIMEType = nil
+                return
+            }
+            let filename = URL(fileURLWithPath: finalURL.path).lastPathComponent
+            guard !filename.isEmpty else {
+                blobCaptureErrorMessage = "The Blob was captured but no finalized output filename was produced."
+                isCapturingBlob = false
+                activeBlobCaptureID = nil
+                activeBlobCaptureTabID = nil
+                activeBlobCaptureOriginalURL = nil
+                activeBlobCaptureMIMEType = nil
+                return
+            }
+            let expectedSize = snapshot.expectedSize
+            Task { @MainActor [weak self] in
+                do {
+                    guard let self, let downloadDelegate = self.downloadDelegate else {
+                        throw BrowserDownloadDelegateError.completedFileImportUnavailable
+                    }
+                    try await downloadDelegate.importCompletedBrowserFile(
+                        fileURL: finalURL,
+                        filename: filename,
+                        expectedSize: expectedSize,
+                        originalURL: self.activeBlobCaptureOriginalURL,
+                        mimeType: self.activeBlobCaptureMIMEType
+                    )
+                    self.isCapturingBlob = false
+                    self.activeBlobCaptureID = nil
+                    self.activeBlobCaptureTabID = nil
+                    self.activeBlobCaptureOriginalURL = nil
+                    self.activeBlobCaptureMIMEType = nil
+                    self.downloadSuccessNotification = "Blob download completed."
+                } catch {
+                    guard let self else { return }
+                    self.blobCaptureErrorMessage = error.localizedDescription
+                    self.isCapturingBlob = false
+                    self.activeBlobCaptureID = nil
+                    self.activeBlobCaptureTabID = nil
+                    self.activeBlobCaptureOriginalURL = nil
+                    self.activeBlobCaptureMIMEType = nil
+                }
+            }
         }
     }
 

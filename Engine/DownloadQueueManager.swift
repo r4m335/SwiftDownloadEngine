@@ -197,6 +197,9 @@ public actor DownloadQueueManager {
         guard items[request.id] == nil else {
             throw DownloadQueueError.downloadAlreadyExists(id: request.id)
         }
+        if items.values.contains(where: { $0.request.destinationURL == destinationURL }) {
+            throw DownloadQueueError.downloadAlreadyExists(id: destinationURL.path)
+        }
 
         sequenceCounter += 1
         let newItem = QueueItem(
@@ -233,6 +236,73 @@ public actor DownloadQueueManager {
             processQueue()
         }
         return added
+    }
+
+    /// Registers a file that has already been transferred outside the HTTP coordinator.
+    /// Both the queue manifest and the durable download record are written before returning.
+    @discardableResult
+    public func addCompletedFile(
+        destinationURL: URL,
+        originalURL: URL,
+        totalBytes: Int64,
+        filename: String,
+        mimeType: String? = nil
+    ) throws -> QueueItem {
+        let request = DownloadRequest(
+            url: originalURL,
+            destinationURL: destinationURL,
+            configuredThreadCount: 1,
+            storageMode: .directSeek,
+            transportPolicy: .foreground
+        )
+        guard items[request.id] == nil else {
+            throw DownloadQueueError.downloadAlreadyExists(id: request.id)
+        }
+
+        sequenceCounter += 1
+        let now = Date()
+        let item = QueueItem(
+            request: request,
+            priority: .normal,
+            sequenceIndex: sequenceCounter,
+            enqueuedAt: now,
+            state: .completed,
+            completedBytes: totalBytes,
+            totalBytes: totalBytes
+        )
+        items[item.id] = item
+        let record = DownloadRecord(
+            id: item.id,
+            originalURL: originalURL,
+            resolvedURL: originalURL,
+            destinationURL: destinationURL,
+            totalSize: totalBytes,
+            state: .completed,
+            storageMode: .directSeek,
+            transportPolicy: .foreground,
+            suggestedFilename: filename,
+            mimeType: mimeType,
+            createdAt: now,
+            updatedAt: now,
+            segments: [
+                SegmentRecord(
+                    id: 0,
+                    startOffset: 0,
+                    endOffset: max(0, totalBytes - 1),
+                    length: totalBytes,
+                    completedBytes: totalBytes
+                )
+            ]
+        )
+        do {
+            try persistenceStore.save(record)
+        } catch {
+            items.removeValue(forKey: item.id)
+            throw DownloadQueueError.persistenceError(error.localizedDescription)
+        }
+        persistQueue()
+        notifyQueueChanged()
+        return item
     }
 
     /// Cooperatively pauses a download.
@@ -449,8 +519,8 @@ public actor DownloadQueueManager {
             } else if FileManager.default.fileExists(atPath: item.request.destinationURL.path) {
                 try? FileManager.default.removeItem(at: item.request.destinationURL)
             }
-            try? await persistenceStore.delete(tag: id)
         }
+        try? await persistenceStore.delete(tag: id)
 
         items.removeValue(forKey: id)
         progressHandlers.removeValue(forKey: id)
@@ -600,7 +670,9 @@ public actor DownloadQueueManager {
             }
             // Reconcile completed items with physical disk file
             if item.state == .completed {
-                if let diskSize = try? FileManager.default.attributesOfItem(atPath: item.request.destinationURL.path)[.size] as? Int64, diskSize > 0 {
+                if FileManager.default.fileExists(atPath: item.request.destinationURL.path),
+                   let diskSize = try? FileManager.default.attributesOfItem(atPath: item.request.destinationURL.path)[.size] as? Int64,
+                   diskSize >= 0 {
                     var updated = self.items[id] ?? item
                     if updated.completedBytes == 0 {
                         updated.completedBytes = diskSize
@@ -861,4 +933,3 @@ public actor DownloadQueueManager {
         try await coordinator.requestBudget.setMaxGlobalRequests(limit)
     }
 }
-
