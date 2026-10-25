@@ -402,11 +402,17 @@ public enum BrowserMediaCandidateClassifier {
         _ context: BrowserRequestContext?,
         for targetURL: URL
     ) -> BrowserRequestContext? {
-        guard let context,
-              originKey(context.url) == originKey(targetURL) else {
-            return nil
+        guard let context else { return nil }
+        if originKey(context.url) == originKey(targetURL) {
+            return context
         }
-        return context
+        if BrowserHeaderFilter.isSameSiteOrSubdomain(context.url, targetURL) {
+            return context
+        }
+        if context.cookies.contains(where: { $0.matches(url: targetURL) }) {
+            return context
+        }
+        return nil
     }
 
     private static func originKey(_ url: URL) -> String {

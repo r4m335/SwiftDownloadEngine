@@ -349,22 +349,27 @@ public struct BrowserHeaderFilter {
         from originalURL: URL,
         to redirectURL: URL
     ) -> [String: String] {
-        // Credentials may be retained only for the same origin. A host-only check
-        // would incorrectly retain them across scheme or port changes.
-        guard !sameOrigin(originalURL, redirectURL) else {
+        if sameOrigin(originalURL, redirectURL) {
             return headers
         }
 
+        let sameSite = isSameSiteOrSubdomain(originalURL, redirectURL)
         var stripped: [String: String] = [:]
         for (k, v) in headers {
             let lower = k.trimmingCharacters(in: .whitespaces).lowercased()
-            // Strip Cookie and Authorization headers on cross-origin redirects
+            // Retain domain-scoped cookies when redirecting to a same-site/subdomain host
+            if lower == "cookie" {
+                if sameSite {
+                    stripped[k] = v
+                }
+                continue
+            }
             if isSensitiveHeader(lower) {
                 continue
             }
             // The captured page URL can contain private paths or query values;
-            // do not carry it across an origin boundary.
-            if lower == "referer" {
+            // do not carry it across an origin boundary unless same-site.
+            if lower == "referer" && !sameSite {
                 continue
             }
             stripped[k] = v
@@ -373,7 +378,29 @@ public struct BrowserHeaderFilter {
         return stripped
     }
 
-    private static func sameOrigin(_ lhs: URL, _ rhs: URL) -> Bool {
+    public static func isSameSiteOrSubdomain(_ lhs: URL, _ rhs: URL) -> Bool {
+        guard let lhsHost = lhs.host?.lowercased(),
+              let rhsHost = rhs.host?.lowercased(),
+              !lhsHost.isEmpty, !rhsHost.isEmpty else {
+            return false
+        }
+        if lhsHost == rhsHost { return true }
+        if lhsHost.hasSuffix("." + rhsHost) || rhsHost.hasSuffix("." + lhsHost) {
+            return true
+        }
+        let lhsParts = lhsHost.split(separator: ".")
+        let rhsParts = rhsHost.split(separator: ".")
+        if lhsParts.count >= 2 && rhsParts.count >= 2 {
+            let lhsRoot = lhsParts.suffix(2).joined(separator: ".")
+            let rhsRoot = rhsParts.suffix(2).joined(separator: ".")
+            if lhsRoot == rhsRoot {
+                return true
+            }
+        }
+        return false
+    }
+
+    public static func sameOrigin(_ lhs: URL, _ rhs: URL) -> Bool {
         guard let lhsScheme = lhs.scheme?.lowercased(),
               let rhsScheme = rhs.scheme?.lowercased(),
               let lhsHost = lhs.host?.lowercased(),

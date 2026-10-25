@@ -337,6 +337,22 @@ public struct WebpageResourceExtractor {
                 filename = "embedded_resource.\(subExt)"
             } else if resolvedURL.scheme?.lowercased() == "blob" {
                 filename = blobFilename(candidateTitle: candidate.text, mimeType: declaredMIME, type: type)
+            } else if type == .video || type == .audio {
+                let candidateName = BrowserDownloadClassifier.suggestedFilenameFromURL(resolvedURL, mimeType: declaredMIME)
+                let ext = (candidateName as NSString).pathExtension.lowercased()
+                if ext == "bin" || ext.isEmpty {
+                    let mediaExt = (type == .video) ? "mp4" : "m4a"
+                    if let rawTitle = candidate.text?.trimmingCharacters(in: .whitespacesAndNewlines), !rawTitle.isEmpty {
+                        let sanitized = sanitizeTitleForFilename(rawTitle)
+                        filename = sanitized.isEmpty ? (type == .video ? "video.\(mediaExt)" : "audio.\(mediaExt)") : "\(sanitized).\(mediaExt)"
+                    } else {
+                        let stem = (candidateName as NSString).deletingPathExtension
+                        let safeStem = (stem.isEmpty || stem == "download" || stem.hasPrefix("download_")) ? (type == .video ? "video" : "audio") : stem
+                        filename = "\(safeStem).\(mediaExt)"
+                    }
+                } else {
+                    filename = candidateName
+                }
             } else {
                 filename = BrowserDownloadClassifier.suggestedFilenameFromURL(resolvedURL, mimeType: declaredMIME)
             }

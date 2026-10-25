@@ -784,7 +784,15 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         isShowingResourceInspector = false
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
             guard let self = self else { return }
+            if resource.isStreamingManifest {
+                self.promptStreamingDownload(for: resource)
+                return
+            }
             let candidate = BrowserMediaCandidateClassifier.classify(resource: resource)
+            if candidate.kind == .hlsManifest || candidate.kind == .dashManifest {
+                self.promptStreamingDownload(for: resource)
+                return
+            }
             if candidate.kind == .completeBlob {
                 let discoveredCandidate = self.mediaCandidates.first {
                     $0.rawURL.caseInsensitiveCompare(resource.url.absoluteString) == .orderedSame
@@ -820,7 +828,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                         requestContext: plan.requestContext
                     )
                 } catch {
-                    self.errorMessage = error.localizedDescription
+                    self.resourceScanError = error.localizedDescription
                 }
                 return
             }
@@ -1313,6 +1321,29 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                     )
                 }
                 self.exportBlobCandidate(targetCandidate)
+                continue
+            }
+            if resource.isStreamingManifest {
+                promptStreamingDownload(for: resource)
+                continue
+            }
+            let candidate = BrowserMediaCandidateClassifier.classify(resource: resource)
+            if candidate.kind == .hlsManifest || candidate.kind == .dashManifest {
+                promptStreamingDownload(for: resource)
+                continue
+            }
+            if candidate.kind == .directMedia {
+                let plan = try DirectMediaTransferPlanner.makePlan(candidate: candidate)
+                let headers = useBrowserCredentials
+                    ? (plan.requestHeaders.isEmpty ? nil : plan.requestHeaders)
+                    : nil
+                try await downloadDelegate?.handleDownloadRequest(
+                    url: plan.transferURL,
+                    filename: plan.filename.isEmpty ? nil : plan.filename,
+                    threadCount: 6,
+                    speedLimitBytesPerSecond: nil,
+                    headers: headers
+                )
                 continue
             }
             try await downloadDelegate?.handleDownloadRequest(

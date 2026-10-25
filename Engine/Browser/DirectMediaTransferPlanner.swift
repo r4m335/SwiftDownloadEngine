@@ -174,7 +174,9 @@ public enum DirectMediaTransferPlanner {
         let filename = preferredFilename(
             candidateFilename: candidate.suggestedFilename,
             responseFilename: responseFilename,
-            hasResponseFilename: response?.suggestedFilename != nil || response?.contentDisposition != nil
+            hasResponseFilename: response?.suggestedFilename != nil || response?.contentDisposition != nil,
+            mimeType: mimeType,
+            isMedia: candidate.kind == .directMedia
         )
         let headers: [String: String]
         if let context = candidate.requestContext {
@@ -190,7 +192,9 @@ public enum DirectMediaTransferPlanner {
 
         let safeContext: BrowserRequestContext?
         if let context = candidate.requestContext,
-           sameOrigin(originalURL, transferURL) {
+           (sameOrigin(originalURL, transferURL) ||
+            BrowserHeaderFilter.isSameSiteOrSubdomain(originalURL, transferURL) ||
+            context.cookies.contains(where: { $0.matches(url: transferURL) })) {
             safeContext = context
         } else {
             safeContext = nil
@@ -225,8 +229,17 @@ public enum DirectMediaTransferPlanner {
            mimeType.hasPrefix("video/") || mimeType.hasPrefix("audio/") {
             return true
         }
+        if candidate.kind == .directMedia {
+            return true
+        }
         if candidate.evidence.contains("supported media MIME type") ||
-            candidate.evidence.contains("media element observation") {
+            candidate.evidence.contains("media element observation") ||
+            candidate.evidence.contains("direct media resource classification") {
+            return true
+        }
+        let candExt = (candidate.suggestedFilename as NSString).pathExtension.lowercased()
+        if WebpageResourceExtractor.videoExtensions.contains(candExt) ||
+            WebpageResourceExtractor.audioExtensions.contains(candExt) {
             return true
         }
         guard let url = candidate.url else { return false }
@@ -250,14 +263,50 @@ public enum DirectMediaTransferPlanner {
     private static func preferredFilename(
         candidateFilename: String,
         responseFilename: String,
-        hasResponseFilename: Bool
+        hasResponseFilename: Bool,
+        mimeType: String? = nil,
+        isMedia: Bool = false
     ) -> String {
-        guard !hasResponseFilename else { return responseFilename }
-        let sanitized = BrowserDownloadClassifier.sanitizeFilename(candidateFilename)
-        if sanitized != "download.bin" && sanitized.contains(".") {
-            return sanitized
+        var baseName: String
+        if hasResponseFilename {
+            baseName = responseFilename
+        } else {
+            let sanitized = BrowserDownloadClassifier.sanitizeFilename(candidateFilename)
+            if sanitized != "download.bin" && sanitized.contains(".") && !sanitized.hasSuffix(".bin") {
+                baseName = sanitized
+            } else if sanitized != "download.bin" && !sanitized.isEmpty && !sanitized.hasSuffix(".bin") {
+                baseName = sanitized
+            } else {
+                baseName = responseFilename
+            }
         }
-        return responseFilename
+
+        // If the resulting filename ends in .bin or lacks a file extension, infer extension from media/mimeType
+        let ext = (baseName as NSString).pathExtension.lowercased()
+        if ext == "bin" || ext.isEmpty {
+            let mediaExt: String
+            if let mime = mimeType?.lowercased() {
+                if mime.contains("mp4") { mediaExt = "mp4" }
+                else if mime.contains("webm") { mediaExt = "webm" }
+                else if mime.contains("quicktime") { mediaExt = "mov" }
+                else if mime.contains("audio/mpeg") || mime.contains("mp3") { mediaExt = "mp3" }
+                else if mime.contains("audio/mp4") || mime.contains("m4a") { mediaExt = "m4a" }
+                else if isMedia { mediaExt = "mp4" }
+                else { mediaExt = "bin" }
+            } else if isMedia {
+                mediaExt = "mp4"
+            } else {
+                mediaExt = "bin"
+            }
+
+            if mediaExt != "bin" {
+                let stem = (baseName as NSString).deletingPathExtension
+                let safeStem = (stem.isEmpty || stem == "download" || stem.hasPrefix("download_")) ? "video" : stem
+                return "\(safeStem).\(mediaExt)"
+            }
+        }
+
+        return baseName
     }
 
     private static func isHTMLOrManifest(_ mime: String) -> Bool {

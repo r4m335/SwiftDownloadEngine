@@ -245,4 +245,72 @@ final class DirectMediaTransferPlannerTests: XCTestCase {
             XCTAssertEqual(error as? DirectMediaTransferPlanError, .unsupportedCandidate)
         }
     }
+
+    func testExtensionlessDirectVideoPlansWithInferredMP4Extension() throws {
+        let url = URL(string: "https://video.example/videoplayback?id=999")!
+        let extlessResource = resource(
+            url: url,
+            filename: "video.bin",
+            mimeType: nil,
+            resourceType: .video
+        )
+
+        let plan = try DirectMediaTransferPlanner.makePlan(
+            resource: extlessResource,
+            now: now
+        )
+
+        XCTAssertEqual(plan.transferURL, url)
+        XCTAssertTrue(plan.filename.hasSuffix(".mp4"), "Expected extensionless video to be resolved with .mp4 extension, got \(plan.filename)")
+    }
+
+    func testSameSiteSubdomainRedirectPreservesDomainCookies() throws {
+        let originalURL = URL(string: "https://video.example/video.mp4")!
+        let cdnURL = URL(string: "https://cdn.video.example/stream.mp4")!
+        let context = BrowserRequestContext(
+            url: originalURL,
+            pageURL: URL(string: "https://video.example/watch")!,
+            cookies: [
+                BrowserCookie(name: "cf_token", value: "valid_session", domain: ".video.example"),
+                BrowserCookie(name: "strict_host", value: "host_only", domain: "video.example")
+            ],
+            customHeaders: [
+                "Authorization": "Bearer private_token",
+                "X-Trace-ID": "trace-subdomain"
+            ]
+        )
+
+        let plan = try DirectMediaTransferPlanner.makePlan(
+            candidate: BrowserMediaCandidateClassifier.classify(
+                resource: resource(url: originalURL, requestContext: context),
+                now: now
+            ),
+            response: DirectMediaResponseMetadata(
+                finalURL: cdnURL,
+                statusCode: 200,
+                mimeType: "video/mp4"
+            ),
+            now: now
+        )
+
+        XCTAssertEqual(plan.transferURL, cdnURL)
+        XCTAssertNotNil(plan.requestContext)
+        XCTAssertTrue(plan.requestHeaders["Cookie"]?.contains("cf_token=valid_session") == true)
+        XCTAssertNil(plan.requestHeaders["Authorization"], "Authorization header must be stripped when crossing subdomains")
+        XCTAssertEqual(plan.requestHeaders["X-Trace-ID"], "trace-subdomain")
+    }
+
+    func testExtensionlessResourceExtractorInfersMediaFilename() {
+        let html = "<video src=\"https://cdn.example.com/videoplayback?id=123\"></video>"
+        let resources = WebpageResourceExtractor.extractResources(
+            fromHTML: html,
+            baseURL: URL(string: "https://cdn.example.com")!
+        )
+
+        XCTAssertEqual(resources.count, 1)
+        let first = resources[0]
+        XCTAssertEqual(first.resourceType, .video)
+        XCTAssertTrue(first.suggestedFilename.hasSuffix(".mp4"), "Expected suggested filename to end in .mp4, got \(first.suggestedFilename)")
+    }
 }
+
