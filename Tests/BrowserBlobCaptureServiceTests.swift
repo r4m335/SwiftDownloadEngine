@@ -647,21 +647,23 @@ final class BrowserBlobCaptureServiceTests: XCTestCase {
         XCTAssertEqual(res.suggestedFilename, "Magale - Music Video Bhattha Vijay Sethupathi....mp4")
     }
 
-    func testBrowserMediaCandidate_BlobObservationUnknownSizeFallback() {
+    func testBrowserMediaCandidate_BlobObservationUnknownSizeFallback() throws {
         let observation = BrowserMediaDiscoveryObservation(
             url: nil,
             rawURL: "blob:https://example.com/83bc537b-9447-4f67-a279-d6e06b3aa731",
             source: .mediaElement,
             tag: "video",
             declaredType: nil,
-            contentLength: nil
+            contentLength: nil,
+            pageOrigin: URL(string: "https://example.com")!,
+            frameOrigin: URL(string: "https://example.com")!,
+            mayUseBrowserCredentials: false
         )
 
-        let candidate = BrowserMediaCandidateClassifier.classify(observation: observation)
-        XCTAssertNotNil(candidate)
-        XCTAssertEqual(candidate?.kind, .completeBlob)
-        XCTAssertEqual(candidate?.availability, .captureCandidate)
-        XCTAssertEqual(candidate?.suggestedFilename, "browser_blob.mp4")
+        let candidate = try XCTUnwrap(BrowserMediaCandidateClassifier.classify(observation: observation))
+        XCTAssertEqual(candidate.kind, BrowserMediaCandidateKind.completeBlob)
+        XCTAssertEqual(candidate.availability, BrowserMediaCandidateAvailability.captureCandidate)
+        XCTAssertEqual(candidate.suggestedFilename, "browser_blob.mp4")
     }
 
     func testBlobCaptureBridgeScript_UsesResponseBlob() {
@@ -764,29 +766,27 @@ final class BrowserBlobCaptureServiceTests: XCTestCase {
             mimeType: "video/mp4"
         )
 
-        XCTAssertEqual(snapshot.state, .completed)
-        XCTAssertEqual(snapshot.totalSize, Int64(videoData.count))
-        XCTAssertEqual(snapshot.suggestedFilename, "Magale.mp4")
+        XCTAssertEqual(snapshot.state, DownloadState.completed)
+        XCTAssertEqual(snapshot.totalBytes, Int64(videoData.count))
+        XCTAssertEqual(snapshot.completedBytes, Int64(videoData.count))
+        XCTAssertEqual(snapshot.destinationURL.lastPathComponent, "Magale.mp4")
 
         // Verify persistence store contains the record
-        let records = await persistenceStore.loadAll()
+        let records = try await persistenceStore.fetchAll()
         XCTAssertEqual(records.count, 1)
         let persistedRecord = try XCTUnwrap(records.first)
-        XCTAssertEqual(persistedRecord.state, .completed)
+        XCTAssertEqual(persistedRecord.state, DownloadState.completed)
         XCTAssertEqual(persistedRecord.suggestedFilename, "Magale.mp4")
         XCTAssertEqual(persistedRecord.totalSize, Int64(videoData.count))
 
         // Verify recovery after restarting app / recreating queue manager
         let recoveredQueueManager = DownloadQueueManager(coordinator: coordinator, persistenceStore: persistenceStore, maxConcurrentDownloads: 2)
-        let recoveredEngine = DownloadEngine(queueManager: recoveredQueueManager, coordinator: coordinator, persistenceStore: persistenceStore)
-        await recoveredEngine.start()
-        let recoveredSnapshots = await recoveredEngine.allDownloads()
-        XCTAssertEqual(recoveredSnapshots.count, 1)
-        XCTAssertEqual(recoveredSnapshots.first?.state, .completed)
-        XCTAssertEqual(recoveredSnapshots.first?.suggestedFilename, "Magale.mp4")
+        let queueItem = await recoveredQueueManager.item(for: snapshot.id)
+        XCTAssertEqual(queueItem?.state, DownloadState.completed)
+        XCTAssertEqual(queueItem?.completedBytes, Int64(videoData.count))
+        XCTAssertEqual(queueItem?.request.destinationURL.lastPathComponent, "Magale.mp4")
 
         await engine.shutdown()
-        await recoveredEngine.shutdown()
     }
 
     func testFailedBlobCapture_RejectsAndNeverProducesCompletedFile() async throws {
