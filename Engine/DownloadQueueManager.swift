@@ -197,8 +197,8 @@ public actor DownloadQueueManager {
         guard items[request.id] == nil else {
             throw DownloadQueueError.downloadAlreadyExists(id: request.id)
         }
-        if items.values.contains(where: { $0.request.destinationURL == destinationURL }) {
-            throw DownloadQueueError.downloadAlreadyExists(id: destinationURL.path)
+        if items.values.contains(where: { $0.request.destinationURL == record.destinationURL }) {
+            throw DownloadQueueError.downloadAlreadyExists(id: record.destinationURL.path)
         }
 
         sequenceCounter += 1
@@ -242,15 +242,13 @@ public actor DownloadQueueManager {
     /// Both the queue manifest and the durable download record are written before returning.
     @discardableResult
     public func addCompletedFile(
-        destinationURL: URL,
-        originalURL: URL,
-        totalBytes: Int64,
-        filename: String,
-        mimeType: String? = nil
-    ) async throws -> QueueItem {
+        record: DownloadRecord
+    ) throws -> QueueItem {
         let request = DownloadRequest(
-            url: originalURL,
-            destinationURL: destinationURL,
+            id: record.id,
+            url: record.originalURL,
+            destinationURL: record.destinationURL,
+            headers: record.headers,
             configuredThreadCount: 1,
             storageMode: .directSeek,
             transportPolicy: .foreground
@@ -267,39 +265,10 @@ public actor DownloadQueueManager {
             sequenceIndex: sequenceCounter,
             enqueuedAt: now,
             state: .completed,
-            completedBytes: totalBytes,
-            totalBytes: totalBytes
+            completedBytes: record.totalSize,
+            totalBytes: record.totalSize
         )
         items[item.id] = item
-        let record = DownloadRecord(
-            id: item.id,
-            originalURL: originalURL,
-            resolvedURL: originalURL,
-            destinationURL: destinationURL,
-            totalSize: totalBytes,
-            state: .completed,
-            storageMode: .directSeek,
-            transportPolicy: .foreground,
-            suggestedFilename: filename,
-            mimeType: mimeType,
-            createdAt: now,
-            updatedAt: now,
-            segments: [
-                SegmentRecord(
-                    id: 0,
-                    startOffset: 0,
-                    endOffset: max(0, totalBytes - 1),
-                    length: totalBytes,
-                    completedBytes: totalBytes
-                )
-            ]
-        )
-        do {
-            try await persistenceStore.save(record)
-        } catch {
-            items.removeValue(forKey: item.id)
-            throw DownloadQueueError.persistenceError(error.localizedDescription)
-        }
         persistQueue()
         notifyQueueChanged()
         return item

@@ -325,19 +325,46 @@ public actor DownloadEngine {
               totalBytes >= 0 else {
             throw DownloadQueueError.persistenceError("The captured file is missing or has no valid size.")
         }
-        let item = try await queueManager.addCompletedFile(
-            destinationURL: fileURL,
+        let now = Date()
+        let record = DownloadRecord(
             originalURL: originalURL,
-            totalBytes: totalBytes,
-            filename: filename,
-            mimeType: mimeType
+            resolvedURL: originalURL,
+            destinationURL: fileURL,
+            totalSize: totalBytes,
+            state: .completed,
+            storageMode: .directSeek,
+            transportPolicy: .foreground,
+            suggestedFilename: filename,
+            mimeType: mimeType,
+            createdAt: now,
+            updatedAt: now,
+            segments: [
+                SegmentRecord(
+                    id: 0,
+                    startOffset: 0,
+                    endOffset: max(0, totalBytes - 1),
+                    length: totalBytes,
+                    completedBytes: totalBytes
+                )
+            ]
         )
-        let snapshot = await makeSnapshot(from: item)
-        previousStates[item.id] = .completed
-        terminalEventsEmitted.insert(item.id)
-        broadcast(.added(snapshot))
-        broadcast(.completed(snapshot))
-        return snapshot
+        do {
+            try await persistenceStore.save(record)
+        } catch {
+            throw DownloadQueueError.persistenceError(error.localizedDescription)
+        }
+        do {
+            let item = try await queueManager.addCompletedFile(record: record)
+            let snapshot = await makeSnapshot(from: item)
+            previousStates[item.id] = .completed
+            terminalEventsEmitted.insert(item.id)
+            broadcast(.added(snapshot))
+            broadcast(.completed(snapshot))
+            return snapshot
+        } catch {
+            try? await persistenceStore.delete(tag: record.id)
+            throw error
+        }
     }
 
     /// Enqueues multiple download requests in bulk.
