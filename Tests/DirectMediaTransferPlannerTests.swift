@@ -45,6 +45,49 @@ final class DirectMediaTransferPlannerTests: XCTestCase {
         XCTAssertEqual(plan.transferURL.query, "id=42&sig=signed-value")
     }
 
+    func testFinalResponseURLAndMetadataReachDownloadRequest() throws {
+        let originalURL = URL(string: "https://video.example/play?id=7")!
+        let finalURL = URL(string: "https://video.example/files/episode.mp4")!
+        let context = BrowserRequestContext(
+            url: originalURL,
+            pageURL: URL(string: "https://video.example/watch")!,
+            userAgent: "BrowserTest/1.0",
+            cookies: [BrowserCookie(name: "session", value: "secret", domain: "video.example")]
+        )
+
+        let plan = try DirectMediaTransferPlanner.makePlan(
+            candidate: BrowserMediaCandidateClassifier.classify(
+                resource: resource(
+                    url: originalURL,
+                    filename: "episode.mp4",
+                    mimeType: nil,
+                    requestContext: context
+                ),
+                now: now
+            ),
+            response: DirectMediaResponseMetadata(
+                finalURL: finalURL,
+                statusCode: 200,
+                mimeType: "video/mp4",
+                expectedContentLength: 8_192
+            ),
+            now: now
+        )
+
+        XCTAssertEqual(plan.transferURL, finalURL)
+        XCTAssertEqual(plan.mimeType, "video/mp4")
+        XCTAssertEqual(plan.expectedContentLength, 8_192)
+        XCTAssertNotNil(plan.requestContext)
+        XCTAssertEqual(plan.requestHeaders["Cookie"], "session=secret")
+
+        let request = try plan.makeDownloadRequest(
+            destinationURL: URL(fileURLWithPath: "/tmp/episode.mp4"),
+            id: "final-url-media-test"
+        )
+        XCTAssertEqual(request.url, finalURL)
+        XCTAssertEqual(request.headers["Cookie"], "session=secret")
+    }
+
     func testContentDispositionTakesPrecedenceOverBrowserFilename() throws {
         let plan = try DirectMediaTransferPlanner.makePlan(
             resource: resource(
