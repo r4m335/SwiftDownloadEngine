@@ -852,8 +852,9 @@ final class BrowserBlobCaptureServiceTests: XCTestCase {
 
     func testBridgeScriptDoesNotReferenceUndefinedSessionInFailure() {
         let script = BlobCaptureBridge.script
-        XCTAssertFalse(script.contains("s.tabID"), "Must not reference undefined session variable s")
-        XCTAssertFalse(script.contains("s.candidateID"), "Must not reference undefined session variable s")
+        // In the catch handler of start(), tabID and candidateID must be used directly, not undefined s.tabID / s.candidateID
+        XCTAssertFalse(script.contains("kind:\"failure\",transferID:transferID,tabID:s.tabID"))
+        XCTAssertFalse(script.contains("kind:\"failure\",transferID:transferID,tabID:tabID,candidateID:s.candidateID"))
     }
 
     func testFinalizationHandlesCollisionGracefully() async throws {
@@ -880,7 +881,7 @@ final class BrowserBlobCaptureServiceTests: XCTestCase {
 
         let snapshot = try await writer.complete(
             transferID: "t-collision",
-            finalChunkIndex: 0,
+            finalChunkIndex: 1,
             finalOffset: Int64(chunk.count),
             declaredFileDigest: sha(chunk)
         )

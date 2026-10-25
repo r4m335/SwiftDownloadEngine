@@ -430,6 +430,11 @@ public final class BrowserViewModel: NSObject, ObservableObject {
               let blobURL = URL(string: candidate.rawURL),
               blobURL.scheme?.lowercased() == "blob" else {
             blobCaptureErrorMessage = "This browser resource is not available for bounded Blob export."
+            BrowserDiagnosticLogger.shared.log(
+                category: .blobCapture,
+                message: "Blob capture rejected: resource not eligible",
+                details: ["rawURL": candidate.rawURL, "kind": candidate.kind.rawValue]
+            )
             return
         }
 
@@ -437,6 +442,11 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         let tabID = activeTabID ?? tabManager.activeTabID ?? tabManager.tabs.first?.id
         guard let resolvedTabID = tabID else {
             blobCaptureErrorMessage = "No active browser tab found for Blob export."
+            BrowserDiagnosticLogger.shared.log(
+                category: .blobCapture,
+                message: "Blob capture rejected: no active browser tab found",
+                url: blobURL
+            )
             return
         }
         let session = webViewSession(for: resolvedTabID)
@@ -447,6 +457,14 @@ public final class BrowserViewModel: NSObject, ObservableObject {
 
         if isCapturingBlob || isCapturingMSE {
             blobCaptureErrorMessage = "Another browser capture is already in progress."
+            #if canImport(WebKit)
+            BrowserDiagnosticLogger.shared.log(
+                category: .blobCapture,
+                message: "Blob capture rejected: another capture already in progress",
+                url: blobURL,
+                tabID: resolvedTabID
+            )
+            #endif
             return
         }
 
@@ -463,6 +481,18 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         isCapturingBlob = true
 
         #if canImport(WebKit)
+        BrowserDiagnosticLogger.shared.log(
+            category: .blobCapture,
+            message: "Blob capture initialization started",
+            url: blobURL,
+            tabID: resolvedTabID,
+            details: [
+                "transferID": captureID,
+                "candidateID": candidate.id,
+                "suggestedFilename": candidate.suggestedFilename
+            ]
+        )
+
         let documentID = candidate.documentID
         let service = session.blobCaptureService
         let webView = session.webView
@@ -474,13 +504,34 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                 candidateID: candidate.id,
                 suggestedFilename: candidate.suggestedFilename
             )
+            BrowserDiagnosticLogger.shared.log(
+                category: .blobCapture,
+                message: "Native service accepted authorization",
+                url: blobURL,
+                tabID: resolvedTabID,
+                details: ["transferID": captureID]
+            )
             guard let self,
                   self.activeBlobCaptureID == captureID,
                   self.activeBlobCaptureTabID == resolvedTabID else {
                 await service.cancel(captureID: captureID)
+                BrowserDiagnosticLogger.shared.log(
+                    category: .blobCapture,
+                    message: "Blob capture aborted before JavaScript evaluation (tab changed or cancelled)",
+                    url: blobURL,
+                    tabID: resolvedTabID,
+                    details: ["transferID": captureID]
+                )
                 return
             }
             do {
+                BrowserDiagnosticLogger.shared.log(
+                    category: .blobCapture,
+                    message: "Invoking JavaScript blob capture bridge",
+                    url: blobURL,
+                    tabID: resolvedTabID,
+                    details: ["transferID": captureID]
+                )
                 _ = try await webView.evaluateJavaScript(
                     BlobCaptureBridge.startCommand(
                         blobURL: blobURL,
@@ -490,9 +541,23 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                         candidateID: candidate.id
                     )
                 )
+                BrowserDiagnosticLogger.shared.log(
+                    category: .blobCapture,
+                    message: "JavaScript blob capture bridge invoked successfully",
+                    url: blobURL,
+                    tabID: resolvedTabID,
+                    details: ["transferID": captureID]
+                )
             } catch {
+                BrowserDiagnosticLogger.shared.log(
+                    category: .blobCapture,
+                    message: "JavaScript blob capture bridge invocation failed",
+                    url: blobURL,
+                    tabID: resolvedTabID,
+                    details: ["transferID": captureID, "error": error.localizedDescription]
+                )
                 await service.cancel(captureID: captureID)
-                self.blobCaptureErrorMessage = "The browser Blob capture could not start."
+                self.blobCaptureErrorMessage = "The browser Blob capture could not start: \(error.localizedDescription)"
                 self.isCapturingBlob = false
                 self.activeBlobCaptureID = nil
                 self.activeBlobCaptureTabID = nil
@@ -1578,7 +1643,12 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                     associatedManifestID: nil,
                     lastObserved: Date()
                 )
-            }
+            BrowserDiagnosticLogger.shared.log(
+                category: .blobCapture,
+                message: "Start Download tapped: routing to Blob capture",
+                url: url,
+                details: ["filename": resolvedFilename]
+            )
 
             isShowingDownloadSheet = false
             exportBlobCandidate(candidate)

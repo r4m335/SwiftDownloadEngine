@@ -13,6 +13,7 @@ public enum BrowserDiagnosticCategory: String, Codable, Sendable, CaseIterable {
     case processTermination
     case cookie
     case policy
+    case blobCapture
 }
 
 /// A structured diagnostic record capturing lifecycle events in the in-app browser.

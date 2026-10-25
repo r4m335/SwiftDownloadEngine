@@ -1095,6 +1095,25 @@ public final class BlobCaptureWebKitHandler: NSObject, WKScriptMessageHandler, @
         Task { @MainActor [weak webView] in
             let ack = await receiver.receive(data: data)
             self.acknowledgementHandler?(ack)
+            if !ack.accepted {
+                BrowserDiagnosticLogger.shared.log(
+                    category: .blobCapture,
+                    message: "Native blob capture receiver rejected message",
+                    details: [
+                        "transferID": ack.transferID,
+                        "error": ack.error?.rawValue ?? "unknown"
+                    ]
+                )
+            } else if ack.snapshot?.isComplete == true {
+                BrowserDiagnosticLogger.shared.log(
+                    category: .blobCapture,
+                    message: "Native blob capture completed successfully",
+                    details: [
+                        "transferID": ack.transferID,
+                        "bytesWritten": "\(ack.snapshot?.bytesWritten ?? 0)"
+                    ]
+                )
+            }
             guard let webView, !ack.transferID.isEmpty else { return }
             _ = try? await webView.evaluateJavaScript(
                 BlobCaptureBridge.acknowledgeCommand(transferID: ack.transferID, accepted: ack.accepted)
