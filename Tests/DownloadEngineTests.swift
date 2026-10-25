@@ -777,11 +777,13 @@ final class DownloadEngineTests: XCTestCase {
         XCTAssertEqual(snapshot.totalBytes, Int64(contents.count))
         XCTAssertEqual(snapshot.destinationURL, sourceURL)
 
-        let persisted = try XCTUnwrap(try await persistenceStore.fetch(tag: snapshot.id))
-        XCTAssertEqual(persisted.state, .completed)
-        XCTAssertEqual(persisted.suggestedFilename, "captured-media.mp4")
-        XCTAssertEqual(persisted.mimeType, "video/mp4")
-        XCTAssertEqual(persisted.completedBytes, Int64(contents.count))
+        let persisted = try await persistenceStore.fetch(tag: snapshot.id)
+        XCTAssertNotNil(persisted)
+        let persistedRecord = try XCTUnwrap(persisted)
+        XCTAssertEqual(persistedRecord.state, .completed)
+        XCTAssertEqual(persistedRecord.suggestedFilename, "captured-media.mp4")
+        XCTAssertEqual(persistedRecord.mimeType, "video/mp4")
+        XCTAssertEqual(persistedRecord.completedBytes, Int64(contents.count))
 
         let restoredManager = DownloadQueueManager(
             coordinator: coordinator,
@@ -795,7 +797,8 @@ final class DownloadEngineTests: XCTestCase {
 
         try await restoredManager.removeFromQueue(id: snapshot.id, deleteDestinationFile: true)
         XCTAssertFalse(FileManager.default.fileExists(atPath: sourceURL.path))
-        XCTAssertNil(try await persistenceStore.fetch(tag: snapshot.id))
+        let deletedRecord = try await persistenceStore.fetch(tag: snapshot.id)
+        XCTAssertNil(deletedRecord)
     }
 
     func testImportCompletedFileRejectsDuplicateDestination() async throws {
