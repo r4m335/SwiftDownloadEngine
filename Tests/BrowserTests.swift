@@ -1105,5 +1105,26 @@ final class BrowserTests: XCTestCase {
         XCTAssertFalse(vm.isShowingResourceInspector)
         XCTAssertNotNil(vm.downloadSuccessNotification)
     }
+
+    @MainActor
+    func testExecuteDownload_RoutesBlobURLToBlobExport() async throws {
+        let mockDelegate = MockDownloadDelegate()
+        let vm = BrowserViewModel(downloadDelegate: mockDelegate)
+
+        let blobURL = URL(string: "blob:https://example.com/3f4e19b5-4b0d-45bf-a621-c5e3170e1762")!
+        vm.downloadCandidateURL = blobURL
+        vm.downloadCandidateFilename = "blob_video.mp4"
+        vm.isShowingDownloadSheet = true
+
+        try await vm.executeDownload()
+
+        // 1. Must NOT submit to normal HTTP download coordinator
+        XCTAssertTrue(mockDelegate.downloadRequests.isEmpty, "Blob downloads must not be routed to HTTP download delegate")
+        // 2. Sheet must be dismissed
+        XCTAssertFalse(vm.isShowingDownloadSheet)
+        // 3. Notification reflects export initiation
+        XCTAssertNotNil(vm.downloadSuccessNotification)
+        XCTAssertTrue(vm.downloadSuccessNotification?.contains("blob_video.mp4") == true)
+    }
     #endif
 }

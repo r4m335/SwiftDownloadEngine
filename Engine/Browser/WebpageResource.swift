@@ -357,9 +357,12 @@ public struct WebpageResourceExtractor {
                 filename = BrowserDownloadClassifier.suggestedFilenameFromURL(resolvedURL, mimeType: declaredMIME)
             }
 
-            let title = (candidate.text?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false)
-                ? candidate.text!.trimmingCharacters(in: .whitespacesAndNewlines)
-                : filename
+            let title: String
+            if let trimmed = candidate.text?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty {
+                title = trimmed
+            } else {
+                title = filename
+            }
 
             results.append(WebpageResource(
                 url: resolvedURL,

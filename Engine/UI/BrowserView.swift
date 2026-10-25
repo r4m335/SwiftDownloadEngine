@@ -428,12 +428,22 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         guard candidate.kind == .completeBlob,
               candidate.availability == .captureCandidate || candidate.availability == .uncertain,
               let blobURL = URL(string: candidate.rawURL),
-              blobURL.scheme?.lowercased() == "blob",
-              let tabID = activeTabID,
-              let session = tabSessions[tabID] else {
+              blobURL.scheme?.lowercased() == "blob" else {
             blobCaptureErrorMessage = "This browser resource is not available for bounded Blob export."
             return
         }
+
+        #if canImport(WebKit)
+        let tabID = activeTabID ?? tabManager.activeTabID ?? tabManager.tabs.first?.id
+        guard let resolvedTabID = tabID else {
+            blobCaptureErrorMessage = "No active browser tab found for Blob export."
+            return
+        }
+        let session = webViewSession(for: resolvedTabID)
+        #else
+        blobCaptureErrorMessage = "WebKit is not supported in this environment."
+        return
+        #endif
 
         if isCapturingBlob || isCapturingMSE {
             blobCaptureErrorMessage = "Another browser capture is already in progress."
@@ -442,7 +452,9 @@ public final class BrowserViewModel: NSObject, ObservableObject {
 
         let captureID = "blob-" + UUID().uuidString.lowercased()
         activeBlobCaptureID = captureID
-        activeBlobCaptureTabID = tabID
+        #if canImport(WebKit)
+        activeBlobCaptureTabID = resolvedTabID
+        #endif
         activeBlobCaptureOriginalURL = blobURL
         activeBlobCaptureMIMEType = candidate.mimeType
         activeBlobCaptureSuggestedFilename = candidate.suggestedFilename
@@ -450,20 +462,21 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         blobCaptureErrorMessage = nil
         isCapturingBlob = true
 
+        #if canImport(WebKit)
         let documentID = candidate.documentID
         let service = session.blobCaptureService
         let webView = session.webView
         Task { @MainActor [weak self] in
             await service.authorize(
                 transferID: captureID,
-                tabID: tabID.uuidString,
+                tabID: resolvedTabID.uuidString,
                 documentID: documentID,
                 candidateID: candidate.id,
                 suggestedFilename: candidate.suggestedFilename
             )
             guard let self,
                   self.activeBlobCaptureID == captureID,
-                  self.activeBlobCaptureTabID == tabID else {
+                  self.activeBlobCaptureTabID == resolvedTabID else {
                 await service.cancel(captureID: captureID)
                 return
             }
@@ -473,7 +486,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                         blobURL: blobURL,
                         transferID: captureID,
                         documentID: documentID,
-                        tabID: tabID.uuidString,
+                        tabID: resolvedTabID.uuidString,
                         candidateID: candidate.id
                     )
                 )
@@ -486,6 +499,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                 self.activeBlobCaptureSuggestedFilename = nil
             }
         }
+        #endif
     }
 
     /// Cancels the active page reader and removes the native partial file.
@@ -542,9 +556,12 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                 return
             }
             let candidateFilename = self.activeBlobCaptureSuggestedFilename?.trimmingCharacters(in: .whitespacesAndNewlines)
-            let filename = (candidateFilename?.isEmpty == false)
-                ? candidateFilename!
-                : URL(fileURLWithPath: finalURL.path).lastPathComponent
+            let filename: String
+            if let candidateFilename, !candidateFilename.isEmpty {
+                filename = candidateFilename
+            } else {
+                filename = URL(fileURLWithPath: finalURL.path).lastPathComponent
+            }
             guard !filename.isEmpty else {
                 blobCaptureErrorMessage = "The Blob was captured but no finalized output filename was produced."
                 isCapturingBlob = false
@@ -575,7 +592,8 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                     self.activeBlobCaptureOriginalURL = nil
                     self.activeBlobCaptureMIMEType = nil
                     self.activeBlobCaptureSuggestedFilename = nil
-                    self.downloadSuccessNotification = "Blob download completed."
+                    self.downloadSuccessNotification = "Blob download completed: \(filename)"
+                    self.onDownloadInitiated?()
                 } catch {
                     guard let self else { return }
                     self.blobCaptureErrorMessage = error.localizedDescription
@@ -1512,6 +1530,63 @@ public final class BrowserViewModel: NSObject, ObservableObject {
 
     public func executeDownload() async throws {
         guard let url = downloadCandidateURL else { return }
+
+        if url.scheme?.lowercased() == "blob" {
+            let filename = downloadCandidateFilename.trimmingCharacters(in: .whitespacesAndNewlines)
+            let existing = mediaCandidates.first {
+                $0.rawURL.caseInsensitiveCompare(url.absoluteString) == .orderedSame
+            }
+            let resolvedFilename: String = {
+                if !filename.isEmpty { return filename }
+                if let existing = existing, !existing.suggestedFilename.isEmpty {
+                    return existing.suggestedFilename
+                }
+                return "browser_blob.mp4"
+            }()
+            let candidate: BrowserMediaCandidate
+            if let existing = existing {
+                candidate = BrowserMediaCandidate(
+                    id: existing.id,
+                    url: existing.url,
+                    rawURL: existing.rawURL,
+                    finalURL: existing.finalURL,
+                    kind: .completeBlob,
+                    mimeType: existing.mimeType,
+                    suggestedFilename: resolvedFilename,
+                    estimatedSize: existing.estimatedSize,
+                    availability: .captureCandidate,
+                    evidence: existing.evidence + ["Blob export requested from download sheet"],
+                    documentID: existing.documentID,
+                    requestContext: existing.requestContext,
+                    associatedManifestID: existing.associatedManifestID,
+                    lastObserved: Date()
+                )
+            } else {
+                candidate = BrowserMediaCandidate(
+                    id: BrowserMediaCandidateClassifier.stableIdentity(rawURL: url.absoluteString, url: url),
+                    url: nil,
+                    rawURL: url.absoluteString,
+                    finalURL: nil,
+                    kind: .completeBlob,
+                    mimeType: nil,
+                    suggestedFilename: resolvedFilename,
+                    estimatedSize: nil,
+                    availability: .captureCandidate,
+                    evidence: ["Blob export requested from download sheet"],
+                    documentID: nil,
+                    requestContext: nil,
+                    associatedManifestID: nil,
+                    lastObserved: Date()
+                )
+            }
+
+            isShowingDownloadSheet = false
+            exportBlobCandidate(candidate)
+            downloadSuccessNotification = "Blob export started: \(resolvedFilename)"
+            onDownloadInitiated?()
+            return
+        }
+
         let limit: Int64?
         if let kb = Int64(downloadCandidateSpeedLimitKBps), kb > 0 {
             limit = kb * 1024

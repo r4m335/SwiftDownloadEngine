@@ -730,10 +730,11 @@ public actor BlobExportWriter {
             }
         }
         do {
-            guard !FileManager.default.fileExists(atPath: session.record.finalURL.path) else {
-                throw BlobExportError.finalizationFailure
-            }
-            try FileManager.default.moveItem(at: session.record.stagingURL, to: session.record.finalURL)
+            let targetURL = FileManager.default.fileExists(atPath: session.record.finalURL.path)
+                ? Self.uniqueURL(directory: destinationDirectoryURL, filename: session.record.finalURL.lastPathComponent)
+                : session.record.finalURL
+            try FileManager.default.moveItem(at: session.record.stagingURL, to: targetURL)
+            session.record.finalURL = targetURL
         } catch {
             abort(transferID: transferID, reason: "rename failed")
             throw BlobExportError.finalizationFailure
@@ -1216,15 +1217,17 @@ public enum BlobCaptureBridge {
         try{entry=reg&&reg[String(blobURL)];}catch(_){}
         var rd=makeRollingDigest();
         if (entry&&entry.kind==="blob"&&entry.blob) {
-            var esz=Math.floor(Number(entry.size));
-            if (!isFinite(esz)||esz<0){            post({version:PROTOCOL_VERSION,kind:"failure",transferID:transferID,tabID:s.tabID,candidateID:s.candidateID,reason:"blob size unavailable"});return;}
-            sessions[transferID]={transferID:transferID,tabID:tabID,candidateID:candidateID,documentID:docID||entry.documentID||null,
-                blob:entry.blob,size:esz,reader:null,chunkSize:sz,chunkIndex:0,offset:0,
-                pending:null,awaitingAck:true,rollingDigest:rd};
-            post({version:PROTOCOL_VERSION,kind:"metadata",transferID:transferID,tabID:tabID,candidateID:candidateID,
-                  documentID:docID||entry.documentID||null,url:String(blobURL),
-                  mimeType:entry.type||null,size:esz,readable:true,resourceKind:"completeBlobCandidate"});
-            return;
+            var rawSize=(entry.blob&&isFinite(entry.blob.size))?entry.blob.size:entry.size;
+            var esz=(rawSize!==null&&rawSize!==undefined&&isFinite(Number(rawSize)))?Math.floor(Number(rawSize)):null;
+            if (esz!==null&&esz>=0) {
+                sessions[transferID]={transferID:transferID,tabID:tabID,candidateID:candidateID,documentID:docID||entry.documentID||null,
+                    blob:entry.blob,size:esz,reader:null,chunkSize:sz,chunkIndex:0,offset:0,
+                    pending:null,awaitingAck:true,rollingDigest:rd};
+                post({version:PROTOCOL_VERSION,kind:"metadata",transferID:transferID,tabID:tabID,candidateID:candidateID,
+                      documentID:docID||entry.documentID||null,url:String(blobURL),
+                      mimeType:(entry.blob&&entry.blob.type)||entry.type||null,size:esz,readable:true,resourceKind:"completeBlobCandidate"});
+                return;
+            }
         }
         fetch(String(blobURL)).then(function(r){
             if (!r.ok){throw new Error("blob not readable");}
@@ -1242,7 +1245,7 @@ public enum BlobCaptureBridge {
                       mimeType:(b&&b.type)||r.headers.get("content-type"),size:esz,readable:true,resourceKind:"completeBlobCandidate"});
             });
         }).catch(function(err){
-            post({version:PROTOCOL_VERSION,kind:"failure",transferID:transferID,reason:String(err&&err.message||err)});
+            post({version:PROTOCOL_VERSION,kind:"failure",transferID:transferID,tabID:tabID,candidateID:candidateID,reason:String(err&&err.message||err)});
         });
     }
     function acknowledge(transferID,accepted) {

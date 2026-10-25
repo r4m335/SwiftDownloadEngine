@@ -849,4 +849,47 @@ final class BrowserBlobCaptureServiceTests: XCTestCase {
         XCTAssertNil(badChunkAck.snapshot?.finalURL)
         XCTAssertFalse(badChunkAck.snapshot?.isComplete ?? false)
     }
+
+    func testBridgeScriptDoesNotReferenceUndefinedSessionInFailure() {
+        let script = BlobCaptureBridge.script
+        XCTAssertFalse(script.contains("s.tabID"), "Must not reference undefined session variable s")
+        XCTAssertFalse(script.contains("s.candidateID"), "Must not reference undefined session variable s")
+    }
+
+    func testFinalizationHandlesCollisionGracefully() async throws {
+        let d = tmpDir()
+        defer { try? FileManager.default.removeItem(at: d) }
+        let writer = makeWriter(dir: d, maxBytes: 1024, maxChunk: 128)
+        let auth = makeAuth(transferID: "t-collision")
+        let chunk = Data("hello world blob capture".utf8)
+        let env = makeEnvelope(transferID: "t-collision", size: Int64(chunk.count))
+
+        _ = try await writer.begin(authorization: auth, envelope: env, suggestedFilename: "captured.bin")
+
+        // Pre-create the colliding file at destination
+        let collidingFile = d.appendingPathComponent("captured.bin")
+        try Data("existing".utf8).write(to: collidingFile)
+
+        _ = try await writer.append(
+            transferID: "t-collision",
+            chunkIndex: 0,
+            offset: 0,
+            data: chunk,
+            sha256: sha(chunk)
+        )
+
+        let snapshot = try await writer.complete(
+            transferID: "t-collision",
+            finalChunkIndex: 0,
+            finalOffset: Int64(chunk.count),
+            declaredFileDigest: sha(chunk)
+        )
+
+        XCTAssertTrue(snapshot.isComplete)
+        XCTAssertNotNil(snapshot.finalURL)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: snapshot.finalURL!.path))
+        XCTAssertNotEqual(snapshot.finalURL!.path, collidingFile.path, "Must generate a collision-free unique URL")
+        let existingContent = try String(contentsOf: collidingFile, encoding: .utf8)
+        XCTAssertEqual(existingContent, "existing", "Existing file must be preserved intact")
+    }
 }

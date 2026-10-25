@@ -984,9 +984,11 @@ extension DownloadManagerViewModel: BrowserDownloadDelegate {
               FileManager.default.fileExists(atPath: fileURL.path) else {
             throw BrowserDownloadDelegateError.completedFileImportUnavailable
         }
-        if let expectedSize,
-           expectedSize != (try FileManager.default.attributesOfItem(atPath: fileURL.path)[.size] as? NSNumber)?.int64Value {
-            throw BrowserDownloadDelegateError.completedFileImportUnavailable
+        if let expectedSize {
+            let actualSize = (try? FileManager.default.attributesOfItem(atPath: fileURL.path)[.size] as? NSNumber)?.int64Value
+            guard actualSize == expectedSize else {
+                throw BrowserDownloadDelegateError.completedFileImportUnavailable
+            }
         }
 
         try FileManager.default.createDirectory(
@@ -1017,6 +1019,7 @@ extension DownloadManagerViewModel: BrowserDownloadDelegate {
             try? FileManager.default.removeItem(at: destination)
             throw error
         }
+        try? FileManager.default.removeItem(at: fileURL)
         await refreshSnapshots()
     }
 
