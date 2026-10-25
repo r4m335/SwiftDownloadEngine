@@ -160,6 +160,7 @@ final class CloudflareVerificationDiagnosticTests: XCTestCase {
 
     // MARK: - 5. Navigation & Process Lifecycle Telemetry
 
+    @MainActor
     func testCoordinatorLogsNavigationTransitionsAndProcessTermination() {
         let logger = BrowserDiagnosticLogger.shared
         let tabID = UUID()
