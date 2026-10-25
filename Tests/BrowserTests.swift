@@ -951,11 +951,12 @@ final class BrowserTests: XCTestCase {
 
         let results = WebpageResourceExtractor.extractFromRawCandidates(candidates, baseURL: baseURL)
 
-        // 1. Blob URL
+        // 1. Blob URL (supported for in-browser bounded Blob export)
         let blob = results.first { $0.url.absoluteString.hasPrefix("blob:") }
         XCTAssertNotNil(blob)
-        XCTAssertFalse(blob!.isSupported)
-        XCTAssertTrue(blob!.unsupportedReason?.contains("Blob URLs") == true)
+        XCTAssertTrue(blob!.isSupported)
+        XCTAssertNil(blob!.unsupportedReason)
+        XCTAssertTrue(blob!.isBlobResource)
 
         // 2. Data URI
         let dataURI = results.first { $0.url.absoluteString.hasPrefix("data:") }

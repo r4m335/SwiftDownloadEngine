@@ -94,6 +94,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
     private var activeBlobCaptureTabID: UUID?
     private var activeBlobCaptureOriginalURL: URL?
     private var activeBlobCaptureMIMEType: String?
+    private var activeBlobCaptureSuggestedFilename: String?
 
     // Optional MSE capture state (7H.4). Metadata observation remains the
     // default; bytes are retained only while an explicit capture is active.
@@ -425,7 +426,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
     /// WebKit to materialize the complete object in native memory.
     public func exportBlobCandidate(_ candidate: BrowserMediaCandidate) {
         guard candidate.kind == .completeBlob,
-              candidate.availability == .captureCandidate,
+              candidate.availability == .captureCandidate || candidate.availability == .uncertain,
               let blobURL = URL(string: candidate.rawURL),
               blobURL.scheme?.lowercased() == "blob",
               let tabID = activeTabID,
@@ -444,6 +445,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         activeBlobCaptureTabID = tabID
         activeBlobCaptureOriginalURL = blobURL
         activeBlobCaptureMIMEType = candidate.mimeType
+        activeBlobCaptureSuggestedFilename = candidate.suggestedFilename
         blobCaptureSnapshot = nil
         blobCaptureErrorMessage = nil
         isCapturingBlob = true
@@ -456,7 +458,8 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                 transferID: captureID,
                 tabID: tabID.uuidString,
                 documentID: documentID,
-                candidateID: candidate.id
+                candidateID: candidate.id,
+                suggestedFilename: candidate.suggestedFilename
             )
             guard let self,
                   self.activeBlobCaptureID == captureID,
@@ -480,6 +483,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                 self.isCapturingBlob = false
                 self.activeBlobCaptureID = nil
                 self.activeBlobCaptureTabID = nil
+                self.activeBlobCaptureSuggestedFilename = nil
             }
         }
     }
@@ -500,6 +504,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         activeBlobCaptureTabID = nil
         activeBlobCaptureOriginalURL = nil
         activeBlobCaptureMIMEType = nil
+        activeBlobCaptureSuggestedFilename = nil
         isCapturingBlob = false
     }
 
@@ -521,6 +526,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
             activeBlobCaptureTabID = nil
             activeBlobCaptureOriginalURL = nil
             activeBlobCaptureMIMEType = nil
+            activeBlobCaptureSuggestedFilename = nil
             return
         }
         if acknowledgement.snapshot?.isComplete == true {
@@ -532,9 +538,13 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                 activeBlobCaptureTabID = nil
                 activeBlobCaptureOriginalURL = nil
                 activeBlobCaptureMIMEType = nil
+                activeBlobCaptureSuggestedFilename = nil
                 return
             }
-            let filename = URL(fileURLWithPath: finalURL.path).lastPathComponent
+            let candidateFilename = self.activeBlobCaptureSuggestedFilename?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let filename = (candidateFilename?.isEmpty == false)
+                ? candidateFilename!
+                : URL(fileURLWithPath: finalURL.path).lastPathComponent
             guard !filename.isEmpty else {
                 blobCaptureErrorMessage = "The Blob was captured but no finalized output filename was produced."
                 isCapturingBlob = false
@@ -542,6 +552,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                 activeBlobCaptureTabID = nil
                 activeBlobCaptureOriginalURL = nil
                 activeBlobCaptureMIMEType = nil
+                activeBlobCaptureSuggestedFilename = nil
                 return
             }
             let expectedSize = snapshot.expectedSize
@@ -563,6 +574,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                     self.activeBlobCaptureTabID = nil
                     self.activeBlobCaptureOriginalURL = nil
                     self.activeBlobCaptureMIMEType = nil
+                    self.activeBlobCaptureSuggestedFilename = nil
                     self.downloadSuccessNotification = "Blob download completed."
                 } catch {
                     guard let self else { return }
@@ -572,6 +584,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                     self.activeBlobCaptureTabID = nil
                     self.activeBlobCaptureOriginalURL = nil
                     self.activeBlobCaptureMIMEType = nil
+                    self.activeBlobCaptureSuggestedFilename = nil
                 }
             }
         }
@@ -776,7 +789,26 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                 let discoveredCandidate = self.mediaCandidates.first {
                     $0.rawURL.caseInsensitiveCompare(resource.url.absoluteString) == .orderedSame
                 }
-                self.exportBlobCandidate(discoveredCandidate ?? candidate)
+                var targetCandidate = candidate
+                if let discoveredCandidate {
+                    targetCandidate = BrowserMediaCandidate(
+                        id: targetCandidate.id,
+                        url: targetCandidate.url,
+                        rawURL: targetCandidate.rawURL,
+                        finalURL: targetCandidate.finalURL,
+                        kind: targetCandidate.kind,
+                        mimeType: discoveredCandidate.mimeType ?? targetCandidate.mimeType,
+                        suggestedFilename: resource.suggestedFilename.isEmpty ? targetCandidate.suggestedFilename : resource.suggestedFilename,
+                        estimatedSize: discoveredCandidate.estimatedSize ?? targetCandidate.estimatedSize,
+                        availability: .captureCandidate,
+                        evidence: targetCandidate.evidence + discoveredCandidate.evidence,
+                        documentID: discoveredCandidate.documentID ?? targetCandidate.documentID,
+                        requestContext: discoveredCandidate.requestContext ?? targetCandidate.requestContext,
+                        associatedManifestID: discoveredCandidate.associatedManifestID ?? targetCandidate.associatedManifestID,
+                        lastObserved: targetCandidate.lastObserved
+                    )
+                }
+                self.exportBlobCandidate(targetCandidate)
                 return
             }
             if candidate.kind == .directMedia {
@@ -1256,6 +1288,33 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         guard !targets.isEmpty else { return }
 
         for resource in targets {
+            if resource.url.scheme?.lowercased() == "blob" {
+                let candidate = BrowserMediaCandidateClassifier.classify(resource: resource)
+                let discoveredCandidate = self.mediaCandidates.first {
+                    $0.rawURL.caseInsensitiveCompare(resource.url.absoluteString) == .orderedSame
+                }
+                var targetCandidate = candidate
+                if let discoveredCandidate {
+                    targetCandidate = BrowserMediaCandidate(
+                        id: targetCandidate.id,
+                        url: targetCandidate.url,
+                        rawURL: targetCandidate.rawURL,
+                        finalURL: targetCandidate.finalURL,
+                        kind: targetCandidate.kind,
+                        mimeType: discoveredCandidate.mimeType ?? targetCandidate.mimeType,
+                        suggestedFilename: resource.suggestedFilename.isEmpty ? targetCandidate.suggestedFilename : resource.suggestedFilename,
+                        estimatedSize: discoveredCandidate.estimatedSize ?? targetCandidate.estimatedSize,
+                        availability: .captureCandidate,
+                        evidence: targetCandidate.evidence + discoveredCandidate.evidence,
+                        documentID: discoveredCandidate.documentID ?? targetCandidate.documentID,
+                        requestContext: discoveredCandidate.requestContext ?? targetCandidate.requestContext,
+                        associatedManifestID: discoveredCandidate.associatedManifestID ?? targetCandidate.associatedManifestID,
+                        lastObserved: targetCandidate.lastObserved
+                    )
+                }
+                self.exportBlobCandidate(targetCandidate)
+                continue
+            }
             try await downloadDelegate?.handleDownloadRequest(
                 url: resource.url,
                 filename: resource.suggestedFilename.isEmpty ? nil : resource.suggestedFilename,

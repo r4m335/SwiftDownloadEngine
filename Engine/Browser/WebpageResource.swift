@@ -49,6 +49,12 @@ public struct WebpageResource: Identifiable, Hashable, Sendable {
         return classification.kind == .hls || classification.kind == .dash
     }
 
+    /// Identifies resources backed by active browser session memory (Blob URLs).
+    /// These are exported through the bounded in-page Blob capture pipeline rather than HTTP.
+    public var isBlobResource: Bool {
+        url.scheme?.lowercased() == "blob"
+    }
+
     public init(
         id: String = UUID().uuidString,
         url: URL,
@@ -212,7 +218,9 @@ public struct WebpageResourceExtractor {
             .lowercased()
 
         if scheme == "blob" || lowerRaw.hasPrefix("blob:") {
-            return (false, "Blob URLs are memory-backed in the active browser session and cannot be downloaded directly via HTTP.")
+            // Blob URLs are memory-backed in the active browser session and are supported
+            // through the bounded in-page Blob capture pipeline.
+            return (true, nil)
         }
 
         if scheme == "data" || lowerRaw.hasPrefix("data:") {
@@ -328,7 +336,7 @@ public struct WebpageResourceExtractor {
                 let subExt = declaredMIME?.split(separator: "/").last.map(String.init) ?? "bin"
                 filename = "embedded_resource.\(subExt)"
             } else if resolvedURL.scheme?.lowercased() == "blob" {
-                filename = blobFilename(mimeType: declaredMIME)
+                filename = blobFilename(candidateTitle: candidate.text, mimeType: declaredMIME, type: type)
             } else {
                 filename = BrowserDownloadClassifier.suggestedFilenameFromURL(resolvedURL, mimeType: declaredMIME)
             }
@@ -351,7 +359,11 @@ public struct WebpageResourceExtractor {
         return results
     }
 
-    private static func blobFilename(mimeType: String?) -> String {
+    private static func blobFilename(
+        candidateTitle: String? = nil,
+        mimeType: String? = nil,
+        type: WebpageResourceType = .video
+    ) -> String {
         let extensionName: String
         switch mimeType?.lowercased() {
         case "video/mp4": extensionName = "mp4"
@@ -360,9 +372,40 @@ public struct WebpageResourceExtractor {
         case "audio/mp4", "audio/x-m4a": extensionName = "m4a"
         case "audio/webm": extensionName = "webm"
         case "audio/ogg": extensionName = "ogg"
-        default: extensionName = "bin"
+        case "image/png": extensionName = "png"
+        case "image/jpeg": extensionName = "jpg"
+        case "image/webp": extensionName = "webp"
+        default:
+            if type == .video {
+                extensionName = "mp4"
+            } else if type == .audio {
+                extensionName = "m4a"
+            } else if type == .image {
+                extensionName = "png"
+            } else {
+                extensionName = "bin"
+            }
+        }
+
+        if let rawTitle = candidateTitle?.trimmingCharacters(in: .whitespacesAndNewlines), !rawTitle.isEmpty {
+            let sanitized = sanitizeTitleForFilename(rawTitle)
+            if !sanitized.isEmpty {
+                if sanitized.lowercased().hasSuffix(".\(extensionName)") {
+                    return sanitized
+                }
+                return "\(sanitized).\(extensionName)"
+            }
         }
         return "blob_stream.\(extensionName)"
+    }
+
+    private static func sanitizeTitleForFilename(_ title: String) -> String {
+        let invalidCharacters = CharacterSet(charactersIn: "\\/:*?\"<>|")
+            .union(.newlines)
+            .union(.controlCharacters)
+        let cleaned = title.components(separatedBy: invalidCharacters).joined(separator: " ")
+        let collapsed = cleaned.split(separator: " ").joined(separator: " ")
+        return String(collapsed.prefix(120)).trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     /// Pure Swift HTML parser extracting resource candidates using regex scanning.

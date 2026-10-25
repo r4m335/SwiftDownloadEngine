@@ -164,16 +164,30 @@ public enum BrowserMediaCandidateClassifier {
         }
 
         if observation.isBlobSignal {
-            let supportedBlob = isSupportedBlobMIME(mime)
+            let isMediaTag = observation.tag?.lowercased() == "video" ||
+                observation.tag?.lowercased() == "audio" ||
+                observation.tag?.lowercased() == "media" ||
+                observation.tag?.lowercased() == "source"
+            let supportedBlob = isSupportedBlobMIME(mime) || (mime == nil && isMediaTag) || observation.source == .blob
             let hasSize = observation.contentLength != nil
             let availability: BrowserMediaCandidateAvailability
             if !supportedBlob {
                 availability = .unsupported
-            } else if hasSize {
-                availability = .captureCandidate
             } else {
-                availability = .uncertain
+                availability = .captureCandidate
             }
+            let filename: String = {
+                if let mime {
+                    return blobFilename(mime: mime)
+                }
+                if observation.tag?.lowercased() == "video" {
+                    return "browser_blob.mp4"
+                }
+                if observation.tag?.lowercased() == "audio" {
+                    return "browser_blob.m4a"
+                }
+                return "browser_blob.bin"
+            }()
             return BrowserMediaCandidate(
                 id: identity,
                 url: nil,
@@ -181,12 +195,12 @@ public enum BrowserMediaCandidateClassifier {
                 finalURL: nil,
                 kind: .completeBlob,
                 mimeType: mime,
-                suggestedFilename: blobFilename(mime: mime),
+                suggestedFilename: filename,
                 estimatedSize: observation.contentLength,
                 availability: availability,
                 evidence: hasSize
                     ? ["Blob metadata reports a supported type and size"]
-                    : ["Blob URL was observed without complete metadata"],
+                    : ["Blob URL was observed; size will be determined at in-browser export"],
                 documentID: observation.documentID,
                 lastObserved: now
             )

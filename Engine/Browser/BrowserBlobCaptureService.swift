@@ -86,6 +86,7 @@ public struct BlobCaptureAuthorization: Sendable, Equatable {
     public let tabID: String
     public let documentID: String?
     public let candidateID: String?
+    public let suggestedFilename: String?
     public let expiresAt: Date
 
     public init(
@@ -93,12 +94,14 @@ public struct BlobCaptureAuthorization: Sendable, Equatable {
         tabID: String,
         documentID: String? = nil,
         candidateID: String? = nil,
+        suggestedFilename: String? = nil,
         expiresAt: Date = Date().addingTimeInterval(300)
     ) {
         self.transferID = transferID
         self.tabID = tabID
         self.documentID = documentID
         self.candidateID = candidateID
+        self.suggestedFilename = suggestedFilename
         self.expiresAt = expiresAt
     }
 
@@ -876,10 +879,17 @@ public actor BrowserBlobCaptureReceiver {
     }
 
     /// Issues a native authorization before JS is asked to start the transfer.
-    public func authorize(transferID: String, tabID: String, documentID: String?, candidateID: String?) {
+    public func authorize(
+        transferID: String,
+        tabID: String,
+        documentID: String?,
+        candidateID: String?,
+        suggestedFilename: String? = nil
+    ) {
         let auth = BlobCaptureAuthorization(
             transferID: transferID, tabID: tabID,
-            documentID: documentID, candidateID: candidateID
+            documentID: documentID, candidateID: candidateID,
+            suggestedFilename: suggestedFilename
         )
         authorizations[transferID] = auth
     }
@@ -942,9 +952,10 @@ public actor BrowserBlobCaptureReceiver {
                     sourceURL: sourceURL, mimeType: message.mimeType,
                     declaredSize: message.size, resourceKind: resourceKind, readable: readable
                 )
+                let effectiveFilename = auth.suggestedFilename ?? suggestedFilename(mimeType: message.mimeType)
                 let snapshot = try await writer.begin(
                     authorization: auth, envelope: envelope,
-                    suggestedFilename: suggestedFilename(mimeType: message.mimeType)
+                    suggestedFilename: effectiveFilename
                 )
                 return BlobCaptureAck(transferID: transferID, accepted: true, snapshot: snapshot)
             case .chunk:
@@ -1015,9 +1026,20 @@ public actor BrowserBlobCaptureService {
         self.receiver = BrowserBlobCaptureReceiver(writer: w)
     }
 
-    public func authorize(transferID: String, tabID: String, documentID: String?, candidateID: String? = nil) async {
-        await receiver.authorize(transferID: transferID, tabID: tabID,
-                                  documentID: documentID, candidateID: candidateID)
+    public func authorize(
+        transferID: String,
+        tabID: String,
+        documentID: String?,
+        candidateID: String? = nil,
+        suggestedFilename: String? = nil
+    ) async {
+        await receiver.authorize(
+            transferID: transferID,
+            tabID: tabID,
+            documentID: documentID,
+            candidateID: candidateID,
+            suggestedFilename: suggestedFilename
+        )
     }
 
     /// Legacy compat: existing BrowserView call sites use register().
@@ -1205,16 +1227,19 @@ public enum BlobCaptureBridge {
             return;
         }
         fetch(String(blobURL)).then(function(r){
-            if (!r.ok||!r.body||!r.body.getReader){throw new Error("blob not readable");}
-            var len=r.headers.get("content-length"),parsed=len===null?null:Number(len);
-            var ksz=(isFinite(parsed)&&parsed>=0)?Math.floor(parsed):null;
-            var kind=ksz===null?"streamOrUnknown":"completeBlobCandidate";
+            if (!r.ok){throw new Error("blob not readable");}
+            return r.blob();
+        }).then(function(b){
+            if (!b || typeof b.size !== "number" || !isFinite(b.size) || b.size < 0) {
+                throw new Error("blob size unavailable");
+            }
+            var esz = Math.floor(b.size);
             sessions[transferID]={transferID:transferID,tabID:tabID,candidateID:candidateID,documentID:docID||null,
-                reader:r.body.getReader(),chunkSize:sz,chunkIndex:0,offset:0,
+                blob:b,size:esz,reader:null,chunkSize:sz,chunkIndex:0,offset:0,
                 pending:null,awaitingAck:true,rollingDigest:rd};
             post({version:PROTOCOL_VERSION,kind:"metadata",transferID:transferID,tabID:tabID,candidateID:candidateID,
                   documentID:docID||null,url:String(blobURL),
-                  mimeType:r.headers.get("content-type"),size:ksz,readable:true,resourceKind:kind});
+                  mimeType:b.type||null,size:esz,readable:true,resourceKind:"completeBlobCandidate"});
         }).catch(function(err){
             post({version:PROTOCOL_VERSION,kind:"failure",transferID:transferID,reason:String(err&&err.message||err)});
         });

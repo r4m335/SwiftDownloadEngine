@@ -625,4 +625,216 @@ final class BrowserBlobCaptureServiceTests: XCTestCase {
         let output = try XCTUnwrap(snap.finalURL)
         XCTAssertEqual(try Data(contentsOf: output), expectedContent)
     }
+
+    // MARK: - 9. Problem 1 Regression Tests: Blob Capture & Grabber Integration
+
+    func testWebpageResource_BlobFilenamePreservationFromVideoTitle() {
+        let baseURL = URL(string: "https://example.com/watch")!
+        let title = "Magale - Music Video | Bhattha | Vijay Sethupathi..."
+        let candidate = WebpageRawResourceCandidate(
+            rawURL: "blob:https://example.com/83bc537b-9447-4f67-a279-d6e06b3aa731",
+            tag: "video",
+            text: title
+        )
+        let results = WebpageResourceExtractor.extractFromRawCandidates([candidate], baseURL: baseURL)
+        XCTAssertEqual(results.count, 1)
+
+        let res = results[0]
+        XCTAssertTrue(res.isSupported)
+        XCTAssertNil(res.unsupportedReason)
+        XCTAssertTrue(res.isBlobResource)
+        XCTAssertEqual(res.title, title)
+        XCTAssertEqual(res.suggestedFilename, "Magale - Music Video Bhattha Vijay Sethupathi....mp4")
+    }
+
+    func testBrowserMediaCandidate_BlobObservationUnknownSizeFallback() {
+        let observation = BrowserMediaDiscoveryObservation(
+            url: nil,
+            rawURL: "blob:https://example.com/83bc537b-9447-4f67-a279-d6e06b3aa731",
+            source: .mediaElement,
+            tag: "video",
+            declaredType: nil,
+            contentLength: nil
+        )
+
+        let candidate = BrowserMediaCandidateClassifier.classify(observation: observation)
+        XCTAssertNotNil(candidate)
+        XCTAssertEqual(candidate?.kind, .completeBlob)
+        XCTAssertEqual(candidate?.availability, .captureCandidate)
+        XCTAssertEqual(candidate?.suggestedFilename, "browser_blob.mp4")
+    }
+
+    func testBlobCaptureBridgeScript_UsesResponseBlob() {
+        XCTAssertTrue(BlobCaptureBridge.script.contains("r.blob()"))
+        XCTAssertTrue(BlobCaptureBridge.script.contains("completeBlobCandidate"))
+    }
+
+    func testBlobCaptureReceiver_AuthorizesWithCustomFilenameAndPreservesIt() async throws {
+        let dir = tmpDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let writer = makeWriter(dir: dir)
+        let receiver = BrowserBlobCaptureReceiver(writer: writer)
+
+        let customFilename = "Vijay_Sethupathi_Magale.mp4"
+        await receiver.authorize(
+            transferID: "t-custom",
+            tabID: "tab-1",
+            documentID: "doc-1",
+            candidateID: "cand-1",
+            suggestedFilename: customFilename
+        )
+
+        // 1. Send metadata
+        let metaMsg = BlobCaptureWireMessage(
+            version: 2,
+            kind: .metadata,
+            transferID: "t-custom",
+            tabID: "tab-1",
+            candidateID: "cand-1",
+            documentID: "doc-1",
+            url: "blob:https://example.test/stream-custom",
+            mimeType: "video/mp4",
+            size: 10,
+            readable: true,
+            resourceKind: .completeBlobCandidate
+        )
+        let metaData = try JSONEncoder().encode(metaMsg)
+        let metaAck = await receiver.receive(data: metaData)
+        XCTAssertTrue(metaAck.accepted)
+
+        // 2. Send chunk
+        let chunkBytes = Data("0123456789".utf8)
+        let chunkMsg = BlobCaptureWireMessage(
+            version: 2,
+            kind: .chunk,
+            transferID: "t-custom",
+            tabID: "tab-1",
+            candidateID: "cand-1",
+            documentID: "doc-1",
+            chunkIndex: 0,
+            offset: 0,
+            base64: chunkBytes.base64EncodedString(),
+            sha256: sha(chunkBytes)
+        )
+        let chunkData = try JSONEncoder().encode(chunkMsg)
+        let chunkAck = await receiver.receive(data: chunkData)
+        XCTAssertTrue(chunkAck.accepted)
+
+        // 3. Send complete
+        let completeMsg = BlobCaptureWireMessage(
+            version: 2,
+            kind: .complete,
+            transferID: "t-custom",
+            tabID: "tab-1",
+            candidateID: "cand-1",
+            documentID: "doc-1",
+            chunkIndex: 1,
+            offset: 10,
+            sha256: sha(chunkBytes)
+        )
+        let completeData = try JSONEncoder().encode(completeMsg)
+        let completeAck = await receiver.receive(data: completeData)
+        XCTAssertTrue(completeAck.accepted)
+        XCTAssertEqual(completeAck.snapshot?.isComplete, true)
+
+        let finalPath = try XCTUnwrap(completeAck.snapshot?.finalURL?.lastPathComponent)
+        XCTAssertTrue(finalPath.contains("Vijay_Sethupathi_Magale"))
+        XCTAssertTrue(finalPath.hasSuffix(".mp4"))
+    }
+
+    func testCompletedBlobImport_RegistersInDownloadQueueAndPersists() async throws {
+        let dir = tmpDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let storeURL = dir.appendingPathComponent("Store", isDirectory: true)
+        let persistenceStore = try DownloadPersistenceStore(storageDirectoryURL: storeURL)
+        let coordinator = try DownloadCoordinator(session: .shared, persistenceStore: persistenceStore)
+        let queueManager = DownloadQueueManager(coordinator: coordinator, persistenceStore: persistenceStore, maxConcurrentDownloads: 2)
+        let engine = DownloadEngine(queueManager: queueManager, coordinator: coordinator, persistenceStore: persistenceStore)
+
+        let videoFile = dir.appendingPathComponent("Magale.mp4")
+        let videoData = Data("sample-video-content-bytes".utf8)
+        try videoData.write(to: videoFile)
+
+        let blobURL = URL(string: "blob:https://example.com/83bc537b-9447-4f67")!
+        let snapshot = try await engine.importCompletedFile(
+            fileURL: videoFile,
+            originalURL: blobURL,
+            filename: "Magale.mp4",
+            mimeType: "video/mp4"
+        )
+
+        XCTAssertEqual(snapshot.state, .completed)
+        XCTAssertEqual(snapshot.totalSize, Int64(videoData.count))
+        XCTAssertEqual(snapshot.suggestedFilename, "Magale.mp4")
+
+        // Verify persistence store contains the record
+        let records = await persistenceStore.loadAll()
+        XCTAssertEqual(records.count, 1)
+        let persistedRecord = try XCTUnwrap(records.first)
+        XCTAssertEqual(persistedRecord.state, .completed)
+        XCTAssertEqual(persistedRecord.suggestedFilename, "Magale.mp4")
+        XCTAssertEqual(persistedRecord.totalSize, Int64(videoData.count))
+
+        // Verify recovery after restarting app / recreating queue manager
+        let recoveredQueueManager = DownloadQueueManager(coordinator: coordinator, persistenceStore: persistenceStore, maxConcurrentDownloads: 2)
+        let recoveredEngine = DownloadEngine(queueManager: recoveredQueueManager, coordinator: coordinator, persistenceStore: persistenceStore)
+        await recoveredEngine.start()
+        let recoveredSnapshots = await recoveredEngine.allDownloads()
+        XCTAssertEqual(recoveredSnapshots.count, 1)
+        XCTAssertEqual(recoveredSnapshots.first?.state, .completed)
+        XCTAssertEqual(recoveredSnapshots.first?.suggestedFilename, "Magale.mp4")
+
+        await engine.shutdown()
+        await recoveredEngine.shutdown()
+    }
+
+    func testFailedBlobCapture_RejectsAndNeverProducesCompletedFile() async throws {
+        let dir = tmpDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let writer = makeWriter(dir: dir)
+        let receiver = BrowserBlobCaptureReceiver(writer: writer)
+
+        await receiver.authorize(
+            transferID: "t-fail",
+            tabID: "tab-1",
+            documentID: "doc-1",
+            candidateID: "cand-1"
+        )
+
+        let metaMsg = BlobCaptureWireMessage(
+            version: 2,
+            kind: .metadata,
+            transferID: "t-fail",
+            tabID: "tab-1",
+            candidateID: "cand-1",
+            documentID: "doc-1",
+            url: "blob:https://example.test/stream-fail",
+            mimeType: "video/mp4",
+            size: 50,
+            readable: true,
+            resourceKind: .completeBlobCandidate
+        )
+        let metaAck = await receiver.receive(data: try JSONEncoder().encode(metaMsg))
+        XCTAssertTrue(metaAck.accepted)
+
+        // Send chunk with invalid checksum
+        let badChunkMsg = BlobCaptureWireMessage(
+            version: 2,
+            kind: .chunk,
+            transferID: "t-fail",
+            tabID: "tab-1",
+            candidateID: "cand-1",
+            documentID: "doc-1",
+            chunkIndex: 0,
+            offset: 0,
+            base64: Data("bad".utf8).base64EncodedString(),
+            sha256: "0000000000000000000000000000000000000000000000000000000000000000"
+        )
+        let badChunkAck = await receiver.receive(data: try JSONEncoder().encode(badChunkMsg))
+        XCTAssertFalse(badChunkAck.accepted)
+        XCTAssertEqual(badChunkAck.error, .checksumMismatch)
+        XCTAssertNil(badChunkAck.snapshot?.finalURL)
+        XCTAssertFalse(badChunkAck.snapshot?.isComplete ?? false)
+    }
 }
