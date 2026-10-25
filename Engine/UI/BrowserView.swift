@@ -2511,18 +2511,23 @@ final class BrowserWebViewSession {
         }
         mseHandler.install(on: config)
 
+        let diagHandler = BrowserDiagnosticWebKitHandler(tabID: tabID)
+        diagHandler.install(on: config)
+
         let webView = WKWebView(frame: .zero, configuration: config)
+        webView.customUserAgent = BrowserUserAgentHelper.standardSafariUserAgent
         self.webView = webView
         let coordinator = BrowserWebViewCoordinator(viewModel: viewModel, tabID: tabID)
         self.coordinator = coordinator
         webView.navigationDelegate = coordinator
+        webView.uiDelegate = coordinator
         coordinator.setupProgressObserver(for: webView)
     }
 }
 
-// MARK: - WKNavigationDelegate Coordinator
+// MARK: - WKNavigationDelegate & WKUIDelegate Coordinator
 
-public final class BrowserWebViewCoordinator: NSObject, WKNavigationDelegate, WKDownloadDelegate {
+public final class BrowserWebViewCoordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKDownloadDelegate {
     public weak var viewModel: BrowserViewModel?
     private let tabID: UUID?
     private var progressObserver: NSKeyValueObservation?
@@ -2551,6 +2556,12 @@ public final class BrowserWebViewCoordinator: NSObject, WKNavigationDelegate, WK
     }
 
     public func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+        BrowserDiagnosticLogger.shared.log(
+            category: .navigation,
+            message: "Provisional navigation started",
+            url: webView.url,
+            tabID: tabID
+        )
         DispatchQueue.main.async { [weak self] in
             guard let self = self, let vm = self.viewModel else { return }
             if let tabID = self.tabID {
@@ -2577,7 +2588,55 @@ public final class BrowserWebViewCoordinator: NSObject, WKNavigationDelegate, WK
         }
     }
 
+    public func webView(
+        _ webView: WKWebView,
+        didReceiveServerRedirectForProvisionalNavigation navigation: WKNavigation!
+    ) {
+        BrowserDiagnosticLogger.shared.log(
+            category: .redirect,
+            message: "Server redirect received",
+            url: webView.url,
+            tabID: tabID
+        )
+    }
+
+    public func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+        BrowserDiagnosticLogger.shared.log(
+            category: .navigation,
+            message: "Navigation content committed",
+            url: webView.url,
+            tabID: tabID
+        )
+    }
+
     public func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        let currentURL = webView.url
+        BrowserDiagnosticLogger.shared.log(
+            category: .navigation,
+            message: "Navigation finished: \(webView.title ?? "")",
+            url: currentURL,
+            tabID: tabID,
+            details: ["title": webView.title ?? ""]
+        )
+
+        // Inspect cookies asynchronously for verification tokens
+        webView.configuration.websiteDataStore.httpCookieStore.getAllCookies { [weak self] cookies in
+            let cfCookies = cookies.filter {
+                let name = $0.name.lowercased()
+                return name.contains("cf_") || name.contains("__cf")
+            }
+            if !cfCookies.isEmpty {
+                let names = cfCookies.map { $0.name }.joined(separator: ", ")
+                BrowserDiagnosticLogger.shared.log(
+                    category: .cookie,
+                    message: "Cloudflare verification cookies present: \(names)",
+                    url: currentURL,
+                    tabID: self?.tabID,
+                    details: ["count": "\(cfCookies.count)", "names": names]
+                )
+            }
+        }
+
         DispatchQueue.main.async { [weak self] in
             guard let self = self, let vm = self.viewModel else { return }
             if let tabID = self.tabID {
@@ -2602,14 +2661,44 @@ public final class BrowserWebViewCoordinator: NSObject, WKNavigationDelegate, WK
     }
 
     public func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+        let nsError = error as NSError
+        BrowserDiagnosticLogger.shared.log(
+            category: .navigation,
+            message: "Navigation failed: \(error.localizedDescription)",
+            url: webView.url,
+            tabID: tabID,
+            details: [
+                "domain": nsError.domain,
+                "code": "\(nsError.code)",
+                "isCancelled": "\(nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled)"
+            ]
+        )
         handleNavigationError(error, webView: webView)
     }
 
     public func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+        let nsError = error as NSError
+        BrowserDiagnosticLogger.shared.log(
+            category: .navigation,
+            message: "Provisional navigation failed: \(error.localizedDescription)",
+            url: webView.url,
+            tabID: tabID,
+            details: [
+                "domain": nsError.domain,
+                "code": "\(nsError.code)",
+                "isCancelled": "\(nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled)"
+            ]
+        )
         handleNavigationError(error, webView: webView)
     }
 
     public func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        BrowserDiagnosticLogger.shared.log(
+            category: .processTermination,
+            message: "WebContent process terminated. Triggering reload.",
+            url: webView.url,
+            tabID: tabID
+        )
         guard webView.url != nil else { return }
         webView.reload()
     }
@@ -2637,6 +2726,60 @@ public final class BrowserWebViewCoordinator: NSObject, WKNavigationDelegate, WK
         }
     }
 
+    // MARK: - WKUIDelegate
+
+    public func webView(
+        _ webView: WKWebView,
+        createWebViewWith configuration: WKWebViewConfiguration,
+        for navigationAction: WKNavigationAction,
+        windowFeatures: WKWindowFeatures
+    ) -> WKWebView? {
+        BrowserDiagnosticLogger.shared.log(
+            category: .navigation,
+            message: "createWebViewWith requested by page",
+            url: navigationAction.request.url,
+            tabID: tabID,
+            details: [
+                "targetFrame": navigationAction.targetFrame == nil ? "nil" : "non-nil",
+                "navigationType": "\(navigationAction.navigationType.rawValue)"
+            ]
+        )
+        if navigationAction.targetFrame == nil {
+            webView.load(navigationAction.request)
+        }
+        return nil
+    }
+
+    public func webView(
+        _ webView: WKWebView,
+        runJavaScriptAlertPanelWithMessage message: String,
+        initiatedByFrame frame: WKFrameInfo,
+        completionHandler: @escaping () -> Void
+    ) {
+        BrowserDiagnosticLogger.shared.log(
+            category: .challenge,
+            message: "JavaScript alert panel: \(message)",
+            url: frame.request.url,
+            tabID: tabID
+        )
+        completionHandler()
+    }
+
+    public func webView(
+        _ webView: WKWebView,
+        runJavaScriptConfirmPanelWithMessage message: String,
+        initiatedByFrame frame: WKFrameInfo,
+        completionHandler: @escaping (Bool) -> Void
+    ) {
+        BrowserDiagnosticLogger.shared.log(
+            category: .challenge,
+            message: "JavaScript confirm panel: \(message)",
+            url: frame.request.url,
+            tabID: tabID
+        )
+        completionHandler(true)
+    }
+
     public func webView(
         _ webView: WKWebView,
         decidePolicyFor navigationAction: WKNavigationAction,
@@ -2646,6 +2789,19 @@ public final class BrowserWebViewCoordinator: NSObject, WKNavigationDelegate, WK
             decisionHandler(.cancel)
             return
         }
+
+        BrowserDiagnosticLogger.shared.log(
+            category: .policy,
+            message: "Deciding policy for navigation action",
+            url: url,
+            tabID: tabID,
+            details: [
+                "method": navigationAction.request.httpMethod ?? "GET",
+                "targetFrame": navigationAction.targetFrame == nil ? "nil" : "non-nil",
+                "isMainFrame": "\(navigationAction.targetFrame?.isMainFrame ?? false)",
+                "navigationType": "\(navigationAction.navigationType.rawValue)"
+            ]
+        )
 
         // Magnet links identify torrent metadata rather than HTTP resources.
         // Intercept them before the normal web-navigation scheme check so
@@ -2693,6 +2849,13 @@ public final class BrowserWebViewCoordinator: NSObject, WKNavigationDelegate, WK
 
         // Handle target="_blank" links by navigating in the current web view
         if navigationAction.targetFrame == nil {
+            BrowserDiagnosticLogger.shared.log(
+                category: .policy,
+                message: "Navigating targetFrame == nil link in current webView",
+                url: url,
+                tabID: tabID,
+                details: ["method": navigationAction.request.httpMethod ?? "GET"]
+            )
             webView.load(navigationAction.request)
             decisionHandler(.cancel)
             return
@@ -2735,6 +2898,18 @@ public final class BrowserWebViewCoordinator: NSObject, WKNavigationDelegate, WK
         if contentType == nil {
             contentType = response.mimeType
         }
+
+        BrowserDiagnosticLogger.shared.log(
+            category: .policy,
+            message: "Deciding policy for navigation response (HTTP \(response.statusCode))",
+            url: url,
+            tabID: tabID,
+            details: [
+                "statusCode": "\(response.statusCode)",
+                "mimeType": contentType ?? "unknown",
+                "disposition": disposition ?? "none"
+            ]
+        )
 
         let classification = BrowserDownloadClassifier.classify(
             url: url,

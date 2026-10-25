@@ -147,6 +147,17 @@ public final class BrowserMediaDiscoveryBridge: NSObject, @unchecked Sendable {
         if (window.__lidMediaDiscoveryInstalled) { return; }
         window.__lidMediaDiscoveryInstalled = true;
 
+        // Never instrument Cloudflare challenge platform domains, Turnstile frames, or challenge endpoints
+        try {
+            var host = (window.location && window.location.hostname) ? window.location.hostname.toLowerCase() : "";
+            var path = (window.location && window.location.pathname) ? window.location.pathname.toLowerCase() : "";
+            if (host.indexOf("cloudflare.com") !== -1 ||
+                host.indexOf("challenges.cloudflare.com") !== -1 ||
+                path.indexOf("/cdn-cgi/challenge-platform") !== -1) {
+                return;
+            }
+        } catch (_) {}
+
         var handler = window.webkit && window.webkit.messageHandlers &&
             window.webkit.messageHandlers.browserMediaDiscovery;
         if (!handler) { return; }
@@ -454,7 +465,7 @@ public final class BrowserMediaDiscoveryBridge: NSObject, @unchecked Sendable {
         try {
             var originalFetch = window.fetch;
             if (typeof originalFetch === "function") {
-                window.fetch = function(input, init) {
+                var wrappedFetch = function(input, init) {
                     var requestURL = input && input.url ? input.url : input;
                     var method = (input && input.method) || (init && init.method) || "GET";
                     var promise = originalFetch.apply(this, arguments);
@@ -463,40 +474,64 @@ public final class BrowserMediaDiscoveryBridge: NSObject, @unchecked Sendable {
                         return response;
                     });
                 };
+                try {
+                    wrappedFetch.toString = function() { return "function fetch() { [native code] }"; };
+                    Object.defineProperty(wrappedFetch, "name", { value: "fetch", configurable: true });
+                } catch (_) {}
+                window.fetch = wrappedFetch;
             }
         } catch (_) {}
 
         try {
             var originalOpen = XMLHttpRequest.prototype.open;
             var originalSend = XMLHttpRequest.prototype.send;
-            XMLHttpRequest.prototype.open = function(method, url) {
-                this.__lidMediaURL = url;
-                this.__lidMediaMethod = method || "GET";
+            var xhrMeta = typeof WeakMap === "function" ? new WeakMap() : null;
+
+            var wrappedOpen = function(method, url) {
+                if (xhrMeta) {
+                    xhrMeta.set(this, { url: url, method: method || "GET" });
+                }
                 return originalOpen.apply(this, arguments);
             };
-            XMLHttpRequest.prototype.send = function() {
+            try {
+                wrappedOpen.toString = function() { return "function open() { [native code] }"; };
+                Object.defineProperty(wrappedOpen, "name", { value: "open", configurable: true });
+            } catch (_) {}
+            XMLHttpRequest.prototype.open = wrappedOpen;
+
+            var wrappedSend = function() {
                 var request = this;
-                this.addEventListener("loadend", function() {
-                    var type = null;
-                    try { type = request.getResponseHeader("content-type"); } catch (_) {}
-                    var prefix = null;
-                    try {
-                        if ((request.responseType === "" || request.responseType === "text") && shouldInspect(request.__lidMediaURL, type)) {
-                            prefix = String(request.responseText || "").slice(0, MAX_INSPECTION_BYTES);
-                        }
-                    } catch (_) {}
-                    emit(request.__lidMediaURL, "xmlHttpRequest", {
-                        method: request.__lidMediaMethod || "GET",
-                        declaredType: type,
-                        responseURL: request.responseURL || null,
-                        status: request.status,
-                        contentLength: headerContentLength({ get: function(name) { return request.getResponseHeader(name); } }),
-                        manifestPrefix: prefix,
-                        manifestKind: manifestKindFor(request.__lidMediaURL, type, prefix)
-                    });
-                }, { once: true });
+                var meta = xhrMeta ? xhrMeta.get(request) : null;
+                var reqURL = meta ? meta.url : null;
+                var reqMethod = meta ? meta.method : "GET";
+                if (reqURL) {
+                    this.addEventListener("loadend", function() {
+                        var type = null;
+                        try { type = request.getResponseHeader("content-type"); } catch (_) {}
+                        var prefix = null;
+                        try {
+                            if ((request.responseType === "" || request.responseType === "text") && shouldInspect(reqURL, type)) {
+                                prefix = String(request.responseText || "").slice(0, MAX_INSPECTION_BYTES);
+                            }
+                        } catch (_) {}
+                        emit(reqURL, "xmlHttpRequest", {
+                            method: reqMethod || "GET",
+                            declaredType: type,
+                            responseURL: request.responseURL || null,
+                            status: request.status,
+                            contentLength: headerContentLength({ get: function(name) { return request.getResponseHeader(name); } }),
+                            manifestPrefix: prefix,
+                            manifestKind: manifestKindFor(reqURL, type, prefix)
+                        });
+                    }, { once: true });
+                }
                 return originalSend.apply(this, arguments);
             };
+            try {
+                wrappedSend.toString = function() { return "function send() { [native code] }"; };
+                Object.defineProperty(wrappedSend, "name", { value: "send", configurable: true });
+            } catch (_) {}
+            XMLHttpRequest.prototype.send = wrappedSend;
         } catch (_) {}
 
         try {
