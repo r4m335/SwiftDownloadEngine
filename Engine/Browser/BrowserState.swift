@@ -38,8 +38,8 @@ public protocol BrowserDownloadDelegate: AnyObject {
         fileURL: URL,
         filename: String,
         expectedSize: Int64?,
-        originalURL: URL? = nil,
-        mimeType: String? = nil
+        originalURL: URL?,
+        mimeType: String?
     ) async throws
 
     func handleDownloadRequest(
