@@ -277,8 +277,9 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         case .showTabSwitcher:
             showTabSwitcher()
         }
+    }
 
-        #if canImport(WebKit)
+    #if canImport(WebKit)
         fileprivate func externalAppPrompt(
             for url: URL,
             navigationAction: WKNavigationAction,
@@ -293,7 +294,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
             }
             return BrowserExternalAppLink(url: url, serviceName: service)
         }
-        #endif
+    #endif
 
         public func continueInBrowser(_ link: BrowserExternalAppLink) {
             externalAppLinkPrompt = nil
@@ -338,7 +339,6 @@ public final class BrowserViewModel: NSObject, ObservableObject {
             guard let host else { return "" }
             return host.hasPrefix("www.") ? String(host.dropFirst(4)) : host
         }
-    }
 
     #if canImport(WebKit)
     func webViewSession(for tabID: UUID) -> BrowserWebViewSession {
