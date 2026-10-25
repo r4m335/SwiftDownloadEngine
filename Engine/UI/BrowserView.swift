@@ -547,7 +547,8 @@ public final class BrowserViewModel: NSObject, ObservableObject {
             let expectedSize = snapshot.expectedSize
             Task { @MainActor [weak self] in
                 do {
-                    guard let self, let downloadDelegate = self.downloadDelegate else {
+                    guard let self,
+                          let downloadDelegate = self.downloadDelegate as? BrowserCompletedFileImportDelegate else {
                         throw BrowserDownloadDelegateError.completedFileImportUnavailable
                     }
                     try await downloadDelegate.importCompletedBrowserFile(
