@@ -117,7 +117,7 @@ public struct BlobExportTransferRecord: Codable, Sendable, Equatable {
     public let tabID: String
     public let documentID: String?
     public let stagingURL: URL
-    public let finalURL: URL
+    public var finalURL: URL
     public let expectedSize: Int64?
     public var state: BlobTransferState
     public var bytesWritten: Int64
