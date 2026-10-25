@@ -261,7 +261,7 @@ public actor DownloadQueueManager {
             request: request,
             priority: .normal,
             sequenceIndex: sequenceCounter,
-            enqueuedAt: now,
+            enqueuedAt: record.createdAt,
             state: .completed,
             completedBytes: record.totalSize,
             totalBytes: record.totalSize

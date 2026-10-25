@@ -760,4 +760,66 @@ final class DownloadEngineTests: XCTestCase {
         await engine.cancelAllDownloads(deleteFiles: false)
     }
 
+    // MARK: - 19. Completed File Import & Persistence Tests
+
+    func testImportCompletedFilePersistsAsCompletedDownload() async throws {
+        let sourceURL = tempDirectory.appendingPathComponent("blob-capture.mp4")
+        let contents = Data("captured-media".utf8)
+        try contents.write(to: sourceURL)
+
+        let snapshot = try await engine.importCompletedFile(
+            fileURL: sourceURL,
+            originalURL: URL(string: "blob:https://example.test/capture")!,
+            filename: "captured-media.mp4",
+            mimeType: "video/mp4"
+        )
+
+        XCTAssertTrue(snapshot.isCompleted)
+        XCTAssertEqual(snapshot.completedBytes, Int64(contents.count))
+        XCTAssertEqual(snapshot.totalBytes, Int64(contents.count))
+        XCTAssertEqual(snapshot.destinationURL, sourceURL)
+
+        let persisted = try XCTUnwrap(try persistenceStore.fetch(tag: snapshot.id))
+        XCTAssertEqual(persisted.state, .completed)
+        XCTAssertEqual(persisted.suggestedFilename, "captured-media.mp4")
+        XCTAssertEqual(persisted.mimeType, "video/mp4")
+        XCTAssertEqual(persisted.completedBytes, Int64(contents.count))
+
+        let restoredManager = DownloadQueueManager(
+            coordinator: coordinator,
+            persistenceStore: persistenceStore,
+            maxConcurrentDownloads: 3
+        )
+        try await restoredManager.restoreQueue(autoStart: false)
+        let restored = await restoredManager.item(for: snapshot.id)
+        XCTAssertEqual(restored?.state, .completed)
+        XCTAssertEqual(restored?.request.destinationURL, sourceURL)
+
+        try await restoredManager.removeFromQueue(id: snapshot.id, deleteDestinationFile: true)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: sourceURL.path))
+        XCTAssertNil(try persistenceStore.fetch(tag: snapshot.id))
+    }
+
+    func testImportCompletedFileRejectsDuplicateDestination() async throws {
+        let sourceURL = tempDirectory.appendingPathComponent("duplicate.bin")
+        try Data("duplicate".utf8).write(to: sourceURL)
+        let origin = URL(string: "blob:https://example.test/duplicate")!
+
+        _ = try await engine.importCompletedFile(
+            fileURL: sourceURL,
+            originalURL: origin,
+            filename: "duplicate.bin"
+        )
+
+        do {
+            _ = try await engine.importCompletedFile(
+                fileURL: sourceURL,
+                originalURL: origin,
+                filename: "duplicate.bin"
+            )
+            XCTFail("Expected duplicate destination registration to fail.")
+        } catch {
+            XCTAssertTrue(error is DownloadQueueError)
+        }
+    }
 }
