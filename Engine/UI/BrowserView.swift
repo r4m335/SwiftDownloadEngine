@@ -11,6 +11,18 @@ import UIKit
 import AppKit
 #endif
 
+public struct BrowserExternalAppLink: Identifiable, Equatable {
+    public let id: String
+    public let url: URL
+    public let serviceName: String
+
+    public init(url: URL, serviceName: String) {
+        self.id = url.absoluteString
+        self.url = url
+        self.serviceName = serviceName
+    }
+}
+
 // MARK: - Browser View Model
 
 /// Manages navigation state and coordinates actions between SwiftUI and WKWebView.
@@ -28,6 +40,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
     @Published public private(set) var tabs: [BrowserTabState] = []
     @Published public private(set) var activeTabID: UUID?
     @Published public var isShowingTabSwitcher: Bool = false
+    @Published public var externalAppLinkPrompt: BrowserExternalAppLink?
 
     // Download modal state
     @Published public var isShowingDownloadSheet: Bool = false
@@ -263,6 +276,67 @@ public final class BrowserViewModel: NSObject, ObservableObject {
             goBack()
         case .showTabSwitcher:
             showTabSwitcher()
+        }
+
+        #if canImport(WebKit)
+        fileprivate func externalAppPrompt(
+            for url: URL,
+            navigationAction: WKNavigationAction,
+            currentURL: URL?
+        ) -> BrowserExternalAppLink? {
+            guard navigationAction.navigationType == .linkActivated,
+                  url.scheme?.lowercased() == "https",
+                  let host = url.host?.lowercased(),
+                  let service = Self.externalAppService(for: host),
+                  Self.normalizedHost(host) != Self.normalizedHost(currentURL?.host) else {
+                return nil
+            }
+            return BrowserExternalAppLink(url: url, serviceName: service)
+        }
+        #endif
+
+        public func continueInBrowser(_ link: BrowserExternalAppLink) {
+            externalAppLinkPrompt = nil
+            #if canImport(WebKit)
+            guard let tabID = activeTabID, let webView = webView(for: tabID) else { return }
+            webView.load(URLRequest(url: link.url))
+            #endif
+        }
+
+        public func openInAssociatedApp(_ link: BrowserExternalAppLink) {
+            externalAppLinkPrompt = nil
+            #if canImport(UIKit)
+            UIApplication.shared.open(
+                link.url,
+                options: [.universalLinksOnly: true]
+            ) { [weak self] opened in
+                guard !opened else { return }
+                self?.continueInBrowser(link)
+            }
+            #else
+            continueInBrowser(link)
+            #endif
+        }
+
+        private static func externalAppService(for host: String) -> String? {
+            let normalizedHost = normalizedHost(host)
+            let services: [(String, String)] = [
+                ("youtube.com", "YouTube"),
+                ("instagram.com", "Instagram"),
+                ("tiktok.com", "TikTok"),
+                ("reddit.com", "Reddit"),
+                ("spotify.com", "Spotify"),
+                ("x.com", "X"),
+                ("twitter.com", "X")
+            ]
+            return services.first {
+                normalizedHost == $0.0 || normalizedHost.hasSuffix("." + $0.0)
+            }?.1
+        }
+
+        private static func normalizedHost(_ host: String?) -> String {
+            guard let host else { return "" }
+            return host.hasPrefix("www.") ? String(host.dropFirst(4)) : host
         }
     }
 
@@ -1441,6 +1515,18 @@ public struct BrowserView: View {
         .sheet(isPresented: $viewModel.isShowingTabSwitcher) {
             BrowserTabSwitcherView(viewModel: viewModel)
         }
+        .alert(item: $viewModel.externalAppLinkPrompt) { link in
+            Alert(
+                title: Text("Open in App?"),
+                message: Text("\(link.serviceName) may open an installed app. Choose whether to open the app or continue in the browser."),
+                primaryButton: .default(Text("Open App")) {
+                    viewModel.openInAssociatedApp(link)
+                },
+                secondaryButton: .cancel(Text("Continue in Browser")) {
+                    viewModel.continueInBrowser(link)
+                }
+            )
+        }
         .safeAreaInset(edge: .bottom, spacing: 0) {
             addressBarHeader
         }
@@ -2461,6 +2547,18 @@ public final class BrowserWebViewCoordinator: NSObject, WKNavigationDelegate, WK
         // Allow HTTP, HTTPS, and blank page
         guard BrowserURLResolver.isValidWebNavigationURL(url) else {
             decisionHandler(.cancel)
+            return
+        }
+
+        if let link = viewModel?.externalAppPrompt(
+            for: url,
+            navigationAction: navigationAction,
+            currentURL: webView.url
+        ) {
+            decisionHandler(.cancel)
+            DispatchQueue.main.async { [weak self] in
+                self?.viewModel?.externalAppLinkPrompt = link
+            }
             return
         }
 
