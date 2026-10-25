@@ -979,9 +979,16 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         ingestMediaObservation(observation, tabID: tabID)
         if let tabID, tabID != activeTabID { return }
         guard let discoveredURL = observation.url else { return }
+        let resourceURL: URL
+        if let responseURL = observation.responseURL,
+           BrowserURLResolver.isValidDownloadURL(responseURL) {
+            resourceURL = responseURL
+        } else {
+            resourceURL = discoveredURL
+        }
 
         let rawCandidate = WebpageRawResourceCandidate(
-            rawURL: discoveredURL.absoluteString,
+            rawURL: resourceURL.absoluteString,
             tag: observation.tag ?? (observation.isManifestSignal ? "video" : nil),
             declaredType: observation.declaredType
         )
@@ -999,11 +1006,12 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                 ? "application/dash+xml"
                 : "application/vnd.apple.mpegurl"
             resources = [WebpageResource(
-                url: discoveredURL,
-                title: BrowserURLResolver.suggestedFilename(from: discoveredURL),
-                suggestedFilename: BrowserURLResolver.suggestedFilename(from: discoveredURL),
+                url: resourceURL,
+                title: BrowserURLResolver.suggestedFilename(from: resourceURL),
+                suggestedFilename: BrowserURLResolver.suggestedFilename(from: resourceURL),
                 resourceType: .video,
                 mimeType: observation.declaredType ?? manifestType,
+                estimatedSize: observation.contentLength,
                 isSupported: false,
                 unsupportedReason: "Streaming playlist manifest. Prepare a manifest-aware transfer to continue."
             )]
