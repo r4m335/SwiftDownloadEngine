@@ -280,7 +280,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
     }
 
     #if canImport(WebKit)
-        fileprivate func externalAppPrompt(
+    nonisolated fileprivate static func externalAppPrompt(
             for url: URL,
             navigationAction: WKNavigationAction,
             currentURL: URL?
@@ -288,8 +288,8 @@ public final class BrowserViewModel: NSObject, ObservableObject {
             guard navigationAction.navigationType == .linkActivated,
                   url.scheme?.lowercased() == "https",
                   let host = url.host?.lowercased(),
-                  let service = Self.externalAppService(for: host),
-                  Self.normalizedHost(host) != Self.normalizedHost(currentURL?.host) else {
+                  let service = externalAppService(for: host),
+                  normalizedHost(host) != normalizedHost(currentURL?.host) else {
                 return nil
             }
             return BrowserExternalAppLink(url: url, serviceName: service)
@@ -319,7 +319,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
             #endif
         }
 
-        private static func externalAppService(for host: String) -> String? {
+    nonisolated private static func externalAppService(for host: String) -> String? {
             let normalizedHost = normalizedHost(host)
             let services: [(String, String)] = [
                 ("youtube.com", "YouTube"),
@@ -335,7 +335,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
             }?.1
         }
 
-        private static func normalizedHost(_ host: String?) -> String {
+    nonisolated private static func normalizedHost(_ host: String?) -> String {
             guard let host else { return "" }
             return host.hasPrefix("www.") ? String(host.dropFirst(4)) : host
         }
@@ -2558,7 +2558,7 @@ public final class BrowserWebViewCoordinator: NSObject, WKNavigationDelegate, WK
             return
         }
 
-        if let link = viewModel?.externalAppPrompt(
+        if let link = BrowserViewModel.externalAppPrompt(
             for: url,
             navigationAction: navigationAction,
             currentURL: webView.url
