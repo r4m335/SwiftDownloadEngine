@@ -749,9 +749,15 @@ final class BrowserBlobCaptureServiceTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: dir) }
 
         let storeURL = dir.appendingPathComponent("Store", isDirectory: true)
+        let manifestURL = dir.appendingPathComponent("queue_manifest.json")
         let persistenceStore = try DownloadPersistenceStore(storageDirectoryURL: storeURL)
         let coordinator = try DownloadCoordinator(session: .shared, persistenceStore: persistenceStore)
-        let queueManager = DownloadQueueManager(coordinator: coordinator, persistenceStore: persistenceStore, maxConcurrentDownloads: 2)
+        let queueManager = DownloadQueueManager(
+            coordinator: coordinator,
+            persistenceStore: persistenceStore,
+            queueStoreURL: manifestURL,
+            maxConcurrentDownloads: 2
+        )
         let engine = DownloadEngine(queueManager: queueManager, coordinator: coordinator, persistenceStore: persistenceStore)
 
         let videoFile = dir.appendingPathComponent("Magale.mp4")
@@ -780,7 +786,13 @@ final class BrowserBlobCaptureServiceTests: XCTestCase {
         XCTAssertEqual(persistedRecord.totalSize, Int64(videoData.count))
 
         // Verify recovery after restarting app / recreating queue manager
-        let recoveredQueueManager = DownloadQueueManager(coordinator: coordinator, persistenceStore: persistenceStore, maxConcurrentDownloads: 2)
+        let recoveredQueueManager = DownloadQueueManager(
+            coordinator: coordinator,
+            persistenceStore: persistenceStore,
+            queueStoreURL: manifestURL,
+            maxConcurrentDownloads: 2
+        )
+        try await recoveredQueueManager.restoreQueue(autoStart: false)
         let queueItem = await recoveredQueueManager.item(for: snapshot.id)
         XCTAssertEqual(queueItem?.state, DownloadState.completed)
         XCTAssertEqual(queueItem?.completedBytes, Int64(videoData.count))

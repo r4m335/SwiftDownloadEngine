@@ -1228,18 +1228,19 @@ public enum BlobCaptureBridge {
         }
         fetch(String(blobURL)).then(function(r){
             if (!r.ok){throw new Error("blob not readable");}
-            return r.blob();
-        }).then(function(b){
-            if (!b || typeof b.size !== "number" || !isFinite(b.size) || b.size < 0) {
-                throw new Error("blob size unavailable");
-            }
-            var esz = Math.floor(b.size);
-            sessions[transferID]={transferID:transferID,tabID:tabID,candidateID:candidateID,documentID:docID||null,
-                blob:b,size:esz,reader:null,chunkSize:sz,chunkIndex:0,offset:0,
-                pending:null,awaitingAck:true,rollingDigest:rd};
-            post({version:PROTOCOL_VERSION,kind:"metadata",transferID:transferID,tabID:tabID,candidateID:candidateID,
-                  documentID:docID||null,url:String(blobURL),
-                  mimeType:b.type||null,size:esz,readable:true,resourceKind:"completeBlobCandidate"});
+            var len=r.headers.get("content-length"),parsed=len===null?null:Number(len);
+            var ksz=(isFinite(parsed)&&parsed>=0)?Math.floor(parsed):null;
+            var reader=(r.body&&r.body.getReader)?r.body.getReader():null;
+            return r.blob().then(function(b){
+                var esz=(b&&isFinite(b.size)&&b.size>=0)?Math.floor(b.size):ksz;
+                if (esz===null){throw new Error("blob size unavailable");}
+                sessions[transferID]={transferID:transferID,tabID:tabID,candidateID:candidateID,documentID:docID||null,
+                    blob:b,size:esz,reader:reader,chunkSize:sz,chunkIndex:0,offset:0,
+                    pending:null,awaitingAck:true,rollingDigest:rd};
+                post({version:PROTOCOL_VERSION,kind:"metadata",transferID:transferID,tabID:tabID,candidateID:candidateID,
+                      documentID:docID||null,url:String(blobURL),
+                      mimeType:(b&&b.type)||r.headers.get("content-type"),size:esz,readable:true,resourceKind:"completeBlobCandidate"});
+            });
         }).catch(function(err){
             post({version:PROTOCOL_VERSION,kind:"failure",transferID:transferID,reason:String(err&&err.message||err)});
         });
