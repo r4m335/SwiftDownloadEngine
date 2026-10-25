@@ -8,6 +8,7 @@ public struct BrowserResourceInspectorSheet: View {
     @Environment(\.presentationMode) private var presentationMode
 
     @State private var selectedCategory: WebpageResourceType? = nil
+    @State private var showsAllResources = false
     @State private var searchText: String = ""
     @State private var isDownloadingBatch: Bool = false
     @State private var batchErrorMessage: String? = nil
@@ -17,13 +18,23 @@ public struct BrowserResourceInspectorSheet: View {
     }
 
     public var filteredResources: [WebpageResource] {
-        viewModel.discoveredResources.filter { res in
+        let resources = viewModel.discoveredResources.filter { res in
             let matchesCategory = selectedCategory == nil || res.resourceType == selectedCategory
+            let matchesDefaultMedia = showsAllResources ||
+                res.resourceType == .video ||
+                res.resourceType == .audio
             let matchesSearch = searchText.isEmpty ||
                 res.title.localizedCaseInsensitiveContains(searchText) ||
                 res.suggestedFilename.localizedCaseInsensitiveContains(searchText) ||
                 res.url.absoluteString.localizedCaseInsensitiveContains(searchText)
-            return matchesCategory && matchesSearch
+            return matchesCategory && matchesDefaultMedia && matchesSearch
+        }
+        return resources.sorted {
+            let lhsPriority = $0.resourceType == .video || $0.resourceType == .audio ? 0 : 1
+            let rhsPriority = $1.resourceType == .video || $1.resourceType == .audio ? 0 : 1
+            return lhsPriority == rhsPriority
+                ? $0.suggestedFilename.localizedCaseInsensitiveCompare($1.suggestedFilename) == .orderedAscending
+                : lhsPriority < rhsPriority
         }
     }
 
@@ -81,11 +92,23 @@ public struct BrowserResourceInspectorSheet: View {
             HStack(spacing: 8) {
                 // "All" Pill
                 FilterPill(
-                    title: "All",
-                    count: viewModel.discoveredResources.count,
-                    isSelected: selectedCategory == nil
+                    title: "Media",
+                    count: viewModel.discoveredResources.filter {
+                        $0.resourceType == .video || $0.resourceType == .audio
+                    }.count,
+                    isSelected: selectedCategory == nil && !showsAllResources
                 ) {
                     selectedCategory = nil
+                    showsAllResources = false
+                }
+
+                FilterPill(
+                    title: "All",
+                    count: viewModel.discoveredResources.count,
+                    isSelected: selectedCategory == nil && showsAllResources
+                ) {
+                    selectedCategory = nil
+                    showsAllResources = true
                 }
 
                 // Per-type Pills
@@ -98,6 +121,7 @@ public struct BrowserResourceInspectorSheet: View {
                             isSelected: selectedCategory == cat
                         ) {
                             selectedCategory = cat
+                            showsAllResources = true
                         }
                     }
                 }

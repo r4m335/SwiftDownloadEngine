@@ -1025,6 +1025,26 @@ final class BrowserTests: XCTestCase {
         XCTAssertEqual(WebpageResourceExtractor.categorize(extension: "html", mimeType: "text/html"), .other)
     }
 
+    func testWebpageResource_MediaFirstExtractionExcludesImageNoise() {
+        let baseURL = URL(string: "https://example.com/watch")!
+        let candidates = [
+            WebpageRawResourceCandidate(rawURL: "https://cdn.example/thumb", tag: "img", declaredType: "image/jpeg"),
+            WebpageRawResourceCandidate(rawURL: "https://cdn.example/player/segment", tag: "video", declaredType: "video/mp4"),
+            WebpageRawResourceCandidate(rawURL: "https://cdn.example/audio/track", tag: "audio", declaredType: "audio/mpeg"),
+            WebpageRawResourceCandidate(rawURL: "https://cdn.example/site.css", tag: "link", declaredType: "text/css")
+        ]
+
+        let results = WebpageResourceExtractor.extractFromRawCandidates(
+            candidates,
+            baseURL: baseURL,
+            mediaOnly: true
+        )
+
+        XCTAssertEqual(results.map(\.resourceType), [.video, .audio])
+        XCTAssertFalse(results.contains { $0.url.absoluteString.contains("thumb") })
+        XCTAssertFalse(results.contains { $0.url.absoluteString.contains("site.css") })
+    }
+
     #if canImport(SwiftUI)
     @MainActor
     func testBrowserViewModel_ResourceInspectorState() async throws {

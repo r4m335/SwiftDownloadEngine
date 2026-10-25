@@ -245,8 +245,13 @@ public struct WebpageResourceExtractor {
     public static func isRelevantResource(
         url: URL,
         tag: String?,
-        resourceType: WebpageResourceType
+        resourceType: WebpageResourceType,
+        mediaOnly: Bool = false
     ) -> Bool {
+        if mediaOnly {
+            return resourceType == .video || resourceType == .audio
+        }
+
         // Direct media elements and images are always relevant
         if let t = tag?.lowercased(), t == "video" || t == "audio" || t == "source" || t == "img" {
             return true
@@ -269,7 +274,8 @@ public struct WebpageResourceExtractor {
     /// Extracts and categorizes resources from a list of raw DOM candidates.
     public static func extractFromRawCandidates(
         _ candidates: [WebpageRawResourceCandidate],
-        baseURL: URL
+        baseURL: URL,
+        mediaOnly: Bool = false
     ) -> [WebpageResource] {
         var results: [WebpageResource] = []
         var seenURLs = Set<String>()
@@ -286,10 +292,27 @@ public struct WebpageResourceExtractor {
 
             let ext = BrowserDownloadClassifier.extractURLExtension(from: resolvedURL)
             let declaredMIME = candidate.declaredType ?? extractDataURIMIMEType(candidate.rawURL)
-            let type = categorize(extension: ext, mimeType: declaredMIME)
+            var type = categorize(extension: ext, mimeType: declaredMIME)
+            switch candidate.tag?.lowercased() {
+            case "video":
+                type = .video
+            case "audio":
+                type = .audio
+            case "source" where declaredMIME?.lowercased().hasPrefix("video/") == true:
+                type = .video
+            case "source" where declaredMIME?.lowercased().hasPrefix("audio/") == true:
+                type = .audio
+            default:
+                break
+            }
 
             // Filter out ordinary web navigation links that are not downloads or media
-            if !isRelevantResource(url: resolvedURL, tag: candidate.tag, resourceType: type) {
+            if !isRelevantResource(
+                url: resolvedURL,
+                tag: candidate.tag,
+                resourceType: type,
+                mediaOnly: mediaOnly
+            ) {
                 continue
             }
 
