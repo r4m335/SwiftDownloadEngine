@@ -92,18 +92,6 @@ public protocol BrowserCompletedFileImportDelegate: AnyObject {
     ) async throws
 }
 
-public extension BrowserCompletedFileImportDelegate {
-    func importCompletedBrowserFile(
-        fileURL: URL,
-        filename: String,
-        expectedSize: Int64?,
-        originalURL: URL? = nil,
-        mimeType: String? = nil
-    ) async throws {
-        throw BrowserDownloadDelegateError.completedFileImportUnavailable
-    }
-}
-
 public enum BrowserDownloadDelegateError: Error, LocalizedError, Sendable, Equatable {
     case completedFileImportUnavailable
 
