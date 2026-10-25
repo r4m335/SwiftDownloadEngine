@@ -2246,6 +2246,8 @@ public struct PlatformWebView: NSViewRepresentable {
 
 @MainActor
 final class BrowserWebViewSession {
+    private static let sharedProcessPool = WKProcessPool()
+
     let tabID: UUID
     let mediaDiscoveryBridge: BrowserMediaDiscoveryBridge
     let blobCaptureService: BrowserBlobCaptureService
@@ -2256,6 +2258,9 @@ final class BrowserWebViewSession {
     init(tabID: UUID, viewModel: BrowserViewModel) {
         self.tabID = tabID
         let config = WKWebViewConfiguration()
+        config.processPool = Self.sharedProcessPool
+        config.websiteDataStore = .default()
+        config.defaultWebpagePreferences.allowsContentJavaScript = true
 #if os(iOS)
         config.allowsInlineMediaPlayback = true
 #endif
@@ -2395,6 +2400,11 @@ public final class BrowserWebViewCoordinator: NSObject, WKNavigationDelegate, WK
 
     public func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
         handleNavigationError(error, webView: webView)
+    }
+
+    public func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        guard webView.url != nil else { return }
+        webView.reload()
     }
 
     private func handleErrorInternal(_ error: Error) {
