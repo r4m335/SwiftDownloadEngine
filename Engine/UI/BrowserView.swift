@@ -548,7 +548,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
             Task { @MainActor [weak self] in
                 do {
                     guard let self,
-                          let downloadDelegate = self.downloadDelegate as? BrowserCompletedFileImportDelegate else {
+                          let downloadDelegate = self.downloadDelegate else {
                         throw BrowserDownloadDelegateError.completedFileImportUnavailable
                     }
                     try await downloadDelegate.importCompletedBrowserFile(

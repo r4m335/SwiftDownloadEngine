@@ -958,7 +958,7 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
 
 // MARK: - BrowserDownloadDelegate Conformance
 
-extension DownloadManagerViewModel: BrowserDownloadDelegate, BrowserCompletedFileImportDelegate {
+extension DownloadManagerViewModel: BrowserDownloadDelegate {
     private func uniqueDownloadURL(in directory: URL, filename: String) -> URL {
         let original = URL(fileURLWithPath: filename).lastPathComponent
         let base = URL(fileURLWithPath: original).deletingPathExtension().lastPathComponent
