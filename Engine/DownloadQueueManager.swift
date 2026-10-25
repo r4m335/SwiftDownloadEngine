@@ -247,7 +247,7 @@ public actor DownloadQueueManager {
         totalBytes: Int64,
         filename: String,
         mimeType: String? = nil
-    ) throws -> QueueItem {
+    ) async throws -> QueueItem {
         let request = DownloadRequest(
             url: originalURL,
             destinationURL: destinationURL,
@@ -295,7 +295,7 @@ public actor DownloadQueueManager {
             ]
         )
         do {
-            try persistenceStore.save(record)
+            try await persistenceStore.save(record)
         } catch {
             items.removeValue(forKey: item.id)
             throw DownloadQueueError.persistenceError(error.localizedDescription)
