@@ -349,7 +349,7 @@ public actor DownloadEngine {
             ]
         )
         do {
-            try persistenceStore.save(record)
+            try await persistenceStore.save(record)
             let item = try await queueManager.addCompletedFile(record: record)
             let snapshot = await makeSnapshot(from: item)
             previousStates[item.id] = .completed
@@ -358,7 +358,7 @@ public actor DownloadEngine {
             broadcast(.completed(snapshot))
             return snapshot
         } catch {
-            try? persistenceStore.delete(tag: record.id)
+            try? await persistenceStore.delete(tag: record.id)
             if let persistenceError = error as? DownloadQueueError {
                 throw persistenceError
             }
