@@ -1643,6 +1643,8 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                     associatedManifestID: nil,
                     lastObserved: Date()
                 )
+            }
+
             BrowserDiagnosticLogger.shared.log(
                 category: .blobCapture,
                 message: "Start Download tapped: routing to Blob capture",

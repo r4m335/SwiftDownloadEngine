@@ -1101,7 +1101,7 @@ public final class BlobCaptureWebKitHandler: NSObject, WKScriptMessageHandler, @
                     message: "Native blob capture receiver rejected message",
                     details: [
                         "transferID": ack.transferID,
-                        "error": ack.error?.rawValue ?? "unknown"
+                        "error": ack.error.map { String(describing: $0) } ?? "unknown"
                     ]
                 )
             } else if ack.snapshot?.isComplete == true {
