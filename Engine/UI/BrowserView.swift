@@ -978,6 +978,9 @@ public final class BrowserViewModel: NSObject, ObservableObject {
             do {
                 let candidate = try StreamingManifestCandidate(resource: resource)
                 let proposal = try await orchestrator.prepare(candidate: candidate)
+                // Small delay to allow any dismissing sheets (such as the resource inspector)
+                // to finish dismissing before presenting the streaming confirmation sheet
+                try? await Task.sleep(nanoseconds: 350_000_000)
                 self.streamingProposal = proposal
                 self.isShowingStreamingConfirmation = true
             } catch {
@@ -1176,6 +1179,9 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                     guard let self = self else { return }
                     self.discoveredResources = contextualResources
                     self.selectedResourceIDs = []
+                    if let manifest = contextualResources.first(where: { $0.isStreamingManifest }) {
+                        self.selectedResourceIDs.insert(manifest.id)
+                    }
                     self.resetMediaCandidateCatalog(for: self.activeTabID)
                     self.ingestMediaResources(contextualResources, tabID: self.activeTabID)
                 }
@@ -1263,6 +1269,10 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         guard observation.mayUseBrowserCredentials,
               let wv = webView else {
             discoveredResources.append(resource)
+            if selectedResourceIDs.isEmpty,
+               let manifest = discoveredResources.first(where: { $0.isStreamingManifest }) {
+                selectedResourceIDs.insert(manifest.id)
+            }
             ingestMediaResource(resource, tabID: tabID ?? activeTabID)
             return
         }
@@ -1280,6 +1290,10 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                 return
             }
             self.discoveredResources.append(contextualResource)
+            if self.selectedResourceIDs.isEmpty,
+               let manifest = self.discoveredResources.first(where: { $0.isStreamingManifest }) {
+                self.selectedResourceIDs.insert(manifest.id)
+            }
             self.ingestMediaResource(contextualResource, tabID: tabID ?? self.activeTabID)
         }
     }
@@ -1423,7 +1437,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
 
     public func downloadSelectedResources() async throws {
         let targets = discoveredResources.filter { res in
-            res.isSupported && selectedResourceIDs.contains(res.id)
+            (res.isSupported || res.isStreamingManifest) && selectedResourceIDs.contains(res.id)
         }
 
         guard !targets.isEmpty else { return }

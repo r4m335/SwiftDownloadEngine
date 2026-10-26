@@ -17,8 +17,20 @@ public struct BrowserResourceInspectorSheet: View {
         self.viewModel = viewModel
     }
 
+    private var eligibleResources: [WebpageResource] {
+        let hasStreamingManifest = viewModel.discoveredResources.contains(where: { $0.isStreamingManifest })
+        return viewModel.discoveredResources.filter { res in
+            // Discard raw .ts/.m4s chunks when an .m3u8/.mpd manifest is present or in standard media view,
+            // as they are internal segment chunks that cannot be played standalone.
+            if res.isSegmentChunk && (hasStreamingManifest || !showsAllResources) {
+                return false
+            }
+            return true
+        }
+    }
+
     public var filteredResources: [WebpageResource] {
-        let resources = viewModel.discoveredResources.filter { res in
+        let resources = eligibleResources.filter { res in
             let matchesCategory = selectedCategory == nil || res.resourceType == selectedCategory
             let matchesDefaultMedia = showsAllResources ||
                 res.resourceType == .video ||
@@ -30,8 +42,24 @@ public struct BrowserResourceInspectorSheet: View {
             return matchesCategory && matchesDefaultMedia && matchesSearch
         }
         return resources.sorted {
-            let lhsPriority = $0.resourceType == .video || $0.resourceType == .audio ? 0 : 1
-            let rhsPriority = $1.resourceType == .video || $1.resourceType == .audio ? 0 : 1
+            let lhsPriority: Int
+            if $0.isStreamingManifest {
+                lhsPriority = 0
+            } else if $0.resourceType == .video || $0.resourceType == .audio {
+                lhsPriority = 1
+            } else {
+                lhsPriority = 2
+            }
+
+            let rhsPriority: Int
+            if $1.isStreamingManifest {
+                rhsPriority = 0
+            } else if $1.resourceType == .video || $1.resourceType == .audio {
+                rhsPriority = 1
+            } else {
+                rhsPriority = 2
+            }
+
             return lhsPriority == rhsPriority
                 ? $0.suggestedFilename.localizedCaseInsensitiveCompare($1.suggestedFilename) == .orderedAscending
                 : lhsPriority < rhsPriority
@@ -82,6 +110,12 @@ public struct BrowserResourceInspectorSheet: View {
                     .disabled(viewModel.isScanningResources)
                 }
             }
+            .onAppear {
+                if viewModel.selectedResourceIDs.isEmpty,
+                   let manifest = filteredResources.first(where: { $0.isStreamingManifest }) {
+                    viewModel.selectedResourceIDs.insert(manifest.id)
+                }
+            }
         }
     }
 
@@ -93,7 +127,7 @@ public struct BrowserResourceInspectorSheet: View {
                 // "All" Pill
                 FilterPill(
                     title: "Media",
-                    count: viewModel.discoveredResources.filter {
+                    count: eligibleResources.filter {
                         $0.resourceType == .video || $0.resourceType == .audio
                     }.count,
                     isSelected: selectedCategory == nil && !showsAllResources
@@ -104,7 +138,7 @@ public struct BrowserResourceInspectorSheet: View {
 
                 FilterPill(
                     title: "All",
-                    count: viewModel.discoveredResources.count,
+                    count: eligibleResources.count,
                     isSelected: selectedCategory == nil && showsAllResources
                 ) {
                     selectedCategory = nil
@@ -113,7 +147,7 @@ public struct BrowserResourceInspectorSheet: View {
 
                 // Per-type Pills
                 ForEach(WebpageResourceType.allCases) { cat in
-                    let count = viewModel.discoveredResources.filter { $0.resourceType == cat }.count
+                    let count = eligibleResources.filter { $0.resourceType == cat }.count
                     if count > 0 {
                         FilterPill(
                             title: cat.rawValue,
@@ -182,13 +216,13 @@ public struct BrowserResourceInspectorSheet: View {
     }
 
     private var areAllFilteredSelected: Bool {
-        let supported = filteredResources.filter { $0.isSupported }
+        let supported = filteredResources.filter { $0.isSupported || $0.isStreamingManifest }
         guard !supported.isEmpty else { return false }
         return supported.allSatisfy { viewModel.selectedResourceIDs.contains($0.id) }
     }
 
     private func toggleSelectAll() {
-        let supported = filteredResources.filter { $0.isSupported }
+        let supported = filteredResources.filter { $0.isSupported || $0.isStreamingManifest }
         if areAllFilteredSelected {
             for item in supported {
                 viewModel.selectedResourceIDs.remove(item.id)
@@ -399,7 +433,7 @@ public struct ResourceRowView: View {
     public var body: some View {
         HStack(alignment: .top, spacing: 12) {
             // Selection Checkbox (if supported and downloadable)
-            if resource.isSupported && (!isMediaSourceBlob || hasManifest) {
+            if (resource.isSupported || resource.isStreamingManifest) && (!isMediaSourceBlob || hasManifest) {
                 Button(action: onToggleSelect) {
                     Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
                         .foregroundColor(isSelected ? .blue : .secondary)
@@ -445,7 +479,15 @@ public struct ResourceRowView: View {
                         #endif
                         .cornerRadius(4)
 
-                    if isMediaSourceBlob {
+                    if resource.isStreamingManifest {
+                        Text("Ready for HLS Download")
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundColor(.blue)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Color.blue.opacity(0.15))
+                            .cornerRadius(4)
+                    } else if isMediaSourceBlob {
                         if hasManifest {
                             Text("Streaming · Segment download")
                                 .font(.system(size: 10, weight: .bold))
@@ -482,7 +524,7 @@ public struct ResourceRowView: View {
                 }
 
                 // Unsupported Warning Badge
-                if !resource.isSupported, let reason = resource.unsupportedReason {
+                if !resource.isSupported && !resource.isStreamingManifest, let reason = resource.unsupportedReason {
                     HStack(alignment: .top, spacing: 4) {
                         Image(systemName: "info.circle")
                             .font(.system(size: 10))

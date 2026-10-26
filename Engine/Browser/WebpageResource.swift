@@ -49,6 +49,16 @@ public struct WebpageResource: Identifiable, Hashable, Sendable {
         return classification.kind == .hls || classification.kind == .dash
     }
 
+    /// Indicates whether this resource is an internal transport stream segment or media chunk
+    /// (e.g. .ts, .m4s, video/mp2t) rather than a standalone media file or manifest.
+    public var isSegmentChunk: Bool {
+        let ext = url.pathExtension.lowercased()
+        let isChunkExt = ext == "ts" || ext == "m4s"
+        let isChunkMIME = mimeType?.lowercased().contains("mp2t") == true ||
+            mimeType?.lowercased().contains("iso.segment") == true
+        return isChunkExt || isChunkMIME
+    }
+
     /// Identifies resources backed by active browser session memory (Blob URLs).
     /// These are exported through the bounded in-page Blob capture pipeline rather than HTTP.
     public var isBlobResource: Bool {

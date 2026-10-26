@@ -1126,5 +1126,37 @@ final class BrowserTests: XCTestCase {
         XCTAssertNotNil(vm.downloadSuccessNotification)
         XCTAssertTrue(vm.downloadSuccessNotification?.contains("blob_video.mp4") == true)
     }
+
+    func testWebpageResource_SegmentChunkClassification() {
+        let tsResource = WebpageResource(
+            url: URL(string: "https://example.com/segment_0001.ts")!,
+            title: "segment_0001.ts",
+            suggestedFilename: "segment_0001.ts",
+            resourceType: .video,
+            mimeType: "video/mp2t"
+        )
+        let m3u8Resource = WebpageResource(
+            url: URL(string: "https://example.com/master.m3u8")!,
+            title: "master.m3u8",
+            suggestedFilename: "master.m3u8",
+            resourceType: .video,
+            mimeType: "application/vnd.apple.mpegurl"
+        )
+        let mp4Resource = WebpageResource(
+            url: URL(string: "https://example.com/video.mp4")!,
+            title: "video.mp4",
+            suggestedFilename: "video.mp4",
+            resourceType: .video
+        )
+
+        XCTAssertTrue(tsResource.isSegmentChunk)
+        XCTAssertFalse(tsResource.isStreamingManifest)
+
+        XCTAssertFalse(m3u8Resource.isSegmentChunk)
+        XCTAssertTrue(m3u8Resource.isStreamingManifest)
+
+        XCTAssertFalse(mp4Resource.isSegmentChunk)
+        XCTAssertFalse(mp4Resource.isStreamingManifest)
+    }
     #endif
 }
