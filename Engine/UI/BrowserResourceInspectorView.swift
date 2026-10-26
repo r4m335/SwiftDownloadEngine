@@ -207,6 +207,9 @@ public struct BrowserResourceInspectorSheet: View {
             ForEach(filteredResources) { resource in
                 ResourceRowView(
                     resource: resource,
+                    candidate: viewModel.mediaCandidates.first {
+                        $0.rawURL.caseInsensitiveCompare(resource.url.absoluteString) == .orderedSame
+                    },
                     isSelected: viewModel.selectedResourceIDs.contains(resource.id),
                     onToggleSelect: {
                         if viewModel.selectedResourceIDs.contains(resource.id) {
@@ -364,14 +367,38 @@ public struct BrowserResourceInspectorSheet: View {
 
 public struct ResourceRowView: View {
     public let resource: WebpageResource
+    public let candidate: BrowserMediaCandidate?
     public let isSelected: Bool
     public let onToggleSelect: () -> Void
     public let onDownload: () -> Void
 
+    public init(
+        resource: WebpageResource,
+        candidate: BrowserMediaCandidate? = nil,
+        isSelected: Bool,
+        onToggleSelect: @escaping () -> Void,
+        onDownload: @escaping () -> Void
+    ) {
+        self.resource = resource
+        self.candidate = candidate
+        self.isSelected = isSelected
+        self.onToggleSelect = onToggleSelect
+        self.onDownload = onDownload
+    }
+
+    private var isMediaSourceBlob: Bool {
+        resource.url.scheme?.lowercased() == "blob" &&
+        (candidate?.blobKind == .mediaSource || candidate?.kind == .mediaSource)
+    }
+
+    private var hasManifest: Bool {
+        candidate?.associatedManifestURL != nil
+    }
+
     public var body: some View {
         HStack(alignment: .top, spacing: 12) {
-            // Selection Checkbox (if supported)
-            if resource.isSupported {
+            // Selection Checkbox (if supported and downloadable)
+            if resource.isSupported && (!isMediaSourceBlob || hasManifest) {
                 Button(action: onToggleSelect) {
                     Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
                         .foregroundColor(isSelected ? .blue : .secondary)
@@ -417,6 +444,34 @@ public struct ResourceRowView: View {
                         #endif
                         .cornerRadius(4)
 
+                    if isMediaSourceBlob {
+                        if hasManifest {
+                            Text("Streaming · Segment download")
+                                .font(.system(size: 10, weight: .bold))
+                                .foregroundColor(.blue)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(Color.blue.opacity(0.15))
+                                .cornerRadius(4)
+                        } else {
+                            Text("Streaming · Play to capture")
+                                .font(.system(size: 10, weight: .bold))
+                                .foregroundColor(.orange)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(Color.orange.opacity(0.15))
+                                .cornerRadius(4)
+                        }
+                    } else if resource.url.scheme?.lowercased() == "blob" {
+                        Text("Ready to download")
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundColor(.green)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Color.green.opacity(0.15))
+                            .cornerRadius(4)
+                    }
+
                     if let host = resource.url.host {
                         Text(host)
                             .font(.system(size: 10))
@@ -441,14 +496,21 @@ public struct ResourceRowView: View {
             Spacer(minLength: 8)
 
             // Individual Download Action Button
-            if resource.isSupported || resource.isStreamingManifest ||
-                resource.url.scheme?.lowercased() == "blob" {
+            let canDownload = (resource.isSupported || resource.isStreamingManifest ||
+                resource.url.scheme?.lowercased() == "blob") && (!isMediaSourceBlob || hasManifest)
+
+            if canDownload {
                 Button(action: onDownload) {
                     Image(systemName: "arrow.down.circle.fill")
                         .font(.system(size: 24))
                         .foregroundColor(.blue)
                 }
                 .buttonStyle(PlainButtonStyle())
+            } else if isMediaSourceBlob && !hasManifest {
+                Image(systemName: "clock.arrow.circlepath")
+                    .font(.system(size: 20))
+                    .foregroundColor(.secondary)
+                    .padding(.top, 4)
             }
         }
         .padding(.vertical, 4)

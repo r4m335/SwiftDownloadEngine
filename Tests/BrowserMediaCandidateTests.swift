@@ -198,4 +198,91 @@ final class BrowserMediaCandidateTests: XCTestCase {
         )
         XCTAssertTrue(catalog.candidates.first?.evidence.contains("associated with a recognized manifest") == true)
     }
+
+    func testClassifyMediaSourceObservationSetsBlobKindAndMetadataOnly() throws {
+        let observation = BrowserMediaDiscoveryObservation(
+            url: nil,
+            rawURL: "blob:https://www.youtube.com/watch-feed-1",
+            source: .mediaElement,
+            tag: "video",
+            pageOrigin: URL(string: "https://www.youtube.com")!,
+            frameOrigin: URL(string: "https://www.youtube.com")!,
+            mayUseBrowserCredentials: true,
+            blobKind: .mediaSource
+        )
+
+        let candidate = try XCTUnwrap(BrowserMediaCandidateClassifier.classify(observation: observation, now: now))
+        XCTAssertEqual(candidate.kind, .mediaSource)
+        XCTAssertEqual(candidate.blobKind, .mediaSource)
+        XCTAssertEqual(candidate.availability, .metadataOnly)
+        XCTAssertNil(candidate.url)
+    }
+
+    func testClassifyTrueBlobObservationSetsBlobKindAndCaptureCandidate() throws {
+        let observation = BrowserMediaDiscoveryObservation(
+            url: nil,
+            rawURL: "blob:https://example.com/recording-1",
+            source: .blob,
+            tag: "blob",
+            declaredType: "video/mp4",
+            contentLength: 10_000_000,
+            pageOrigin: URL(string: "https://example.com")!,
+            frameOrigin: URL(string: "https://example.com")!,
+            mayUseBrowserCredentials: true,
+            blobKind: .blob
+        )
+
+        let candidate = try XCTUnwrap(BrowserMediaCandidateClassifier.classify(observation: observation, now: now))
+        XCTAssertEqual(candidate.kind, .completeBlob)
+        XCTAssertEqual(candidate.blobKind, .blob)
+        XCTAssertEqual(candidate.availability, .captureCandidate)
+    }
+
+    func testCatalogMergesMediaSourceOverDOMAndAssociatesManifestURL() {
+        var catalog = BrowserMediaCandidateCatalog()
+        let blobURL = "blob:https://www.youtube.com/abc-123"
+
+        // Step 1: DOM observer sees <video src="blob:..."> without knowing it's MediaSource yet
+        let domResource = WebpageResource(
+            url: URL(string: blobURL)!,
+            title: "YouTube Video",
+            suggestedFilename: "youtube.mp4",
+            resourceType: .video
+        )
+        _ = catalog.ingest(resource: domResource, now: now)
+        XCTAssertEqual(catalog.candidates.first?.kind, .completeBlob)
+
+        // Step 2: JavaScript bridge emits MediaSource origin observation
+        let mseObservation = BrowserMediaDiscoveryObservation(
+            url: nil,
+            rawURL: blobURL,
+            source: .mediaSource,
+            tag: "video",
+            pageOrigin: URL(string: "https://www.youtube.com")!,
+            frameOrigin: URL(string: "https://www.youtube.com")!,
+            mayUseBrowserCredentials: true,
+            blobKind: .mediaSource
+        )
+        _ = catalog.ingest(observation: mseObservation, now: now)
+        XCTAssertEqual(catalog.candidates.first?.kind, .mediaSource)
+        XCTAssertEqual(catalog.candidates.first?.blobKind, .mediaSource)
+        XCTAssertEqual(catalog.candidates.first?.availability, .metadataOnly)
+
+        // Step 3: Fetch interceptor discovers DASH/HLS manifest
+        let manifestURL = URL(string: "https://www.youtube.com/api/manifest/dash/id/xyz.mpd")!
+        let manifestObservation = BrowserMediaDiscoveryObservation(
+            url: manifestURL,
+            rawURL: manifestURL.absoluteString,
+            source: .fetch,
+            manifestKind: .dash,
+            pageOrigin: URL(string: "https://www.youtube.com")!,
+            frameOrigin: URL(string: "https://www.youtube.com")!,
+            mayUseBrowserCredentials: true
+        )
+        _ = catalog.ingest(observation: manifestObservation, now: now)
+
+        let updatedMediaSource = catalog.candidates.first(where: { $0.rawURL == blobURL })
+        XCTAssertEqual(updatedMediaSource?.associatedManifestURL, manifestURL)
+    }
 }
+

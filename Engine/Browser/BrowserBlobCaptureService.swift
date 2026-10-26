@@ -577,7 +577,7 @@ public actor BlobExportWriter {
             throw BlobExportError.invalidBlobURL
         }
         if let sz = envelope.declaredSize {
-            guard sz >= 0 else { throw BlobExportError.invalidDeclaredSize }
+            guard sz > 0 else { throw BlobExportError.invalidDeclaredSize }
             guard sz <= limits.maximumBytesPerTransfer else { throw BlobExportError.sizeLimitExceeded }
         }
         let expectedStaging = envelope.declaredSize ?? 0
@@ -698,8 +698,12 @@ public actor BlobExportWriter {
             abort(transferID: transferID, reason: "completion offset mismatch")
             throw BlobExportError.incompleteTransfer
         }
+        guard session.record.bytesWritten > 0 else {
+            abort(transferID: transferID, reason: "empty blob: 0 bytes written")
+            throw BlobExportError.unreadableBlob
+        }
         if let expected = session.record.expectedSize,
-           expected != session.record.bytesWritten {
+            expected != session.record.bytesWritten {
             abort(transferID: transferID, reason: "size mismatch expected=\(expected) got=\(session.record.bytesWritten)")
             throw BlobExportError.incompleteTransfer
         }
@@ -1209,6 +1213,12 @@ public enum BlobCaptureBridge {
         if (s.awaitingAck){return;}
         nextBytes(s).then(function(bytes){
             if (!bytes) {
+                if (s.chunkIndex === 0 && (!s.offset || s.offset === 0)) {
+                    post({version:PROTOCOL_VERSION,kind:"failure",transferID:s.transferID,tabID:s.tabID,candidateID:s.candidateID,
+                          reason:"Blob is empty (0 bytes) or MediaSource-backed."});
+                    delete sessions[s.transferID];
+                    return;
+                }
                 return s.rollingDigest.finalize().then(function(digest){
                     post({version:PROTOCOL_VERSION,kind:"complete",transferID:s.transferID,tabID:s.tabID,candidateID:s.candidateID,
                           documentID:s.documentID,chunkIndex:s.chunkIndex,offset:s.offset,
@@ -1234,11 +1244,23 @@ public enum BlobCaptureBridge {
         var sz=Math.max(1,Math.min(MAX_CHUNK_BYTES,Number(chunkSize)||MAX_CHUNK_BYTES));
         var reg=window.__lidBlobRegistry||null, entry=null;
         try{entry=reg&&reg[String(blobURL)];}catch(_){}
+        var grabberKind=null;
+        try{grabberKind=(window.__grabberBlobRegistry||{})[String(blobURL)];}catch(_){}
+        if (grabberKind==="MediaSource" || (entry && entry.kind==="mediaSource")) {
+            post({version:PROTOCOL_VERSION,kind:"failure",transferID:transferID,tabID:tabID,candidateID:candidateID,
+                  reason:"Blob is backed by MediaSource streaming buffer and cannot be captured as a static blob."});
+            return;
+        }
         var rd=makeRollingDigest();
         if (entry&&entry.kind==="blob"&&entry.blob) {
             var rawSize=(entry.blob&&isFinite(entry.blob.size))?entry.blob.size:entry.size;
             var esz=(rawSize!==null&&rawSize!==undefined&&isFinite(Number(rawSize)))?Math.floor(Number(rawSize)):null;
-            if (esz!==null&&esz>=0) {
+            if (esz===0) {
+                post({version:PROTOCOL_VERSION,kind:"failure",transferID:transferID,tabID:tabID,candidateID:candidateID,
+                      reason:"Blob is empty (0 bytes) or MediaSource-backed."});
+                return;
+            }
+            if (esz!==null&&esz>0) {
                 sessions[transferID]={transferID:transferID,tabID:tabID,candidateID:candidateID,documentID:docID||entry.documentID||null,
                     blob:entry.blob,size:esz,reader:null,chunkSize:sz,chunkIndex:0,offset:0,
                     pending:null,awaitingAck:true,rollingDigest:rd};
@@ -1252,6 +1274,9 @@ public enum BlobCaptureBridge {
             if (!r.ok){throw new Error("blob not readable");}
             var len=r.headers.get("content-length"),parsed=len===null?null:Number(len);
             var ksz=(isFinite(parsed)&&parsed>=0)?Math.floor(parsed):null;
+            if (ksz===0) {
+                throw new Error("Blob is empty (0 bytes) or MediaSource-backed.");
+            }
             var mime=r.headers.get("content-type")||null;
             if (r.body && r.body.getReader) {
                 var reader=r.body.getReader();
@@ -1266,6 +1291,7 @@ public enum BlobCaptureBridge {
             return r.blob().then(function(b){
                 var esz=(b&&isFinite(b.size)&&b.size>=0)?Math.floor(b.size):ksz;
                 if (esz===null){throw new Error("blob size unavailable");}
+                if (esz===0){throw new Error("Blob is empty (0 bytes) or MediaSource-backed.");}
                 sessions[transferID]={transferID:transferID,tabID:tabID,candidateID:candidateID,documentID:docID||null,
                     blob:b,size:esz,reader:null,chunkSize:sz,chunkIndex:0,offset:0,
                     pending:null,awaitingAck:true,rollingDigest:rd};

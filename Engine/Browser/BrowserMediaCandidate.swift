@@ -22,6 +22,13 @@ public enum BrowserMediaCandidateAvailability: String, Codable, Sendable, Equata
     case uncertain
 }
 
+/// Differentiates true in-memory Blob objects from MediaSource streaming buffers.
+public enum BlobKind: String, Codable, Sendable, Equatable, Hashable {
+    case blob = "Blob"
+    case mediaSource = "MediaSource"
+    case unknown = "Unknown"
+}
+
 /// A unified, sanitized description of a browser media candidate.
 ///
 /// `url` is present only for resources that can be addressed by the existing
@@ -33,6 +40,7 @@ public struct BrowserMediaCandidate: Identifiable, Codable, Sendable, Equatable,
     public let rawURL: String
     public let finalURL: URL?
     public let kind: BrowserMediaCandidateKind
+    public let blobKind: BlobKind?
     public let mimeType: String?
     public let suggestedFilename: String
     public let estimatedSize: Int64?
@@ -41,6 +49,7 @@ public struct BrowserMediaCandidate: Identifiable, Codable, Sendable, Equatable,
     public let documentID: String?
     public let requestContext: BrowserRequestContext?
     public let associatedManifestID: String?
+    public let associatedManifestURL: URL?
     public let lastObserved: Date
 
     public init(
@@ -49,6 +58,7 @@ public struct BrowserMediaCandidate: Identifiable, Codable, Sendable, Equatable,
         rawURL: String,
         finalURL: URL? = nil,
         kind: BrowserMediaCandidateKind,
+        blobKind: BlobKind? = nil,
         mimeType: String? = nil,
         suggestedFilename: String,
         estimatedSize: Int64? = nil,
@@ -57,6 +67,7 @@ public struct BrowserMediaCandidate: Identifiable, Codable, Sendable, Equatable,
         documentID: String? = nil,
         requestContext: BrowserRequestContext? = nil,
         associatedManifestID: String? = nil,
+        associatedManifestURL: URL? = nil,
         lastObserved: Date = Date()
     ) {
         self.id = id
@@ -64,6 +75,7 @@ public struct BrowserMediaCandidate: Identifiable, Codable, Sendable, Equatable,
         self.rawURL = rawURL
         self.finalURL = finalURL
         self.kind = kind
+        self.blobKind = blobKind
         self.mimeType = mimeType
         self.suggestedFilename = suggestedFilename
         self.estimatedSize = estimatedSize
@@ -76,6 +88,7 @@ public struct BrowserMediaCandidate: Identifiable, Codable, Sendable, Equatable,
         self.documentID = documentID
         self.requestContext = requestContext
         self.associatedManifestID = associatedManifestID
+        self.associatedManifestURL = associatedManifestURL
         self.lastObserved = lastObserved
     }
 
@@ -153,6 +166,7 @@ public enum BrowserMediaCandidateClassifier {
                 rawURL: observation.rawURL,
                 finalURL: finalURL,
                 kind: .mediaSource,
+                blobKind: .mediaSource,
                 mimeType: mime,
                 suggestedFilename: "media_source_capture",
                 estimatedSize: observation.appendedByteCount ?? observation.contentLength,
@@ -164,6 +178,25 @@ public enum BrowserMediaCandidateClassifier {
         }
 
         if observation.isBlobSignal {
+            if observation.blobKind == .mediaSource {
+                return BrowserMediaCandidate(
+                    id: identity,
+                    url: nil,
+                    rawURL: observation.rawURL,
+                    finalURL: nil,
+                    kind: .mediaSource,
+                    blobKind: .mediaSource,
+                    mimeType: mime,
+                    suggestedFilename: "streaming_media.mp4",
+                    estimatedSize: nil,
+                    availability: .metadataOnly,
+                    evidence: ["MediaSource streaming buffer observed (not a downloadable standalone Blob)"],
+                    documentID: observation.documentID,
+                    associatedManifestURL: nil,
+                    lastObserved: now
+                )
+            }
+
             let isMediaTag = observation.tag?.lowercased() == "video" ||
                 observation.tag?.lowercased() == "audio" ||
                 observation.tag?.lowercased() == "media" ||
@@ -194,6 +227,7 @@ public enum BrowserMediaCandidateClassifier {
                 rawURL: observation.rawURL,
                 finalURL: nil,
                 kind: .completeBlob,
+                blobKind: observation.blobKind ?? .blob,
                 mimeType: mime,
                 suggestedFilename: filename,
                 estimatedSize: observation.contentLength,
@@ -491,9 +525,56 @@ public struct BrowserMediaCandidateCatalog: Sendable, Equatable {
     @discardableResult
     private mutating func merge(_ candidate: BrowserMediaCandidate) -> BrowserMediaCandidate {
         guard let existing = values[candidate.id] else {
-            orderedIDs.append(candidate.id)
-            values[candidate.id] = candidate
-            return candidate
+            var newCandidate = candidate
+            if (newCandidate.kind == .mediaSource || newCandidate.blobKind == .mediaSource), newCandidate.associatedManifestURL == nil {
+                if let manifestURL = values.values.first(where: { $0.kind == .hlsManifest || $0.kind == .dashManifest })?.url {
+                    newCandidate = BrowserMediaCandidate(
+                        id: newCandidate.id,
+                        url: newCandidate.url,
+                        rawURL: newCandidate.rawURL,
+                        finalURL: newCandidate.finalURL,
+                        kind: newCandidate.kind,
+                        blobKind: newCandidate.blobKind,
+                        mimeType: newCandidate.mimeType,
+                        suggestedFilename: newCandidate.suggestedFilename,
+                        estimatedSize: newCandidate.estimatedSize,
+                        availability: newCandidate.availability,
+                        evidence: newCandidate.evidence,
+                        documentID: newCandidate.documentID,
+                        requestContext: newCandidate.requestContext,
+                        associatedManifestID: newCandidate.associatedManifestID,
+                        associatedManifestURL: manifestURL,
+                        lastObserved: newCandidate.lastObserved
+                    )
+                }
+            }
+
+            orderedIDs.append(newCandidate.id)
+            values[newCandidate.id] = newCandidate
+
+            if (newCandidate.kind == .hlsManifest || newCandidate.kind == .dashManifest), let manifestURL = newCandidate.url {
+                for (id, val) in values where (val.kind == .mediaSource || val.blobKind == .mediaSource) && val.associatedManifestURL == nil {
+                    values[id] = BrowserMediaCandidate(
+                        id: val.id,
+                        url: val.url,
+                        rawURL: val.rawURL,
+                        finalURL: val.finalURL,
+                        kind: val.kind,
+                        blobKind: val.blobKind,
+                        mimeType: val.mimeType,
+                        suggestedFilename: val.suggestedFilename,
+                        estimatedSize: val.estimatedSize,
+                        availability: val.availability,
+                        evidence: val.evidence,
+                        documentID: val.documentID,
+                        requestContext: val.requestContext,
+                        associatedManifestID: val.associatedManifestID,
+                        associatedManifestURL: manifestURL,
+                        lastObserved: val.lastObserved
+                    )
+                }
+            }
+            return newCandidate
         }
 
         var uniqueEvidence: [String] = []
@@ -501,23 +582,64 @@ public struct BrowserMediaCandidateCatalog: Sendable, Equatable {
             uniqueEvidence.append(item)
         }
 
+        let isMediaSource = candidate.blobKind == .mediaSource || existing.blobKind == .mediaSource ||
+            candidate.kind == .mediaSource || existing.kind == .mediaSource
+        let mergedKind: BrowserMediaCandidateKind
+        if isMediaSource {
+            mergedKind = .mediaSource
+        } else if existing.kind == .unknown {
+            mergedKind = candidate.kind
+        } else {
+            mergedKind = existing.kind
+        }
+
+        var associatedManifestURL = candidate.associatedManifestURL ?? existing.associatedManifestURL
+        if associatedManifestURL == nil && isMediaSource {
+            associatedManifestURL = values.values.first(where: { $0.kind == .hlsManifest || $0.kind == .dashManifest })?.url
+        }
+
         let merged = BrowserMediaCandidate(
             id: existing.id,
             url: existing.url ?? candidate.url,
             rawURL: existing.rawURL,
             finalURL: candidate.finalURL ?? existing.finalURL,
-            kind: existing.kind == .unknown ? candidate.kind : existing.kind,
+            kind: mergedKind,
+            blobKind: candidate.blobKind ?? existing.blobKind,
             mimeType: existing.mimeType ?? candidate.mimeType,
             suggestedFilename: existing.suggestedFilename == "browser_blob.bin" ? candidate.suggestedFilename : existing.suggestedFilename,
             estimatedSize: candidate.estimatedSize ?? existing.estimatedSize,
-            availability: preferredAvailability(existing.availability, candidate.availability),
+            availability: isMediaSource ? .metadataOnly : preferredAvailability(existing.availability, candidate.availability),
             evidence: uniqueEvidence,
             documentID: candidate.documentID ?? existing.documentID,
             requestContext: existing.requestContext ?? candidate.requestContext,
             associatedManifestID: existing.associatedManifestID ?? candidate.associatedManifestID,
+            associatedManifestURL: associatedManifestURL,
             lastObserved: max(existing.lastObserved, candidate.lastObserved)
         )
         values[candidate.id] = merged
+
+        if (merged.kind == .hlsManifest || merged.kind == .dashManifest), let manifestURL = merged.url {
+            for (id, val) in values where (val.kind == .mediaSource || val.blobKind == .mediaSource) && val.associatedManifestURL == nil {
+                values[id] = BrowserMediaCandidate(
+                    id: val.id,
+                    url: val.url,
+                    rawURL: val.rawURL,
+                    finalURL: val.finalURL,
+                    kind: val.kind,
+                    blobKind: val.blobKind,
+                    mimeType: val.mimeType,
+                    suggestedFilename: val.suggestedFilename,
+                    estimatedSize: val.estimatedSize,
+                    availability: val.availability,
+                    evidence: val.evidence,
+                    documentID: val.documentID,
+                    requestContext: val.requestContext,
+                    associatedManifestID: val.associatedManifestID,
+                    associatedManifestURL: manifestURL,
+                    lastObserved: val.lastObserved
+                )
+            }
+        }
         return merged
     }
 

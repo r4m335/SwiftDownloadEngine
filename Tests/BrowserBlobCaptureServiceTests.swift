@@ -900,4 +900,51 @@ final class BrowserBlobCaptureServiceTests: XCTestCase {
         let existingContent = try String(contentsOf: collidingFile, encoding: .utf8)
         XCTAssertEqual(existingContent, "existing", "Existing file must be preserved intact")
     }
+
+    func testBlobCaptureBridgeScript_ContainsMediaSourceAndZeroByteRejections() {
+        let script = BlobCaptureBridge.script
+        XCTAssertTrue(script.contains("__grabberBlobRegistry"))
+        XCTAssertTrue(script.contains("MediaSource"))
+        XCTAssertTrue(script.contains("Blob is empty (0 bytes) or MediaSource-backed."))
+        XCTAssertTrue(script.contains("Blob is backed by MediaSource streaming buffer"))
+    }
+
+    func testBlobCaptureReceiverRejectsZeroByteDeclaredSize() async throws {
+        let d = tmpDir()
+        defer { try? FileManager.default.removeItem(at: d) }
+        let writer = makeWriter(dir: d, maxBytes: 1024, maxChunk: 128)
+        let auth = makeAuth(transferID: "t-zero-size")
+        let env = makeEnvelope(transferID: "t-zero-size", size: 0)
+
+        do {
+            _ = try await writer.begin(authorization: auth, envelope: env, suggestedFilename: "empty.bin")
+            XCTFail("Must reject 0-byte declared size")
+        } catch let err as BlobExportError {
+            XCTAssertEqual(err, .invalidDeclaredSize)
+        }
+    }
+
+    func testBlobCaptureReceiverRejectsZeroBytesWrittenCompletion() async throws {
+        let d = tmpDir()
+        defer { try? FileManager.default.removeItem(at: d) }
+        let writer = makeWriter(dir: d, maxBytes: 1024, maxChunk: 128)
+        let auth = makeAuth(transferID: "t-zero-complete")
+        // No declared size initially
+        let env = makeEnvelope(transferID: "t-zero-complete", size: nil)
+
+        _ = try await writer.begin(authorization: auth, envelope: env, suggestedFilename: "empty.bin")
+
+        do {
+            _ = try await writer.complete(
+                transferID: "t-zero-complete",
+                finalChunkIndex: 0,
+                finalOffset: 0,
+                declaredFileDigest: nil as String?
+            )
+            XCTFail("Must reject 0 bytes written completion")
+        } catch let err as BlobExportError {
+            XCTAssertEqual(err, .unreadableBlob)
+        }
+    }
 }
+

@@ -425,6 +425,10 @@ public final class BrowserViewModel: NSObject, ObservableObject {
     /// candidate. The page reads bounded Blob slices; this method never asks
     /// WebKit to materialize the complete object in native memory.
     public func exportBlobCandidate(_ candidate: BrowserMediaCandidate) {
+        guard candidate.blobKind != .mediaSource && candidate.kind != .mediaSource else {
+            blobCaptureErrorMessage = "This video is streamed via Media Source Extensions. It cannot be saved as a single file — play a few seconds first, then try downloading from the captured manifest."
+            return
+        }
         guard candidate.kind == .completeBlob,
               candidate.availability == .captureCandidate || candidate.availability == .uncertain,
               let blobURL = URL(string: candidate.rawURL),
@@ -619,8 +623,9 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         }
         if acknowledgement.snapshot?.isComplete == true {
             guard let snapshot = acknowledgement.snapshot,
+                  snapshot.bytesWritten > 0,
                   let finalURL = snapshot.finalURL else {
-                blobCaptureErrorMessage = "The Blob was captured but no finalized output file was produced."
+                blobCaptureErrorMessage = "The Blob capture failed: 0 bytes received or no finalized output produced."
                 isCapturingBlob = false
                 activeBlobCaptureID = nil
                 activeBlobCaptureTabID = nil
@@ -888,6 +893,19 @@ public final class BrowserViewModel: NSObject, ObservableObject {
             if candidate.kind == .completeBlob {
                 let discoveredCandidate = self.mediaCandidates.first {
                     $0.rawURL.caseInsensitiveCompare(resource.url.absoluteString) == .orderedSame
+                }
+                if discoveredCandidate?.blobKind == .mediaSource || discoveredCandidate?.kind == .mediaSource {
+                    if let manifest = discoveredCandidate?.associatedManifestURL {
+                        self.promptStreamingDownload(for: WebpageResource(
+                            url: manifest,
+                            title: resource.title,
+                            suggestedFilename: resource.suggestedFilename.isEmpty ? "stream.mp4" : resource.suggestedFilename,
+                            resourceType: .video
+                        ))
+                    } else {
+                        self.blobCaptureErrorMessage = "This video is streamed via Media Source Extensions. It cannot be saved as a single file — play a few seconds first, then try downloading from the captured manifest."
+                    }
+                    return
                 }
                 var targetCandidate = candidate
                 if let discoveredCandidate {
@@ -1393,6 +1411,19 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                 let discoveredCandidate = self.mediaCandidates.first {
                     $0.rawURL.caseInsensitiveCompare(resource.url.absoluteString) == .orderedSame
                 }
+                if discoveredCandidate?.blobKind == .mediaSource || discoveredCandidate?.kind == .mediaSource {
+                    if let manifest = discoveredCandidate?.associatedManifestURL {
+                        promptStreamingDownload(for: WebpageResource(
+                            url: manifest,
+                            title: resource.title,
+                            suggestedFilename: resource.suggestedFilename.isEmpty ? "stream.mp4" : resource.suggestedFilename,
+                            resourceType: .video
+                        ))
+                    } else {
+                        blobCaptureErrorMessage = "This video is streamed via Media Source Extensions. It cannot be saved as a single file — play a few seconds first, then try downloading from the captured manifest."
+                    }
+                    continue
+                }
                 var targetCandidate = candidate
                 if let discoveredCandidate {
                     targetCandidate = BrowserMediaCandidate(
@@ -1609,6 +1640,21 @@ public final class BrowserViewModel: NSObject, ObservableObject {
             let filename = downloadCandidateFilename.trimmingCharacters(in: .whitespacesAndNewlines)
             let existing = mediaCandidates.first {
                 $0.rawURL.caseInsensitiveCompare(url.absoluteString) == .orderedSame
+            }
+            if let existing = existing, existing.blobKind == .mediaSource || existing.kind == .mediaSource {
+                if let manifest = existing.associatedManifestURL {
+                    promptStreamingDownload(for: WebpageResource(
+                        url: manifest,
+                        title: resolvedFilename,
+                        suggestedFilename: resolvedFilename.isEmpty ? "stream.mp4" : resolvedFilename,
+                        resourceType: .video
+                    ))
+                    isShowingDownloadSheet = false
+                } else {
+                    blobCaptureErrorMessage = "This video is streamed via Media Source Extensions. It cannot be saved as a single file — play a few seconds first, then try downloading from the captured manifest."
+                    isShowingDownloadSheet = false
+                }
+                return
             }
             let resolvedFilename: String = {
                 if !filename.isEmpty { return filename }

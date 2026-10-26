@@ -38,6 +38,7 @@ public struct BrowserMediaDiscoveryObservation: Codable, Sendable, Equatable {
     public let pageOrigin: URL
     public let frameOrigin: URL
     public let mayUseBrowserCredentials: Bool
+    public let blobKind: BlobKind?
 
     public var isBlobSignal: Bool {
         url == nil && rawURL.lowercased().hasPrefix("blob:")
@@ -69,7 +70,8 @@ public struct BrowserMediaDiscoveryObservation: Codable, Sendable, Equatable {
         isPotentiallyProtected: Bool = false,
         pageOrigin: URL,
         frameOrigin: URL,
-        mayUseBrowserCredentials: Bool
+        mayUseBrowserCredentials: Bool,
+        blobKind: BlobKind? = nil
     ) {
         self.eventID = eventID
         self.url = url
@@ -89,6 +91,7 @@ public struct BrowserMediaDiscoveryObservation: Codable, Sendable, Equatable {
         self.pageOrigin = pageOrigin
         self.frameOrigin = frameOrigin
         self.mayUseBrowserCredentials = mayUseBrowserCredentials
+        self.blobKind = blobKind
     }
 }
 
@@ -183,6 +186,21 @@ public final class BrowserMediaDiscoveryBridge: NSObject, @unchecked Sendable {
         try { window.__lidMediaDocumentID = documentID; } catch (_) {}
         var mediaSourceObjectURLs = typeof WeakMap === "function" ? new WeakMap() : null;
         var sourceBufferMediaSourceURLs = typeof WeakMap === "function" ? new WeakMap() : null;
+        window.__grabberBlobRegistry = window.__grabberBlobRegistry || {};
+
+        function blobKind(url) {
+            if (!url || typeof url !== "string" || url.indexOf("blob:") !== 0) { return null; }
+            try {
+                var fromGrabber = (window.__grabberBlobRegistry || {})[url];
+                if (fromGrabber) { return fromGrabber; }
+                var entry = (window.__lidBlobRegistry || {})[url];
+                if (entry) {
+                    if (entry.kind === "mediaSource") { return "MediaSource"; }
+                    if (entry.kind === "blob") { return "Blob"; }
+                }
+            } catch (_) {}
+            return "Unknown";
+        }
 
         function absoluteURL(value) {
             if (value === null || value === undefined) { return null; }
@@ -264,6 +282,7 @@ public final class BrowserMediaDiscoveryBridge: NSObject, @unchecked Sendable {
             var declaredType = metadata.declaredType || null;
             var prefix = metadata.manifestPrefix || null;
             var kind = metadata.manifestKind || manifestKindFor(url, declaredType, prefix);
+            var bKind = metadata.blobKind || blobKind(url);
             try {
                 var message = {
                     eventID: eventID,
@@ -279,7 +298,8 @@ public final class BrowserMediaDiscoveryBridge: NSObject, @unchecked Sendable {
                 appendedByteCount: metadata.appendedByteCount === undefined ? null : metadata.appendedByteCount,
                 isPotentiallyProtected: metadata.isPotentiallyProtected === true,
                 manifestKind: kind,
-                manifestPrefix: prefix
+                manifestPrefix: prefix,
+                blobKind: bKind
             };
                 handler.postMessage(message);
             } catch (_) {}
@@ -379,6 +399,11 @@ public final class BrowserMediaDiscoveryBridge: NSObject, @unchecked Sendable {
                 window.URL.createObjectURL = function(object) {
                     var objectURL = originalCreateObjectURL.apply(this, arguments);
                     try {
+                        var k = (typeof MediaSource !== "undefined" && object instanceof MediaSource) ? "MediaSource" :
+                                (typeof Blob !== "undefined" && object instanceof Blob) ? "Blob" : "Unknown";
+                        window.__grabberBlobRegistry = window.__grabberBlobRegistry || {};
+                        window.__grabberBlobRegistry[objectURL] = k;
+
                         if (window.Blob && object instanceof window.Blob) {
                             blobRegistry[objectURL] = {
                                 kind: "blob",
@@ -391,7 +416,8 @@ public final class BrowserMediaDiscoveryBridge: NSObject, @unchecked Sendable {
                                 tag: "blob",
                                 declaredType: object.type || null,
                                 contentLength: isFinite(object.size) ? Math.floor(object.size) : null,
-                                method: "GET"
+                                method: "GET",
+                                blobKind: "Blob"
                             });
                         } else if (window.MediaSource && object instanceof window.MediaSource) {
                             if (mediaSourceObjectURLs) { mediaSourceObjectURLs.set(object, objectURL); }
@@ -402,7 +428,8 @@ public final class BrowserMediaDiscoveryBridge: NSObject, @unchecked Sendable {
                             };
                             emit(objectURL, "mediaSource", {
                                 tag: "mediaSource",
-                                method: "GET"
+                                method: "GET",
+                                blobKind: "MediaSource"
                             });
                         }
                     } catch (_) {}
@@ -412,7 +439,10 @@ public final class BrowserMediaDiscoveryBridge: NSObject, @unchecked Sendable {
             if (window.URL && typeof window.URL.revokeObjectURL === "function") {
                 var originalRevokeObjectURL = window.URL.revokeObjectURL;
                 window.URL.revokeObjectURL = function(objectURL) {
-                    try { delete blobRegistry[String(objectURL)]; } catch (_) {}
+                    try {
+                        delete blobRegistry[String(objectURL)];
+                        delete (window.__grabberBlobRegistry || {})[String(objectURL)];
+                    } catch (_) {}
                     return originalRevokeObjectURL.apply(this, arguments);
                 };
             }
@@ -775,6 +805,19 @@ public final class BrowserMediaDiscoveryBridge: NSObject, @unchecked Sendable {
                 : nil
         }
 
+        let observationBlobKind: BlobKind?
+        if let rawBlobKind = message.blobKind {
+            observationBlobKind = BlobKind(rawValue: rawBlobKind) ?? .unknown
+        } else if isBlob && message.source == .mediaSource {
+            observationBlobKind = .mediaSource
+        } else if isBlob && message.source == .blob {
+            observationBlobKind = .blob
+        } else if isBlob {
+            observationBlobKind = .unknown
+        } else {
+            observationBlobKind = nil
+        }
+
         return BrowserMediaDiscoveryObservation(
             url: isBlob || metadataOnly ? nil : resolved,
             rawURL: rawURL,
@@ -793,7 +836,8 @@ public final class BrowserMediaDiscoveryBridge: NSObject, @unchecked Sendable {
             isPotentiallyProtected: message.isPotentiallyProtected == true || message.source == .protection,
             pageOrigin: pageOrigin,
             frameOrigin: frameOrigin,
-            mayUseBrowserCredentials: mayUseCredentials
+            mayUseBrowserCredentials: mayUseCredentials,
+            blobKind: observationBlobKind
         )
     }
 
@@ -852,6 +896,7 @@ public final class BrowserMediaDiscoveryBridge: NSObject, @unchecked Sendable {
         let documentID: String?
         let appendedByteCount: Int64?
         let isPotentiallyProtected: Bool?
+        let blobKind: String?
     }
 
     private static func normalizedMetadata(_ value: String?) -> String? {
