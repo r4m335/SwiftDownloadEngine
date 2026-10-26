@@ -33,6 +33,7 @@ public struct HLSCompletedResource: Sendable, Equatable {
 
 public enum HLSVODReconstructionError: Error, LocalizedError, Sendable, Equatable {
     case unsupportedEncryption
+    case decryptionFailed(HLSSegmentDecryptionError)
     case resourceCountMismatch
     case resourceOrderMismatch
     case invalidResourceFile
@@ -44,6 +45,8 @@ public enum HLSVODReconstructionError: Error, LocalizedError, Sendable, Equatabl
         switch self {
         case .unsupportedEncryption:
             return "This HLS VOD uses encryption that the clear-media reconstruction path does not support."
+        case .decryptionFailed(let error):
+            return "HLS segment decryption failed: \(error.localizedDescription)"
         case .resourceCountMismatch:
             return "The completed HLS resources do not match the planned resource set."
         case .resourceOrderMismatch:
@@ -174,11 +177,111 @@ public enum HLSVODReconstructor {
         destinationURL: URL,
         temporaryDirectoryURL: URL? = nil
     ) throws -> MediaAssemblyOutput {
+        let hasEncryption = transferPlan.resources.contains {
+            $0.kind == .encryptionKey || ($0.encryption != nil && $0.encryption != .clear)
+        }
+
+        let effectiveTempDir = temporaryDirectoryURL ?? destinationURL.deletingLastPathComponent().appendingPathComponent(
+            ".media-assembly",
+            isDirectory: true
+        )
+        try? FileManager.default.createDirectory(at: effectiveTempDir, withIntermediateDirectories: true)
+
+        let resolvedPlan: HLSVODTransferPlan
+        let resolvedCompleted: [HLSCompletedResource]
+
+        if hasEncryption {
+            var keyMap: [URL: Data] = [:]
+            for completed in completedResources where completed.resource.kind == .encryptionKey {
+                guard let keyData = try? Data(contentsOf: completed.fileURL), keyData.count == 16 else {
+                    throw HLSVODReconstructionError.decryptionFailed(.missingKeyData(completed.resource.url))
+                }
+                keyMap[completed.resource.url] = keyData
+            }
+
+            var clearResources: [HLSPlannedResource] = []
+            var clearCompleted: [HLSCompletedResource] = []
+
+            for completed in completedResources {
+                switch completed.resource.kind {
+                case .encryptionKey:
+                    continue
+                case .initializationMap:
+                    let clearRes = HLSPlannedResource(
+                        order: clearResources.count,
+                        kind: completed.resource.kind,
+                        url: completed.resource.url,
+                        byteRange: completed.resource.byteRange,
+                        sequenceNumber: completed.resource.sequenceNumber,
+                        duration: completed.resource.duration,
+                        encryption: .clear
+                    )
+                    clearResources.append(clearRes)
+                    clearCompleted.append(HLSCompletedResource(resource: clearRes, fileURL: completed.fileURL))
+                case .mediaSegment:
+                    if case let .aes128(keyURL, explicitIV) = completed.resource.encryption {
+                        guard let keyData = keyMap[keyURL] else {
+                            throw HLSVODReconstructionError.decryptionFailed(.missingKeyData(keyURL))
+                        }
+                        let ivData: Data
+                        if let explicitIV = explicitIV, let parsed = HLSSegmentDecryptor.parseIV(explicitIV) {
+                            ivData = parsed
+                        } else {
+                            ivData = HLSSegmentDecryptor.ivForSequenceNumber(completed.resource.sequenceNumber ?? 0)
+                        }
+                        let ext = completed.fileURL.pathExtension.isEmpty ? "ts" : completed.fileURL.pathExtension
+                        let decryptedURL = effectiveTempDir.appendingPathComponent("decrypted_seg_\(completed.resource.order).\(ext)")
+                        do {
+                            try HLSSegmentDecryptor.decryptFile(at: completed.fileURL, to: decryptedURL, key: keyData, iv: ivData)
+                        } catch let decErr as HLSSegmentDecryptionError {
+                            throw HLSVODReconstructionError.decryptionFailed(decErr)
+                        } catch {
+                            throw HLSVODReconstructionError.decryptionFailed(.fileWriteError(decryptedURL.path))
+                        }
+                        let clearRes = HLSPlannedResource(
+                            order: clearResources.count,
+                            kind: .mediaSegment,
+                            url: completed.resource.url,
+                            byteRange: nil,
+                            sequenceNumber: completed.resource.sequenceNumber,
+                            duration: completed.resource.duration,
+                            encryption: .clear
+                        )
+                        clearResources.append(clearRes)
+                        clearCompleted.append(HLSCompletedResource(resource: clearRes, fileURL: decryptedURL))
+                    } else {
+                        let clearRes = HLSPlannedResource(
+                            order: clearResources.count,
+                            kind: .mediaSegment,
+                            url: completed.resource.url,
+                            byteRange: completed.resource.byteRange,
+                            sequenceNumber: completed.resource.sequenceNumber,
+                            duration: completed.resource.duration,
+                            encryption: .clear
+                        )
+                        clearResources.append(clearRes)
+                        clearCompleted.append(HLSCompletedResource(resource: clearRes, fileURL: completed.fileURL))
+                    }
+                }
+            }
+
+            resolvedPlan = HLSVODTransferPlan(
+                manifestURL: transferPlan.manifestURL,
+                resources: clearResources,
+                browserRequestContext: transferPlan.browserRequestContext,
+                estimatedTransferBytes: transferPlan.estimatedTransferBytes
+            )
+            resolvedCompleted = clearCompleted
+        } else {
+            resolvedPlan = transferPlan
+            resolvedCompleted = completedResources
+        }
+
         let reconstructionPlan = try HLSVODReconstructionPlanner.makePlan(
-            from: transferPlan,
-            completedResources: completedResources,
+            from: resolvedPlan,
+            completedResources: resolvedCompleted,
             destinationURL: destinationURL,
-            temporaryDirectoryURL: temporaryDirectoryURL
+            temporaryDirectoryURL: effectiveTempDir
         )
         do {
             return try MediaAssembler.assemble(reconstructionPlan.assemblyRequest)
