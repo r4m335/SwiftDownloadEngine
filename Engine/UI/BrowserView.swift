@@ -439,7 +439,15 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         }
 
         #if canImport(WebKit)
-        let tabID = activeTabID ?? tabManager.activeTabID ?? tabManager.tabs.first?.id
+        let ownerTabID: UUID? = {
+            if let activeTabID, mediaCandidateCatalogs[activeTabID]?.candidates.contains(where: { $0.id == candidate.id }) == true {
+                return activeTabID
+            }
+            return mediaCandidateCatalogs.first { _, catalog in
+                catalog.candidates.contains(where: { $0.id == candidate.id })
+            }?.key
+        }()
+        let tabID = ownerTabID ?? activeTabID ?? tabManager.activeTabID ?? tabManager.tabs.first?.id
         guard let resolvedTabID = tabID else {
             blobCaptureErrorMessage = "No active browser tab found for Blob export."
             BrowserDiagnosticLogger.shared.log(
@@ -493,7 +501,8 @@ public final class BrowserViewModel: NSObject, ObservableObject {
             ]
         )
 
-        let documentID = candidate.documentID
+        let cleanDocID = candidate.documentID?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let documentID = (cleanDocID?.isEmpty == false) ? cleanDocID : nil
         let service = session.blobCaptureService
         let webView = session.webView
         Task { @MainActor [weak self] in

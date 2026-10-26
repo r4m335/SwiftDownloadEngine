@@ -857,6 +857,12 @@ final class BrowserBlobCaptureServiceTests: XCTestCase {
         XCTAssertFalse(script.contains("kind:\"failure\",transferID:transferID,tabID:tabID,candidateID:s.candidateID"))
     }
 
+    func testBridgeScriptFallbackDoesNotLockStreamBeforeBlob() {
+        let script = BlobCaptureBridge.script
+        // Must not call r.body.getReader() before calling r.blob() in fetch fallback
+        XCTAssertFalse(script.contains("r.body.getReader"), "Fallback must not lock response stream before calling r.blob()")
+    }
+
     func testFinalizationHandlesCollisionGracefully() async throws {
         let d = tmpDir()
         defer { try? FileManager.default.removeItem(at: d) }
