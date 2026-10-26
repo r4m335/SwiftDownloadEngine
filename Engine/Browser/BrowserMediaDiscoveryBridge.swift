@@ -349,6 +349,23 @@ public final class BrowserMediaDiscoveryBridge: NSObject, @unchecked Sendable {
             }
         } catch (_) {}
 
+        try {
+            var originalSetAttribute = Element.prototype.setAttribute;
+            if (typeof originalSetAttribute === "function") {
+                Element.prototype.setAttribute = function(name, value) {
+                    try {
+                        if (String(name || "").toLowerCase() === "src") {
+                            var tag = this.tagName ? this.tagName.toLowerCase() : "";
+                            if (tag === "video" || tag === "audio" || tag === "source") {
+                                emit(String(value), "mediaElement", { tag: tag, method: "GET" });
+                            }
+                        }
+                    } catch (_) {}
+                    return originalSetAttribute.apply(this, arguments);
+                };
+            }
+        } catch (_) {}
+
         // Blob object URLs are reported as metadata only. The page-local
         // registry retains the opaque Blob object, never its bytes, so an
         // explicit capture can read bounded slices later without relying on

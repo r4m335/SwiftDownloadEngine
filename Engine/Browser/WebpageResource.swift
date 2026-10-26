@@ -101,7 +101,7 @@ public struct WebpageResourceExtractor {
 
     // Known media & file extensions by category
     public static let videoExtensions: Set<String> = [
-        "mp4", "mkv", "avi", "mov", "webm", "m4v", "flv", "wmv", "3gp", "ts"
+        "mp4", "mkv", "avi", "mov", "webm", "m4v", "flv", "wmv", "3gp", "ts", "m4s", "m3u8", "mpd"
     ]
 
     public static let audioExtensions: Set<String> = [
@@ -130,7 +130,9 @@ public struct WebpageResourceExtractor {
             if m == "application/vnd.apple.mpegurl" ||
                 m == "application/x-mpegurl" ||
                 m == "audio/mpegurl" ||
-                m == "application/dash+xml" {
+                m == "application/dash+xml" ||
+                m == "video/mp2t" ||
+                m == "video/iso.segment" {
                 return .video
             }
             if m.hasPrefix("video/") { return .video }
