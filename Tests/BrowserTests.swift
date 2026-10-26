@@ -1159,6 +1159,7 @@ final class BrowserTests: XCTestCase {
         XCTAssertFalse(mp4Resource.isStreamingManifest)
     }
 
+    @MainActor
     func testWebpageResource_MediaSourceBlobClassificationAndGuard() {
         let genericBlob = WebpageResource(
             url: URL(string: "blob:https://example.com/b404d0da-4a57-418f-a9cb-56b0635336bf")!,
