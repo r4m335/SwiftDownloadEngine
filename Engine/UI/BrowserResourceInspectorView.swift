@@ -387,8 +387,9 @@ public struct ResourceRowView: View {
     }
 
     private var isMediaSourceBlob: Bool {
-        resource.url.scheme?.lowercased() == "blob" &&
-        (candidate?.blobKind == .mediaSource || candidate?.kind == .mediaSource)
+        let isBlob = resource.url.scheme?.lowercased() == "blob"
+        let isYouTube = resource.url.absoluteString.lowercased().contains("youtube.com")
+        return isBlob && (isYouTube || candidate?.blobKind == .mediaSource || candidate?.kind == .mediaSource)
     }
 
     private var hasManifest: Bool {

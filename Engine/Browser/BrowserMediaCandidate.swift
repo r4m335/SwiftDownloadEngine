@@ -328,30 +328,45 @@ public enum BrowserMediaCandidateClassifier {
         let availability: BrowserMediaCandidateAvailability
         var evidence: [String] = []
 
+        let blobKind: BlobKind?
         if resource.url.scheme?.lowercased() == "blob" {
-            kind = .completeBlob
-            availability = .captureCandidate
-            evidence = ["Blob data can be exported through the active browser session"]
+            let isYouTube = resource.url.absoluteString.lowercased().contains("youtube.com")
+            if isYouTube {
+                kind = .mediaSource
+                availability = .metadataOnly
+                evidence = ["YouTube MediaSource streaming buffer"]
+                blobKind = .mediaSource
+            } else {
+                kind = .completeBlob
+                availability = .captureCandidate
+                evidence = ["Blob data can be exported through the active browser session"]
+                blobKind = .blob
+            }
         } else if manifest.kind == .hls {
             kind = .hlsManifest
             availability = .requiresPlanning
             evidence = ["HLS manifest metadata was recognized"]
+            blobKind = nil
         } else if manifest.kind == .dash {
             kind = .dashManifest
             availability = .requiresPlanning
             evidence = ["DASH manifest metadata was recognized"]
+            blobKind = nil
         } else if resource.resourceType == .video || resource.resourceType == .audio {
             kind = .directMedia
             availability = resource.isSupported ? .downloadable : .unsupported
             evidence = ["direct media resource classification"]
+            blobKind = nil
         } else if resource.isSupported {
             kind = .directFile
             availability = .downloadable
             evidence = ["supported downloadable resource classification"]
+            blobKind = nil
         } else {
             kind = .unknown
             availability = .unsupported
             evidence = [resource.unsupportedReason ?? "resource is not currently supported"]
+            blobKind = nil
         }
 
         return BrowserMediaCandidate(
@@ -359,6 +374,7 @@ public enum BrowserMediaCandidateClassifier {
             url: resource.url,
             rawURL: resource.url.absoluteString,
             kind: kind,
+            blobKind: blobKind,
             mimeType: mime,
             suggestedFilename: resource.suggestedFilename,
             estimatedSize: resource.estimatedSize,

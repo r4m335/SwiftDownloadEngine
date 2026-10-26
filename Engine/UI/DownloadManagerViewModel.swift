@@ -441,6 +441,12 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
             throw DownloadCoordinatorError.invalidRequest(reason: error)
         }
 
+        if host.lowercased().contains("googlevideo.com") || (host.lowercased().contains("youtube.com") && !url.path.contains("watch")) {
+            let error = "YouTube streams are heavily protected. Segment downloading must be used."
+            self.errorMessage = error
+            throw DownloadCoordinatorError.invalidRequest(reason: error)
+        }
+
         let resolvedFilename: String
         if let custom = filename?.trimmingCharacters(in: .whitespacesAndNewlines), !custom.isEmpty {
             resolvedFilename = custom
@@ -1055,6 +1061,33 @@ extension DownloadManagerViewModel: BrowserDownloadDelegate {
             transportPolicy: .foreground,
             autoStart: true
         )
+    }
+
+    /// Defensive handler for direct candidate download taps from UI components.
+    public func handleDownloadTap(candidate: BrowserMediaCandidate) {
+        guard let url = candidate.url ?? URL(string: candidate.rawURL) else {
+            errorMessage = "Invalid URL: The grabber captured a malformed link."
+            return
+        }
+
+        guard url.scheme?.lowercased() == "http" || url.scheme?.lowercased() == "https" else {
+            errorMessage = "Unsupported link type: \(url.scheme ?? "unknown"). Cannot download directly."
+            return
+        }
+
+        if url.host?.contains("googlevideo.com") == true || (url.host?.contains("youtube.com") == true && !url.path.contains("watch")) {
+            errorMessage = "YouTube streams are heavily protected. Segment downloading must be used."
+            return
+        }
+
+        Task { @MainActor in
+            do {
+                let filename = candidate.suggestedFilename.isEmpty ? nil : candidate.suggestedFilename
+                _ = try await addDownload(urlText: url.absoluteString, filename: filename)
+            } catch {
+                errorMessage = "Engine error: \(error.localizedDescription)"
+            }
+        }
     }
 }
 

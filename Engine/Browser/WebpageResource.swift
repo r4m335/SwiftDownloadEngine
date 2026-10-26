@@ -220,9 +220,16 @@ public struct WebpageResourceExtractor {
             .lowercased()
 
         if scheme == "blob" || lowerRaw.hasPrefix("blob:") {
+            if lowerRaw.contains("youtube.com") {
+                return (false, "YouTube streaming buffer (MediaSource). Direct file download is not supported; play video to capture stream.")
+            }
             // Blob URLs are memory-backed in the active browser session and are supported
             // through the bounded in-page Blob capture pipeline.
             return (true, nil)
+        }
+
+        if let host = url.host?.lowercased(), host.contains("googlevideo.com") {
+            return (false, "YouTube streams are heavily protected. Segment downloading must be used.")
         }
 
         if scheme == "data" || lowerRaw.hasPrefix("data:") {

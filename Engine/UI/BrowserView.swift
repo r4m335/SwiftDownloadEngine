@@ -881,6 +881,11 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         isShowingResourceInspector = false
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
             guard let self = self else { return }
+            let url = resource.url
+            if let host = url.host?.lowercased(), host.contains("googlevideo.com") || (host.contains("youtube.com") && !url.path.contains("watch")) {
+                self.blobCaptureErrorMessage = "YouTube streams are heavily protected. Segment downloading must be used."
+                return
+            }
             if resource.isStreamingManifest {
                 self.promptStreamingDownload(for: resource)
                 return
@@ -1116,7 +1121,16 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         (function() {
             var candidates = [];
             document.querySelectorAll('video').forEach(function(v) {
-                if (v.src) candidates.push({ rawURL: v.src, tag: 'video', text: v.title || v.getAttribute('aria-label') || '' });
+                if (v.src) {
+                    var isMSE = (window.__grabberBlobRegistry && window.__grabberBlobRegistry[v.src] === 'MediaSource') ||
+                                location.hostname.indexOf('youtube.com') !== -1;
+                    candidates.push({
+                        rawURL: v.src,
+                        tag: 'video',
+                        text: v.title || v.getAttribute('aria-label') || '',
+                        declaredType: isMSE ? 'application/x-mediasource' : null
+                    });
+                }
             });
             document.querySelectorAll('audio').forEach(function(a) {
                 if (a.src) candidates.push({ rawURL: a.src, tag: 'audio', text: a.title || a.getAttribute('aria-label') || '' });
@@ -1311,10 +1325,19 @@ public final class BrowserViewModel: NSObject, ObservableObject {
 
     private func resetMediaCandidateCatalog(for tabID: UUID?) {
         guard let tabID else {
-            mediaCandidates = []
+            mediaCandidates = mediaCandidates.filter {
+                $0.blobKind == .mediaSource || $0.kind == .mediaSource || $0.associatedManifestURL != nil
+            }
             return
         }
-        mediaCandidateCatalogs[tabID] = BrowserMediaCandidateCatalog()
+        let preserved = mediaCandidateCatalogs[tabID]?.candidates.filter {
+            $0.blobKind == .mediaSource || $0.kind == .mediaSource || $0.associatedManifestURL != nil
+        } ?? []
+        var catalog = BrowserMediaCandidateCatalog()
+        for cand in preserved {
+            catalog.merge(candidate: cand)
+        }
+        mediaCandidateCatalogs[tabID] = catalog
         if tabID == activeTabID { publishMediaCandidates() }
     }
 
@@ -1406,13 +1429,28 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         guard !targets.isEmpty else { return }
 
         for resource in targets {
-            if resource.url.scheme?.lowercased() == "blob" {
+            let url = resource.url
+            let scheme = url.scheme?.lowercased() ?? ""
+
+            // 1. Ensure scheme is valid
+            guard scheme == "http" || scheme == "https" || scheme == "blob" else {
+                blobCaptureErrorMessage = "Unsupported link type: \(scheme.isEmpty ? "unknown" : scheme). Cannot download directly."
+                continue
+            }
+
+            // 2. Block YouTube / Google Video URLs explicitly
+            if let host = url.host?.lowercased(), host.contains("googlevideo.com") || (host.contains("youtube.com") && !url.path.contains("watch")) {
+                blobCaptureErrorMessage = "YouTube streams are heavily protected. Segment downloading must be used."
+                continue
+            }
+
+            if scheme == "blob" {
                 let candidate = BrowserMediaCandidateClassifier.classify(resource: resource)
                 let discoveredCandidate = self.mediaCandidates.first {
                     $0.rawURL.caseInsensitiveCompare(resource.url.absoluteString) == .orderedSame
                 }
-                if discoveredCandidate?.blobKind == .mediaSource || discoveredCandidate?.kind == .mediaSource {
-                    if let manifest = discoveredCandidate?.associatedManifestURL {
+                if discoveredCandidate?.blobKind == .mediaSource || discoveredCandidate?.kind == .mediaSource || candidate.kind == .mediaSource {
+                    if let manifest = discoveredCandidate?.associatedManifestURL ?? candidate.associatedManifestURL {
                         promptStreamingDownload(for: WebpageResource(
                             url: manifest,
                             title: resource.title,
@@ -1432,6 +1470,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                         rawURL: targetCandidate.rawURL,
                         finalURL: targetCandidate.finalURL,
                         kind: targetCandidate.kind,
+                        blobKind: targetCandidate.blobKind ?? discoveredCandidate.blobKind,
                         mimeType: discoveredCandidate.mimeType ?? targetCandidate.mimeType,
                         suggestedFilename: resource.suggestedFilename.isEmpty ? targetCandidate.suggestedFilename : resource.suggestedFilename,
                         estimatedSize: discoveredCandidate.estimatedSize ?? targetCandidate.estimatedSize,
@@ -1455,30 +1494,34 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                 promptStreamingDownload(for: resource)
                 continue
             }
-            if candidate.kind == .directMedia {
-                let plan = try DirectMediaTransferPlanner.makePlan(candidate: candidate)
-                let headers = useBrowserCredentials
-                    ? (plan.requestHeaders.isEmpty ? nil : plan.requestHeaders)
-                    : nil
+            do {
+                if candidate.kind == .directMedia {
+                    let plan = try DirectMediaTransferPlanner.makePlan(candidate: candidate)
+                    let headers = useBrowserCredentials
+                        ? (plan.requestHeaders.isEmpty ? nil : plan.requestHeaders)
+                        : nil
+                    try await downloadDelegate?.handleDownloadRequest(
+                        url: plan.transferURL,
+                        filename: plan.filename.isEmpty ? nil : plan.filename,
+                        threadCount: 6,
+                        speedLimitBytesPerSecond: nil,
+                        headers: headers
+                    )
+                    continue
+                }
                 try await downloadDelegate?.handleDownloadRequest(
-                    url: plan.transferURL,
-                    filename: plan.filename.isEmpty ? nil : plan.filename,
+                    url: resource.url,
+                    filename: resource.suggestedFilename.isEmpty ? nil : resource.suggestedFilename,
                     threadCount: 6,
                     speedLimitBytesPerSecond: nil,
-                    headers: headers
+                    headers: resource.requestContext?.effectiveHeaders(
+                        for: resource.url,
+                        includeCredentials: useBrowserCredentials
+                    )
                 )
-                continue
+            } catch {
+                blobCaptureErrorMessage = "Engine error: \(error.localizedDescription)"
             }
-            try await downloadDelegate?.handleDownloadRequest(
-                url: resource.url,
-                filename: resource.suggestedFilename.isEmpty ? nil : resource.suggestedFilename,
-                threadCount: 6,
-                speedLimitBytesPerSecond: nil,
-                headers: resource.requestContext?.effectiveHeaders(
-                    for: resource.url,
-                    includeCredentials: useBrowserCredentials
-                )
-            )
         }
 
         selectedResourceIDs = []
@@ -1636,6 +1679,12 @@ public final class BrowserViewModel: NSObject, ObservableObject {
     public func executeDownload() async throws {
         guard let url = downloadCandidateURL else { return }
 
+        if let host = url.host?.lowercased(), host.contains("googlevideo.com") || (host.contains("youtube.com") && !url.path.contains("watch")) {
+            blobCaptureErrorMessage = "YouTube streams are heavily protected. Segment downloading must be used."
+            isShowingDownloadSheet = false
+            return
+        }
+
         if case .mustUseBlobCaptureService = DownloadURLPolicy.classify(url) {
             let filename = downloadCandidateFilename.trimmingCharacters(in: .whitespacesAndNewlines)
             let existing = mediaCandidates.first {
@@ -1727,20 +1776,25 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         }
         #endif
 
-        try await downloadDelegate?.handleDownloadRequest(
-            url: url,
-            filename: downloadCandidateFilename.isEmpty ? nil : downloadCandidateFilename,
-            threadCount: downloadCandidateThreads,
-            speedLimitBytesPerSecond: limit,
-            headers: downloadCandidateRequestContext?.effectiveHeaders(
-                for: url,
-                includeCredentials: useBrowserCredentials
+        do {
+            try await downloadDelegate?.handleDownloadRequest(
+                url: url,
+                filename: downloadCandidateFilename.isEmpty ? nil : downloadCandidateFilename,
+                threadCount: downloadCandidateThreads,
+                speedLimitBytesPerSecond: limit,
+                headers: downloadCandidateRequestContext?.effectiveHeaders(
+                    for: url,
+                    includeCredentials: useBrowserCredentials
+                )
             )
-        )
 
-        isShowingDownloadSheet = false
-        downloadSuccessNotification = "Download queued: \(downloadCandidateFilename)"
-        onDownloadInitiated?()
+            isShowingDownloadSheet = false
+            downloadSuccessNotification = "Download queued: \(downloadCandidateFilename)"
+            onDownloadInitiated?()
+        } catch {
+            blobCaptureErrorMessage = "Engine error: \(error.localizedDescription)"
+            isShowingDownloadSheet = false
+        }
     }
 }
 

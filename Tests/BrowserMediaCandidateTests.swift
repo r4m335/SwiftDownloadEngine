@@ -240,13 +240,13 @@ final class BrowserMediaCandidateTests: XCTestCase {
 
     func testCatalogMergesMediaSourceOverDOMAndAssociatesManifestURL() {
         var catalog = BrowserMediaCandidateCatalog()
-        let blobURL = "blob:https://www.youtube.com/abc-123"
+        let blobURL = "blob:https://example.com/stream-123"
 
-        // Step 1: DOM observer sees <video src="blob:..."> without knowing it's MediaSource yet
+        // Step 1: DOM observer sees generic <video src="blob:..."> without knowing it's MediaSource yet
         let domResource = WebpageResource(
             url: URL(string: blobURL)!,
-            title: "YouTube Video",
-            suggestedFilename: "youtube.mp4",
+            title: "Streaming Video",
+            suggestedFilename: "video.mp4",
             resourceType: .video
         )
         _ = catalog.ingest(resource: domResource, now: now)
@@ -258,8 +258,8 @@ final class BrowserMediaCandidateTests: XCTestCase {
             rawURL: blobURL,
             source: .mediaSource,
             tag: "video",
-            pageOrigin: URL(string: "https://www.youtube.com")!,
-            frameOrigin: URL(string: "https://www.youtube.com")!,
+            pageOrigin: URL(string: "https://example.com")!,
+            frameOrigin: URL(string: "https://example.com")!,
             mayUseBrowserCredentials: true,
             blobKind: .mediaSource
         )
@@ -269,20 +269,33 @@ final class BrowserMediaCandidateTests: XCTestCase {
         XCTAssertEqual(catalog.candidates.first?.availability, .metadataOnly)
 
         // Step 3: Fetch interceptor discovers DASH/HLS manifest
-        let manifestURL = URL(string: "https://www.youtube.com/api/manifest/dash/id/xyz.mpd")!
+        let manifestURL = URL(string: "https://example.com/api/manifest/dash/id/xyz.mpd")!
         let manifestObservation = BrowserMediaDiscoveryObservation(
             url: manifestURL,
             rawURL: manifestURL.absoluteString,
             source: .fetch,
             manifestKind: .dash,
-            pageOrigin: URL(string: "https://www.youtube.com")!,
-            frameOrigin: URL(string: "https://www.youtube.com")!,
+            pageOrigin: URL(string: "https://example.com")!,
+            frameOrigin: URL(string: "https://example.com")!,
             mayUseBrowserCredentials: true
         )
         _ = catalog.ingest(observation: manifestObservation, now: now)
 
         let updatedMediaSource = catalog.candidates.first(where: { $0.rawURL == blobURL })
         XCTAssertEqual(updatedMediaSource?.associatedManifestURL, manifestURL)
+    }
+
+    func testYouTubeBlobResourceIsClassifiedAsMediaSourceImmediately() {
+        let youtubeBlob = WebpageResource(
+            url: URL(string: "blob:https://www.youtube.com/abc-123")!,
+            title: "YouTube Video",
+            suggestedFilename: "youtube.mp4",
+            resourceType: .video
+        )
+        let candidate = BrowserMediaCandidateClassifier.classify(resource: youtubeBlob)
+        XCTAssertEqual(candidate.kind, .mediaSource)
+        XCTAssertEqual(candidate.blobKind, .mediaSource)
+        XCTAssertEqual(candidate.availability, .metadataOnly)
     }
 }
 
