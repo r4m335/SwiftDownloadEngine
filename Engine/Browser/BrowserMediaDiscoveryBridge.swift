@@ -151,9 +151,21 @@ public final class BrowserMediaDiscoveryBridge: NSObject, @unchecked Sendable {
         try {
             var host = (window.location && window.location.hostname) ? window.location.hostname.toLowerCase() : "";
             var path = (window.location && window.location.pathname) ? window.location.pathname.toLowerCase() : "";
+            var href = (window.location && window.location.href) ? window.location.href.toLowerCase() : "";
             if (host.indexOf("cloudflare.com") !== -1 ||
                 host.indexOf("challenges.cloudflare.com") !== -1 ||
-                path.indexOf("/cdn-cgi/challenge-platform") !== -1) {
+                path.indexOf("/cdn-cgi/") !== -1 ||
+                href.indexOf("/cdn-cgi/") !== -1 ||
+                href.indexOf("challenges.cloudflare.com") !== -1) {
+                return;
+            }
+            if (document.getElementById("challenge-stage") ||
+                document.getElementById("challenge-form") ||
+                document.getElementById("challenge-running") ||
+                document.querySelector(".cf-turnstile-wrapper") ||
+                document.querySelector("iframe[src*='challenges.cloudflare.com']") ||
+                document.querySelector("iframe[src*='turnstile']") ||
+                document.querySelector("script[src*='/cdn-cgi/challenge-platform']")) {
                 return;
             }
         } catch (_) {}
@@ -467,6 +479,12 @@ public final class BrowserMediaDiscoveryBridge: NSObject, @unchecked Sendable {
             if (typeof originalFetch === "function") {
                 var wrappedFetch = function(input, init) {
                     var requestURL = input && input.url ? input.url : input;
+                    var reqStr = String(requestURL || "").toLowerCase();
+                    if (reqStr.indexOf("/cdn-cgi/") !== -1 ||
+                        reqStr.indexOf("challenges.cloudflare.com") !== -1 ||
+                        reqStr.indexOf("turnstile") !== -1) {
+                        return originalFetch.apply(this, arguments);
+                    }
                     var method = (input && input.method) || (init && init.method) || "GET";
                     var promise = originalFetch.apply(this, arguments);
                     return promise.then(function(response) {
@@ -503,6 +521,12 @@ public final class BrowserMediaDiscoveryBridge: NSObject, @unchecked Sendable {
                 var request = this;
                 var meta = xhrMeta ? xhrMeta.get(request) : null;
                 var reqURL = meta ? meta.url : null;
+                var reqStr = String(reqURL || "").toLowerCase();
+                if (reqStr.indexOf("/cdn-cgi/") !== -1 ||
+                    reqStr.indexOf("challenges.cloudflare.com") !== -1 ||
+                    reqStr.indexOf("turnstile") !== -1) {
+                    return originalSend.apply(this, arguments);
+                }
                 var reqMethod = meta ? meta.method : "GET";
                 if (reqURL) {
                     this.addEventListener("loadend", function() {

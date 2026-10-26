@@ -97,12 +97,15 @@ public struct BrowserURLResolver {
 
     /// Verifies if a URL is permitted for normal in-app web navigation.
     ///
-    /// Only HTTP, HTTPS, and about:blank are accepted.
+    /// Accepts HTTP, HTTPS, and internal browser pseudo-schemes (about:blank, about:srcdoc)
+    /// required by iframes and challenge verification widgets (e.g. Cloudflare Turnstile).
     public static func isValidWebNavigationURL(_ url: URL?) -> Bool {
         guard let url = url else { return false }
-        if url.absoluteString == "about:blank" { return true }
-        guard let scheme = url.scheme?.lowercased(),
-              (scheme == "http" || scheme == "https"),
+        let urlString = url.absoluteString.lowercased()
+        if urlString == "about:blank" || urlString == "about:srcdoc" { return true }
+        guard let scheme = url.scheme?.lowercased() else { return false }
+        if scheme == "about" { return true }
+        guard (scheme == "http" || scheme == "https"),
               let host = url.host, !host.isEmpty else {
             return false
         }

@@ -2713,6 +2713,7 @@ final class BrowserWebViewSession {
         config.processPool = Self.sharedProcessPool
         config.websiteDataStore = .default()
         config.defaultWebpagePreferences.allowsContentJavaScript = true
+        config.preferences.javaScriptCanOpenWindowsAutomatically = true
 #if os(iOS)
         config.allowsInlineMediaPlayback = true
 #endif
@@ -2760,7 +2761,8 @@ final class BrowserWebViewSession {
         diagHandler.install(on: config)
 
         let webView = WKWebView(frame: .zero, configuration: config)
-        webView.customUserAgent = BrowserUserAgentHelper.standardSafariUserAgent
+        // Keep the native Safari User-Agent untouched to ensure consistency
+        // with device hardware and Client Hints, preventing Cloudflare Turnstile rejection.
         self.webView = webView
         let coordinator = BrowserWebViewCoordinator(viewModel: viewModel, tabID: tabID)
         self.coordinator = coordinator
@@ -2864,17 +2866,20 @@ public final class BrowserWebViewCoordinator: NSObject, WKNavigationDelegate, WK
             details: ["title": webView.title ?? ""]
         )
 
-        // Inspect cookies asynchronously for verification tokens
+        // Inspect and synchronize cookies asynchronously for verification tokens (e.g. cf_clearance, __cf_bm)
         webView.configuration.websiteDataStore.httpCookieStore.getAllCookies { [weak self] cookies in
             let cfCookies = cookies.filter {
                 let name = $0.name.lowercased()
                 return name.contains("cf_") || name.contains("__cf")
             }
             if !cfCookies.isEmpty {
+                for cookie in cfCookies {
+                    HTTPCookieStorage.shared.setCookie(cookie)
+                }
                 let names = cfCookies.map { $0.name }.joined(separator: ", ")
                 BrowserDiagnosticLogger.shared.log(
                     category: .cookie,
-                    message: "Cloudflare verification cookies present: \(names)",
+                    message: "Cloudflare verification cookies present and synchronized to shared store: \(names)",
                     url: currentURL,
                     tabID: self?.tabID,
                     details: ["count": "\(cfCookies.count)", "names": names]
@@ -2994,7 +2999,10 @@ public final class BrowserWebViewCoordinator: NSObject, WKNavigationDelegate, WK
                 "navigationType": "\(navigationAction.navigationType.rawValue)"
             ]
         )
-        if navigationAction.targetFrame == nil {
+        // If a user tapped a link opening in a new tab/window, load it in the current web view.
+        // Automated script windows (e.g. challenge popups) are allowed to evaluate without
+        // forcibly resetting the primary web view.
+        if navigationAction.navigationType == .linkActivated {
             webView.load(navigationAction.request)
         }
         return nil
@@ -3071,7 +3079,16 @@ public final class BrowserWebViewCoordinator: NSObject, WKNavigationDelegate, WK
             return
         }
 
-        // Allow HTTP, HTTPS, and blank page
+        // Subframe navigation (such as Cloudflare Turnstile iframes, about:srcdoc, about:blank)
+        let isMainFrame = navigationAction.targetFrame?.isMainFrame ?? true
+        if !isMainFrame {
+            if BrowserURLResolver.isValidWebNavigationURL(url) {
+                decisionHandler(.allow)
+                return
+            }
+        }
+
+        // Allow HTTP, HTTPS, and internal browser pseudo-schemes (about:blank, about:srcdoc)
         guard BrowserURLResolver.isValidWebNavigationURL(url) else {
             decisionHandler(.cancel)
             return
@@ -3097,18 +3114,23 @@ public final class BrowserWebViewCoordinator: NSObject, WKNavigationDelegate, WK
             }
         }
 
-        // Handle target="_blank" links by navigating in the current web view
+        // Handle target="_blank" links by navigating in the current web view only when activated by user
         if navigationAction.targetFrame == nil {
-            BrowserDiagnosticLogger.shared.log(
-                category: .policy,
-                message: "Navigating targetFrame == nil link in current webView",
-                url: url,
-                tabID: tabID,
-                details: ["method": navigationAction.request.httpMethod ?? "GET"]
-            )
-            webView.load(navigationAction.request)
-            decisionHandler(.cancel)
-            return
+            if navigationAction.navigationType == .linkActivated {
+                BrowserDiagnosticLogger.shared.log(
+                    category: .policy,
+                    message: "Navigating user target=_blank link in current webView",
+                    url: url,
+                    tabID: tabID,
+                    details: ["method": navigationAction.request.httpMethod ?? "GET"]
+                )
+                webView.load(navigationAction.request)
+                decisionHandler(.cancel)
+                return
+            } else {
+                decisionHandler(.allow)
+                return
+            }
         }
 
         decisionHandler(.allow)

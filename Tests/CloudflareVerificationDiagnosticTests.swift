@@ -217,4 +217,26 @@ final class CloudflareVerificationDiagnosticTests: XCTestCase {
         XCTAssertTrue(events.first?.details["names"]?.contains("cf_clearance") == true)
         XCTAssertTrue(events.first?.details["names"]?.contains("__cf_bm") == true)
     }
+
+    // MARK: - 7. Internal Browser Navigation Schemes for Turnstile
+
+    func testWebNavigationAcceptsAboutBlankAndAboutSrcdoc() {
+        let blankURL = URL(string: "about:blank")
+        let srcdocURL = URL(string: "about:srcdoc")
+        let httpsURL = URL(string: "https://challenges.cloudflare.com/turnstile/v0/api.js")
+        let invalidScheme = URL(string: "file:///tmp/secret.html")
+
+        XCTAssertTrue(BrowserURLResolver.isValidWebNavigationURL(blankURL))
+        XCTAssertTrue(BrowserURLResolver.isValidWebNavigationURL(srcdocURL))
+        XCTAssertTrue(BrowserURLResolver.isValidWebNavigationURL(httpsURL))
+        XCTAssertFalse(BrowserURLResolver.isValidWebNavigationURL(invalidScheme))
+    }
+
+    func testObserverScriptContainsCloudflareBypassLogic() {
+        let script = BrowserMediaDiscoveryBridge.observerScript
+        XCTAssertTrue(script.contains("challenges.cloudflare.com"))
+        XCTAssertTrue(script.contains("/cdn-cgi/"))
+        XCTAssertTrue(script.contains("challenge-form"))
+        XCTAssertTrue(script.contains("cf-turnstile-wrapper"))
+    }
 }
