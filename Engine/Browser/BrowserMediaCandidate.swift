@@ -331,10 +331,12 @@ public enum BrowserMediaCandidateClassifier {
         let blobKind: BlobKind?
         if resource.url.scheme?.lowercased() == "blob" {
             let isYouTube = resource.url.absoluteString.lowercased().contains("youtube.com")
-            if isYouTube {
+            let isGenericOrMissingMIME = mime == nil || mime?.isEmpty == true || mime == "application/octet-stream" || mime == "application/x-mediasource"
+            let isMediaSource = isYouTube || (isGenericOrMissingMIME && (resource.suggestedFilename.hasSuffix(".bin") || resource.resourceType == .other || resource.isMediaSourceBlob))
+            if isMediaSource {
                 kind = .mediaSource
                 availability = .metadataOnly
-                evidence = ["YouTube MediaSource streaming buffer"]
+                evidence = ["MediaSource streaming buffer observed (empty or generic MIME type; not a downloadable standalone Blob)"]
                 blobKind = .mediaSource
             } else {
                 kind = .completeBlob

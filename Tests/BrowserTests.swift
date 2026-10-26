@@ -1158,5 +1158,42 @@ final class BrowserTests: XCTestCase {
         XCTAssertFalse(mp4Resource.isSegmentChunk)
         XCTAssertFalse(mp4Resource.isStreamingManifest)
     }
+
+    func testWebpageResource_MediaSourceBlobClassificationAndGuard() {
+        let genericBlob = WebpageResource(
+            url: URL(string: "blob:https://example.com/b404d0da-4a57-418f-a9cb-56b0635336bf")!,
+            title: "stream",
+            suggestedFilename: "blob_stream.bin",
+            resourceType: .video,
+            mimeType: nil
+        )
+        let octetBlob = WebpageResource(
+            url: URL(string: "blob:https://example.com/stream-octet")!,
+            title: "stream",
+            suggestedFilename: "blob_stream.bin",
+            resourceType: .video,
+            mimeType: "application/octet-stream"
+        )
+        let validBlob = WebpageResource(
+            url: URL(string: "blob:https://example.com/real-file")!,
+            title: "real video",
+            suggestedFilename: "video.mp4",
+            resourceType: .video,
+            mimeType: "video/mp4"
+        )
+
+        XCTAssertTrue(genericBlob.isMediaSourceBlob)
+        XCTAssertTrue(octetBlob.isMediaSourceBlob)
+        XCTAssertFalse(validBlob.isMediaSourceBlob)
+
+        let vm = BrowserViewModel()
+        let candidate = BrowserMediaCandidateClassifier.classify(resource: genericBlob)
+        XCTAssertEqual(candidate.kind, .mediaSource)
+        XCTAssertEqual(candidate.blobKind, .mediaSource)
+
+        vm.exportBlobCandidate(candidate)
+        XCTAssertNotNil(vm.blobCaptureErrorMessage)
+        XCTAssertTrue(vm.blobCaptureErrorMessage?.contains("streaming video buffer") == true)
+    }
     #endif
 }

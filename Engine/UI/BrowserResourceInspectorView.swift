@@ -25,6 +25,11 @@ public struct BrowserResourceInspectorSheet: View {
             if res.isSegmentChunk && (hasStreamingManifest || !showsAllResources) {
                 return false
             }
+            // Discard unplayable MediaSource stream buffer blobs when an .m3u8/.mpd manifest is present
+            // or in standard media view, guiding the user to download the actual manifest instead.
+            if res.isMediaSourceBlob && (hasStreamingManifest || !showsAllResources) {
+                return false
+            }
             return true
         }
     }
@@ -33,7 +38,7 @@ public struct BrowserResourceInspectorSheet: View {
         let resources = eligibleResources.filter { res in
             let matchesCategory = selectedCategory == nil || res.resourceType == selectedCategory
             let matchesDefaultMedia = showsAllResources ||
-                res.resourceType == .video ||
+                (res.resourceType == .video && !res.isMediaSourceBlob) ||
                 res.resourceType == .audio
             let matchesSearch = searchText.isEmpty ||
                 res.title.localizedCaseInsensitiveContains(searchText) ||
@@ -423,7 +428,8 @@ public struct ResourceRowView: View {
     private var isMediaSourceBlob: Bool {
         let isBlob = resource.url.scheme?.lowercased() == "blob"
         let isYouTube = resource.url.absoluteString.lowercased().contains("youtube.com")
-        return isBlob && (isYouTube || candidate?.blobKind == .mediaSource || candidate?.kind == .mediaSource)
+        let isGenericMime = resource.mimeType == nil || resource.mimeType?.isEmpty == true || resource.mimeType == "application/octet-stream"
+        return isBlob && (isYouTube || isGenericMime || resource.isMediaSourceBlob || candidate?.blobKind == .mediaSource || candidate?.kind == .mediaSource)
     }
 
     private var hasManifest: Bool {
@@ -468,7 +474,7 @@ public struct ResourceRowView: View {
 
                 // URL & Type Badges
                 HStack(spacing: 6) {
-                    Text(resource.resourceType.rawValue)
+                    Text(isMediaSourceBlob ? WebpageResourceType.other.rawValue : resource.resourceType.rawValue)
                         .font(.system(size: 10, weight: .bold))
                         .padding(.horizontal, 6)
                         .padding(.vertical, 2)
@@ -497,7 +503,7 @@ public struct ResourceRowView: View {
                                 .background(Color.blue.opacity(0.15))
                                 .cornerRadius(4)
                         } else {
-                            Text("Streaming · Play to capture")
+                            Text("Stream Buffer (Unplayable)")
                                 .font(.system(size: 10, weight: .bold))
                                 .foregroundColor(.orange)
                                 .padding(.horizontal, 6)
@@ -524,7 +530,16 @@ public struct ResourceRowView: View {
                 }
 
                 // Unsupported Warning Badge
-                if !resource.isSupported && !resource.isStreamingManifest, let reason = resource.unsupportedReason {
+                if isMediaSourceBlob && !hasManifest {
+                    HStack(alignment: .top, spacing: 4) {
+                        Image(systemName: "info.circle")
+                            .font(.system(size: 10))
+                        Text("Streaming video buffer (MediaSource). Download the .m3u8 or .mpd manifest file instead.")
+                            .font(.system(size: 10))
+                    }
+                    .foregroundColor(.orange)
+                    .padding(.top, 2)
+                } else if !resource.isSupported && !resource.isStreamingManifest, let reason = resource.unsupportedReason {
                     HStack(alignment: .top, spacing: 4) {
                         Image(systemName: "info.circle")
                             .font(.system(size: 10))

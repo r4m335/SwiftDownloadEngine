@@ -65,6 +65,15 @@ public struct WebpageResource: Identifiable, Hashable, Sendable {
         url.scheme?.lowercased() == "blob"
     }
 
+    /// Identifies whether this blob resource represents an unplayable MediaSource streaming buffer
+    /// (empty or generic application/octet-stream MIME type) rather than a complete downloadable file.
+    public var isMediaSourceBlob: Bool {
+        guard isBlobResource else { return false }
+        if url.absoluteString.lowercased().contains("youtube.com") { return true }
+        let cleanMime = mimeType?.split(separator: ";").first?.trimmingCharacters(in: .whitespaces).lowercased()
+        return cleanMime == nil || cleanMime?.isEmpty == true || cleanMime == "application/octet-stream" || cleanMime == "application/x-mediasource"
+    }
+
     public init(
         id: String = UUID().uuidString,
         url: URL,

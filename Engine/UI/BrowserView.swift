@@ -425,8 +425,10 @@ public final class BrowserViewModel: NSObject, ObservableObject {
     /// candidate. The page reads bounded Blob slices; this method never asks
     /// WebKit to materialize the complete object in native memory.
     public func exportBlobCandidate(_ candidate: BrowserMediaCandidate) {
-        guard candidate.blobKind != .mediaSource && candidate.kind != .mediaSource else {
-            blobCaptureErrorMessage = "This video is streamed via Media Source Extensions. It cannot be saved as a single file — play a few seconds first, then try downloading from the captured manifest."
+        let effectiveMIME = candidate.mimeType?.lowercased()
+        let isGenericOrMissingMIME = effectiveMIME == nil || effectiveMIME?.isEmpty == true || effectiveMIME == "application/octet-stream" || effectiveMIME == "application/x-mediasource"
+        guard !isGenericOrMissingMIME && candidate.blobKind != .mediaSource && candidate.kind != .mediaSource else {
+            blobCaptureErrorMessage = "This is a streaming video buffer. You must download the .m3u8 or .mpd manifest file instead."
             return
         }
         guard candidate.kind == .completeBlob,
@@ -895,12 +897,19 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                 self.promptStreamingDownload(for: resource)
                 return
             }
-            if candidate.kind == .completeBlob {
+            if candidate.kind == .completeBlob || resource.url.scheme?.lowercased() == "blob" {
                 let discoveredCandidate = self.mediaCandidates.first {
                     $0.rawURL.caseInsensitiveCompare(resource.url.absoluteString) == .orderedSame
                 }
-                if discoveredCandidate?.blobKind == .mediaSource || discoveredCandidate?.kind == .mediaSource {
-                    if let manifest = discoveredCandidate?.associatedManifestURL {
+                let effectiveMIME = discoveredCandidate?.mimeType ?? candidate.mimeType ?? resource.mimeType
+                let isGenericOrMissingMIME = effectiveMIME == nil || effectiveMIME?.isEmpty == true || effectiveMIME == "application/octet-stream" || effectiveMIME == "application/x-mediasource"
+                let isMediaSource = isGenericOrMissingMIME ||
+                    resource.isMediaSourceBlob ||
+                    discoveredCandidate?.blobKind == .mediaSource ||
+                    discoveredCandidate?.kind == .mediaSource ||
+                    candidate.kind == .mediaSource
+                if isMediaSource {
+                    if let manifest = discoveredCandidate?.associatedManifestURL ?? candidate.associatedManifestURL ?? self.discoveredResources.first(where: { $0.isStreamingManifest })?.url {
                         self.promptStreamingDownload(for: WebpageResource(
                             url: manifest,
                             title: resource.title,
@@ -908,7 +917,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                             resourceType: .video
                         ))
                     } else {
-                        self.blobCaptureErrorMessage = "This video is streamed via Media Source Extensions. It cannot be saved as a single file — play a few seconds first, then try downloading from the captured manifest."
+                        self.blobCaptureErrorMessage = "This is a streaming video buffer. You must download the .m3u8 or .mpd manifest file instead."
                     }
                     return
                 }
@@ -1463,8 +1472,15 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                 let discoveredCandidate = self.mediaCandidates.first {
                     $0.rawURL.caseInsensitiveCompare(resource.url.absoluteString) == .orderedSame
                 }
-                if discoveredCandidate?.blobKind == .mediaSource || discoveredCandidate?.kind == .mediaSource || candidate.kind == .mediaSource {
-                    if let manifest = discoveredCandidate?.associatedManifestURL ?? candidate.associatedManifestURL {
+                let effectiveMIME = discoveredCandidate?.mimeType ?? candidate.mimeType ?? resource.mimeType
+                let isGenericOrMissingMIME = effectiveMIME == nil || effectiveMIME?.isEmpty == true || effectiveMIME == "application/octet-stream" || effectiveMIME == "application/x-mediasource"
+                let isMediaSource = isGenericOrMissingMIME ||
+                    resource.isMediaSourceBlob ||
+                    discoveredCandidate?.blobKind == .mediaSource ||
+                    discoveredCandidate?.kind == .mediaSource ||
+                    candidate.kind == .mediaSource
+                if isMediaSource {
+                    if let manifest = discoveredCandidate?.associatedManifestURL ?? candidate.associatedManifestURL ?? self.discoveredResources.first(where: { $0.isStreamingManifest })?.url {
                         promptStreamingDownload(for: WebpageResource(
                             url: manifest,
                             title: resource.title,
@@ -1472,7 +1488,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                             resourceType: .video
                         ))
                     } else {
-                        blobCaptureErrorMessage = "This video is streamed via Media Source Extensions. It cannot be saved as a single file — play a few seconds first, then try downloading from the captured manifest."
+                        blobCaptureErrorMessage = "This is a streaming video buffer. You must download the .m3u8 or .mpd manifest file instead."
                     }
                     continue
                 }
@@ -1711,8 +1727,13 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                 }
                 return "browser_blob.mp4"
             }()
-            if let existing = existing, existing.blobKind == .mediaSource || existing.kind == .mediaSource {
-                if let manifest = existing.associatedManifestURL {
+            let effectiveMIME = existing?.mimeType
+            let isGenericOrMissingMIME = effectiveMIME == nil || effectiveMIME?.isEmpty == true || effectiveMIME == "application/octet-stream" || effectiveMIME == "application/x-mediasource"
+            let isMediaSource = isGenericOrMissingMIME ||
+                existing?.blobKind == .mediaSource ||
+                existing?.kind == .mediaSource
+            if isMediaSource {
+                if let manifest = existing?.associatedManifestURL ?? discoveredResources.first(where: { $0.isStreamingManifest })?.url {
                     promptStreamingDownload(for: WebpageResource(
                         url: manifest,
                         title: resolvedFilename,
@@ -1721,7 +1742,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                     ))
                     isShowingDownloadSheet = false
                 } else {
-                    blobCaptureErrorMessage = "This video is streamed via Media Source Extensions. It cannot be saved as a single file — play a few seconds first, then try downloading from the captured manifest."
+                    blobCaptureErrorMessage = "This is a streaming video buffer. You must download the .m3u8 or .mpd manifest file instead."
                     isShowingDownloadSheet = false
                 }
                 return
