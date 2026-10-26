@@ -766,7 +766,13 @@ public final class BrowserMediaDiscoveryBridge: NSObject, @unchecked Sendable {
                   kind == .hls || kind == .dash {
             classifiedKind = kind
         } else {
-            classifiedKind = nil
+            let fallback = StreamingManifestClassifier.classify(
+                url: resolved,
+                mimeType: declaredType
+            )
+            classifiedKind = fallback.kind == .hls || fallback.kind == .dash
+                ? fallback.kind
+                : nil
         }
 
         return BrowserMediaDiscoveryObservation(

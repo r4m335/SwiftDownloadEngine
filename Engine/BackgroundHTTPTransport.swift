@@ -744,6 +744,7 @@ public final class BackgroundDownloadSessionManager: NSObject, @unchecked Sendab
         }
 
         request.setValue("identity", forHTTPHeaderField: "Accept-Encoding")
+        request = DownloadRequestEnricher.enrich(request)
 
         let resumeOffset = segment.resumeStartOffset
         let expectedBytes = segment.endOffset - resumeOffset + 1

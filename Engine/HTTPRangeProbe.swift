@@ -144,10 +144,10 @@ final class HTTPRangeProbe: Sendable {
 
     /// Executes the server capability probe.
     func probe(configuration: HTTPRangeProbeConfiguration) async throws -> HTTPRangeProbeResult {
-        guard let scheme = configuration.url.scheme?.lowercased(), (scheme == "http" || scheme == "https") else {
-            throw HTTPRangeProbeError.invalidURL(configuration.url)
-        }
-        guard let host = configuration.url.host, !host.isEmpty else {
+        switch DownloadURLPolicy.classify(configuration.url) {
+        case .directHTTP:
+            break
+        case .mustUseBlobCaptureService, .unsupported:
             throw HTTPRangeProbeError.invalidURL(configuration.url)
         }
 
@@ -168,6 +168,8 @@ final class HTTPRangeProbe: Sendable {
         for (key, value) in BrowserHeaderFilter.sanitizeHeaders(configuration.customHeaders) {
             request.setValue(value, forHTTPHeaderField: key)
         }
+
+        request = DownloadRequestEnricher.enrich(request)
 
         let redirectCaptureDelegate = RedirectCaptureDelegate()
 
@@ -196,6 +198,9 @@ final class HTTPRangeProbe: Sendable {
                 headers[k.lowercased()] = v
             }
         }
+
+        // Record any Set-Cookie headers back to HTTPCookieStorage.shared for rotation
+        DownloadRequestEnricher.recordResponseCookies(headers: headers, for: finalURL)
 
         // Handle error status codes
         switch statusCode {

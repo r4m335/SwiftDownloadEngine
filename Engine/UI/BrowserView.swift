@@ -1605,7 +1605,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
     public func executeDownload() async throws {
         guard let url = downloadCandidateURL else { return }
 
-        if url.scheme?.lowercased() == "blob" {
+        if case .mustUseBlobCaptureService = DownloadURLPolicy.classify(url) {
             let filename = downloadCandidateFilename.trimmingCharacters(in: .whitespacesAndNewlines)
             let existing = mediaCandidates.first {
                 $0.rawURL.caseInsensitiveCompare(url.absoluteString) == .orderedSame
@@ -2866,25 +2866,16 @@ public final class BrowserWebViewCoordinator: NSObject, WKNavigationDelegate, WK
             details: ["title": webView.title ?? ""]
         )
 
-        // Inspect and synchronize cookies asynchronously for verification tokens (e.g. cf_clearance, __cf_bm)
-        webView.configuration.websiteDataStore.httpCookieStore.getAllCookies { [weak self] cookies in
-            let cfCookies = cookies.filter {
-                let name = $0.name.lowercased()
-                return name.contains("cf_") || name.contains("__cf")
-            }
-            if !cfCookies.isEmpty {
-                for cookie in cfCookies {
-                    HTTPCookieStorage.shared.setCookie(cookie)
-                }
-                let names = cfCookies.map { $0.name }.joined(separator: ", ")
-                BrowserDiagnosticLogger.shared.log(
-                    category: .cookie,
-                    message: "Cloudflare verification cookies present and synchronized to shared store: \(names)",
-                    url: currentURL,
-                    tabID: self?.tabID,
-                    details: ["count": "\(cfCookies.count)", "names": names]
-                )
-            }
+        // Inspect and capture session snapshot (User-Agent, language, and all cookies by domain)
+        Task { @MainActor [weak self] in
+            let snapshot = await DownloadRequestEnricher.snapshot(from: webView)
+            BrowserDiagnosticLogger.shared.log(
+                category: .cookie,
+                message: "Browser session snapshot captured with \(snapshot.cookiesByDomain.count) domains and UA: \(snapshot.userAgent)",
+                url: currentURL,
+                tabID: self?.tabID,
+                details: ["domains": snapshot.cookiesByDomain.keys.joined(separator: ", ")]
+            )
         }
 
         DispatchQueue.main.async { [weak self] in

@@ -200,12 +200,18 @@ public actor DownloadQueueManager {
         priority: DownloadPriority = .normal,
         autoStart: Bool = true
     ) throws -> QueueItem {
-        guard let scheme = request.url.scheme?.lowercased(), (scheme == "http" || scheme == "https") else {
-            let schemeName = request.url.scheme ?? "unknown"
-            throw DownloadQueueError.unsupportedScheme("Unsupported URL scheme '\(schemeName)'. Only HTTP and HTTPS URLs can be downloaded through the standard download engine.")
-        }
-        guard let host = request.url.host, !host.isEmpty else {
-            throw DownloadQueueError.invalidURL("Download URL must have a valid non-empty host: \(BrowserURLResolver.sanitizeURLForLogging(request.url))")
+        switch DownloadURLPolicy.classify(request.url) {
+        case .directHTTP:
+            break
+        case .mustUseBlobCaptureService:
+            throw DownloadQueueError.unsupportedScheme("Unsupported URL scheme 'blob'. Blob URLs must be captured in-browser via BrowserBlobCaptureService.")
+        case .unsupported(let scheme, _):
+            if scheme == "http" || scheme == "https" {
+                throw DownloadQueueError.invalidURL("Download URL must have a valid non-empty host: \(BrowserURLResolver.sanitizeURLForLogging(request.url))")
+            } else {
+                let schemeName = scheme.isEmpty ? "unknown" : scheme
+                throw DownloadQueueError.unsupportedScheme("Unsupported URL scheme '\(schemeName)'. Only HTTP and HTTPS URLs can be downloaded through the standard download engine.")
+            }
         }
         guard items[request.id] == nil else {
             throw DownloadQueueError.downloadAlreadyExists(id: request.id)

@@ -211,6 +211,8 @@ public final class SegmentDownloader: Sendable {
             request.setValue(value, forHTTPHeaderField: name)
         }
 
+        request = DownloadRequestEnricher.enrich(request)
+
         let response: URLResponse
         let bytes: URLSession.AsyncBytes
 
@@ -228,6 +230,10 @@ public final class SegmentDownloader: Sendable {
 
         guard let httpResponse = response as? HTTPURLResponse else {
             throw SegmentDownloaderError.invalidHTTPResponse
+        }
+
+        if let allHeaders = httpResponse.allHeaderFields as? [String: String] {
+            DownloadRequestEnricher.recordResponseCookies(headers: allHeaders, for: url)
         }
 
         if httpResponse.statusCode == 429 {
