@@ -107,9 +107,10 @@ public struct SwiftDownloadEngineApp: App {
         }
         #endif
 
-        let engine: DownloadEngine
+        var engineInstance: DownloadEngine? = nil
         do {
-            engine = try DownloadEngine(
+            try FileManager.default.createDirectory(at: storeDir, withIntermediateDirectories: true)
+            engineInstance = try DownloadEngine(
                 storageDirectoryURL: storeDir,
                 maxConcurrentDownloads: 3,
                 maxGlobalRequests: 12,
@@ -118,7 +119,28 @@ public struct SwiftDownloadEngineApp: App {
                 backgroundSessionManager: bgManager
             )
         } catch {
-            fatalError("Failed to initialize DownloadEngine: \(error)")
+            print("Notice: DownloadEngine primary storage initialization failed: \(error.localizedDescription). Initializing fallback storage.")
+            let fallbackStore = FileManager.default.temporaryDirectory.appendingPathComponent("1DMDownloads_Fallback", isDirectory: true)
+            try? FileManager.default.createDirectory(at: fallbackStore, withIntermediateDirectories: true)
+            engineInstance = try? DownloadEngine(
+                storageDirectoryURL: fallbackStore,
+                maxConcurrentDownloads: 3,
+                maxGlobalRequests: 12,
+                globalBandwidthLimit: nil,
+                session: .shared,
+                backgroundSessionManager: nil
+            )
+        }
+
+        let engine: DownloadEngine
+        if let initialized = engineInstance {
+            engine = initialized
+        } else {
+            let emergencyStore = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+            try? FileManager.default.createDirectory(at: emergencyStore, withIntermediateDirectories: true)
+            let persistence = (try? DownloadPersistenceStore(storageDirectoryURL: emergencyStore)) ?? DownloadPersistenceStore(inMemory: true)
+            let qm = DownloadQueueManager(coordinator: DownloadCoordinator(), persistenceStore: persistence)
+            engine = DownloadEngine(queueManager: qm, coordinator: DownloadCoordinator(), persistenceStore: persistence)
         }
 
         var torrentEngine: TorrentEngine? = nil

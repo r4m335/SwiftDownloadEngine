@@ -386,6 +386,20 @@ public actor DownloadPersistenceStore {
         }
     }
 
+    /// Safe fallback initializer that ensures storage is allocated without throwing.
+    public init(inMemory: Bool = false) {
+        let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent("1DMDownloads_Mem_\(UUID().uuidString)", isDirectory: true)
+        try? FileManager.default.createDirectory(at: tempURL, withIntermediateDirectories: true)
+        self.storageDirectoryURL = tempURL
+        let jsonEncoder = JSONEncoder()
+        jsonEncoder.dateEncodingStrategy = .iso8601
+        jsonEncoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        self.encoder = jsonEncoder
+        let jsonDecoder = JSONDecoder()
+        jsonDecoder.dateDecodingStrategy = .iso8601
+        self.decoder = jsonDecoder
+    }
+
     /// Persists or updates a download record atomically.
     public func save(_ record: DownloadRecord) throws {
         cache[record.id] = record
@@ -550,6 +564,10 @@ public actor DownloadPersistenceStore {
 
     private func writeRecordToDisk(_ record: DownloadRecord) throws {
         let fileURL = recordFileURL(tag: record.id)
+        let parentDir = fileURL.deletingLastPathComponent()
+        if !FileManager.default.fileExists(atPath: parentDir.path) {
+            try? FileManager.default.createDirectory(at: parentDir, withIntermediateDirectories: true)
+        }
         let data: Data
         do {
             data = try encoder.encode(record)

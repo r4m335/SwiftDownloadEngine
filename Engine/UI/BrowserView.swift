@@ -1838,6 +1838,64 @@ public struct BrowserView: View {
         .safeAreaInset(edge: .bottom, spacing: 0) {
             addressBarHeader
         }
+        .overlay(alignment: .top) {
+            VStack(spacing: 8) {
+                if let notification = viewModel.downloadSuccessNotification {
+                    HStack(spacing: 8) {
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundColor(.green)
+                        Text(notification)
+                            .font(.subheadline)
+                            .foregroundColor(.primary)
+                        Spacer()
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 10)
+                    #if canImport(UIKit)
+                    .background(RoundedRectangle(cornerRadius: 12).fill(Color(UIColor.secondarySystemBackground)))
+                    #else
+                    .background(RoundedRectangle(cornerRadius: 12).fill(Color.secondary.opacity(0.2)))
+                    #endif
+                    .shadow(radius: 4)
+                    .padding(.horizontal, 16)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+                    .onAppear {
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 4.0) {
+                            withAnimation { viewModel.downloadSuccessNotification = nil }
+                        }
+                    }
+                }
+                if let error = viewModel.blobCaptureErrorMessage {
+                    HStack(spacing: 8) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundColor(.red)
+                        Text(error)
+                            .font(.subheadline)
+                            .foregroundColor(.primary)
+                        Spacer()
+                        Button {
+                            withAnimation { viewModel.blobCaptureErrorMessage = nil }
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 10)
+                    #if canImport(UIKit)
+                    .background(RoundedRectangle(cornerRadius: 12).fill(Color(UIColor.secondarySystemBackground)))
+                    #else
+                    .background(RoundedRectangle(cornerRadius: 12).fill(Color.secondary.opacity(0.2)))
+                    #endif
+                    .shadow(radius: 4)
+                    .padding(.horizontal, 16)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+                }
+            }
+            .padding(.top, 8)
+            .animation(.easeInOut, value: viewModel.downloadSuccessNotification)
+            .animation(.easeInOut, value: viewModel.blobCaptureErrorMessage)
+        }
         #if canImport(UIKit)
         .background(Color(UIColor.systemBackground))
         #endif
@@ -2886,6 +2944,11 @@ public final class BrowserWebViewCoordinator: NSObject, WKNavigationDelegate, WK
             url: webView.url,
             tabID: tabID
         )
+        DispatchQueue.main.async { [weak self] in
+            guard let self, let tabID = self.tabID else { return }
+            self.viewModel?.cancelBlobCapture(for: tabID)
+            self.viewModel?.blobCaptureErrorMessage = "The webpage process was terminated by iOS (likely memory pressure)."
+        }
         guard webView.url != nil else { return }
         webView.reload()
     }

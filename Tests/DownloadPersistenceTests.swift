@@ -338,4 +338,30 @@ final class DownloadPersistenceTests: XCTestCase {
         let fetchedAgain = try await store.fetch(tag: "export-test")
         XCTAssertNotNil(fetchedAgain)
     }
+
+    func testWriteRecordToDiskCreatesDirectoryIfInitiallyAbsent() async throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent("AbsentMetaDirTest_\(UUID().uuidString)", isDirectory: true)
+        let store = try DownloadPersistenceStore(storageDirectoryURL: tempDir)
+
+        // Intentionally delete directory from underneath to simulate absent folder
+        try? FileManager.default.removeItem(at: tempDir)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: tempDir.path))
+
+        let record = DownloadRecord(
+            id: "recreated-dir-test",
+            originalURL: URL(string: "https://example.com/file.bin")!,
+            destinationURL: URL(fileURLWithPath: "/tmp/file.bin"),
+            totalSize: 100,
+            state: .downloading,
+            segments: [SegmentRecord(id: 0, startOffset: 0, endOffset: 99, length: 100, completedBytes: 50)]
+        )
+
+        // Must succeed without throwing directory missing CocoaError
+        try await store.save(record)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: tempDir.path))
+        let fetched = try await store.fetch(tag: "recreated-dir-test")
+        XCTAssertNotNil(fetched)
+        XCTAssertEqual(fetched?.completedBytes, 50)
+        try? FileManager.default.removeItem(at: tempDir)
+    }
 }
