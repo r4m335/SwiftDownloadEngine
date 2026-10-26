@@ -428,7 +428,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         let effectiveMIME = candidate.mimeType?.lowercased()
         let isMediaSourceMIME = effectiveMIME == "application/x-mediasource"
         let isGenericMIME = effectiveMIME == nil || effectiveMIME?.isEmpty == true || effectiveMIME == "application/octet-stream"
-        let isBinOrStreamName = candidate.suggestedFilename?.lowercased().hasSuffix(".bin") == true || candidate.suggestedFilename?.lowercased().hasPrefix("blob_stream") == true
+        let isBinOrStreamName = candidate.suggestedFilename.lowercased().hasSuffix(".bin") || candidate.suggestedFilename.lowercased().hasPrefix("blob_stream")
         let isMediaSource = candidate.blobKind == .mediaSource ||
             candidate.kind == .mediaSource ||
             candidate.rawURL.lowercased().contains("youtube.com") ||
