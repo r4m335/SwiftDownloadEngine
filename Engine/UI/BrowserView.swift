@@ -1349,7 +1349,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         } ?? []
         var catalog = BrowserMediaCandidateCatalog()
         for cand in preserved {
-            catalog.merge(candidate: cand)
+            catalog.merge(cand)
         }
         mediaCandidateCatalogs[tabID] = catalog
         if tabID == activeTabID { publishMediaCandidates() }

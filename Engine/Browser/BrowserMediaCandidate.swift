@@ -539,7 +539,7 @@ public struct BrowserMediaCandidateCatalog: Sendable, Equatable {
     }
 
     @discardableResult
-    private mutating func merge(_ candidate: BrowserMediaCandidate) -> BrowserMediaCandidate {
+    public mutating func merge(_ candidate: BrowserMediaCandidate) -> BrowserMediaCandidate {
         guard let existing = values[candidate.id] else {
             var newCandidate = candidate
             if (newCandidate.kind == .mediaSource || newCandidate.blobKind == .mediaSource), newCandidate.associatedManifestURL == nil {
