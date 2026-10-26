@@ -109,4 +109,67 @@ final class DownloadRequestEnricherTests: XCTestCase {
         XCTAssertEqual(request.value(forHTTPHeaderField: "User-Agent"), "Test-UA")
         XCTAssertNil(request.value(forHTTPHeaderField: "Cookie"))
     }
+
+    func testEnrichInjectsBrowserContextHeaders() {
+        let pageURL = URL(string: "https://goplay.su/watch/movie-123")!
+        let targetURL = URL(string: "https://cdn.goplay.su/media.m3u8")!
+        let snapshot = BrowserSessionSnapshot(
+            userAgent: "Mozilla/5.0",
+            acceptLanguage: "en-US",
+            allCookies: [],
+            pageURL: pageURL
+        )
+
+        var request = URLRequest(url: targetURL)
+        request = DownloadRequestEnricher.enrich(request, snapshot: snapshot)
+
+        XCTAssertEqual(request.value(forHTTPHeaderField: "Accept"), "*/*")
+        XCTAssertEqual(request.value(forHTTPHeaderField: "Origin"), "https://goplay.su")
+        XCTAssertEqual(request.value(forHTTPHeaderField: "Referer"), "https://goplay.su/watch/movie-123")
+        XCTAssertEqual(request.value(forHTTPHeaderField: "Sec-Fetch-Dest"), "empty")
+        XCTAssertEqual(request.value(forHTTPHeaderField: "Sec-Fetch-Mode"), "cors")
+        XCTAssertEqual(request.value(forHTTPHeaderField: "Sec-Fetch-Site"), "same-site")
+    }
+
+    func testHandleRedirectPreservesRangeAndEnrichesTarget() {
+        let originalURL = URL(string: "https://goplay.su/api/video")!
+        let targetURL = URL(string: "https://cdn.goplay.su/media.m3u8")!
+        var originalRequest = URLRequest(url: originalURL)
+        originalRequest.setValue("bytes=0-1024", forHTTPHeaderField: "Range")
+
+        let targetCookie = HTTPCookie(properties: [
+            .domain: ".goplay.su",
+            .path: "/",
+            .name: "cf_clearance",
+            .value: "clearance_token_123"
+        ])!
+
+        let snapshot = BrowserSessionSnapshot(
+            userAgent: "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)",
+            acceptLanguage: "en-US",
+            allCookies: [targetCookie],
+            pageURL: URL(string: "https://goplay.su/watch/123")!
+        )
+
+        let task = URLSession.shared.dataTask(with: originalRequest)
+        let response = HTTPURLResponse(
+            url: originalURL,
+            statusCode: 302,
+            httpVersion: "HTTP/1.1",
+            headerFields: ["Location": targetURL.absoluteString]
+        )!
+
+        let newRequest = URLRequest(url: targetURL)
+        let enriched = DownloadRequestEnricher.handleRedirect(
+            task: task,
+            response: response,
+            newRequest: newRequest,
+            snapshot: snapshot
+        )
+
+        XCTAssertEqual(enriched.value(forHTTPHeaderField: "Range"), "bytes=0-1024")
+        XCTAssertEqual(enriched.value(forHTTPHeaderField: "User-Agent"), "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)")
+        XCTAssertTrue(enriched.value(forHTTPHeaderField: "Cookie")?.contains("cf_clearance=clearance_token_123") == true)
+        XCTAssertEqual(enriched.value(forHTTPHeaderField: "Referer"), "https://goplay.su/watch/123")
+    }
 }

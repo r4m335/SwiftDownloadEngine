@@ -82,6 +82,7 @@ public final class URLSessionStreamingManifestLoader: StreamingManifestLoader, @
                 request.setValue(value, forHTTPHeaderField: name)
             }
         }
+        request = DownloadRequestEnricher.enrich(request)
 
         let delegate = StreamingRedirectDelegate(
             originalURL: candidate.url,
@@ -865,10 +866,10 @@ public struct StreamingTransferResult: Sendable, Equatable {
 }
 
 private final class StreamingRedirectDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
-    private let originalURL: URL
-    private let headers: [String: String]
+    private let originalURL: URL?
+    private let headers: [String: String]?
 
-    init(originalURL: URL, headers: [String: String]) {
+    init(originalURL: URL? = nil, headers: [String: String]? = nil) {
         self.originalURL = originalURL
         self.headers = headers
     }
@@ -880,14 +881,11 @@ private final class StreamingRedirectDelegate: NSObject, URLSessionTaskDelegate,
         newRequest request: URLRequest,
         completionHandler: @escaping (URLRequest?) -> Void
     ) {
-        var redirected = request
-        if let destination = request.url {
-            redirected.allHTTPHeaderFields = BrowserHeaderFilter.stripCredentialsOnRedirect(
-                headers: headers,
-                from: originalURL,
-                to: destination
-            )
-        }
+        let redirected = DownloadRequestEnricher.handleRedirect(
+            task: task,
+            response: response,
+            newRequest: request
+        )
         completionHandler(redirected)
     }
 }

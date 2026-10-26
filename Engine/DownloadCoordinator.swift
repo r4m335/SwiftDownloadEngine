@@ -2173,14 +2173,11 @@ private final class DownloadResourceRedirectDelegate: NSObject, URLSessionTaskDe
         newRequest request: URLRequest,
         completionHandler: @escaping (URLRequest?) -> Void
     ) {
-        var redirected = request
-        if let destination = request.url {
-            redirected.allHTTPHeaderFields = BrowserHeaderFilter.stripCredentialsOnRedirect(
-                headers: headers,
-                from: originalURL,
-                to: destination
-            )
-        }
+        let redirected = DownloadRequestEnricher.handleRedirect(
+            task: task,
+            response: response,
+            newRequest: request
+        )
         completionHandler(redirected)
     }
 }

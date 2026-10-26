@@ -207,8 +207,14 @@ final class HTTPRangeProbe: Sendable {
         case 404:
             throw HTTPRangeProbeError.resourceNotFound(finalURL)
         case 401:
+            #if DEBUG
+            print("[HTTPRangeProbe] 401 Unauthorized: status=\(statusCode), cf-mitigated=\(headers["cf-mitigated"] ?? "none"), headers=\(headers)")
+            #endif
             throw HTTPRangeProbeError.unauthorized(finalURL)
         case 403:
+            #if DEBUG
+            print("[HTTPRangeProbe] 403 Forbidden: status=\(statusCode), cf-mitigated=\(headers["cf-mitigated"] ?? "none"), headers=\(headers)")
+            #endif
             throw HTTPRangeProbeError.forbidden(finalURL)
         case 429:
             let retryAfter = Self.parseRetryAfter(headers["retry-after"])
@@ -450,16 +456,11 @@ private final class RedirectCaptureDelegate: NSObject, URLSessionTaskDelegate, @
         _resolvedFinalURL = request.url
         lock.unlock()
 
-        var safeRequest = request
-        if let originalURL = task.originalRequest?.url, let newURL = request.url {
-            let sanitizedHeaders = BrowserHeaderFilter.stripCredentialsOnRedirect(
-                headers: safeRequest.allHTTPHeaderFields ?? [:],
-                from: originalURL,
-                to: newURL
-            )
-            safeRequest.allHTTPHeaderFields = sanitizedHeaders
-        }
-
+        let safeRequest = DownloadRequestEnricher.handleRedirect(
+            task: task,
+            response: response,
+            newRequest: request
+        )
         completionHandler(safeRequest)
     }
 }

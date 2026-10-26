@@ -45,26 +45,37 @@ extension HTTPCookie {
 
 // MARK: - BrowserSessionSnapshot
 
-/// Snapshot of the active browser session containing authentic User-Agent, language, and uncollapsed cookies.
+/// Snapshot of the active browser session containing authentic User-Agent, language, origin, and uncollapsed cookies.
 public struct BrowserSessionSnapshot: Sendable, Equatable {
     public let userAgent: String
     public let acceptLanguage: String
     public let allCookies: [HTTPCookie]
+    public let pageURL: URL?
+
+    public var pageOrigin: String? {
+        guard let pageURL, let scheme = pageURL.scheme, let host = pageURL.host else { return nil }
+        if let port = pageURL.port {
+            return "\(scheme)://\(host):\(port)"
+        }
+        return "\(scheme)://\(host)"
+    }
 
     public init(
         userAgent: String,
         acceptLanguage: String,
-        allCookies: [HTTPCookie] = []
+        allCookies: [HTTPCookie] = [],
+        pageURL: URL? = nil
     ) {
         self.userAgent = userAgent
         self.acceptLanguage = acceptLanguage
         self.allCookies = allCookies
+        self.pageURL = pageURL
     }
 }
 
 // MARK: - DownloadRequestEnricher
 
-/// Enriches outbound engine requests with authentic browser session headers and Cloudflare verification tokens.
+/// Enriches outbound engine requests with authentic browser session headers, context metadata, and Cloudflare verification tokens.
 public enum DownloadRequestEnricher {
 
     /// Thread-safe holder for the latest active browser session snapshot.
@@ -94,7 +105,7 @@ public enum DownloadRequestEnricher {
     public static let sharedSessionSnapshot = SnapshotHolder()
 
     #if canImport(WebKit)
-    /// Captures the authentic User-Agent, preferred language, and all cookies from the WKWebView.
+    /// Captures the authentic User-Agent, preferred language, current page URL, and all cookies from the WKWebView.
     @MainActor
     public static func snapshot(from webView: WKWebView) async -> BrowserSessionSnapshot {
         let ua: String
@@ -120,18 +131,19 @@ public enum DownloadRequestEnricher {
         let snapshot = BrowserSessionSnapshot(
             userAgent: ua,
             acceptLanguage: language,
-            allCookies: cookies
+            allCookies: cookies,
+            pageURL: webView.url
         )
         sharedSessionSnapshot.snapshot = snapshot
         return snapshot
     }
     #endif
 
-    /// Applies session snapshot to an outbound URLRequest using RFC 6265 cookie matching per URL.
+    /// Applies session snapshot to an outbound URLRequest using RFC 6265 cookie matching and authentic browser context headers.
     /// Idempotent. Does NOT overwrite headers already set by the caller.
     public static func enrich(_ request: URLRequest, snapshot: BrowserSessionSnapshot? = nil) -> URLRequest {
         var req = request
-        guard let url = req.url, let _ = url.host else { return req }
+        guard let url = req.url, let host = url.host else { return req }
 
         let effectiveSnapshot = snapshot ?? sharedSessionSnapshot.snapshot
 
@@ -141,6 +153,30 @@ public enum DownloadRequestEnricher {
             }
             if req.value(forHTTPHeaderField: "Accept-Language") == nil && !s.acceptLanguage.isEmpty {
                 req.setValue(s.acceptLanguage, forHTTPHeaderField: "Accept-Language")
+            }
+            if req.value(forHTTPHeaderField: "Accept") == nil {
+                req.setValue("*/*", forHTTPHeaderField: "Accept")
+            }
+            if req.value(forHTTPHeaderField: "Origin") == nil, let origin = s.pageOrigin {
+                req.setValue(origin, forHTTPHeaderField: "Origin")
+            }
+            if req.value(forHTTPHeaderField: "Referer") == nil, let page = s.pageURL {
+                req.setValue(page.absoluteString, forHTTPHeaderField: "Referer")
+            }
+            if req.value(forHTTPHeaderField: "Sec-Fetch-Dest") == nil {
+                req.setValue("empty", forHTTPHeaderField: "Sec-Fetch-Dest")
+            }
+            if req.value(forHTTPHeaderField: "Sec-Fetch-Mode") == nil {
+                req.setValue("cors", forHTTPHeaderField: "Sec-Fetch-Mode")
+            }
+            if req.value(forHTTPHeaderField: "Sec-Fetch-Site") == nil, let page = s.pageURL, let pageHost = page.host {
+                if host.lowercased() == pageHost.lowercased() {
+                    req.setValue("same-origin", forHTTPHeaderField: "Sec-Fetch-Site")
+                } else if BrowserHeaderFilter.isSameSiteOrSubdomain(page, url) {
+                    req.setValue("same-site", forHTTPHeaderField: "Sec-Fetch-Site")
+                } else {
+                    req.setValue("cross-site", forHTTPHeaderField: "Sec-Fetch-Site")
+                }
             }
             if req.value(forHTTPHeaderField: "Cookie") == nil && !s.allCookies.isEmpty {
                 let matching = s.allCookies.filter { $0.matches(url: url) }
@@ -164,6 +200,31 @@ public enum DownloadRequestEnricher {
         }
 
         return req
+    }
+
+    /// Prepares an enriched redirect request for URLSessionTaskDelegate redirection callbacks,
+    /// preserving Range headers, injecting authentic browser context and cookies for the redirect target.
+    public static func handleRedirect(
+        task: URLSessionTask,
+        response: HTTPURLResponse,
+        newRequest: URLRequest,
+        snapshot: BrowserSessionSnapshot? = nil
+    ) -> URLRequest {
+        var enriched = enrich(newRequest, snapshot: snapshot)
+
+        // Preserve Range across redirect if present on the original request
+        if let originalRange = task.originalRequest?.value(forHTTPHeaderField: "Range"),
+           enriched.value(forHTTPHeaderField: "Range") == nil {
+            enriched.setValue(originalRange, forHTTPHeaderField: "Range")
+        }
+
+        // Record any Set-Cookie headers from the redirect response for cookie rotation
+        if let url = response.url ?? task.currentRequest?.url,
+           let headers = response.allHeaderFields as? [String: String] {
+            recordResponseCookies(headers: headers, for: url)
+        }
+
+        return enriched
     }
 
     /// Writes back any rotated cookies from HTTP response headers (e.g. Set-Cookie) into HTTPCookieStorage.shared.

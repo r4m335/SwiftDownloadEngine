@@ -962,6 +962,21 @@ extension BackgroundDownloadSessionManager: URLSessionDownloadDelegate {
 
     public func urlSession(
         _ session: URLSession,
+        task: URLSessionTask,
+        willPerformHTTPRedirection response: HTTPURLResponse,
+        newRequest request: URLRequest,
+        completionHandler: @escaping (URLRequest?) -> Void
+    ) {
+        let enriched = DownloadRequestEnricher.handleRedirect(
+            task: task,
+            response: response,
+            newRequest: request
+        )
+        completionHandler(enriched)
+    }
+
+    public func urlSession(
+        _ session: URLSession,
         downloadTask: URLSessionDownloadTask,
         didWriteData bytesWritten: Int64,
         totalBytesWritten: Int64,
