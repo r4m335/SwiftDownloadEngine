@@ -111,9 +111,9 @@ public enum HLSSegmentDecryptor {
                             kCCKeySizeAES128,
                             ivBytes.baseAddress,
                             dataBytes.baseAddress,
-                            data.count,
+                            dataBytes.count,
                             outBytes.baseAddress,
-                            decryptedData.count,
+                            outBytes.count,
                             &numBytesDecrypted
                         )
                     }
@@ -179,9 +179,9 @@ public enum HLSSegmentDecryptor {
                             kCCKeySizeAES128,
                             ivBytes.baseAddress,
                             dataBytes.baseAddress,
-                            data.count,
+                            dataBytes.count,
                             outBytes.baseAddress,
-                            encryptedData.count,
+                            outBytes.count,
                             &numBytesEncrypted
                         )
                     }
