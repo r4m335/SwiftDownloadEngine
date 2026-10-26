@@ -139,8 +139,9 @@ public struct SwiftDownloadEngineApp: App {
             let emergencyStore = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
             try? FileManager.default.createDirectory(at: emergencyStore, withIntermediateDirectories: true)
             let persistence = (try? DownloadPersistenceStore(storageDirectoryURL: emergencyStore)) ?? DownloadPersistenceStore(inMemory: true)
-            let qm = DownloadQueueManager(coordinator: DownloadCoordinator(), persistenceStore: persistence)
-            engine = DownloadEngine(queueManager: qm, coordinator: DownloadCoordinator(), persistenceStore: persistence)
+            let coordinator = (try? DownloadCoordinator(session: .shared, persistenceStore: persistence)) ?? (try! DownloadCoordinator(session: .shared, persistenceStore: DownloadPersistenceStore(inMemory: true)))
+            let qm = DownloadQueueManager(coordinator: coordinator, persistenceStore: persistence)
+            engine = DownloadEngine(queueManager: qm, coordinator: coordinator, persistenceStore: persistence)
         }
 
         var torrentEngine: TorrentEngine? = nil

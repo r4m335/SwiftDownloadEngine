@@ -387,7 +387,7 @@ public actor DownloadPersistenceStore {
     }
 
     /// Safe fallback initializer that ensures storage is allocated without throwing.
-    public init(inMemory: Bool = false) {
+    public init(inMemory: Bool) {
         let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent("1DMDownloads_Mem_\(UUID().uuidString)", isDirectory: true)
         try? FileManager.default.createDirectory(at: tempURL, withIntermediateDirectories: true)
         self.storageDirectoryURL = tempURL
