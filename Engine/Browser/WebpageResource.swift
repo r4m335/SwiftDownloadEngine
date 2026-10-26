@@ -79,6 +79,15 @@ public struct WebpageResource: Identifiable, Hashable, Sendable {
         return false
     }
 
+    /// Determines if a URL represents a supported downloadable candidate.
+    public static func evaluateSupport(
+        for url: URL,
+        rawURL: String,
+        mimeType: String? = nil
+    ) -> (isSupported: Bool, reason: String?) {
+        WebpageResourceExtractor.evaluateSupport(for: url, rawURL: rawURL, mimeType: mimeType)
+    }
+
     public init(
         id: String = UUID().uuidString,
         url: URL,

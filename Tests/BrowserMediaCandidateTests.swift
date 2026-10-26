@@ -319,7 +319,7 @@ final class BrowserMediaCandidateTests: XCTestCase {
             XCTAssertEqual(candidate.blobKind, .mediaSource, "Failed for \(site)")
             XCTAssertEqual(candidate.availability, .metadataOnly, "Failed for \(site)")
 
-            let support = WebpageResource.evaluateSupport(for: URL(string: site)!, rawURL: site, mimeType: nil)
+            let support = WebpageResource.evaluateSupport(for: URL(string: site)!, rawURL: site, mimeType: nil as String?)
             XCTAssertFalse(support.isSupported, "Failed support for \(site)")
             XCTAssertEqual(support.reason, "This site uses MediaSource streaming. You must download the manifest (.m3u8 or .mpd) instead.")
         }
