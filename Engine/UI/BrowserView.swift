@@ -1641,6 +1641,13 @@ public final class BrowserViewModel: NSObject, ObservableObject {
             let existing = mediaCandidates.first {
                 $0.rawURL.caseInsensitiveCompare(url.absoluteString) == .orderedSame
             }
+            let resolvedFilename: String = {
+                if !filename.isEmpty { return filename }
+                if let existing = existing, !existing.suggestedFilename.isEmpty {
+                    return existing.suggestedFilename
+                }
+                return "browser_blob.mp4"
+            }()
             if let existing = existing, existing.blobKind == .mediaSource || existing.kind == .mediaSource {
                 if let manifest = existing.associatedManifestURL {
                     promptStreamingDownload(for: WebpageResource(
@@ -1656,13 +1663,6 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                 }
                 return
             }
-            let resolvedFilename: String = {
-                if !filename.isEmpty { return filename }
-                if let existing = existing, !existing.suggestedFilename.isEmpty {
-                    return existing.suggestedFilename
-                }
-                return "browser_blob.mp4"
-            }()
             let candidate: BrowserMediaCandidate
             if let existing = existing {
                 candidate = BrowserMediaCandidate(
