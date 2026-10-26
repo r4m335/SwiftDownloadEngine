@@ -426,8 +426,15 @@ public final class BrowserViewModel: NSObject, ObservableObject {
     /// WebKit to materialize the complete object in native memory.
     public func exportBlobCandidate(_ candidate: BrowserMediaCandidate) {
         let effectiveMIME = candidate.mimeType?.lowercased()
-        let isGenericOrMissingMIME = effectiveMIME == nil || effectiveMIME?.isEmpty == true || effectiveMIME == "application/octet-stream" || effectiveMIME == "application/x-mediasource"
-        guard !isGenericOrMissingMIME && candidate.blobKind != .mediaSource && candidate.kind != .mediaSource else {
+        let isMediaSourceMIME = effectiveMIME == "application/x-mediasource"
+        let isGenericMIME = effectiveMIME == nil || effectiveMIME?.isEmpty == true || effectiveMIME == "application/octet-stream"
+        let isBinOrStreamName = candidate.suggestedFilename?.lowercased().hasSuffix(".bin") == true || candidate.suggestedFilename?.lowercased().hasPrefix("blob_stream") == true
+        let isMediaSource = candidate.blobKind == .mediaSource ||
+            candidate.kind == .mediaSource ||
+            candidate.rawURL.lowercased().contains("youtube.com") ||
+            isMediaSourceMIME ||
+            (isGenericMIME && isBinOrStreamName)
+        guard !isMediaSource else {
             blobCaptureErrorMessage = "This is a streaming video buffer. You must download the .m3u8 or .mpd manifest file instead."
             return
         }
@@ -901,13 +908,17 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                 let discoveredCandidate = self.mediaCandidates.first {
                     $0.rawURL.caseInsensitiveCompare(resource.url.absoluteString) == .orderedSame
                 }
-                let effectiveMIME = discoveredCandidate?.mimeType ?? candidate.mimeType ?? resource.mimeType
-                let isGenericOrMissingMIME = effectiveMIME == nil || effectiveMIME?.isEmpty == true || effectiveMIME == "application/octet-stream" || effectiveMIME == "application/x-mediasource"
-                let isMediaSource = isGenericOrMissingMIME ||
-                    resource.isMediaSourceBlob ||
+                let effectiveMIME = (discoveredCandidate?.mimeType ?? candidate.mimeType ?? resource.mimeType)?.lowercased()
+                let isMediaSourceMIME = effectiveMIME == "application/x-mediasource"
+                let isGenericMIME = effectiveMIME == nil || effectiveMIME?.isEmpty == true || effectiveMIME == "application/octet-stream"
+                let isBinOrStreamName = resource.suggestedFilename.lowercased().hasSuffix(".bin") || resource.suggestedFilename.lowercased().hasPrefix("blob_stream")
+                let isMediaSource = resource.isMediaSourceBlob ||
                     discoveredCandidate?.blobKind == .mediaSource ||
                     discoveredCandidate?.kind == .mediaSource ||
-                    candidate.kind == .mediaSource
+                    candidate.kind == .mediaSource ||
+                    resource.url.absoluteString.lowercased().contains("youtube.com") ||
+                    isMediaSourceMIME ||
+                    (isGenericMIME && isBinOrStreamName)
                 if isMediaSource {
                     if let manifest = discoveredCandidate?.associatedManifestURL ?? candidate.associatedManifestURL ?? self.discoveredResources.first(where: { $0.isStreamingManifest })?.url {
                         self.promptStreamingDownload(for: WebpageResource(
@@ -1472,13 +1483,17 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                 let discoveredCandidate = self.mediaCandidates.first {
                     $0.rawURL.caseInsensitiveCompare(resource.url.absoluteString) == .orderedSame
                 }
-                let effectiveMIME = discoveredCandidate?.mimeType ?? candidate.mimeType ?? resource.mimeType
-                let isGenericOrMissingMIME = effectiveMIME == nil || effectiveMIME?.isEmpty == true || effectiveMIME == "application/octet-stream" || effectiveMIME == "application/x-mediasource"
-                let isMediaSource = isGenericOrMissingMIME ||
-                    resource.isMediaSourceBlob ||
+                let effectiveMIME = (discoveredCandidate?.mimeType ?? candidate.mimeType ?? resource.mimeType)?.lowercased()
+                let isMediaSourceMIME = effectiveMIME == "application/x-mediasource"
+                let isGenericMIME = effectiveMIME == nil || effectiveMIME?.isEmpty == true || effectiveMIME == "application/octet-stream"
+                let isBinOrStreamName = resource.suggestedFilename.lowercased().hasSuffix(".bin") || resource.suggestedFilename.lowercased().hasPrefix("blob_stream")
+                let isMediaSource = resource.isMediaSourceBlob ||
                     discoveredCandidate?.blobKind == .mediaSource ||
                     discoveredCandidate?.kind == .mediaSource ||
-                    candidate.kind == .mediaSource
+                    candidate.kind == .mediaSource ||
+                    resource.url.absoluteString.lowercased().contains("youtube.com") ||
+                    isMediaSourceMIME ||
+                    (isGenericMIME && isBinOrStreamName)
                 if isMediaSource {
                     if let manifest = discoveredCandidate?.associatedManifestURL ?? candidate.associatedManifestURL ?? self.discoveredResources.first(where: { $0.isStreamingManifest })?.url {
                         promptStreamingDownload(for: WebpageResource(
@@ -1727,11 +1742,15 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                 }
                 return "browser_blob.mp4"
             }()
-            let effectiveMIME = existing?.mimeType
-            let isGenericOrMissingMIME = effectiveMIME == nil || effectiveMIME?.isEmpty == true || effectiveMIME == "application/octet-stream" || effectiveMIME == "application/x-mediasource"
-            let isMediaSource = isGenericOrMissingMIME ||
-                existing?.blobKind == .mediaSource ||
-                existing?.kind == .mediaSource
+            let effectiveMIME = existing?.mimeType?.lowercased()
+            let isMediaSourceMIME = effectiveMIME == "application/x-mediasource"
+            let isGenericMIME = effectiveMIME == nil || effectiveMIME?.isEmpty == true || effectiveMIME == "application/octet-stream"
+            let isBinOrStreamName = resolvedFilename.lowercased().hasSuffix(".bin") || resolvedFilename.lowercased().hasPrefix("blob_stream")
+            let isMediaSource = existing?.blobKind == .mediaSource ||
+                existing?.kind == .mediaSource ||
+                downloadCandidateURL?.absoluteString.lowercased().contains("youtube.com") == true ||
+                isMediaSourceMIME ||
+                (isGenericMIME && isBinOrStreamName)
             if isMediaSource {
                 if let manifest = existing?.associatedManifestURL ?? discoveredResources.first(where: { $0.isStreamingManifest })?.url {
                     promptStreamingDownload(for: WebpageResource(
