@@ -69,13 +69,12 @@ public struct WebpageResource: Identifiable, Hashable, Sendable {
     /// (empty or generic application/octet-stream MIME type, with fallback .bin / stream name) rather than a complete downloadable file.
     public var isMediaSourceBlob: Bool {
         guard isBlobResource else { return false }
-        if url.absoluteString.lowercased().contains("youtube.com") { return true }
         let cleanMime = mimeType?.split(separator: ";").first?.trimmingCharacters(in: .whitespaces).lowercased()
         if cleanMime == "application/x-mediasource" { return true }
         let isGenericMime = cleanMime == nil || cleanMime?.isEmpty == true || cleanMime == "application/octet-stream"
         if isGenericMime {
             let lowerFilename = suggestedFilename.lowercased()
-            return lowerFilename.hasSuffix(".bin") || lowerFilename.hasPrefix("blob_stream") || resourceType == .other
+            return lowerFilename.hasSuffix(".bin") || lowerFilename.hasPrefix("blob_stream") || resourceType == .other || mimeType == nil
         }
         return false
     }
@@ -245,16 +244,13 @@ public struct WebpageResourceExtractor {
             .lowercased()
 
         if scheme == "blob" || lowerRaw.hasPrefix("blob:") {
-            if lowerRaw.contains("youtube.com") {
-                return (false, "YouTube streaming buffer (MediaSource). Direct file download is not supported; play video to capture stream.")
+            let isGenericMime = normalizedMIME == nil || normalizedMIME?.isEmpty == true || normalizedMIME == "application/octet-stream" || normalizedMIME == "application/x-mediasource"
+            if isGenericMime {
+                return (false, "This site uses MediaSource streaming. You must download the manifest (.m3u8 or .mpd) instead.")
             }
             // Blob URLs are memory-backed in the active browser session and are supported
             // through the bounded in-page Blob capture pipeline.
             return (true, nil)
-        }
-
-        if let host = url.host?.lowercased(), host.contains("googlevideo.com") {
-            return (false, "YouTube streams are heavily protected. Segment downloading must be used.")
         }
 
         if scheme == "data" || lowerRaw.hasPrefix("data:") {
@@ -274,6 +270,11 @@ public struct WebpageResourceExtractor {
                 return (false, "Streaming manifest metadata conflicts (\(manifestName)); it cannot be downloaded safely.")
             }
             return (false, "Streaming playlist manifest (\(manifestName)). Use the manifest-aware streaming workflow.")
+        }
+
+        if pathExt == "ts" || pathExt == "m4s" || normalizedMIME?.contains("mp2t") == true || normalizedMIME?.contains("iso.segment") == true {
+            let chunkName = pathExt.isEmpty ? "segment" : pathExt.uppercased()
+            return (false, "Streaming segment chunk (\(chunkName)). Download the playlist manifest (.m3u8 or .mpd) instead.")
         }
 
         if scheme != "http" && scheme != "https" {

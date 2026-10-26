@@ -427,9 +427,8 @@ public struct ResourceRowView: View {
 
     private var isMediaSourceBlob: Bool {
         let isBlob = resource.url.scheme?.lowercased() == "blob"
-        let isYouTube = resource.url.absoluteString.lowercased().contains("youtube.com")
-        let isGenericMime = resource.mimeType == nil || resource.mimeType?.isEmpty == true || resource.mimeType == "application/octet-stream"
-        return isBlob && (isYouTube || isGenericMime || resource.isMediaSourceBlob || candidate?.blobKind == .mediaSource || candidate?.kind == .mediaSource)
+        let isGenericMime = resource.mimeType == nil || resource.mimeType?.isEmpty == true || resource.mimeType == "application/octet-stream" || resource.mimeType == "application/x-mediasource"
+        return isBlob && (isGenericMime || resource.isMediaSourceBlob || candidate?.blobKind == .mediaSource || candidate?.kind == .mediaSource)
     }
 
     private var hasManifest: Bool {
@@ -534,7 +533,7 @@ public struct ResourceRowView: View {
                     HStack(alignment: .top, spacing: 4) {
                         Image(systemName: "info.circle")
                             .font(.system(size: 10))
-                        Text("Streaming video buffer (MediaSource). Download the .m3u8 or .mpd manifest file instead.")
+                        Text("This site uses MediaSource streaming. You must download the manifest (.m3u8 or .mpd) instead.")
                             .font(.system(size: 10))
                     }
                     .foregroundColor(.orange)

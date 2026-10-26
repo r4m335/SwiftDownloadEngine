@@ -297,5 +297,32 @@ final class BrowserMediaCandidateTests: XCTestCase {
         XCTAssertEqual(candidate.blobKind, .mediaSource)
         XCTAssertEqual(candidate.availability, .metadataOnly)
     }
+
+    func testGenericSocialMediaMSEBlobsAreClassifiedAsMediaSourceImmediately() {
+        let sites = [
+            "blob:https://twitter.com/x-stream-1",
+            "blob:https://vimeo.com/v-stream-2",
+            "blob:https://www.instagram.com/ig-stream-3",
+            "blob:https://www.tiktok.com/tt-stream-4",
+            "blob:https://twitch.tv/tw-stream-5",
+            "blob:https://facebook.com/fb-stream-6"
+        ]
+        for site in sites {
+            let blob = WebpageResource(
+                url: URL(string: site)!,
+                title: "Social Media Stream",
+                suggestedFilename: "stream.mp4",
+                resourceType: .video
+            )
+            let candidate = BrowserMediaCandidateClassifier.classify(resource: blob)
+            XCTAssertEqual(candidate.kind, .mediaSource, "Failed for \(site)")
+            XCTAssertEqual(candidate.blobKind, .mediaSource, "Failed for \(site)")
+            XCTAssertEqual(candidate.availability, .metadataOnly, "Failed for \(site)")
+
+            let support = WebpageResource.evaluateSupport(for: URL(string: site)!, rawURL: site, mimeType: nil)
+            XCTAssertFalse(support.isSupported, "Failed support for \(site)")
+            XCTAssertEqual(support.reason, "This site uses MediaSource streaming. You must download the manifest (.m3u8 or .mpd) instead.")
+        }
+    }
 }
 

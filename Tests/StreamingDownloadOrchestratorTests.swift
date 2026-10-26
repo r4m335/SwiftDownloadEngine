@@ -80,7 +80,7 @@ final class StreamingDownloadOrchestratorTests: XCTestCase {
         let playlist = """
         #EXTM3U
         #EXT-X-PLAYLIST-TYPE:VOD
-        #EXT-X-KEY:METHOD=AES-128,URI="key.bin"
+        #EXT-X-KEY:METHOD=SAMPLE-AES,URI="key.bin"
         #EXTINF:2,
         segment.ts
         #EXT-X-ENDLIST
@@ -97,6 +97,27 @@ final class StreamingDownloadOrchestratorTests: XCTestCase {
         } catch let error as StreamingDownloadOrchestratorError {
             XCTAssertEqual(error, .unsupportedEncryption)
         }
+    }
+
+    func testAES128HLSEncryptionIsPlannedWithKeyAndSegments() async throws {
+        let url = URL(string: "https://video.example/index.m3u8")!
+        let playlist = """
+        #EXTM3U
+        #EXT-X-PLAYLIST-TYPE:VOD
+        #EXT-X-KEY:METHOD=AES-128,URI="key.bin"
+        #EXTINF:2,
+        segment.ts
+        #EXT-X-ENDLIST
+        """
+        let orchestrator = StreamingDownloadOrchestrator(
+            manifestLoader: RecordingManifestLoader(data: Data(playlist.utf8), finalURL: url, mimeType: "application/vnd.apple.mpegurl"),
+            segmentExecutor: RecordingSegmentExecutor()
+        )
+        let candidate = try StreamingManifestCandidate(url: url)
+        let proposal = try await orchestrator.prepare(candidate: candidate)
+        XCTAssertEqual(proposal.resources.count, 2)
+        XCTAssertEqual(proposal.resources[0].url, URL(string: "https://video.example/key.bin")!)
+        XCTAssertEqual(proposal.resources[1].url, URL(string: "https://video.example/segment.ts")!)
     }
 
     func testInvalidManifestURLRejectedBeforeLoaderRuns() async throws {

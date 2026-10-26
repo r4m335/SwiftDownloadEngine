@@ -440,9 +440,14 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
             self.errorMessage = error
             throw DownloadCoordinatorError.invalidRequest(reason: error)
         }
-
-        if host.lowercased().contains("googlevideo.com") || (host.lowercased().contains("youtube.com") && !url.path.contains("watch")) {
-            let error = "YouTube streams are heavily protected. Segment downloading must be used."
+        let manifestKind = StreamingManifestClassifier.classify(url: url).kind
+        if manifestKind == .hls || manifestKind == .dash || url.pathExtension.lowercased() == "m3u8" || url.pathExtension.lowercased() == "mpd" {
+            let error = "Streaming playlist manifests (.m3u8 / .mpd) must be downloaded using the streaming workflow to assemble segments into playable media."
+            self.errorMessage = error
+            throw DownloadCoordinatorError.invalidRequest(reason: error)
+        }
+        if url.pathExtension.lowercased() == "ts" || url.pathExtension.lowercased() == "m4s" {
+            let error = "Streaming segment chunks (.ts / .m4s) must be downloaded as part of a complete streaming manifest."
             self.errorMessage = error
             throw DownloadCoordinatorError.invalidRequest(reason: error)
         }
@@ -1070,13 +1075,23 @@ extension DownloadManagerViewModel: BrowserDownloadDelegate {
             return
         }
 
+        if candidate.blobKind == .mediaSource || candidate.kind == .mediaSource || (url.scheme?.lowercased() == "blob" && candidate.mimeType == nil) {
+            errorMessage = "This site uses MediaSource streaming. You must download the manifest (.m3u8 or .mpd) instead."
+            return
+        }
+
         guard url.scheme?.lowercased() == "http" || url.scheme?.lowercased() == "https" else {
             errorMessage = "Unsupported link type: \(url.scheme ?? "unknown"). Cannot download directly."
             return
         }
 
-        if url.host?.contains("googlevideo.com") == true || (url.host?.contains("youtube.com") == true && !url.path.contains("watch")) {
-            errorMessage = "YouTube streams are heavily protected. Segment downloading must be used."
+        if candidate.kind == .hlsManifest || candidate.kind == .dashManifest || url.pathExtension.lowercased() == "m3u8" || url.pathExtension.lowercased() == "mpd" {
+            errorMessage = "Streaming playlist manifest. Use the streaming workflow to download and assemble this media."
+            return
+        }
+
+        if url.pathExtension.lowercased() == "ts" || url.pathExtension.lowercased() == "m4s" {
+            errorMessage = "This is a streaming segment chunk. Download the playlist manifest (.m3u8 or .mpd) instead."
             return
         }
 

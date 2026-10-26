@@ -159,7 +159,18 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         self.downloadDelegate = downloadDelegate
         self.magnetDelegate = magnetDelegate
         self.onDownloadInitiated = onDownloadInitiated
-        self.streamingOrchestrator = streamingOrchestrator
+        let orchestrator: StreamingDownloadOrchestrator?
+        if let streamingOrchestrator {
+            orchestrator = streamingOrchestrator
+        } else if let vm = downloadDelegate as? DownloadManagerViewModel {
+            orchestrator = StreamingDownloadOrchestrator(downloadCoordinator: vm.engine.coordinator)
+        } else {
+            orchestrator = StreamingDownloadOrchestrator.shared
+        }
+        self.streamingOrchestrator = orchestrator
+        if let orchestrator {
+            StreamingDownloadOrchestrator.shared = orchestrator
+        }
         self.streamingDestinationDirectoryURL = streamingDestinationDirectoryURL ??
             FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first?.appendingPathComponent("Downloads", isDirectory: true) ??
             FileManager.default.temporaryDirectory.appendingPathComponent("LIDDownloads", isDirectory: true)
@@ -431,11 +442,10 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         let isBinOrStreamName = candidate.suggestedFilename.lowercased().hasSuffix(".bin") || candidate.suggestedFilename.lowercased().hasPrefix("blob_stream")
         let isMediaSource = candidate.blobKind == .mediaSource ||
             candidate.kind == .mediaSource ||
-            candidate.rawURL.lowercased().contains("youtube.com") ||
             isMediaSourceMIME ||
             (isGenericMIME && isBinOrStreamName)
         guard !isMediaSource else {
-            blobCaptureErrorMessage = "This is a streaming video buffer. You must download the .m3u8 or .mpd manifest file instead."
+            blobCaptureErrorMessage = "This site uses MediaSource streaming. You must download the manifest (.m3u8 or .mpd) instead."
             return
         }
         guard candidate.kind == .completeBlob,
@@ -890,13 +900,12 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         isShowingResourceInspector = false
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
             guard let self = self else { return }
-            let url = resource.url
-            if let host = url.host?.lowercased(), host.contains("googlevideo.com") || (host.contains("youtube.com") && !url.path.contains("watch")) {
-                self.blobCaptureErrorMessage = "YouTube streams are heavily protected. Segment downloading must be used."
+            if resource.isStreamingManifest || resource.url.pathExtension.lowercased() == "m3u8" || resource.url.pathExtension.lowercased() == "mpd" {
+                self.promptStreamingDownload(for: resource)
                 return
             }
-            if resource.isStreamingManifest {
-                self.promptStreamingDownload(for: resource)
+            if resource.isSegmentChunk {
+                self.blobCaptureErrorMessage = "This is a streaming segment chunk. Download the playlist manifest (.m3u8 or .mpd) instead."
                 return
             }
             let candidate = BrowserMediaCandidateClassifier.classify(resource: resource)
@@ -904,7 +913,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                 self.promptStreamingDownload(for: resource)
                 return
             }
-            if candidate.kind == .completeBlob || resource.url.scheme?.lowercased() == "blob" {
+            if candidate.kind == .completeBlob || candidate.kind == .mediaSource || resource.url.scheme?.lowercased() == "blob" {
                 let discoveredCandidate = self.mediaCandidates.first {
                     $0.rawURL.caseInsensitiveCompare(resource.url.absoluteString) == .orderedSame
                 }
@@ -912,11 +921,11 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                 let isMediaSourceMIME = effectiveMIME == "application/x-mediasource"
                 let isGenericMIME = effectiveMIME == nil || effectiveMIME?.isEmpty == true || effectiveMIME == "application/octet-stream"
                 let isBinOrStreamName = resource.suggestedFilename.lowercased().hasSuffix(".bin") || resource.suggestedFilename.lowercased().hasPrefix("blob_stream")
-                let isMediaSource = resource.isMediaSourceBlob ||
+                let isMediaSource = candidate.blobKind == .mediaSource ||
+                    candidate.kind == .mediaSource ||
                     discoveredCandidate?.blobKind == .mediaSource ||
                     discoveredCandidate?.kind == .mediaSource ||
-                    candidate.kind == .mediaSource ||
-                    resource.url.absoluteString.lowercased().contains("youtube.com") ||
+                    resource.isMediaSourceBlob ||
                     isMediaSourceMIME ||
                     (isGenericMIME && isBinOrStreamName)
                 if isMediaSource {
@@ -928,7 +937,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                             resourceType: .video
                         ))
                     } else {
-                        self.blobCaptureErrorMessage = "This is a streaming video buffer. You must download the .m3u8 or .mpd manifest file instead."
+                        self.blobCaptureErrorMessage = "This site uses MediaSource streaming. You must download the manifest (.m3u8 or .mpd) instead."
                     }
                     return
                 }
@@ -977,7 +986,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
     }
 
     public func promptStreamingDownload(for resource: WebpageResource) {
-        guard resource.isStreamingManifest else {
+        guard resource.isStreamingManifest || resource.url.pathExtension.lowercased() == "m3u8" || resource.url.pathExtension.lowercased() == "mpd" else {
             streamingErrorMessage = "This resource is not a recognized HLS or DASH manifest."
             return
         }
@@ -1146,7 +1155,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
             document.querySelectorAll('video').forEach(function(v) {
                 if (v.src) {
                     var isMSE = (window.__grabberBlobRegistry && window.__grabberBlobRegistry[v.src] === 'MediaSource') ||
-                                location.hostname.indexOf('youtube.com') !== -1;
+                                (v.src.indexOf('blob:') === 0);
                     candidates.push({
                         rawURL: v.src,
                         tag: 'video',
@@ -1466,15 +1475,21 @@ public final class BrowserViewModel: NSObject, ObservableObject {
             let url = resource.url
             let scheme = url.scheme?.lowercased() ?? ""
 
-            // 1. Ensure scheme is valid
-            guard scheme == "http" || scheme == "https" || scheme == "blob" else {
-                blobCaptureErrorMessage = "Unsupported link type: \(scheme.isEmpty ? "unknown" : scheme). Cannot download directly."
+            // 1. Intercept streaming playlist manifests upfront
+            if resource.isStreamingManifest || url.pathExtension.lowercased() == "m3u8" || url.pathExtension.lowercased() == "mpd" {
+                promptStreamingDownload(for: resource)
                 continue
             }
 
-            // 2. Block YouTube / Google Video URLs explicitly
-            if let host = url.host?.lowercased(), host.contains("googlevideo.com") || (host.contains("youtube.com") && !url.path.contains("watch")) {
-                blobCaptureErrorMessage = "YouTube streams are heavily protected. Segment downloading must be used."
+            // 2. Intercept individual streaming segment chunks
+            if resource.isSegmentChunk {
+                blobCaptureErrorMessage = "This is a streaming segment chunk. Download the playlist manifest (.m3u8 or .mpd) instead."
+                continue
+            }
+
+            // 3. Ensure scheme is valid
+            guard scheme == "http" || scheme == "https" || scheme == "blob" else {
+                blobCaptureErrorMessage = "Unsupported link type: \(scheme.isEmpty ? "unknown" : scheme). Cannot download directly."
                 continue
             }
 
@@ -1487,11 +1502,11 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                 let isMediaSourceMIME = effectiveMIME == "application/x-mediasource"
                 let isGenericMIME = effectiveMIME == nil || effectiveMIME?.isEmpty == true || effectiveMIME == "application/octet-stream"
                 let isBinOrStreamName = resource.suggestedFilename.lowercased().hasSuffix(".bin") || resource.suggestedFilename.lowercased().hasPrefix("blob_stream")
-                let isMediaSource = resource.isMediaSourceBlob ||
+                let isMediaSource = candidate.blobKind == .mediaSource ||
+                    candidate.kind == .mediaSource ||
                     discoveredCandidate?.blobKind == .mediaSource ||
                     discoveredCandidate?.kind == .mediaSource ||
-                    candidate.kind == .mediaSource ||
-                    resource.url.absoluteString.lowercased().contains("youtube.com") ||
+                    resource.isMediaSourceBlob ||
                     isMediaSourceMIME ||
                     (isGenericMIME && isBinOrStreamName)
                 if isMediaSource {
@@ -1503,7 +1518,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                             resourceType: .video
                         ))
                     } else {
-                        blobCaptureErrorMessage = "This is a streaming video buffer. You must download the .m3u8 or .mpd manifest file instead."
+                        blobCaptureErrorMessage = "This site uses MediaSource streaming. You must download the manifest (.m3u8 or .mpd) instead."
                     }
                     continue
                 }
@@ -1724,8 +1739,21 @@ public final class BrowserViewModel: NSObject, ObservableObject {
     public func executeDownload() async throws {
         guard let url = downloadCandidateURL else { return }
 
-        if let host = url.host?.lowercased(), host.contains("googlevideo.com") || (host.contains("youtube.com") && !url.path.contains("watch")) {
-            blobCaptureErrorMessage = "YouTube streams are heavily protected. Segment downloading must be used."
+        let manifestClassification = StreamingManifestClassifier.classify(url: url)
+        if manifestClassification.isManifest || url.pathExtension.lowercased() == "m3u8" || url.pathExtension.lowercased() == "mpd" {
+            let filename = downloadCandidateFilename.trimmingCharacters(in: .whitespacesAndNewlines)
+            promptStreamingDownload(for: WebpageResource(
+                url: url,
+                title: filename.isEmpty ? url.lastPathComponent : filename,
+                suggestedFilename: filename.isEmpty ? url.lastPathComponent : filename,
+                resourceType: .video
+            ))
+            isShowingDownloadSheet = false
+            return
+        }
+
+        if url.pathExtension.lowercased() == "ts" || url.pathExtension.lowercased() == "m4s" {
+            blobCaptureErrorMessage = "This is a streaming segment chunk. Download the playlist manifest (.m3u8 or .mpd) instead."
             isShowingDownloadSheet = false
             return
         }
@@ -1748,7 +1776,6 @@ public final class BrowserViewModel: NSObject, ObservableObject {
             let isBinOrStreamName = resolvedFilename.lowercased().hasSuffix(".bin") || resolvedFilename.lowercased().hasPrefix("blob_stream")
             let isMediaSource = existing?.blobKind == .mediaSource ||
                 existing?.kind == .mediaSource ||
-                downloadCandidateURL?.absoluteString.lowercased().contains("youtube.com") == true ||
                 isMediaSourceMIME ||
                 (isGenericMIME && isBinOrStreamName)
             if isMediaSource {
@@ -1761,7 +1788,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                     ))
                     isShowingDownloadSheet = false
                 } else {
-                    blobCaptureErrorMessage = "This is a streaming video buffer. You must download the .m3u8 or .mpd manifest file instead."
+                    blobCaptureErrorMessage = "This site uses MediaSource streaming. You must download the manifest (.m3u8 or .mpd) instead."
                     isShowingDownloadSheet = false
                 }
                 return

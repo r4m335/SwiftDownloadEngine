@@ -1194,7 +1194,31 @@ final class BrowserTests: XCTestCase {
 
         vm.exportBlobCandidate(candidate)
         XCTAssertNotNil(vm.blobCaptureErrorMessage)
-        XCTAssertTrue(vm.blobCaptureErrorMessage?.contains("streaming video buffer") == true)
+        XCTAssertEqual(vm.blobCaptureErrorMessage, "This site uses MediaSource streaming. You must download the manifest (.m3u8 or .mpd) instead.")
+    }
+
+    @MainActor
+    func testSocialMediaMSEBlobExportIsRejectedGenerically() {
+        let vm = BrowserViewModel()
+        let twitterBlob = WebpageResource(
+            url: URL(string: "blob:https://twitter.com/1234-abcd")!,
+            title: "Twitter Video",
+            suggestedFilename: "stream.bin",
+            resourceType: .video
+        )
+        let candidate = BrowserMediaCandidateClassifier.classify(resource: twitterBlob)
+        vm.exportBlobCandidate(candidate)
+        XCTAssertEqual(vm.blobCaptureErrorMessage, "This site uses MediaSource streaming. You must download the manifest (.m3u8 or .mpd) instead.")
+    }
+
+    @MainActor
+    func testExecuteDownload_RoutesManifestToStreamingOrchestrator() async throws {
+        let vm = BrowserViewModel()
+        vm.downloadCandidateURL = URL(string: "https://example.com/stream.m3u8")!
+        vm.downloadCandidateFilename = "stream.m3u8"
+        try await vm.executeDownload()
+        XCTAssertFalse(vm.isShowingDownloadSheet)
+        XCTAssertTrue(vm.isPreparingStreaming || vm.isShowingStreamingConfirmation || vm.streamingErrorMessage != nil)
     }
     #endif
 }

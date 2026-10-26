@@ -646,4 +646,45 @@ final class DownloadManagerViewModelTests: XCTestCase {
         let isObs5 = await viewModel.isObserving
         XCTAssertFalse(isObs5)
     }
+
+    func testHandleDownloadTapRejectsMediaSourceAndManifests() async throws {
+        let mediaSourceCandidate = BrowserMediaCandidate(
+            id: "cand-mse",
+            url: URL(string: "blob:https://twitter.com/x-stream")!,
+            rawURL: "blob:https://twitter.com/x-stream",
+            kind: .mediaSource,
+            blobKind: .mediaSource,
+            availability: .metadataOnly
+        )
+        await viewModel.handleDownloadTap(candidate: mediaSourceCandidate)
+        let err = await viewModel.errorMessage
+        XCTAssertEqual(err, "This site uses MediaSource streaming. You must download the manifest (.m3u8 or .mpd) instead.")
+
+        let manifestCandidate = BrowserMediaCandidate(
+            id: "cand-hls",
+            url: URL(string: "https://example.com/stream.m3u8")!,
+            rawURL: "https://example.com/stream.m3u8",
+            kind: .hlsManifest,
+            availability: .requiresPlanning
+        )
+        await viewModel.handleDownloadTap(candidate: manifestCandidate)
+        let err2 = await viewModel.errorMessage
+        XCTAssertEqual(err2, "Streaming playlist manifest. Use the streaming workflow to download and assemble this media.")
+
+        do {
+            _ = try await viewModel.addDownload(urlText: "https://example.com/stream.m3u8")
+            XCTFail("Expected manifest to be rejected by addDownload")
+        } catch {
+            let addErr = await viewModel.errorMessage
+            XCTAssertTrue(addErr?.contains("Streaming playlist manifests") == true)
+        }
+
+        do {
+            _ = try await viewModel.addDownload(urlText: "https://example.com/chunk_0.ts")
+            XCTFail("Expected segment chunk to be rejected by addDownload")
+        } catch {
+            let addErr = await viewModel.errorMessage
+            XCTAssertTrue(addErr?.contains("Streaming segment chunks") == true)
+        }
+    }
 }

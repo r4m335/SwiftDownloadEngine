@@ -407,6 +407,8 @@ public enum StreamingDownloadOrchestratorError: Error, LocalizedError, Sendable,
 /// submission, and supported VOD assembly handoffs. It does not own application
 /// download state.
 public actor StreamingDownloadOrchestrator {
+    @MainActor public static var shared: StreamingDownloadOrchestrator?
+
     private let manifestLoader: any StreamingManifestLoader
     private let segmentExecutor: any StreamingSegmentExecutor
     private let parsingLimits: ManifestParsingLimits
@@ -536,12 +538,6 @@ public actor StreamingDownloadOrchestrator {
                     from: parsed,
                     browserRequestContext: candidate.browserRequestContext
                 )
-                guard plan.resources.allSatisfy({
-                    if let encryption = $0.encryption, case .aes128 = encryption { return false }
-                    return $0.kind != .encryptionKey
-                }) else {
-                    throw StreamingDownloadOrchestratorError.unsupportedEncryption
-                }
                 manifest = .hls(plan)
             case .dash:
                 let parsed = try DASHManifestParser.parse(
@@ -562,6 +558,9 @@ public actor StreamingDownloadOrchestrator {
         } catch let error as ManifestParserError {
             throw StreamingDownloadOrchestratorError.manifestParseFailed(error)
         } catch let error as HLSVODTransferPlanError {
+            if case .unsupportedEncryption = error {
+                throw StreamingDownloadOrchestratorError.unsupportedEncryption
+            }
             throw StreamingDownloadOrchestratorError.hlsPlanningFailed(error)
         } catch let error as DASHVODTransferPlanError {
             throw StreamingDownloadOrchestratorError.dashPlanningFailed(error)
@@ -750,6 +749,56 @@ public actor StreamingDownloadOrchestrator {
         } catch let error as DASHVODReconstructionError {
             throw StreamingDownloadOrchestratorError.dashReconstructionFailed(error)
         }
+    }
+
+    /// Convenience method to download an HLS stream directly from a manifest URL,
+    /// executing and assembling into the specified output URL (or destination directory).
+    @discardableResult
+    public func downloadHLS(
+        manifestURL: URL,
+        destinationDirectory: URL? = nil,
+        outputURL: URL? = nil,
+        progress: (@Sendable (StreamingTransferProgress) -> Void)? = nil
+    ) async throws -> MediaAssemblyOutput {
+        let candidate = try StreamingManifestCandidate(url: manifestURL)
+        let proposal = try await prepare(candidate: candidate)
+        guard case .hls(let transferPlan) = proposal.manifest else {
+            throw StreamingDownloadOrchestratorError.unsupportedManifest(.dash)
+        }
+        let dest = destinationDirectory ?? FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let finalOut = outputURL ?? dest.appendingPathComponent(HLSVODReconstructionPlanner.suggestedFilename(for: transferPlan), isDirectory: false)
+        return try await executeAndAssembleHLS(
+            proposal,
+            approved: true,
+            destinationDirectory: dest,
+            outputURL: finalOut,
+            progress: progress
+        )
+    }
+
+    /// Convenience method to download a DASH stream directly from a manifest URL,
+    /// executing and assembling into the specified output URL (or destination directory).
+    @discardableResult
+    public func downloadDASH(
+        manifestURL: URL,
+        destinationDirectory: URL? = nil,
+        outputURL: URL? = nil,
+        progress: (@Sendable (StreamingTransferProgress) -> Void)? = nil
+    ) async throws -> MediaAssemblyOutput {
+        let candidate = try StreamingManifestCandidate(url: manifestURL)
+        let proposal = try await prepare(candidate: candidate)
+        guard case .dash(let transferPlan) = proposal.manifest else {
+            throw StreamingDownloadOrchestratorError.unsupportedManifest(.hls)
+        }
+        let dest = destinationDirectory ?? FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let finalOut = outputURL ?? dest.appendingPathComponent(DASHVODReconstructionPlanner.suggestedFilename(for: transferPlan), isDirectory: false)
+        return try await executeAndAssembleDASH(
+            proposal,
+            approved: true,
+            destinationDirectory: dest,
+            outputURL: finalOut,
+            progress: progress
+        )
     }
 
     public func cancel(transferID: String) async {
