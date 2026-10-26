@@ -144,6 +144,9 @@ final class HTTPRangeProbe: Sendable {
 
     /// Executes the server capability probe.
     func probe(configuration: HTTPRangeProbeConfiguration) async throws -> HTTPRangeProbeResult {
+        guard let scheme = configuration.url.scheme?.lowercased(), (scheme == "http" || scheme == "https") else {
+            throw HTTPRangeProbeError.invalidURL(configuration.url)
+        }
         guard let host = configuration.url.host, !host.isEmpty else {
             throw HTTPRangeProbeError.invalidURL(configuration.url)
         }

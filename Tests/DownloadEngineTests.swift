@@ -824,4 +824,49 @@ final class DownloadEngineTests: XCTestCase {
             XCTAssertTrue(error is DownloadQueueError)
         }
     }
+
+    func testAddDownloadRejectsUnsupportedScheme() async throws {
+        let blobURL = URL(string: "blob:https://example.com/video-12345")!
+        let dest = tempDirectory.appendingPathComponent("blob_video.mp4")
+        let request = DownloadRequest(
+            url: blobURL,
+            destinationURL: dest
+        )
+
+        do {
+            _ = try await engine.addDownload(request)
+            XCTFail("Expected addDownload with blob: URL to fail.")
+        } catch let error as DownloadQueueError {
+            if case .unsupportedScheme(let msg) = error {
+                XCTAssertTrue(msg.contains("blob"))
+            } else {
+                XCTFail("Expected unsupportedScheme error, got: \(error)")
+            }
+        } catch {
+            XCTFail("Unexpected error type: \(error)")
+        }
+    }
+
+    func testAddDownloadRejectsEmptyHost() async throws {
+        let noHostURL = URL(string: "http:///path/to/file")!
+        let dest = tempDirectory.appendingPathComponent("nohost.bin")
+        let request = DownloadRequest(
+            url: noHostURL,
+            destinationURL: dest
+        )
+
+        do {
+            _ = try await engine.addDownload(request)
+            XCTFail("Expected addDownload with empty host to fail.")
+        } catch let error as DownloadQueueError {
+            if case .invalidURL(let msg) = error {
+                XCTAssertTrue(msg.contains("host"))
+            } else {
+                XCTFail("Expected invalidURL error, got: \(error)")
+            }
+        } catch {
+            XCTFail("Unexpected error type: \(error)")
+        }
+    }
 }
+

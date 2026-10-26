@@ -358,6 +358,13 @@ public actor DownloadCoordinator {
         guard !request.id.isEmpty else {
             throw DownloadCoordinatorError.invalidRequest(reason: "Download ID cannot be empty")
         }
+        guard let scheme = request.url.scheme?.lowercased(), (scheme == "http" || scheme == "https") else {
+            let schemeName = request.url.scheme ?? "unknown"
+            throw DownloadCoordinatorError.invalidRequest(reason: "Unsupported URL scheme '\(schemeName)'. Only HTTP and HTTPS URLs can be downloaded directly.")
+        }
+        guard let host = request.url.host, !host.isEmpty else {
+            throw DownloadCoordinatorError.invalidRequest(reason: "Download URL must have a valid non-empty host.")
+        }
         guard activeTasks[request.id] == nil else {
             throw DownloadCoordinatorError.downloadAlreadyRunning(id: request.id)
         }

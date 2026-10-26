@@ -110,6 +110,8 @@ public enum DownloadQueueError: Error, LocalizedError, Equatable, Sendable {
     case invalidStateTransition(id: String, from: DownloadState, to: DownloadState)
     case invalidConcurrencyLimit(Int)
     case persistenceError(String)
+    case unsupportedScheme(String)
+    case invalidURL(String)
 
     public var errorDescription: String? {
         switch self {
@@ -123,6 +125,10 @@ public enum DownloadQueueError: Error, LocalizedError, Equatable, Sendable {
             return "Concurrency limit must be greater than zero, got: \(limit)"
         case .persistenceError(let reason):
             return "Queue persistence error: \(reason)"
+        case .unsupportedScheme(let reason):
+            return "Unsupported URL scheme: \(reason)"
+        case .invalidURL(let reason):
+            return "Invalid download URL: \(reason)"
         }
     }
 }
@@ -194,6 +200,13 @@ public actor DownloadQueueManager {
         priority: DownloadPriority = .normal,
         autoStart: Bool = true
     ) throws -> QueueItem {
+        guard let scheme = request.url.scheme?.lowercased(), (scheme == "http" || scheme == "https") else {
+            let schemeName = request.url.scheme ?? "unknown"
+            throw DownloadQueueError.unsupportedScheme("Unsupported URL scheme '\(schemeName)'. Only HTTP and HTTPS URLs can be downloaded through the standard download engine.")
+        }
+        guard let host = request.url.host, !host.isEmpty else {
+            throw DownloadQueueError.invalidURL("Download URL must have a valid non-empty host: \(BrowserURLResolver.sanitizeURLForLogging(request.url))")
+        }
         guard items[request.id] == nil else {
             throw DownloadQueueError.downloadAlreadyExists(id: request.id)
         }

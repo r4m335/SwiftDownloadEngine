@@ -160,6 +160,7 @@ final class CloudflareVerificationDiagnosticTests: XCTestCase {
 
     // MARK: - 5. Navigation & Process Lifecycle Telemetry
 
+    #if canImport(WebKit)
     @MainActor
     func testCoordinatorLogsNavigationTransitionsAndProcessTermination() {
         let logger = BrowserDiagnosticLogger.shared
@@ -190,6 +191,7 @@ final class CloudflareVerificationDiagnosticTests: XCTestCase {
         XCTAssertEqual(termEvents.count, 1)
         XCTAssertTrue(termEvents.first?.message.contains("WebContent process terminated") == true)
     }
+    #endif
 
     // MARK: - 6. Cookie Telemetry & Challenge Persistence
 

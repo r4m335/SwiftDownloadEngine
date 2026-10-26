@@ -621,4 +621,28 @@ final class DownloadCoordinatorTests: XCTestCase {
             XCTAssertTrue(reason.contains("gap or overlap"))
         }
     }
+
+    func testStartRejectsNonHTTPSchemes() async throws {
+        let blobURL = URL(string: "blob:https://example.com/stream-blob-id")!
+        let destURL = tempDirectory.appendingPathComponent("blob_video.mp4")
+        let request = DownloadRequest(
+            id: "dl-blob-scheme",
+            url: blobURL,
+            destinationURL: destURL
+        )
+
+        do {
+            try await coordinator.start(request)
+            XCTFail("Expected start() to reject blob: URL")
+        } catch let error as DownloadCoordinatorError {
+            if case .invalidRequest(let reason) = error {
+                XCTAssertTrue(reason.contains("blob"))
+            } else {
+                XCTFail("Expected invalidRequest error, got: \(error)")
+            }
+        } catch {
+            XCTFail("Unexpected error type: \(error)")
+        }
+    }
 }
+

@@ -297,6 +297,13 @@ public actor DownloadEngine {
         priority: DownloadPriority = .normal,
         autoStart: Bool = true
     ) async throws -> DownloadSnapshot {
+        guard let scheme = request.url.scheme?.lowercased(), (scheme == "http" || scheme == "https") else {
+            let schemeName = request.url.scheme ?? "unknown"
+            throw DownloadQueueError.unsupportedScheme("Unsupported URL scheme '\(schemeName)'. Only HTTP and HTTPS URLs can be downloaded through the standard download engine.")
+        }
+        guard let host = request.url.host, !host.isEmpty else {
+            throw DownloadQueueError.invalidURL("Download URL must have a valid non-empty host: \(BrowserURLResolver.sanitizeURLForLogging(request.url))")
+        }
         await attachListeners()
         let item = try await queueManager.add(request, priority: priority, autoStart: autoStart)
         let snap = await makeSnapshot(from: item)
