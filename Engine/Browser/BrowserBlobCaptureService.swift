@@ -1252,6 +1252,17 @@ public enum BlobCaptureBridge {
             if (!r.ok){throw new Error("blob not readable");}
             var len=r.headers.get("content-length"),parsed=len===null?null:Number(len);
             var ksz=(isFinite(parsed)&&parsed>=0)?Math.floor(parsed):null;
+            var mime=r.headers.get("content-type")||null;
+            if (r.body && r.body.getReader) {
+                var reader=r.body.getReader();
+                sessions[transferID]={transferID:transferID,tabID:tabID,candidateID:candidateID,documentID:docID||null,
+                    blob:null,size:ksz,reader:reader,chunkSize:sz,chunkIndex:0,offset:0,
+                    pending:null,awaitingAck:true,rollingDigest:rd};
+                post({version:PROTOCOL_VERSION,kind:"metadata",transferID:transferID,tabID:tabID,candidateID:candidateID,
+                      documentID:docID||null,url:String(blobURL),
+                      mimeType:mime,size:ksz,readable:true,resourceKind:"completeBlobCandidate"});
+                return;
+            }
             return r.blob().then(function(b){
                 var esz=(b&&isFinite(b.size)&&b.size>=0)?Math.floor(b.size):ksz;
                 if (esz===null){throw new Error("blob size unavailable");}
@@ -1260,7 +1271,7 @@ public enum BlobCaptureBridge {
                     pending:null,awaitingAck:true,rollingDigest:rd};
                 post({version:PROTOCOL_VERSION,kind:"metadata",transferID:transferID,tabID:tabID,candidateID:candidateID,
                       documentID:docID||null,url:String(blobURL),
-                      mimeType:(b&&b.type)||r.headers.get("content-type"),size:esz,readable:true,resourceKind:"completeBlobCandidate"});
+                      mimeType:(b&&b.type)||mime,size:esz,readable:true,resourceKind:"completeBlobCandidate"});
             });
         }).catch(function(err){
             post({version:PROTOCOL_VERSION,kind:"failure",transferID:transferID,tabID:tabID,candidateID:candidateID,reason:String(err&&err.message||err)});

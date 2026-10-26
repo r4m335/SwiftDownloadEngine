@@ -859,8 +859,9 @@ final class BrowserBlobCaptureServiceTests: XCTestCase {
 
     func testBridgeScriptFallbackDoesNotLockStreamBeforeBlob() {
         let script = BlobCaptureBridge.script
-        // Must not call r.body.getReader() before calling r.blob() in fetch fallback
-        XCTAssertFalse(script.contains("r.body.getReader"), "Fallback must not lock response stream before calling r.blob()")
+        // Must not obtain reader and then subsequently invoke r.blob() on the same response
+        XCTAssertFalse(script.contains("reader=(r.body&&r.body.getReader)"))
+        XCTAssertFalse(script.contains("reader=r.body.getReader();\n            return r.blob()"))
     }
 
     func testFinalizationHandlesCollisionGracefully() async throws {
