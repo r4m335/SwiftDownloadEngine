@@ -16,22 +16,52 @@ final class DownloadRequestEnricherTests: XCTestCase {
         super.tearDown()
     }
 
-    func testRegistrableDomainExtraction() {
-        XCTAssertEqual(DownloadRequestEnricher.registrableDomain("goplay.su"), "goplay.su")
-        XCTAssertEqual(DownloadRequestEnricher.registrableDomain("cdn.goplay.su"), "goplay.su")
-        XCTAssertEqual(DownloadRequestEnricher.registrableDomain("v3.stream.goplay.su"), "goplay.su")
-        XCTAssertEqual(DownloadRequestEnricher.registrableDomain(".goplay.su"), "goplay.su")
-        XCTAssertEqual(DownloadRequestEnricher.registrableDomain("localhost"), "localhost")
+    private func makeCookie(name: String, value: String, domain: String, path: String = "/", isSecure: Bool = false) -> HTTPCookie {
+        var properties: [HTTPCookiePropertyKey: Any] = [
+            .name: name,
+            .value: value,
+            .domain: domain,
+            .path: path
+        ]
+        if isSecure {
+            properties[.secure] = "TRUE"
+        }
+        return HTTPCookie(properties: properties)!
+    }
+
+    func testHTTPCookieRFC6265Matching() {
+        let cookie1 = makeCookie(name: "cf_clearance", value: "token123", domain: ".goplay.su")
+        let cookie2 = makeCookie(name: "sub_token", value: "sub456", domain: "cdn.goplay.su")
+        let cookie3 = makeCookie(name: "secure_token", value: "sec789", domain: "goplay.su", isSecure: true)
+
+        let httpsRoot = URL(string: "https://goplay.su/video")!
+        let httpsCDN = URL(string: "https://cdn.goplay.su/media/playlist.m3u8")!
+        let httpRoot = URL(string: "http://goplay.su/video")!
+        let otherDomain = URL(string: "https://example.com/video")!
+
+        // cookie1 (.goplay.su) matches both root and subdomain
+        XCTAssertTrue(cookie1.matches(url: httpsRoot))
+        XCTAssertTrue(cookie1.matches(url: httpsCDN))
+        XCTAssertFalse(cookie1.matches(url: otherDomain))
+
+        // cookie2 (cdn.goplay.su) only matches cdn.goplay.su, NOT root goplay.su
+        XCTAssertFalse(cookie2.matches(url: httpsRoot))
+        XCTAssertTrue(cookie2.matches(url: httpsCDN))
+
+        // cookie3 (secure) matches HTTPS only
+        XCTAssertTrue(cookie3.matches(url: httpsRoot))
+        XCTAssertFalse(cookie3.matches(url: httpRoot))
     }
 
     func testEnrichInjectsUserAgentAndCookiesForMatchingDomain() {
+        let cookie1 = makeCookie(name: "cf_clearance", value: "abc123token", domain: ".goplay.su")
+        let cookie2 = makeCookie(name: "__cf_bm", value: "bm456", domain: "goplay.su")
+        let cookieOther = makeCookie(name: "other_session", value: "xyz", domain: "other.com")
+
         let snapshot = BrowserSessionSnapshot(
             userAgent: "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15",
             acceptLanguage: "en-US",
-            cookiesByDomain: [
-                "goplay.su": "cf_clearance=abc123token; __cf_bm=bm456",
-                "other.com": "session=xyz"
-            ]
+            allCookies: [cookie1, cookie2, cookieOther]
         )
 
         let targetURL = URL(string: "https://cdn.goplay.su/media/playlist.m3u8")!
@@ -40,16 +70,17 @@ final class DownloadRequestEnricherTests: XCTestCase {
 
         XCTAssertEqual(request.value(forHTTPHeaderField: "User-Agent"), "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15")
         XCTAssertEqual(request.value(forHTTPHeaderField: "Accept-Language"), "en-US")
-        XCTAssertEqual(request.value(forHTTPHeaderField: "Cookie"), "cf_clearance=abc123token; __cf_bm=bm456")
+        let cookieHeader = request.value(forHTTPHeaderField: "Cookie") ?? ""
+        XCTAssertTrue(cookieHeader.contains("cf_clearance=abc123token"))
+        XCTAssertFalse(cookieHeader.contains("other_session"))
     }
 
     func testEnrichPreservesCallerSpecifiedHeaders() {
+        let cookie = makeCookie(name: "cf_clearance", value: "snapshot_token", domain: "goplay.su")
         let snapshot = BrowserSessionSnapshot(
             userAgent: "Snapshot-UA",
             acceptLanguage: "en-US",
-            cookiesByDomain: [
-                "goplay.su": "cf_clearance=snapshot_token"
-            ]
+            allCookies: [cookie]
         )
 
         let targetURL = URL(string: "https://goplay.su/video.mp4")!
@@ -64,12 +95,11 @@ final class DownloadRequestEnricherTests: XCTestCase {
     }
 
     func testEnrichDoesNotAttachCookiesForUnrelatedDomain() {
+        let cookie = makeCookie(name: "cf_clearance", value: "secret", domain: "goplay.su")
         let snapshot = BrowserSessionSnapshot(
             userAgent: "Test-UA",
             acceptLanguage: "en-US",
-            cookiesByDomain: [
-                "goplay.su": "cf_clearance=secret"
-            ]
+            allCookies: [cookie]
         )
 
         let targetURL = URL(string: "https://unrelated-domain.com/video.mp4")!

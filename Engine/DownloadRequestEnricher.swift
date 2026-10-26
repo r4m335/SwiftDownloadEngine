@@ -6,22 +6,63 @@ import FoundationNetworking
 import WebKit
 #endif
 
-/// Snapshot of the active browser session containing authentic User-Agent, language, and cookies.
+// MARK: - HTTPCookie URL Matching (RFC 6265)
+
+extension HTTPCookie {
+    /// Evaluates whether this cookie should be sent to the target URL based on RFC 6265 domain, path, secure, and expiry rules.
+    public func matches(url: URL) -> Bool {
+        guard let host = url.host?.lowercased(), !host.isEmpty else { return false }
+
+        // Domain matching (RFC 6265 §5.1.3)
+        var cookieDomain = domain.lowercased()
+        if cookieDomain.hasPrefix(".") {
+            cookieDomain = String(cookieDomain.dropFirst())
+        }
+        let domainMatches = (host == cookieDomain) || host.hasSuffix("." + cookieDomain)
+        guard domainMatches else { return false }
+
+        // Secure matching (RFC 6265 §5.4)
+        if isSecure {
+            let scheme = url.scheme?.lowercased() ?? "http"
+            guard scheme == "https" else { return false }
+        }
+
+        // Path matching (RFC 6265 §5.1.4)
+        let requestPath = url.path.isEmpty ? "/" : url.path
+        let cookiePath = path.isEmpty ? "/" : path
+        if cookiePath != "/" {
+            guard requestPath.hasPrefix(cookiePath) else { return false }
+        }
+
+        // Expiry matching
+        if let expires = expiresDate {
+            guard expires > Date() else { return false }
+        }
+
+        return true
+    }
+}
+
+// MARK: - BrowserSessionSnapshot
+
+/// Snapshot of the active browser session containing authentic User-Agent, language, and uncollapsed cookies.
 public struct BrowserSessionSnapshot: Sendable, Equatable {
     public let userAgent: String
     public let acceptLanguage: String
-    public let cookiesByDomain: [String: String]  // Registrable domain -> Cookie header value
+    public let allCookies: [HTTPCookie]
 
     public init(
         userAgent: String,
         acceptLanguage: String,
-        cookiesByDomain: [String: String]
+        allCookies: [HTTPCookie] = []
     ) {
         self.userAgent = userAgent
         self.acceptLanguage = acceptLanguage
-        self.cookiesByDomain = cookiesByDomain
+        self.allCookies = allCookies
     }
 }
+
+// MARK: - DownloadRequestEnricher
 
 /// Enriches outbound engine requests with authentic browser session headers and Cloudflare verification tokens.
 public enum DownloadRequestEnricher {
@@ -49,7 +90,7 @@ public enum DownloadRequestEnricher {
         }
     }
 
-    /// Shared session snapshot updated by `BrowserView` when navigations complete.
+    /// Shared session snapshot updated by `BrowserView` when navigations complete or when downloads start.
     public static let sharedSessionSnapshot = SnapshotHolder()
 
     #if canImport(WebKit)
@@ -74,37 +115,23 @@ public enum DownloadRequestEnricher {
             HTTPCookieStorage.shared.setCookie(cookie)
         }
 
-        // Group all cookies by registrable domain
-        var grouped: [String: [HTTPCookie]] = [:]
-        for c in cookies {
-            let key = registrableDomain(c.domain)
-            grouped[key, default: []].append(c)
-        }
-        var headers: [String: String] = [:]
-        for (domain, list) in grouped {
-            let fields = HTTPCookie.requestHeaderFields(with: list)
-            if let value = fields["Cookie"] {
-                headers[domain] = value
-            }
-        }
-
         let language = Locale.preferredLanguages.first ?? "en-US"
 
         let snapshot = BrowserSessionSnapshot(
             userAgent: ua,
             acceptLanguage: language,
-            cookiesByDomain: headers
+            allCookies: cookies
         )
         sharedSessionSnapshot.snapshot = snapshot
         return snapshot
     }
     #endif
 
-    /// Applies session snapshot to an outbound URLRequest.
+    /// Applies session snapshot to an outbound URLRequest using RFC 6265 cookie matching per URL.
     /// Idempotent. Does NOT overwrite headers already set by the caller.
     public static func enrich(_ request: URLRequest, snapshot: BrowserSessionSnapshot? = nil) -> URLRequest {
         var req = request
-        guard let url = req.url, let host = url.host else { return req }
+        guard let url = req.url, let _ = url.host else { return req }
 
         let effectiveSnapshot = snapshot ?? sharedSessionSnapshot.snapshot
 
@@ -115,12 +142,13 @@ public enum DownloadRequestEnricher {
             if req.value(forHTTPHeaderField: "Accept-Language") == nil && !s.acceptLanguage.isEmpty {
                 req.setValue(s.acceptLanguage, forHTTPHeaderField: "Accept-Language")
             }
-            if req.value(forHTTPHeaderField: "Cookie") == nil {
-                let regDomain = registrableDomain(host)
-                if let cookieHeader = s.cookiesByDomain[regDomain] {
-                    req.setValue(cookieHeader, forHTTPHeaderField: "Cookie")
-                } else if let exactCookie = s.cookiesByDomain[host.lowercased()] {
-                    req.setValue(exactCookie, forHTTPHeaderField: "Cookie")
+            if req.value(forHTTPHeaderField: "Cookie") == nil && !s.allCookies.isEmpty {
+                let matching = s.allCookies.filter { $0.matches(url: url) }
+                if !matching.isEmpty {
+                    let fields = HTTPCookie.requestHeaderFields(with: matching)
+                    if let cookieValue = fields["Cookie"] {
+                        req.setValue(cookieValue, forHTTPHeaderField: "Cookie")
+                    }
                 }
             }
         }
@@ -136,16 +164,6 @@ public enum DownloadRequestEnricher {
         }
 
         return req
-    }
-
-    /// Strips leading dots, normalizes to lowercase, and extracts the registrable domain (e.g. cdn.goplay.su -> goplay.su).
-    public static func registrableDomain(_ host: String) -> String {
-        var h = host.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        if h.hasPrefix(".") {
-            h = String(h.dropFirst())
-        }
-        let parts = h.split(separator: ".")
-        return parts.count >= 2 ? parts.suffix(2).joined(separator: ".") : h
     }
 
     /// Writes back any rotated cookies from HTTP response headers (e.g. Set-Cookie) into HTTPCookieStorage.shared.

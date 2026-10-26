@@ -1675,6 +1675,12 @@ public final class BrowserViewModel: NSObject, ObservableObject {
             limit = nil
         }
 
+        #if canImport(WebKit)
+        if let wv = webView {
+            _ = await DownloadRequestEnricher.snapshot(from: wv)
+        }
+        #endif
+
         try await downloadDelegate?.handleDownloadRequest(
             url: url,
             filename: downloadCandidateFilename.isEmpty ? nil : downloadCandidateFilename,
