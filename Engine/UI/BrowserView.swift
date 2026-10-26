@@ -2877,7 +2877,7 @@ public final class BrowserWebViewCoordinator: NSObject, WKNavigationDelegate, WK
             let snapshot = await DownloadRequestEnricher.snapshot(from: webView)
             BrowserDiagnosticLogger.shared.log(
                 category: .cookie,
-                message: "Browser session snapshot captured with \(snapshot.cookiesByDomain.count) domains and UA: \(snapshot.userAgent)",
+                message: "Browser session snapshot captured with \(snapshot.allCookies.count) cookies across \(snapshot.cookiesByDomain.count) domains and UA: \(snapshot.userAgent)",
                 url: currentURL,
                 tabID: self?.tabID,
                 details: ["domains": snapshot.cookiesByDomain.keys.joined(separator: ", ")]

@@ -60,6 +60,10 @@ public struct BrowserSessionSnapshot: Sendable, Equatable {
         return "\(scheme)://\(host)"
     }
 
+    public var cookiesByDomain: [String: [HTTPCookie]] {
+        Dictionary(grouping: allCookies, by: { $0.domain.lowercased() })
+    }
+
     public init(
         userAgent: String,
         acceptLanguage: String,

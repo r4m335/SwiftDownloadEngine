@@ -172,4 +172,29 @@ final class DownloadRequestEnricherTests: XCTestCase {
         XCTAssertTrue(enriched.value(forHTTPHeaderField: "Cookie")?.contains("cf_clearance=clearance_token_123") == true)
         XCTAssertEqual(enriched.value(forHTTPHeaderField: "Referer"), "https://goplay.su/watch/123")
     }
+
+    func testBrowserSessionSnapshotCookiesByDomain() {
+        let cookie1 = HTTPCookie(properties: [
+            .domain: ".example.com",
+            .path: "/",
+            .name: "token",
+            .value: "abc"
+        ])!
+        let cookie2 = HTTPCookie(properties: [
+            .domain: "cdn.example.com",
+            .path: "/",
+            .name: "cf_clearance",
+            .value: "xyz"
+        ])!
+
+        let snapshot = BrowserSessionSnapshot(
+            userAgent: "Mozilla/5.0",
+            acceptLanguage: "en-US",
+            allCookies: [cookie1, cookie2]
+        )
+
+        XCTAssertEqual(snapshot.cookiesByDomain.count, 2)
+        XCTAssertEqual(snapshot.cookiesByDomain[".example.com"]?.count, 1)
+        XCTAssertEqual(snapshot.cookiesByDomain["cdn.example.com"]?.count, 1)
+    }
 }
