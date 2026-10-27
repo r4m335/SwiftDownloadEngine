@@ -1032,7 +1032,24 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                 self?.streamingProgress = progress
             }
         }
+        #if canImport(UIKit) && !os(watchOS)
+        var bgTaskID: UIBackgroundTaskIdentifier = .invalid
+        bgTaskID = UIApplication.shared.beginBackgroundTask(withName: "SwiftDownloadEngine.streamingDownload") {
+            if bgTaskID != .invalid {
+                UIApplication.shared.endBackgroundTask(bgTaskID)
+                bgTaskID = .invalid
+            }
+        }
+        #endif
         streamingExecutionTask = Task { @MainActor [weak self] in
+            defer {
+                #if canImport(UIKit) && !os(watchOS)
+                if bgTaskID != .invalid {
+                    UIApplication.shared.endBackgroundTask(bgTaskID)
+                    bgTaskID = .invalid
+                }
+                #endif
+            }
             do {
                 let completionMessage: String
                 switch proposal.manifest {
