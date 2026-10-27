@@ -225,9 +225,11 @@ final class StreamingDownloadOrchestratorTests: XCTestCase {
         segment.ts
         #EXT-X-ENDLIST
         """
-        let persistence = InMemoryDownloadPersistence()
-        let coordinator = DownloadCoordinator(persistence: persistence)
-        let engine = DownloadEngine(coordinator: coordinator, persistence: persistence)
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent("reg-test-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let engine = try DownloadEngine(storageDirectoryURL: tempDir)
 
         let orchestrator = StreamingDownloadOrchestrator(
             manifestLoader: RecordingManifestLoader(
@@ -239,16 +241,13 @@ final class StreamingDownloadOrchestratorTests: XCTestCase {
             downloadEngine: engine
         )
 
-        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent("reg-test-\(UUID().uuidString)", isDirectory: true)
-        defer { try? FileManager.default.removeItem(at: tempDir) }
-
         let result = try await orchestrator.downloadHLS(
             manifestURL: manifestURL,
             destinationDirectory: tempDir
         )
 
         XCTAssertTrue(FileManager.default.fileExists(atPath: result.destinationURL.path))
-        let snapshots = await engine.allDownloads()
+        let snapshots = await engine.allSnapshots()
         XCTAssertEqual(snapshots.count, 1)
         XCTAssertEqual(snapshots.first?.state, .completed)
         XCTAssertEqual(snapshots.first?.destinationURL.path, result.destinationURL.path)
