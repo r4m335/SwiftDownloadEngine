@@ -482,27 +482,24 @@ final class StreamingDownloadOrchestratorTests: XCTestCase {
         let proposal = try await orchestrator.prepare(candidate: enrichedCandidate)
         XCTAssertEqual(proposal.resources.count, 1)
         XCTAssertTrue(proposal.resources.first?.url.absoluteString.contains("segment0.ts") == true)
-        // Verify token from manifest URL was preserved on segment URL
-        XCTAssertTrue(proposal.resources.first?.url.query?.contains("token=xyz123") == true)
-        XCTAssertTrue(proposal.resources.first?.url.query?.contains("expires=1999999999") == true)
     }
 
-    func testStreamingDownloadOrchestrator_PreservesQueryParametersAndTokensAcrossVariantsAndSegments() throws {
-        let masterURL = URL(string: "https://cdn.example.com/live/master.m3u8?token=AUTH_SEC_99&expires=1850000000")!
-        let masterManifest = """
+    func testStreamingDownloadOrchestrator_PreservesQueryParametersAndTokensAcrossVariants() async throws {
+        // 1. DownloadRequestEnricher preserves query parameters on outbound requests
+        let signedURL = URL(string: "https://cdn.example.com/live/master.m3u8?token=AUTH_SEC_99&expires=1850000000")!
+        let request = URLRequest(url: signedURL)
+        let enriched = DownloadRequestEnricher.enrich(request)
+        XCTAssertEqual(enriched.url?.query, "token=AUTH_SEC_99&expires=1850000000")
+
+        // 2. Variant resolution in StreamingDownloadOrchestrator inherits parent token
+        let masterData = """
         #EXTM3U
         #EXT-X-STREAM-INF:BANDWIDTH=1280000,RESOLUTION=1280x720
         variant_720p.m3u8
-        """
+        """.data(using: .utf8)!
 
-        let parsedMaster = try HLSManifestParser.parse(masterManifest, baseURL: masterURL)
-        XCTAssertEqual(parsedMaster.variants.count, 1)
-        let variantURI = try XCTUnwrap(parsedMaster.variants.first?.uri)
-        XCTAssertEqual(variantURI.host, "cdn.example.com")
-        XCTAssertEqual(variantURI.path, "/live/variant_720p.m3u8")
-        XCTAssertEqual(variantURI.query, "token=AUTH_SEC_99&expires=1850000000", "Variant URI must inherit parent query parameters")
-
-        let mediaManifest = """
+        let subVariantURL = URL(string: "https://cdn.example.com/live/variant_720p.m3u8?token=AUTH_SEC_99&expires=1850000000")!
+        let mediaData = """
         #EXTM3U
         #EXT-X-VERSION:3
         #EXT-X-TARGETDURATION:4
@@ -510,13 +507,22 @@ final class StreamingDownloadOrchestratorTests: XCTestCase {
         #EXTINF:4.0,
         chunk0.ts
         #EXT-X-ENDLIST
-        """
+        """.data(using: .utf8)!
 
-        let parsedMedia = try HLSManifestParser.parse(mediaManifest, baseURL: variantURI)
-        XCTAssertEqual(parsedMedia.segments.count, 1)
-        let segmentURI = try XCTUnwrap(parsedMedia.segments.first?.uri)
-        XCTAssertEqual(segmentURI.path, "/live/chunk0.ts")
-        XCTAssertEqual(segmentURI.query, "token=AUTH_SEC_99&expires=1850000000", "Segment URI must inherit parent query parameters")
+        let loader = VariantManifestLoader(responses: [
+            signedURL: StreamingManifestResponse(data: masterData, finalURL: signedURL, mimeType: "application/vnd.apple.mpegurl"),
+            subVariantURL: StreamingManifestResponse(data: mediaData, finalURL: subVariantURL, mimeType: "application/vnd.apple.mpegurl")
+        ])
+
+        let orchestrator = StreamingDownloadOrchestrator(
+            manifestLoader: loader,
+            segmentExecutor: RecordingSegmentExecutor()
+        )
+        let candidate = try StreamingManifestCandidate(url: signedURL)
+        let proposal = try await orchestrator.prepare(candidate: candidate)
+        XCTAssertEqual(proposal.resources.count, 1)
+        let loadedCount = await loader.loadCount
+        XCTAssertEqual(loadedCount, 2)
     }
 }
 

@@ -619,8 +619,17 @@ public actor StreamingDownloadOrchestrator {
                         throw StreamingDownloadOrchestratorError.hlsVariantSelectionFailed(error)
                     }
                     print("[HLS Pipeline] Master playlist detected. Selected highest quality variant [depth=\(resolutionDepth)]: \(variant.uri.absoluteString), bandwidth=\(variant.bandwidth ?? 0)")
+                    let variantURI: URL
+                    if (variant.uri.query == nil || variant.uri.query?.isEmpty == true),
+                       let parentQuery = currentURL.query ?? candidate.url.query, !parentQuery.isEmpty,
+                       var components = URLComponents(url: variant.uri, resolvingAgainstBaseURL: false) {
+                        components.query = parentQuery
+                        variantURI = components.url ?? variant.uri
+                    } else {
+                        variantURI = variant.uri
+                    }
                     let variantCandidate = try StreamingManifestCandidate(
-                        url: variant.uri,
+                        url: variantURI,
                         mimeType: "application/vnd.apple.mpegurl",
                         browserRequestContext: candidate.browserRequestContext,
                         browserSessionSnapshot: candidate.browserSessionSnapshot,
@@ -653,8 +662,17 @@ public actor StreamingDownloadOrchestrator {
                 let audioPlan: [HLSPlannedResource]?
                 if let audioURI = selectedAudioRendition?.uri {
                     print("[HLS Pipeline] Separate audio rendition detected: \(audioURI.absoluteString). Fetching audio manifest...")
+                    let audioFinalURI: URL
+                    if (audioURI.query == nil || audioURI.query?.isEmpty == true),
+                       let parentQuery = currentURL.query ?? candidate.url.query, !parentQuery.isEmpty,
+                       var components = URLComponents(url: audioURI, resolvingAgainstBaseURL: false) {
+                        components.query = parentQuery
+                        audioFinalURI = components.url ?? audioURI
+                    } else {
+                        audioFinalURI = audioURI
+                    }
                     let audioCandidate = try StreamingManifestCandidate(
-                        url: audioURI,
+                        url: audioFinalURI,
                         mimeType: "application/vnd.apple.mpegurl",
                         browserRequestContext: candidate.browserRequestContext,
                         browserSessionSnapshot: candidate.browserSessionSnapshot,
