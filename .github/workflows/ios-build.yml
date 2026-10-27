@@ -32,7 +32,7 @@ jobs:
         run: |
           set -o pipefail
           swift test 2>&1 | tee test_output.log || {
-            ERR_MSG=$(tail -n 30 test_output.log | tr '\n' ' ')
+            ERR_MSG=$(grep -E "(Test Case|failed|Fatal error|fatalError|XCTAssert)" test_output.log | tail -n 25 | tr '\n' ' ')
             echo "::error::$ERR_MSG"
             exit 1
           }
