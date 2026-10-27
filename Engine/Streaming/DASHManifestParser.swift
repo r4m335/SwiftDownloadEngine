@@ -5,6 +5,8 @@ import FoundationXML
 #endif
 
 /// Parses a bounded DASH MPD document without resolving or fetching external data.
+public typealias MPDManifestParser = DASHManifestParser
+
 public enum DASHManifestParser {
 
     public static func parse(

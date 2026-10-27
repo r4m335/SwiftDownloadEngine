@@ -234,4 +234,44 @@ final class DASHTransferPlannerTests: XCTestCase {
             XCTAssertEqual(error as? DASHVODTransferPlanError, .invalidResourceURL)
         }
     }
+
+    func testHighestBitrateRepresentationAutoSelectionAndMPDParserAlias() throws {
+        let multiQualityMPD = """
+        <MPD type="static" mediaPresentationDuration="PT4S">
+          <Period id="p0" duration="PT4S">
+            <AdaptationSet id="video" contentType="video" mimeType="video/mp4" codecs="avc1">
+              <Representation id="v_360p" bandwidth="800000" width="640" height="360">
+                <SegmentTemplate timescale="1" duration="2" initialization="init-360p.mp4" media="seg-360p-$Number$.m4s"/>
+              </Representation>
+              <Representation id="v_1080p" bandwidth="5000000" width="1920" height="1080">
+                <SegmentTemplate timescale="1" duration="2" initialization="init-1080p.mp4" media="seg-1080p-$Number$.m4s"/>
+              </Representation>
+              <Representation id="v_720p" bandwidth="2500000" width="1280" height="720">
+                <SegmentTemplate timescale="1" duration="2" initialization="init-720p.mp4" media="seg-720p-$Number$.m4s"/>
+              </Representation>
+            </AdaptationSet>
+            <AdaptationSet id="audio" contentType="audio" mimeType="audio/mp4" codecs="mp4a">
+              <Representation id="a_low" bandwidth="64000">
+                <SegmentTemplate timescale="1" duration="2" initialization="audio-low.mp4" media="audio-low-$Number$.m4s"/>
+              </Representation>
+              <Representation id="a_high" bandwidth="256000">
+                <SegmentTemplate timescale="1" duration="2" initialization="audio-high.mp4" media="audio-high-$Number$.m4s"/>
+              </Representation>
+            </AdaptationSet>
+          </Period>
+        </MPD>
+        """
+
+        let manifest = try MPDManifestParser.parse(multiQualityMPD, baseURL: manifestURL)
+        let plan = try DASHTransferPlanner.makeVODPlan(from: manifest)
+
+        // Verifies highest bitrate is automatically selected (1080p @ 5Mbps for video, 256kbps for audio)
+        XCTAssertEqual(plan.video?.representationID, "v_1080p")
+        XCTAssertEqual(plan.video?.bandwidth, 5000000)
+        XCTAssertEqual(plan.video?.resources.first?.url.absoluteString, "https://video.example/path/init-1080p.mp4")
+
+        XCTAssertEqual(plan.audio?.representationID, "a_high")
+        XCTAssertEqual(plan.audio?.bandwidth, 256000)
+        XCTAssertEqual(plan.audio?.resources.first?.url.absoluteString, "https://video.example/path/audio-high.mp4")
+    }
 }

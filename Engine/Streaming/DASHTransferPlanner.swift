@@ -333,11 +333,23 @@ public enum DASHTransferPlanner {
             throw DASHVODTransferPlanError.representationNotFound
         }
 
-        guard let adaptationSet = candidates.first,
-              let representation = adaptationSet.representations.first else {
+        var allOptions: [(adaptationSet: DASHAdaptationSet, representation: DASHRepresentation)] = []
+        for adaptationSet in candidates {
+            for representation in adaptationSet.representations {
+                allOptions.append((adaptationSet, representation))
+            }
+        }
+        guard let best = allOptions.max(by: { lhs, rhs in
+            let lhsBw = lhs.representation.bandwidth ?? 0
+            let rhsBw = rhs.representation.bandwidth ?? 0
+            if lhsBw != rhsBw { return lhsBw < rhsBw }
+            let lhsPixels = (lhs.representation.width ?? 0) * (lhs.representation.height ?? 0)
+            let rhsPixels = (rhs.representation.width ?? 0) * (rhs.representation.height ?? 0)
+            return lhsPixels < rhsPixels
+        }) else {
             throw DASHVODTransferPlanError.noSupportedRepresentation
         }
-        return Selection(adaptationSet: adaptationSet, representation: representation)
+        return Selection(adaptationSet: best.adaptationSet, representation: best.representation)
     }
 
     private static func inferredMediaType(_ adaptationSet: DASHAdaptationSet) -> DASHMediaType? {
