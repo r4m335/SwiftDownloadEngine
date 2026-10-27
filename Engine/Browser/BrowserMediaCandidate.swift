@@ -331,7 +331,7 @@ public enum BrowserMediaCandidateClassifier {
         let blobKind: BlobKind?
         if resource.url.scheme?.lowercased() == "blob" {
             let isGenericOrMissingMIME = mime == nil || mime?.isEmpty == true || mime == "application/octet-stream" || mime == "application/x-mediasource"
-            let isMediaSource = isGenericOrMissingMIME || resource.isMediaSourceBlob || resource.suggestedFilename.hasSuffix(".bin") || resource.resourceType == .other
+            let isMediaSource = mime == "application/x-mediasource" || resource.isMediaSourceBlob || (isGenericOrMissingMIME && (resource.suggestedFilename.hasSuffix(".bin") || resource.suggestedFilename.hasPrefix("blob_stream") || resource.resourceType == .other))
             if isMediaSource {
                 kind = .mediaSource
                 availability = .metadataOnly

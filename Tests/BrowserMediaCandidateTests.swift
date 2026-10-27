@@ -290,7 +290,8 @@ final class BrowserMediaCandidateTests: XCTestCase {
             url: URL(string: "blob:https://www.youtube.com/abc-123")!,
             title: "YouTube Video",
             suggestedFilename: "youtube.mp4",
-            resourceType: .video
+            resourceType: .video,
+            mimeType: "application/x-mediasource"
         )
         let candidate = BrowserMediaCandidateClassifier.classify(resource: youtubeBlob)
         XCTAssertEqual(candidate.kind, .mediaSource)
@@ -312,14 +313,15 @@ final class BrowserMediaCandidateTests: XCTestCase {
                 url: URL(string: site)!,
                 title: "Social Media Stream",
                 suggestedFilename: "stream.mp4",
-                resourceType: .video
+                resourceType: .video,
+                mimeType: "application/x-mediasource"
             )
             let candidate = BrowserMediaCandidateClassifier.classify(resource: blob)
             XCTAssertEqual(candidate.kind, .mediaSource, "Failed for \(site)")
             XCTAssertEqual(candidate.blobKind, .mediaSource, "Failed for \(site)")
             XCTAssertEqual(candidate.availability, .metadataOnly, "Failed for \(site)")
 
-            let support = WebpageResource.evaluateSupport(for: URL(string: site)!, rawURL: site, mimeType: nil as String?)
+            let support = WebpageResource.evaluateSupport(for: URL(string: site)!, rawURL: site, mimeType: "application/x-mediasource")
             XCTAssertFalse(support.isSupported, "Failed support for \(site)")
             XCTAssertEqual(support.reason, "This site uses MediaSource streaming. You must download the manifest (.m3u8 or .mpd) instead.")
         }

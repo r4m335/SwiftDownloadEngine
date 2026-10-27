@@ -74,7 +74,7 @@ public struct WebpageResource: Identifiable, Hashable, Sendable {
         let isGenericMime = cleanMime == nil || cleanMime?.isEmpty == true || cleanMime == "application/octet-stream"
         if isGenericMime {
             let lowerFilename = suggestedFilename.lowercased()
-            return lowerFilename.hasSuffix(".bin") || lowerFilename.hasPrefix("blob_stream") || resourceType == .other || mimeType == nil
+            return lowerFilename.hasSuffix(".bin") || lowerFilename.hasPrefix("blob_stream") || resourceType == .other
         }
         return false
     }
@@ -253,8 +253,7 @@ public struct WebpageResourceExtractor {
             .lowercased()
 
         if scheme == "blob" || lowerRaw.hasPrefix("blob:") {
-            let isGenericMime = normalizedMIME == nil || normalizedMIME?.isEmpty == true || normalizedMIME == "application/octet-stream" || normalizedMIME == "application/x-mediasource"
-            if isGenericMime {
+            if normalizedMIME == "application/x-mediasource" {
                 return (false, "This site uses MediaSource streaming. You must download the manifest (.m3u8 or .mpd) instead.")
             }
             // Blob URLs are memory-backed in the active browser session and are supported
