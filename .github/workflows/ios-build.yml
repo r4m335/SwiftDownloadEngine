@@ -28,18 +28,9 @@ jobs:
           xcodebuild -version
           swift --version
 
-      - name: Build Swift Package and Tests (macOS)
-        run: |
-          set -o pipefail
-          swift build --build-tests 2>&1 | tee build.log || {
-            ERRS=$(grep -E "(: error:|error: )" build.log | head -n 8 | tr '\n' ' | ')
-            echo "::error::COMPILER ERRORS: $ERRS"
-            exit 1
-          }
-
       - name: Run Swift Package Tests (macOS)
         run: |
-          swift test --skip-build
+          swift test
 
   milestone1-torrent-build:
     name: Milestone 1-3 — libtorrent 2.0 iOS Native Build, Bridge & Transfer Engine Test

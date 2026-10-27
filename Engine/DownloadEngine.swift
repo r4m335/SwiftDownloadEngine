@@ -452,21 +452,34 @@ public actor DownloadEngine {
         totalBytes: Int64
     ) async throws -> DownloadSnapshot {
         await queueManager.completeStreaming(id: id, finalDestinationURL: finalFileURL, totalBytes: totalBytes)
-        if var record = try? await persistenceStore.fetch(tag: id) {
-            record.state = .completed
-            record.destinationURL = finalFileURL
-            record.totalSize = totalBytes
-            record.updatedAt = Date()
-            record.segments = [
-                SegmentRecord(
-                    id: 0,
-                    startOffset: 0,
-                    endOffset: max(0, totalBytes - 1),
-                    length: totalBytes,
-                    completedBytes: totalBytes
-                )
-            ]
-            try? await persistenceStore.save(record)
+        if let existing = try? await persistenceStore.fetch(tag: id) {
+            let updated = DownloadRecord(
+                id: existing.id,
+                originalURL: existing.originalURL,
+                resolvedURL: existing.resolvedURL,
+                destinationURL: finalFileURL,
+                totalSize: totalBytes,
+                state: .completed,
+                storageMode: existing.storageMode,
+                transportPolicy: existing.transportPolicy,
+                eTag: existing.eTag,
+                lastModified: existing.lastModified,
+                suggestedFilename: existing.suggestedFilename,
+                mimeType: existing.mimeType,
+                headers: existing.headers,
+                createdAt: existing.createdAt,
+                updatedAt: Date(),
+                segments: [
+                    SegmentRecord(
+                        id: 0,
+                        startOffset: 0,
+                        endOffset: max(0, totalBytes - 1),
+                        length: totalBytes,
+                        completedBytes: totalBytes
+                    )
+                ]
+            )
+            try? await persistenceStore.save(updated)
         }
         if let item = await queueManager.item(for: id) {
             let snapshot = await makeSnapshot(from: item)
