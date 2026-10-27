@@ -854,7 +854,14 @@ public struct UnifiedTransferRowView: View {
             // Metrics: Size & Speed
             HStack {
                 if let total = transfer.totalBytes, total > 0 {
-                    Text("\(UIFormatters.formatBytes(transfer.completedBytes)) / \(UIFormatters.formatBytes(total))")
+                    let totalStr: String = {
+                        if transfer.isStreaming && transfer.state == .downloading {
+                            return "~\(UIFormatters.formatBytes(total)) (Estimated)"
+                        } else {
+                            return UIFormatters.formatBytes(total)
+                        }
+                    }()
+                    Text("\(UIFormatters.formatBytes(transfer.completedBytes)) / \(totalStr)")
                         .font(.caption)
                         .foregroundColor(.secondary)
                 } else {

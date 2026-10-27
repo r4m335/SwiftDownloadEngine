@@ -301,6 +301,82 @@ final class StreamingDownloadOrchestratorTests: XCTestCase {
         XCTAssertEqual(snapshots.first?.destinationURL.path, result.destinationURL.path)
     }
 
+    func testMasterPlaylistVariantResolutionPreservesMasterURLAndEstimatesBandwidthSize() async throws {
+        let masterURL = URL(string: "https://video.example/vod/master.m3u8")!
+        let variantURL = URL(string: "https://video.example/vod/variant_fhd.m3u8")!
+
+        let masterM3U8 = """
+        #EXTM3U
+        #EXT-X-VERSION:4
+        #EXT-X-STREAM-INF:BANDWIDTH=8000000,RESOLUTION=1920x1080
+        variant_fhd.m3u8
+        """
+
+        let variantM3U8 = """
+        #EXTM3U
+        #EXT-X-VERSION:4
+        #EXT-X-TARGETDURATION:5
+        #EXTINF:5.0,
+        seg1.ts
+        #EXTINF:5.0,
+        seg2.ts
+        #EXT-X-ENDLIST
+        """
+
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent("master-test-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let engine = try DownloadEngine(storageDirectoryURL: tempDir)
+        let router = RouterManifestLoader(responses: [
+            masterURL: StreamingManifestResponse(data: Data(masterM3U8.utf8), finalURL: masterURL, mimeType: "application/vnd.apple.mpegurl"),
+            variantURL: StreamingManifestResponse(data: Data(variantM3U8.utf8), finalURL: variantURL, mimeType: "application/vnd.apple.mpegurl")
+        ])
+
+        let orchestrator = StreamingDownloadOrchestrator(
+            manifestLoader: router,
+            segmentExecutor: WritingSegmentExecutor(),
+            downloadEngine: engine
+        )
+        await engine.setStreamingOrchestrator(orchestrator)
+
+        let candidate = try StreamingManifestCandidate(url: masterURL)
+        let proposal = try await orchestrator.prepare(candidate: candidate)
+
+        // Estimated bytes: 8,000,000 / 8 * 10 seconds = 10,000,000 bytes (~10 MB)
+        XCTAssertEqual(proposal.estimatedTransferBytes, 10_000_000)
+
+        let destinationMP4 = tempDir.appendingPathComponent("movie.mp4", isDirectory: false)
+        let result = try await orchestrator.executeAndAssembleHLS(
+            proposal,
+            approved: true,
+            destinationDirectory: tempDir,
+            outputURL: destinationMP4
+        )
+
+        // Verifies Bug 2 fix: Output file forced to .mp4
+        XCTAssertEqual(result.destinationURL.pathExtension.lowercased(), "mp4")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: result.destinationURL.path))
+
+        let snapshots = await engine.allSnapshots()
+        // Verifies Bug 1 fix: Exactly 1 record
+        XCTAssertEqual(snapshots.count, 1)
+
+        guard let snapshot = snapshots.first else {
+            XCTFail("Expected 1 download snapshot")
+            return
+        }
+
+        // Verifies Bug 1 fix: Source URL is the original master URL, NOT the variant sub-playlist
+        XCTAssertEqual(snapshot.url.absoluteString, masterURL.absoluteString)
+        XCTAssertEqual(snapshot.state, .completed)
+
+        // Verifies Bug 5 fix: TransferType for .m3u8 resolves to .hls
+        let transfer = UnifiedTransfer(from: snapshot)
+        XCTAssertEqual(transfer.type, .hls)
+        XCTAssertTrue(transfer.isStreaming)
+    }
+
     func testDASHExecutionAssemblesSingleVideoThroughExistingExecutor() async throws {
         let url = URL(string: "https://video.example/vod/manifest.mpd")!
         let mpd = """
@@ -799,6 +875,23 @@ private actor RecordingManifestLoader: StreamingManifestLoader {
     ) async throws -> StreamingManifestResponse {
         loadCount += 1
         return StreamingManifestResponse(data: data, finalURL: finalURL, mimeType: mimeType)
+    }
+}
+
+private actor RouterManifestLoader: StreamingManifestLoader {
+    private let responses: [URL: StreamingManifestResponse]
+
+    init(responses: [URL: StreamingManifestResponse]) {
+        self.responses = responses
+    }
+
+    func load(
+        candidate: StreamingManifestCandidate,
+        headers: [String: String],
+        limits: ManifestParsingLimits
+    ) async throws -> StreamingManifestResponse {
+        if let res = responses[candidate.url] { return res }
+        throw StreamingDownloadOrchestratorError.invalidManifestURL
     }
 }
 

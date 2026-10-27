@@ -39,7 +39,7 @@ final class HLSVODReconstructionTests: XCTestCase {
 
         XCTAssertEqual(result.container, .mpegTS)
         XCTAssertEqual(try Data(contentsOf: output), firstData + secondData)
-        XCTAssertTrue(HLSVODReconstructionPlanner.suggestedFilename(for: transferPlan).hasSuffix(".ts"))
+        XCTAssertTrue(HLSVODReconstructionPlanner.suggestedFilename(for: transferPlan).hasSuffix(".mp4"))
     }
 
     func testFragmentedMP4VODPreservesInitializationMapAndSegmentOrder() throws {

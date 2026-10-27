@@ -8,6 +8,9 @@ import SwiftUI
 public enum TransferType: String, Sendable, Codable, CaseIterable, Identifiable {
     case http = "HTTP"
     case torrent = "BitTorrent"
+    case streaming = "Streaming"
+    case hls = "HLS"
+    case dash = "DASH"
 
     public var id: String { rawValue }
 
@@ -15,9 +18,14 @@ public enum TransferType: String, Sendable, Codable, CaseIterable, Identifiable 
         switch self {
         case .http: return "HTTP"
         case .torrent: return "TORRENT"
+        case .streaming: return "STREAMING"
+        case .hls: return "HLS"
+        case .dash: return "DASH"
         }
     }
 }
+
+public typealias DownloadType = TransferType
 
 /// Unified presentation states covering both HTTP segmented transfers and BitTorrent swarm transfers.
 public enum UnifiedTransferState: Sendable, Equatable, Hashable {
@@ -95,7 +103,13 @@ public struct UnifiedTransfer: Identifiable, Sendable, Equatable {
     public init(from snapshot: DownloadSnapshot) {
         self.id = snapshot.id
         self.name = snapshot.destinationURL.lastPathComponent
-        self.type = .http
+        if snapshot.url.pathExtension.lowercased() == "m3u8" || snapshot.url.absoluteString.contains(".m3u8") {
+            self.type = .hls
+        } else if snapshot.url.pathExtension.lowercased() == "mpd" || snapshot.url.absoluteString.contains(".mpd") {
+            self.type = .dash
+        } else {
+            self.type = .http
+        }
 
         switch snapshot.state {
         case .pending:
@@ -228,7 +242,8 @@ public struct UnifiedTransfer: Identifiable, Sendable, Equatable {
 
     // MARK: - Helper Predicates
     public var isTorrent: Bool { type == .torrent }
-    public var isHTTP: Bool { type == .http }
+    public var isHTTP: Bool { type == .http || type == .streaming || type == .hls || type == .dash }
+    public var isStreaming: Bool { type == .streaming || type == .hls || type == .dash }
 
     public var canPause: Bool {
         switch state {
@@ -303,13 +318,31 @@ public struct TypeBadge: View {
     }
 
     public var body: some View {
-        Text(type == .torrent ? "TORRENT" : "HTTP")
+        Text(badgeText)
             .font(.system(size: 10, weight: .bold))
             .padding(.horizontal, 6)
             .padding(.vertical, 2)
-            .background(type == .torrent ? Color.purple.opacity(0.18) : Color.blue.opacity(0.18))
-            .foregroundColor(type == .torrent ? .purple : .blue)
+            .background(badgeColor.opacity(0.18))
+            .foregroundColor(badgeColor)
             .cornerRadius(4)
+    }
+
+    private var badgeText: String {
+        switch type {
+        case .torrent: return "TORRENT"
+        case .hls: return "HLS"
+        case .dash: return "DASH"
+        case .streaming: return "HLS"
+        case .http: return "HTTP"
+        }
+    }
+
+    private var badgeColor: Color {
+        switch type {
+        case .torrent: return .purple
+        case .hls, .dash, .streaming: return .orange
+        case .http: return .blue
+        }
     }
 }
 

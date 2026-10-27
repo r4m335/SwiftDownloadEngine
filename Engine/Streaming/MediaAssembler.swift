@@ -195,7 +195,15 @@ public enum MediaAssembler {
             if fileManager.fileExists(atPath: request.destinationURL.path) {
                 try fileManager.removeItem(at: request.destinationURL)
             }
-            try fileManager.moveItem(at: temporaryOutput, to: request.destinationURL)
+            if request.container == .mpegTS && request.destinationURL.pathExtension.lowercased() == "mp4" {
+                #if canImport(AVFoundation)
+                try remuxMPEGTSFileToMP4(sourceTSURL: temporaryOutput, destinationMP4URL: request.destinationURL)
+                #else
+                throw MediaAssemblyError.muxingUnavailable
+                #endif
+            } else {
+                try fileManager.moveItem(at: temporaryOutput, to: request.destinationURL)
+            }
             let attributes = try fileManager.attributesOfItem(atPath: request.destinationURL.path)
             guard let byteCount = (attributes[.size] as? NSNumber)?.int64Value, byteCount > 0 else {
                 throw MediaAssemblyError.fileOperationFailed
@@ -396,6 +404,114 @@ public enum MediaAssembler {
         if expectedKinds.contains(.video) && !hasVideo { return false }
         if expectedKinds.contains(.audio) && !hasAudio { return false }
         return asset.duration.isNumeric && asset.duration.seconds > 0
+    }
+
+    private static func remuxMPEGTSFileToMP4(sourceTSURL: URL, destinationMP4URL: URL) throws {
+        let fileManager = FileManager.default
+        let tempMP4 = destinationMP4URL.deletingLastPathComponent()
+            .appendingPathComponent("remux-\(UUID().uuidString).mp4", isDirectory: false)
+        defer { try? fileManager.removeItem(at: tempMP4) }
+
+        let asset = AVURLAsset(url: sourceTSURL)
+        var didSucceed = false
+
+        // Attempt 1: AVAssetExportSession passthrough
+        if let exportSession = AVAssetExportSession(asset: asset, presetName: AVAssetExportPresetPassthrough) {
+            exportSession.outputURL = tempMP4
+            exportSession.outputFileType = .mp4
+            exportSession.shouldOptimizeForNetworkUse = true
+            let sema = DispatchSemaphore(value: 0)
+            exportSession.exportAsynchronously {
+                sema.signal()
+            }
+            sema.wait()
+            if exportSession.status == .completed && fileManager.fileExists(atPath: tempMP4.path) {
+                didSucceed = true
+            }
+        }
+
+        // Attempt 2: AVAssetReader + AVAssetWriter if exportSession did not complete
+        if !didSucceed {
+            try? fileManager.removeItem(at: tempMP4)
+            do {
+                let writer = try AVAssetWriter(outputURL: tempMP4, fileType: .mp4)
+                let reader = try AVAssetReader(asset: asset)
+                var outputsAndInputs: [(AVAssetReaderTrackOutput, AVAssetWriterInput)] = []
+
+                for track in asset.tracks {
+                    guard track.mediaType == .video || track.mediaType == .audio else { continue }
+                    let output = AVAssetReaderTrackOutput(track: track, outputSettings: nil)
+                    guard reader.canAdd(output) else { continue }
+                    reader.add(output)
+
+                    let input = AVAssetWriterInput(mediaType: track.mediaType, outputSettings: nil)
+                    input.expectsMediaDataInRealTime = false
+                    guard writer.canAdd(input) else { continue }
+                    writer.add(input)
+
+                    outputsAndInputs.append((output, input))
+                }
+
+                guard !outputsAndInputs.isEmpty, reader.startReading(), writer.startWriting() else {
+                    throw MediaAssemblyError.muxingFailed
+                }
+                writer.startSession(atSourceTime: .zero)
+
+                let group = DispatchGroup()
+                let state = MuxState()
+
+                for (output, input) in outputsAndInputs {
+                    group.enter()
+                    input.requestMediaDataWhenReady(on: DispatchQueue(label: "remux-track-\(UUID().uuidString)")) {
+                        while input.isReadyForMoreMediaData {
+                            guard let sample = output.copyNextSampleBuffer() else {
+                                input.markAsFinished()
+                                group.leave()
+                                return
+                            }
+                            if !input.append(sample) {
+                                state.lock.lock()
+                                state.appendFailed = true
+                                state.lock.unlock()
+                                reader.cancelReading()
+                                input.markAsFinished()
+                                group.leave()
+                                return
+                            }
+                        }
+                    }
+                }
+
+                group.wait()
+                state.lock.lock()
+                let failed = state.appendFailed
+                state.lock.unlock()
+
+                guard !failed else {
+                    writer.cancelWriting()
+                    throw MediaAssemblyError.muxingFailed
+                }
+
+                let finishSem = DispatchSemaphore(value: 0)
+                writer.finishWriting { finishSem.signal() }
+                finishSem.wait()
+
+                if writer.status == .completed && fileManager.fileExists(atPath: tempMP4.path) {
+                    didSucceed = true
+                }
+            } catch {
+                throw MediaAssemblyError.muxingFailed
+            }
+        }
+
+        guard didSucceed else {
+            throw MediaAssemblyError.muxingFailed
+        }
+
+        if fileManager.fileExists(atPath: destinationMP4URL.path) {
+            try? fileManager.removeItem(at: destinationMP4URL)
+        }
+        try fileManager.moveItem(at: tempMP4, to: destinationMP4URL)
     }
 #endif
 

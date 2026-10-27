@@ -228,6 +228,7 @@ public actor DownloadEngine {
     }
 
     public weak var streamingOrchestrator: StreamingDownloadOrchestrator?
+    private var streamingSpeeds: [DownloadID: Double] = [:]
 
     public func setStreamingOrchestrator(_ orchestrator: StreamingDownloadOrchestrator?) {
         self.streamingOrchestrator = orchestrator
@@ -437,6 +438,7 @@ public actor DownloadEngine {
         totalBytes: Int64?,
         bytesPerSecond: Double = 0.0
     ) async {
+        streamingSpeeds[id] = bytesPerSecond
         await queueManager.updateStreamingProgress(id: id, completedBytes: completedBytes, totalBytes: totalBytes)
         if let item = await queueManager.item(for: id) {
             let snapshot = await makeSnapshot(from: item)
@@ -481,6 +483,7 @@ public actor DownloadEngine {
             )
             try? await persistenceStore.save(updated)
         }
+        streamingSpeeds.removeValue(forKey: id)
         if let item = await queueManager.item(for: id) {
             let snapshot = await makeSnapshot(from: item)
             previousStates[item.id] = .completed
@@ -502,6 +505,7 @@ public actor DownloadEngine {
             record.updatedAt = Date()
             try? await persistenceStore.save(record)
         }
+        streamingSpeeds.removeValue(forKey: id)
         if let item = await queueManager.item(for: id) {
             let snapshot = await makeSnapshot(from: item)
             previousStates[item.id] = .failed(reason: reason)
@@ -782,6 +786,10 @@ public actor DownloadEngine {
             failureReason = reason
         }
 
+        let streamSpeed = streamingSpeeds[item.id]
+        let currentBps = metrics?.currentBytesPerSecond ?? coordProg?.currentBytesPerSecond ?? streamSpeed ?? 0
+        let avgBps = metrics?.averageBytesPerSecond ?? coordProg?.averageBytesPerSecond ?? streamSpeed ?? 0
+
         return DownloadSnapshot(
             id: item.id,
             url: item.request.url,
@@ -791,8 +799,8 @@ public actor DownloadEngine {
             completedBytes: item.completedBytes,
             totalBytes: item.totalBytes,
             progressFraction: item.fractionCompleted,
-            currentBytesPerSecond: metrics?.currentBytesPerSecond ?? coordProg?.currentBytesPerSecond ?? 0,
-            averageBytesPerSecond: metrics?.averageBytesPerSecond ?? coordProg?.averageBytesPerSecond ?? 0,
+            currentBytesPerSecond: currentBps,
+            averageBytesPerSecond: avgBps,
             elapsedTime: metrics?.elapsedTime ?? coordProg?.elapsedTime ?? 0,
             estimatedTimeRemaining: metrics?.estimatedTimeRemaining ?? coordProg?.estimatedTimeRemaining,
             failureReason: failureReason,

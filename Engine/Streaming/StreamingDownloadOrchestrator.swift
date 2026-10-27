@@ -765,6 +765,7 @@ public actor StreamingDownloadOrchestrator {
                 PipelineLogger.shared.log("[HLS Pipeline] 2. HLSManifestParser initial parse completed: playlistType=\(parsed.playlistType), variants=\(parsed.variants.count), segments=\(parsed.segments.count)")
 
                 var selectedAudioRendition: HLSRendition?
+                var selectedVariantBandwidth: Int? = nil
                 var currentURL = response.finalURL
                 var resolutionDepth = 0
                 while parsed.playlistType == .master && resolutionDepth < 5 {
@@ -775,6 +776,7 @@ public actor StreamingDownloadOrchestrator {
                             from: parsed,
                             preferences: candidate.hlsVariantPreferences
                         )
+                        selectedVariantBandwidth = variant.bandwidth
                         try HLSVariantSelector.validateAudioLayout(
                             selectedVariant: variant,
                             master: parsed
@@ -874,6 +876,12 @@ public actor StreamingDownloadOrchestrator {
                 if let videoBytes = videoPlan.estimatedTransferBytes {
                     let audioBytes = audioPlan?.reduce(Int64(0)) { $0 + ($1.byteRange?.length ?? 0) } ?? 0
                     totalEstimatedBytes = videoBytes + audioBytes
+                } else if let bw = selectedVariantBandwidth, bw > 0 {
+                    let totalDuration = parsed.segments.reduce(0.0) { $0 + $1.duration }
+                    let effectiveDuration = totalDuration > 0 ? totalDuration : (Double(parsed.segments.count) * (parsed.targetDuration ?? 6.0))
+                    let videoBytes = Int64(Double(bw) / 8.0 * effectiveDuration)
+                    let audioBytes = audioPlan?.reduce(Int64(0)) { $0 + ($1.byteRange?.length ?? 0) } ?? 0
+                    totalEstimatedBytes = videoBytes + audioBytes
                 } else {
                     totalEstimatedBytes = nil
                 }
@@ -926,9 +934,11 @@ public actor StreamingDownloadOrchestrator {
         )
         proposals[metadataFingerprint] = proposal
         candidatesByTransfer[proposal.transferID] = candidate
-        let manifestKey = proposal.manifest.manifestURL.absoluteString
-        registeredTransferIDs[manifestKey] = proposal.transferID
-        registeredTransferIDs[proposal.transferID] = manifestKey
+        let masterKey = candidate.url.absoluteString
+        let variantKey = proposal.manifest.manifestURL.absoluteString
+        registeredTransferIDs[masterKey] = proposal.transferID
+        registeredTransferIDs[variantKey] = proposal.transferID
+        registeredTransferIDs[proposal.transferID] = masterKey
         return proposal
     }
 
@@ -956,6 +966,10 @@ public actor StreamingDownloadOrchestrator {
         try FileManager.default.createDirectory(at: destinationDirectory, withIntermediateDirectories: true)
         var completed: [StreamingSegmentIdentity] = []
         var localFiles: [URL] = []
+        var actualDownloadedBytes: Int64 = 0
+        var lastSpeedCheckTime = Date()
+        var lastSpeedCheckBytes: Int64 = 0
+        var currentBytesPerSecond: Double = 0.0
         do {
             for resource in proposal.resources {
                 if isCancelled(transferID: proposal.transferID) || Task.isCancelled {
@@ -997,6 +1011,7 @@ public actor StreamingDownloadOrchestrator {
                    size.int64Value == range.length {
                     completed.append(resource.identity)
                     localFiles.append(destinationURL)
+                    actualDownloadedBytes += size.int64Value
                     let currentFraction = Double(completed.count) / Double(max(1, proposal.resources.count))
                     progress?(StreamingTransferProgress(
                         transferID: proposal.transferID,
@@ -1006,13 +1021,14 @@ public actor StreamingDownloadOrchestrator {
                         currentFraction: currentFraction
                     ))
                     if let engine = self.downloadEngine {
-                        let manifestKey = proposal.manifest.manifestURL.absoluteString
+                        let originalSourceURL = candidatesByTransfer[proposal.transferID]?.url ?? proposal.manifest.manifestURL
+                        let manifestKey = originalSourceURL.absoluteString
                         let estimatedTotal = proposal.estimatedTransferBytes ?? (Int64(proposal.resources.count) * 1_000_000)
-                        let completedBytes = Int64(currentFraction * Double(estimatedTotal))
                         await engine.updateStreamingDownloadProgress(
                             id: manifestKey,
-                            completedBytes: completedBytes,
-                            totalBytes: estimatedTotal
+                            completedBytes: actualDownloadedBytes,
+                            totalBytes: estimatedTotal,
+                            bytesPerSecond: currentBytesPerSecond
                         )
                     }
                     continue
@@ -1056,6 +1072,17 @@ public actor StreamingDownloadOrchestrator {
                 }
                 completed.append(resource.identity)
                 localFiles.append(destinationURL)
+                let segSize = (try? FileManager.default.attributesOfItem(atPath: destinationURL.path)[.size] as? Int64) ?? 0
+                actualDownloadedBytes += segSize
+
+                let now = Date()
+                let timeDelta = now.timeIntervalSince(lastSpeedCheckTime)
+                if timeDelta >= 0.5 {
+                    currentBytesPerSecond = Double(actualDownloadedBytes - lastSpeedCheckBytes) / timeDelta
+                    lastSpeedCheckTime = now
+                    lastSpeedCheckBytes = actualDownloadedBytes
+                }
+
                 let currentFraction = Double(completed.count) / Double(max(1, proposal.resources.count))
                 progress?(StreamingTransferProgress(
                     transferID: proposal.transferID,
@@ -1065,13 +1092,14 @@ public actor StreamingDownloadOrchestrator {
                     currentFraction: currentFraction
                 ))
                 if let engine = self.downloadEngine {
-                    let manifestKey = proposal.manifest.manifestURL.absoluteString
+                    let originalSourceURL = candidatesByTransfer[proposal.transferID]?.url ?? proposal.manifest.manifestURL
+                    let manifestKey = originalSourceURL.absoluteString
                     let estimatedTotal = proposal.estimatedTransferBytes ?? (Int64(proposal.resources.count) * 1_000_000)
-                    let completedBytes = Int64(currentFraction * Double(estimatedTotal))
                     await engine.updateStreamingDownloadProgress(
                         id: manifestKey,
-                        completedBytes: completedBytes,
-                        totalBytes: estimatedTotal
+                        completedBytes: actualDownloadedBytes,
+                        totalBytes: estimatedTotal,
+                        bytesPerSecond: currentBytesPerSecond
                     )
                 }
             }
@@ -1111,17 +1139,20 @@ public actor StreamingDownloadOrchestrator {
         guard case .hls(let transferPlan) = proposal.manifest else {
             throw StreamingDownloadOrchestratorError.unsupportedManifest(.dash)
         }
-        let manifestKey = transferPlan.manifestURL.absoluteString
+        let finalOutputURL = outputURL.pathExtension.lowercased() == "mp4" ? outputURL : outputURL.deletingPathExtension().appendingPathExtension("mp4")
+        let originalSourceURL = candidatesByTransfer[proposal.transferID]?.url ?? transferPlan.manifestURL
+        let manifestKey = originalSourceURL.absoluteString
         registeredTransferIDs[manifestKey] = proposal.transferID
+        registeredTransferIDs[transferPlan.manifestURL.absoluteString] = proposal.transferID
         registeredTransferIDs[proposal.transferID] = manifestKey
 
         if let engine = self.downloadEngine {
             let estimated = proposal.estimatedTransferBytes ?? (Int64(proposal.resources.count) * 1_000_000)
             _ = try? await engine.registerStreamingDownload(
                 id: manifestKey,
-                manifestURL: transferPlan.manifestURL,
-                destinationURL: outputURL,
-                filename: outputURL.lastPathComponent,
+                manifestURL: originalSourceURL,
+                destinationURL: finalOutputURL,
+                filename: finalOutputURL.lastPathComponent,
                 totalBytes: estimated,
                 mimeType: "video/mp4"
             )
@@ -1143,7 +1174,7 @@ public actor StreamingDownloadOrchestrator {
             let assemblyOutput = try HLSVODReconstructor.assemble(
                 transferPlan: transferPlan,
                 completedResources: completed,
-                destinationURL: outputURL,
+                destinationURL: finalOutputURL,
                 temporaryDirectoryURL: destinationDirectory.appendingPathComponent(
                     ".media-assembly",
                     isDirectory: true
@@ -1184,17 +1215,20 @@ public actor StreamingDownloadOrchestrator {
         guard case .dash(let transferPlan) = proposal.manifest else {
             throw StreamingDownloadOrchestratorError.unsupportedManifest(.hls)
         }
-        let manifestKey = transferPlan.manifestURL.absoluteString
+        let finalOutputURL = outputURL.pathExtension.lowercased() == "mp4" ? outputURL : outputURL.deletingPathExtension().appendingPathExtension("mp4")
+        let originalSourceURL = candidatesByTransfer[proposal.transferID]?.url ?? transferPlan.manifestURL
+        let manifestKey = originalSourceURL.absoluteString
         registeredTransferIDs[manifestKey] = proposal.transferID
+        registeredTransferIDs[transferPlan.manifestURL.absoluteString] = proposal.transferID
         registeredTransferIDs[proposal.transferID] = manifestKey
 
         if let engine = self.downloadEngine {
             let estimated = proposal.estimatedTransferBytes ?? (Int64(proposal.resources.count) * 1_000_000)
             _ = try? await engine.registerStreamingDownload(
                 id: manifestKey,
-                manifestURL: transferPlan.manifestURL,
-                destinationURL: outputURL,
-                filename: outputURL.lastPathComponent,
+                manifestURL: originalSourceURL,
+                destinationURL: finalOutputURL,
+                filename: finalOutputURL.lastPathComponent,
                 totalBytes: estimated,
                 mimeType: "video/mp4"
             )
@@ -1215,7 +1249,7 @@ public actor StreamingDownloadOrchestrator {
             let assemblyOutput = try DASHVODReconstructor.assemble(
                 transferPlan: transferPlan,
                 completedResources: completed,
-                destinationURL: outputURL,
+                destinationURL: finalOutputURL,
                 temporaryDirectoryURL: destinationDirectory.appendingPathComponent(
                     ".media-assembly",
                     isDirectory: true

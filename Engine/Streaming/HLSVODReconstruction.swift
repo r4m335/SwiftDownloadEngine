@@ -200,13 +200,7 @@ public enum HLSVODReconstructionPlanner {
         let safe = stem.map { character in
             character.isLetter || character.isNumber || character == "-" || character == "_" ? character : "_"
         }
-        if transferPlan.audioPlan != nil && !transferPlan.audioPlan!.isEmpty {
-            return "\(String(safe)).mp4"
-        }
-        let format: HLSVODReconstructionFormat = transferPlan.resources.contains {
-            $0.kind == .initializationMap
-        } ? .fragmentedMP4 : .mpegTS
-        return "\(String(safe)).\(format.fileExtension)"
+        return "\(String(safe)).mp4"
     }
 
     private static func fileSize(_ url: URL) -> Int64? {

@@ -427,7 +427,7 @@ public struct DownloadDetailsView: View {
                         Text(transfer.name)
                             .font(.title3.bold())
                         Spacer()
-                        TypeBadge(type: .http)
+                        TypeBadge(type: transfer.type)
                         if let snap = snapshot {
                             StatusBadge(state: snap.state)
                         } else {

@@ -1092,77 +1092,38 @@ public final class BrowserViewModel: NSObject, ObservableObject {
             }
             do {
                 let completionMessage: String
-                let assembledOutputURL: URL
-                let filename: String
-                let manifestURL: URL
-
                 let tempAssemblyDir = FileManager.default.temporaryDirectory
                     .appendingPathComponent("Assemble-\(UUID().uuidString)", isDirectory: true)
                 try FileManager.default.createDirectory(at: tempAssemblyDir, withIntermediateDirectories: true)
+                try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
 
                 switch proposal.manifest {
                 case .hls(let transferPlan):
-                    manifestURL = transferPlan.manifestURL
-                    filename = HLSVODReconstructionPlanner.suggestedFilename(for: transferPlan)
-                    let tempOutputURL = tempAssemblyDir.appendingPathComponent(filename, isDirectory: false)
-                    let result = try await orchestrator.executeAndAssembleHLS(
+                    let filename = HLSVODReconstructionPlanner.suggestedFilename(for: transferPlan)
+                    let targetURL = destination.appendingPathComponent(filename, isDirectory: false)
+                    _ = try await orchestrator.executeAndAssembleHLS(
                         proposal,
                         approved: true,
                         destinationDirectory: tempAssemblyDir,
-                        outputURL: tempOutputURL,
+                        outputURL: targetURL,
                         progress: progressSink
                     )
-                    assembledOutputURL = result.destinationURL
                     completionMessage = "Streaming download completed: \(filename)."
                 case .dash(let transferPlan):
-                    manifestURL = transferPlan.manifestURL
-                    filename = DASHVODReconstructionPlanner.suggestedFilename(for: transferPlan)
-                    let tempOutputURL = tempAssemblyDir.appendingPathComponent(filename, isDirectory: false)
-                    let result = try await orchestrator.executeAndAssembleDASH(
+                    let filename = DASHVODReconstructionPlanner.suggestedFilename(for: transferPlan)
+                    let targetURL = destination.appendingPathComponent(filename, isDirectory: false)
+                    _ = try await orchestrator.executeAndAssembleDASH(
                         proposal,
                         approved: true,
                         destinationDirectory: tempAssemblyDir,
-                        outputURL: tempOutputURL,
+                        outputURL: targetURL,
                         progress: progressSink
                     )
-                    assembledOutputURL = result.destinationURL
                     completionMessage = "Streaming download completed: \(filename)."
                 }
 
-                if let delegate = self?.downloadDelegate {
-                    do {
-                        try await delegate.importCompletedBrowserFile(
-                            fileURL: assembledOutputURL,
-                            filename: filename,
-                            expectedSize: nil,
-                            originalURL: manifestURL,
-                            mimeType: "video/mp4"
-                        )
-                        PipelineLogger.shared.log("[HLS Pipeline] Successfully registered and imported stream into Downloads UI: \(filename)")
-                    } catch {
-                        PipelineLogger.shared.log("[HLS Pipeline] Warning: Delegate import failed: \(error.localizedDescription)")
-                    }
-                } else if let engine = await orchestrator.downloadEngine {
-                    do {
-                        let finalDestination = destination.appendingPathComponent(filename, isDirectory: false)
-                        try? FileManager.default.removeItem(at: finalDestination)
-                        try FileManager.default.moveItem(at: assembledOutputURL, to: finalDestination)
-                        _ = try await engine.importCompletedFile(
-                            fileURL: finalDestination,
-                            originalURL: manifestURL,
-                            filename: filename,
-                            mimeType: "video/mp4"
-                        )
-                        PipelineLogger.shared.log("[HLS Pipeline] Successfully registered stream in DownloadEngine: \(filename)")
-                    } catch {
-                        PipelineLogger.shared.log("[HLS Pipeline] Warning: Engine import failed: \(error.localizedDescription)")
-                    }
-                } else {
-                    let finalDestination = destination.appendingPathComponent(filename, isDirectory: false)
-                    try? FileManager.default.removeItem(at: finalDestination)
-                    try FileManager.default.moveItem(at: assembledOutputURL, to: finalDestination)
-                }
-
+                // Streaming downloads are registered, tracked, and completed directly in DownloadEngine
+                // through StreamingDownloadOrchestrator. Avoid calling importCompletedFile to prevent duplicates.
                 try? FileManager.default.removeItem(at: tempAssemblyDir)
 
                 guard let self else { return }
