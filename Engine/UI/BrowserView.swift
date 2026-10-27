@@ -173,6 +173,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
             orchestrator = StreamingDownloadOrchestrator.createDefault()
         }
         if let vm = downloadDelegate as? DownloadManagerViewModel {
+            vm.engine.streamingOrchestrator = orchestrator
             Task { await orchestrator.setDownloadEngine(vm.engine) }
         }
         self.streamingOrchestrator = orchestrator
@@ -1014,10 +1015,12 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         }
 
         isShowingResourceInspector = false
+        isShowingStreamingConfirmation = false
         isPreparingStreaming = true
         streamingErrorMessage = nil
         streamingProposal = nil
         streamingProgress = nil
+        downloadSuccessNotification = "Streaming download started"
 
         Task { @MainActor [weak self] in
             guard let self else { return }
@@ -1040,19 +1043,17 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                     browserSessionSnapshot: sessionSnapshot
                 )
                 let proposal = try await orchestrator.prepare(candidate: candidate)
-                print("[HLS Pipeline] Proposal prepared successfully. Showing confirmation sheet.")
-                // Small delay to allow any dismissing sheets (such as the resource inspector)
-                // to finish dismissing before presenting the streaming confirmation sheet
-                try? await Task.sleep(nanoseconds: 350_000_000)
+                print("[HLS Pipeline] Proposal prepared successfully. Automatically starting streaming download in background...")
                 self.streamingProposal = proposal
-                self.isShowingStreamingConfirmation = true
+                self.isPreparingStreaming = false
+                self.executeStreamingProposal()
             } catch {
                 let errorMsg = "Streaming preparation failed: \(error.localizedDescription)"
                 print("[HLS Pipeline] \(errorMsg)")
                 self.streamingErrorMessage = errorMsg
                 self.blobCaptureErrorMessage = errorMsg
+                self.isPreparingStreaming = false
             }
-            self.isPreparingStreaming = false
         }
     }
 
@@ -2153,9 +2154,6 @@ public struct BrowserView: View {
         .sheet(isPresented: $viewModel.isShowingMagnetSheet) {
             BrowserMagnetConfirmationSheet(viewModel: viewModel)
         }
-        .sheet(isPresented: $viewModel.isShowingStreamingConfirmation) {
-            BrowserStreamingConfirmationSheet(viewModel: viewModel)
-        }
         .sheet(isPresented: $viewModel.isShowingTabSwitcher) {
             BrowserTabSwitcherView(viewModel: viewModel)
         }
@@ -2255,7 +2253,6 @@ public struct BrowserView: View {
         viewModel.isShowingDownloadSheet ||
         viewModel.isShowingResourceInspector ||
         viewModel.isShowingMagnetSheet ||
-        viewModel.isShowingStreamingConfirmation ||
         viewModel.isShowingTabSwitcher
     }
 

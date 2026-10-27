@@ -227,6 +227,8 @@ public actor DownloadEngine {
         }
     }
 
+    public weak var streamingOrchestrator: StreamingDownloadOrchestrator?
+
     private var listenersAttached = false
 
     /// Attaches internal listeners to `DownloadQueueManager` for automated event broadcasting.
@@ -379,6 +381,117 @@ public actor DownloadEngine {
         }
     }
 
+    /// Registers an active streaming download (e.g. HLS or DASH), writing it to persistence
+    /// and adding it to the queue manager so it immediately appears in the active Downloads UI.
+    @discardableResult
+    public func registerStreamingDownload(
+        id: DownloadID,
+        manifestURL: URL,
+        destinationURL: URL,
+        filename: String,
+        totalBytes: Int64,
+        mimeType: String? = "video/mp4"
+    ) async throws -> DownloadSnapshot {
+        await attachListeners()
+        let now = Date()
+        let record = DownloadRecord(
+            id: id,
+            originalURL: manifestURL,
+            resolvedURL: manifestURL,
+            destinationURL: destinationURL,
+            totalSize: totalBytes,
+            state: .downloading,
+            storageMode: .directSeek,
+            transportPolicy: .foreground,
+            suggestedFilename: filename,
+            mimeType: mimeType,
+            createdAt: now,
+            updatedAt: now,
+            segments: [
+                SegmentRecord(
+                    id: 0,
+                    startOffset: 0,
+                    endOffset: max(0, totalBytes - 1),
+                    length: totalBytes,
+                    completedBytes: 0
+                )
+            ]
+        )
+        try await persistenceStore.save(record)
+        let item = try await queueManager.addActiveStreamingDownload(record: record)
+        let snapshot = await makeSnapshot(from: item)
+        previousStates[item.id] = .downloading
+        broadcast(.added(snapshot))
+        broadcast(.started(snapshot))
+        return snapshot
+    }
+
+    /// Updates the progress of an active streaming download and broadcasts progress updates to the UI.
+    public func updateStreamingDownloadProgress(
+        id: DownloadID,
+        completedBytes: Int64,
+        totalBytes: Int64?,
+        bytesPerSecond: Double = 0.0
+    ) async {
+        await queueManager.updateStreamingProgress(id: id, completedBytes: completedBytes, totalBytes: totalBytes)
+        if let item = await queueManager.item(for: id) {
+            let snapshot = await makeSnapshot(from: item)
+            broadcast(.progressUpdated(snapshot))
+        }
+    }
+
+    /// Completes an active streaming download after segments are assembled into the final playable file.
+    @discardableResult
+    public func completeStreamingDownload(
+        id: DownloadID,
+        finalFileURL: URL,
+        totalBytes: Int64
+    ) async throws -> DownloadSnapshot {
+        await queueManager.completeStreaming(id: id, finalDestinationURL: finalFileURL, totalBytes: totalBytes)
+        if var record = try? await persistenceStore.fetch(tag: id) {
+            record.state = .completed
+            record.destinationURL = finalFileURL
+            record.totalSize = totalBytes
+            record.updatedAt = Date()
+            record.segments = [
+                SegmentRecord(
+                    id: 0,
+                    startOffset: 0,
+                    endOffset: max(0, totalBytes - 1),
+                    length: totalBytes,
+                    completedBytes: totalBytes
+                )
+            ]
+            try? await persistenceStore.save(record)
+        }
+        if let item = await queueManager.item(for: id) {
+            let snapshot = await makeSnapshot(from: item)
+            previousStates[item.id] = .completed
+            terminalEventsEmitted.insert(item.id)
+            broadcast(.completed(snapshot))
+            return snapshot
+        }
+        throw DownloadQueueError.downloadNotFound(id: id)
+    }
+
+    /// Marks an active streaming download as failed and broadcasts the failure to the UI.
+    public func failStreamingDownload(
+        id: DownloadID,
+        reason: String
+    ) async {
+        await queueManager.failStreaming(id: id, reason: reason)
+        if var record = try? await persistenceStore.fetch(tag: id) {
+            record.state = .failed(reason: reason)
+            record.updatedAt = Date()
+            try? await persistenceStore.save(record)
+        }
+        if let item = await queueManager.item(for: id) {
+            let snapshot = await makeSnapshot(from: item)
+            previousStates[item.id] = .failed(reason: reason)
+            broadcast(.failed(snapshot, reason: reason))
+        }
+    }
+
     /// Enqueues multiple download requests in bulk.
     @discardableResult
     public func addDownloads(
@@ -401,6 +514,21 @@ public actor DownloadEngine {
     /// Cooperatively pauses an active or queued download.
     public func pauseDownload(id: DownloadID) async throws {
         await attachListeners()
+        if let orchestrator = streamingOrchestrator, await orchestrator.isManaging(id: id) {
+            await orchestrator.pause(transferID: id)
+            await queueManager.pauseStreaming(id: id)
+            if var record = try? await persistenceStore.fetch(tag: id) {
+                record.state = .paused
+                record.updatedAt = Date()
+                try? await persistenceStore.save(record)
+            }
+            if let item = await queueManager.item(for: id) {
+                let snap = await makeSnapshot(from: item)
+                previousStates[item.id] = .paused
+                broadcast(.paused(snap))
+            }
+            return
+        }
         try await queueManager.pause(id: id)
     }
 
@@ -408,6 +536,21 @@ public actor DownloadEngine {
     public func resumeDownload(id: DownloadID) async throws {
         await attachListeners()
         terminalEventsEmitted.remove(id)
+        if let orchestrator = streamingOrchestrator, await orchestrator.isManaging(id: id) {
+            await orchestrator.resume(transferID: id)
+            await queueManager.resumeStreaming(id: id)
+            if var record = try? await persistenceStore.fetch(tag: id) {
+                record.state = .downloading
+                record.updatedAt = Date()
+                try? await persistenceStore.save(record)
+            }
+            if let item = await queueManager.item(for: id) {
+                let snap = await makeSnapshot(from: item)
+                previousStates[item.id] = .downloading
+                broadcast(.resumed(snap))
+            }
+            return
+        }
         try await queueManager.resume(id: id)
     }
 
@@ -420,6 +563,11 @@ public actor DownloadEngine {
 
     /// Cancels a download, stopping active transfers and optionally deleting destination files.
     public func cancelDownload(id: DownloadID, deleteFile: Bool = false) async throws {
+        if let orchestrator = streamingOrchestrator, await orchestrator.isManaging(id: id) {
+            await orchestrator.cancel(transferID: id)
+            await queueManager.cancel(id: id, deleteDestinationFile: deleteFile)
+            return
+        }
         try await queueManager.cancel(id: id, deleteDestinationFile: deleteFile)
     }
 

@@ -253,6 +253,50 @@ final class StreamingDownloadOrchestratorTests: XCTestCase {
         XCTAssertEqual(snapshots.first?.destinationURL.path, result.destinationURL.path)
     }
 
+    func testStreamingDownloadOrchestrator_PauseAndResumeIntegrationWithDownloadEngine() async throws {
+        let manifestURL = URL(string: "https://video.example/vod/pause_playlist.m3u8")!
+        let m3u8 = """
+        #EXTM3U
+        #EXT-X-VERSION:3
+        #EXT-X-TARGETDURATION:4
+        #EXTINF:4.0,
+        segment.ts
+        #EXT-X-ENDLIST
+        """
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent("pause-test-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let engine = try DownloadEngine(storageDirectoryURL: tempDir)
+        let orchestrator = StreamingDownloadOrchestrator(
+            manifestLoader: RecordingManifestLoader(
+                data: Data(m3u8.utf8),
+                finalURL: manifestURL,
+                mimeType: "application/vnd.apple.mpegurl"
+            ),
+            segmentExecutor: WritingSegmentExecutor(),
+            downloadEngine: engine
+        )
+        engine.streamingOrchestrator = orchestrator
+
+        // 1. Pause
+        await orchestrator.pause(transferID: manifestURL.absoluteString)
+        XCTAssertTrue(await orchestrator.isPaused(transferID: manifestURL.absoluteString))
+
+        // 2. Resume
+        await orchestrator.resume(transferID: manifestURL.absoluteString)
+        XCTAssertFalse(await orchestrator.isPaused(transferID: manifestURL.absoluteString))
+
+        // 3. Complete download
+        let result = try await orchestrator.downloadHLS(
+            manifestURL: manifestURL,
+            destinationDirectory: tempDir
+        )
+        XCTAssertTrue(FileManager.default.fileExists(atPath: result.destinationURL.path))
+        let snapshots = await engine.allSnapshots()
+        XCTAssertEqual(snapshots.first?.state, .completed)
+    }
+
     func testDASHExecutionAssemblesSingleVideoThroughExistingExecutor() async throws {
         let url = URL(string: "https://video.example/vod/manifest.mpd")!
         let mpd = """

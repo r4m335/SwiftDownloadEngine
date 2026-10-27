@@ -291,6 +291,89 @@ public actor DownloadQueueManager {
         return item
     }
 
+    /// Registers an active streaming download (e.g. HLS or DASH) into the queue.
+    @discardableResult
+    public func addActiveStreamingDownload(record: DownloadRecord) throws -> QueueItem {
+        let request = DownloadRequest(
+            id: record.id,
+            url: record.originalURL,
+            destinationURL: record.destinationURL,
+            headers: record.headers,
+            configuredThreadCount: 1,
+            storageMode: .directSeek,
+            transportPolicy: .foreground
+        )
+        if let existing = items[request.id] {
+            return existing
+        }
+
+        sequenceCounter += 1
+        let item = QueueItem(
+            request: request,
+            priority: .normal,
+            sequenceIndex: sequenceCounter,
+            enqueuedAt: record.createdAt,
+            state: .downloading,
+            completedBytes: record.completedBytes,
+            totalBytes: record.totalSize > 0 ? record.totalSize : nil
+        )
+        items[item.id] = item
+        persistQueue()
+        notifyQueueChanged()
+        return item
+    }
+
+    /// Updates the progress of an active streaming download.
+    public func updateStreamingProgress(id: String, completedBytes: Int64, totalBytes: Int64?) {
+        guard var item = items[id] else { return }
+        item.completedBytes = completedBytes
+        if let total = totalBytes, total > 0 {
+            item.totalBytes = total
+        }
+        items[id] = item
+        notifyQueueChanged()
+    }
+
+    /// Marks an active streaming download as paused in the queue.
+    public func pauseStreaming(id: String) {
+        guard var item = items[id] else { return }
+        guard !item.state.isTerminal else { return }
+        item.state = .paused
+        items[id] = item
+        persistQueue()
+        notifyQueueChanged()
+    }
+
+    /// Marks a paused streaming download as active (downloading) in the queue.
+    public func resumeStreaming(id: String) {
+        guard var item = items[id] else { return }
+        guard item.state == .paused || item.state.canResume else { return }
+        item.state = .downloading
+        items[id] = item
+        persistQueue()
+        notifyQueueChanged()
+    }
+
+    /// Completes an active streaming download, pointing to the final muxed file.
+    public func completeStreaming(id: String, finalDestinationURL: URL, totalBytes: Int64) {
+        guard var item = items[id] else { return }
+        item.state = .completed
+        item.completedBytes = totalBytes
+        item.totalBytes = totalBytes
+        items[id] = item
+        persistQueue()
+        notifyQueueChanged()
+    }
+
+    /// Marks an active streaming download as failed.
+    public func failStreaming(id: String, reason: String) {
+        guard var item = items[id] else { return }
+        item.state = .failed(reason: reason)
+        items[id] = item
+        persistQueue()
+        notifyQueueChanged()
+    }
+
     /// Cooperatively pauses a download.
     ///
     /// If actively downloading, awaits worker settlement and flushes disk buffers before releasing the concurrency slot.

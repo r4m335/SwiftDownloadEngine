@@ -521,6 +521,60 @@ public actor StreamingDownloadOrchestrator {
     private var proposals: [String: StreamingTransferProposal] = [:]
     private var runningTransfers: Set<String> = []
     private var completedTransfers: [String: StreamingTransferResult] = [:]
+    private var pausedTransfers: Set<String> = []
+    private var cancelledTransfers: Set<String> = []
+    private var registeredTransferIDs: [String: String] = [:]
+    private var candidatesByTransfer: [String: StreamingManifestCandidate] = [:]
+
+    public func isManaging(id: String) -> Bool {
+        return runningTransfers.contains(id) ||
+               pausedTransfers.contains(id) ||
+               registeredTransferIDs.keys.contains(id) ||
+               registeredTransferIDs.values.contains(id)
+    }
+
+    public func pause(transferID: String) {
+        pausedTransfers.insert(transferID)
+        if let mapped = registeredTransferIDs[transferID] {
+            pausedTransfers.insert(mapped)
+        }
+        for (k, v) in registeredTransferIDs where v == transferID {
+            pausedTransfers.insert(k)
+        }
+        PipelineLogger.shared.log("[HLS Pipeline] Paused transfer: \(transferID)")
+    }
+
+    public func resume(transferID: String) {
+        pausedTransfers.remove(transferID)
+        if let mapped = registeredTransferIDs[transferID] {
+            pausedTransfers.remove(mapped)
+        }
+        for (k, v) in registeredTransferIDs where v == transferID {
+            pausedTransfers.remove(k)
+        }
+        PipelineLogger.shared.log("[HLS Pipeline] Resumed transfer: \(transferID)")
+    }
+
+    public func cancel(transferID: String) async {
+        cancelledTransfers.insert(transferID)
+        if let mapped = registeredTransferIDs[transferID] {
+            cancelledTransfers.insert(mapped)
+        }
+        for (k, v) in registeredTransferIDs where v == transferID {
+            cancelledTransfers.insert(k)
+        }
+        pausedTransfers.remove(transferID)
+        await segmentExecutor.cancel(transferID: transferID)
+        PipelineLogger.shared.log("[HLS Pipeline] Cancelled transfer: \(transferID)")
+    }
+
+    public func isPaused(transferID: String) -> Bool {
+        pausedTransfers.contains(transferID)
+    }
+
+    public func isCancelled(transferID: String) -> Bool {
+        cancelledTransfers.contains(transferID)
+    }
 
     public init(
         manifestLoader: any StreamingManifestLoader = URLSessionStreamingManifestLoader(),
@@ -867,6 +921,10 @@ public actor StreamingDownloadOrchestrator {
             estimatedTransferBytes: estimatedBytes(for: manifest)
         )
         proposals[metadataFingerprint] = proposal
+        candidatesByTransfer[proposal.transferID] = candidate
+        let manifestKey = proposal.manifest.manifestURL.absoluteString
+        registeredTransferIDs[manifestKey] = proposal.transferID
+        registeredTransferIDs[proposal.transferID] = manifestKey
         return proposal
     }
 
@@ -883,7 +941,11 @@ public actor StreamingDownloadOrchestrator {
         guard runningTransfers.insert(proposal.transferID).inserted else {
             throw StreamingDownloadOrchestratorError.transferAlreadyRunning
         }
-        defer { runningTransfers.remove(proposal.transferID) }
+        defer {
+            runningTransfers.remove(proposal.transferID)
+            pausedTransfers.remove(proposal.transferID)
+            cancelledTransfers.remove(proposal.transferID)
+        }
 
         let pipelineTag = proposal.manifest.kind == .dash ? "[DASH Pipeline]" : "[HLS Pipeline]"
         PipelineLogger.shared.log("\(pipelineTag) Step 2: Segment download started (transferID: \(proposal.transferID), totalSegments: \(proposal.resources.count))")
@@ -892,7 +954,19 @@ public actor StreamingDownloadOrchestrator {
         var localFiles: [URL] = []
         do {
             for resource in proposal.resources {
-                try Task.checkCancellation()
+                if isCancelled(transferID: proposal.transferID) || Task.isCancelled {
+                    PipelineLogger.shared.log("\(pipelineTag) Transfer was cancelled.")
+                    throw StreamingDownloadOrchestratorError.cancelled
+                }
+
+                while isPaused(transferID: proposal.transferID) {
+                    try await Task.sleep(nanoseconds: 350_000_000)
+                    if isCancelled(transferID: proposal.transferID) || Task.isCancelled {
+                        PipelineLogger.shared.log("\(pipelineTag) Transfer was cancelled while paused.")
+                        throw StreamingDownloadOrchestratorError.cancelled
+                    }
+                }
+
                 let completedBefore = completed.count
                 let destinationURL = destinationDirectory.appendingPathComponent(
                     "\(resource.identity.value).part",
@@ -919,40 +993,83 @@ public actor StreamingDownloadOrchestrator {
                    size.int64Value == range.length {
                     completed.append(resource.identity)
                     localFiles.append(destinationURL)
+                    let currentFraction = Double(completed.count) / Double(max(1, proposal.resources.count))
                     progress?(StreamingTransferProgress(
                         transferID: proposal.transferID,
-                        completedSegments: completedBefore,
+                        completedSegments: completed.count,
                         totalSegments: proposal.resources.count,
                         currentOrder: resource.identity.order,
-                        currentFraction: 1
+                        currentFraction: currentFraction
                     ))
+                    if let engine = self.downloadEngine {
+                        let manifestKey = proposal.manifest.manifestURL.absoluteString
+                        let estimatedTotal = proposal.estimatedTransferBytes ?? (Int64(proposal.resources.count) * 1_000_000)
+                        let completedBytes = Int64(currentFraction * Double(estimatedTotal))
+                        await engine.updateStreamingDownloadProgress(
+                            id: manifestKey,
+                            completedBytes: completedBytes,
+                            totalBytes: estimatedTotal
+                        )
+                    }
                     continue
                 }
 
                 do {
                     try await segmentExecutor.execute(request) { fraction in
+                        let overallFraction = (Double(completedBefore) + fraction) / Double(max(1, proposal.resources.count))
                         progress?(StreamingTransferProgress(
                             transferID: proposal.transferID,
                             completedSegments: completedBefore,
                             totalSegments: proposal.resources.count,
                             currentOrder: resource.identity.order,
-                            currentFraction: fraction
+                            currentFraction: overallFraction
                         ))
                     }
                 } catch is CancellationError {
                     throw StreamingDownloadOrchestratorError.cancelled
                 } catch {
-                    throw StreamingDownloadOrchestratorError.segmentTransferFailed(order: resource.identity.order)
+                    // Retry once with refreshed manifest tokens in case the session expired during pause
+                    PipelineLogger.shared.log("\(pipelineTag) Segment \(resource.identity.order) failed: \(error.localizedDescription). Attempting token refresh...")
+                    if let candidate = candidatesByTransfer[proposal.transferID],
+                       let freshProposal = try? await prepare(candidate: candidate),
+                       let freshResource = freshProposal.resources.first(where: { $0.identity.order == resource.identity.order }) {
+                        PipelineLogger.shared.log("\(pipelineTag) Successfully refreshed manifest. Retrying segment \(resource.identity.order)...")
+                        let freshRequest = StreamingSegmentTransferRequest(
+                            identity: freshResource.identity,
+                            url: freshResource.url,
+                            headers: requestHeaders(for: freshResource, manifest: freshProposal.manifest),
+                            byteRange: freshResource.byteRange,
+                            destinationURL: destinationURL
+                        )
+                        do {
+                            try await segmentExecutor.execute(freshRequest, progress: nil)
+                        } catch {
+                            throw StreamingDownloadOrchestratorError.segmentTransferFailed(order: resource.identity.order)
+                        }
+                    } else {
+                        throw StreamingDownloadOrchestratorError.segmentTransferFailed(order: resource.identity.order)
+                    }
                 }
                 completed.append(resource.identity)
                 localFiles.append(destinationURL)
+                let currentFraction = Double(completed.count) / Double(max(1, proposal.resources.count))
                 progress?(StreamingTransferProgress(
                     transferID: proposal.transferID,
                     completedSegments: completed.count,
                     totalSegments: proposal.resources.count,
                     currentOrder: resource.identity.order,
-                    currentFraction: 1
+                    currentFraction: currentFraction
                 ))
+                if let engine = self.downloadEngine {
+                    let manifestKey = proposal.manifest.manifestURL.absoluteString
+                    let estimatedTotal = proposal.estimatedTransferBytes ?? (Int64(proposal.resources.count) * 1_000_000)
+                    let completedBytes = Int64(currentFraction * Double(estimatedTotal))
+                    await engine.updateStreamingDownloadProgress(
+                        id: manifestKey,
+                        completedBytes: completedBytes,
+                        totalBytes: estimatedTotal
+                    )
+                }
             }
         } catch is CancellationError {
             PipelineLogger.shared.log("\(pipelineTag) Error: Segment download cancelled.")
@@ -990,6 +1107,23 @@ public actor StreamingDownloadOrchestrator {
         guard case .hls(let transferPlan) = proposal.manifest else {
             throw StreamingDownloadOrchestratorError.unsupportedManifest(.dash)
         }
+        let manifestKey = transferPlan.manifestURL.absoluteString
+        registeredTransferIDs[manifestKey] = proposal.transferID
+        registeredTransferIDs[proposal.transferID] = manifestKey
+
+        if let engine = self.downloadEngine {
+            let estimated = proposal.estimatedTransferBytes ?? (Int64(proposal.resources.count) * 1_000_000)
+            _ = try? await engine.registerStreamingDownload(
+                id: manifestKey,
+                manifestURL: transferPlan.manifestURL,
+                destinationURL: outputURL,
+                filename: outputURL.lastPathComponent,
+                totalBytes: estimated,
+                mimeType: "video/mp4"
+            )
+            PipelineLogger.shared.log("[HLS Pipeline] Active stream registered with DownloadEngine: \(manifestKey)")
+        }
+
         let result = try await execute(
             proposal,
             approved: approved,
@@ -1002,7 +1136,7 @@ public actor StreamingDownloadOrchestrator {
             HLSCompletedResource(resource: $0.0, fileURL: $0.1)
         }
         do {
-            return try HLSVODReconstructor.assemble(
+            let assemblyOutput = try HLSVODReconstructor.assemble(
                 transferPlan: transferPlan,
                 completedResources: completed,
                 destinationURL: outputURL,
@@ -1011,8 +1145,26 @@ public actor StreamingDownloadOrchestrator {
                     isDirectory: true
                 )
             )
+            if let engine = self.downloadEngine {
+                let finalSize = (try? FileManager.default.attributesOfItem(atPath: assemblyOutput.destinationURL.path)[.size] as? Int64) ?? 0
+                _ = try? await engine.completeStreamingDownload(
+                    id: manifestKey,
+                    finalFileURL: assemblyOutput.destinationURL,
+                    totalBytes: finalSize
+                )
+                PipelineLogger.shared.log("[HLS Pipeline] Successfully completed stream in DownloadEngine: \(assemblyOutput.destinationURL.path)")
+            }
+            return assemblyOutput
         } catch let error as HLSVODReconstructionError {
+            if let engine = self.downloadEngine {
+                await engine.failStreamingDownload(id: manifestKey, reason: error.localizedDescription)
+            }
             throw StreamingDownloadOrchestratorError.hlsReconstructionFailed(error)
+        } catch {
+            if let engine = self.downloadEngine {
+                await engine.failStreamingDownload(id: manifestKey, reason: error.localizedDescription)
+            }
+            throw error
         }
     }
 
@@ -1028,6 +1180,23 @@ public actor StreamingDownloadOrchestrator {
         guard case .dash(let transferPlan) = proposal.manifest else {
             throw StreamingDownloadOrchestratorError.unsupportedManifest(.hls)
         }
+        let manifestKey = transferPlan.manifestURL.absoluteString
+        registeredTransferIDs[manifestKey] = proposal.transferID
+        registeredTransferIDs[proposal.transferID] = manifestKey
+
+        if let engine = self.downloadEngine {
+            let estimated = proposal.estimatedTransferBytes ?? (Int64(proposal.resources.count) * 1_000_000)
+            _ = try? await engine.registerStreamingDownload(
+                id: manifestKey,
+                manifestURL: transferPlan.manifestURL,
+                destinationURL: outputURL,
+                filename: outputURL.lastPathComponent,
+                totalBytes: estimated,
+                mimeType: "video/mp4"
+            )
+            PipelineLogger.shared.log("[DASH Pipeline] Active stream registered with DownloadEngine: \(manifestKey)")
+        }
+
         let result = try await execute(
             proposal,
             approved: approved,
@@ -1039,7 +1208,7 @@ public actor StreamingDownloadOrchestrator {
             DASHCompletedResource(resource: $0.0, fileURL: $0.1)
         }
         do {
-            return try DASHVODReconstructor.assemble(
+            let assemblyOutput = try DASHVODReconstructor.assemble(
                 transferPlan: transferPlan,
                 completedResources: completed,
                 destinationURL: outputURL,
@@ -1048,8 +1217,26 @@ public actor StreamingDownloadOrchestrator {
                     isDirectory: true
                 )
             )
+            if let engine = self.downloadEngine {
+                let finalSize = (try? FileManager.default.attributesOfItem(atPath: assemblyOutput.destinationURL.path)[.size] as? Int64) ?? 0
+                _ = try? await engine.completeStreamingDownload(
+                    id: manifestKey,
+                    finalFileURL: assemblyOutput.destinationURL,
+                    totalBytes: finalSize
+                )
+                PipelineLogger.shared.log("[DASH Pipeline] Successfully completed stream in DownloadEngine: \(assemblyOutput.destinationURL.path)")
+            }
+            return assemblyOutput
         } catch let error as DASHVODReconstructionError {
+            if let engine = self.downloadEngine {
+                await engine.failStreamingDownload(id: manifestKey, reason: error.localizedDescription)
+            }
             throw StreamingDownloadOrchestratorError.dashReconstructionFailed(error)
+        } catch {
+            if let engine = self.downloadEngine {
+                await engine.failStreamingDownload(id: manifestKey, reason: error.localizedDescription)
+            }
+            throw error
         }
     }
 
@@ -1087,19 +1274,6 @@ public actor StreamingDownloadOrchestrator {
                 outputURL: finalOut,
                 progress: progress
             )
-            if let engine = self.downloadEngine {
-                do {
-                    _ = try await engine.importCompletedFile(
-                        fileURL: result.destinationURL,
-                        originalURL: manifestURL,
-                        filename: result.destinationURL.lastPathComponent,
-                        mimeType: "video/mp4"
-                    )
-                    PipelineLogger.shared.log("[HLS Pipeline] Successfully registered completed file in DownloadEngine persistence.")
-                } catch {
-                    PipelineLogger.shared.log("[HLS Pipeline] Warning: Could not register in DownloadEngine: \(error.localizedDescription)")
-                }
-            }
             PipelineLogger.shared.log("[HLS Pipeline] downloadHLS successfully completed: \(result.destinationURL.path)")
             return result
         } catch {
@@ -1142,29 +1316,12 @@ public actor StreamingDownloadOrchestrator {
                 outputURL: finalOut,
                 progress: progress
             )
-            if let engine = self.downloadEngine {
-                do {
-                    _ = try await engine.importCompletedFile(
-                        fileURL: result.destinationURL,
-                        originalURL: manifestURL,
-                        filename: result.destinationURL.lastPathComponent,
-                        mimeType: "video/mp4"
-                    )
-                    PipelineLogger.shared.log("[DASH Pipeline] Successfully registered completed file in DownloadEngine persistence.")
-                } catch {
-                    PipelineLogger.shared.log("[DASH Pipeline] Warning: Could not register in DownloadEngine: \(error.localizedDescription)")
-                }
-            }
             PipelineLogger.shared.log("[DASH Pipeline] downloadDASH successfully completed: \(result.destinationURL.path)")
             return result
         } catch {
             PipelineLogger.shared.log("[DASH Pipeline] Error: \(error.localizedDescription)")
             throw error
         }
-    }
-
-    public func cancel(transferID: String) async {
-        await segmentExecutor.cancel(transferID: transferID)
     }
 
     private func manifestHeaders(for candidate: StreamingManifestCandidate) -> [String: String] {
