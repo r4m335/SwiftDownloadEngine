@@ -529,7 +529,7 @@ public actor StreamingDownloadOrchestrator {
     public func isManaging(id: String) -> Bool {
         return runningTransfers.contains(id) ||
                pausedTransfers.contains(id) ||
-               registeredTransferIDs.keys.contains(id) ||
+               registeredTransferIDs[id] != nil ||
                registeredTransferIDs.values.contains(id)
     }
 
@@ -569,11 +569,15 @@ public actor StreamingDownloadOrchestrator {
     }
 
     public func isPaused(transferID: String) -> Bool {
-        pausedTransfers.contains(transferID)
+        if pausedTransfers.contains(transferID) { return true }
+        if let mapped = registeredTransferIDs[transferID], pausedTransfers.contains(mapped) { return true }
+        return false
     }
 
     public func isCancelled(transferID: String) -> Bool {
-        cancelledTransfers.contains(transferID)
+        if cancelledTransfers.contains(transferID) { return true }
+        if let mapped = registeredTransferIDs[transferID], cancelledTransfers.contains(mapped) { return true }
+        return false
     }
 
     public init(

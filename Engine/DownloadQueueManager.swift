@@ -360,6 +360,24 @@ public actor DownloadQueueManager {
         item.state = .completed
         item.completedBytes = totalBytes
         item.totalBytes = totalBytes
+        item.request = DownloadRequest(
+            id: item.request.id,
+            url: item.request.url,
+            destinationURL: finalDestinationURL,
+            headers: item.request.headers,
+            persistSensitiveHeaders: item.request.persistSensitiveHeaders,
+            configuredThreadCount: item.request.configuredThreadCount,
+            advancedMode: item.request.advancedMode,
+            storageMode: item.request.storageMode,
+            reserveDiskBytes: item.request.reserveDiskBytes,
+            retryCount: item.request.retryCount,
+            expectedSHA256: item.request.expectedSHA256,
+            maxConcurrentRequests: item.request.maxConcurrentRequests,
+            speedLimitBytesPerSecond: item.request.speedLimitBytesPerSecond,
+            resumePolicy: item.request.resumePolicy,
+            transportPolicy: item.request.transportPolicy,
+            requestedByteRange: item.request.requestedByteRange
+        )
         items[id] = item
         persistQueue()
         notifyQueueChanged()

@@ -161,7 +161,7 @@ public struct SwiftDownloadEngineApp: App {
         )
         let orchestrator = StreamingDownloadOrchestrator(downloadCoordinator: engine.coordinator, downloadEngine: engine)
         StreamingDownloadOrchestrator.shared = orchestrator
-        engine.streamingOrchestrator = orchestrator
+        Task { await engine.setStreamingOrchestrator(orchestrator) }
         _viewModel = StateObject(wrappedValue: vm)
     }
 
@@ -169,7 +169,7 @@ public struct SwiftDownloadEngineApp: App {
     public init(viewModel: DownloadManagerViewModel) {
         let orchestrator = StreamingDownloadOrchestrator(downloadCoordinator: viewModel.engine.coordinator, downloadEngine: viewModel.engine)
         StreamingDownloadOrchestrator.shared = orchestrator
-        viewModel.engine.streamingOrchestrator = orchestrator
+        Task { await viewModel.engine.setStreamingOrchestrator(orchestrator) }
         _viewModel = StateObject(wrappedValue: viewModel)
     }
 
@@ -183,7 +183,7 @@ public struct SwiftDownloadEngineApp: App {
         )
         let orchestrator = StreamingDownloadOrchestrator(downloadCoordinator: engine.coordinator, downloadEngine: engine)
         StreamingDownloadOrchestrator.shared = orchestrator
-        engine.streamingOrchestrator = orchestrator
+        Task { await engine.setStreamingOrchestrator(orchestrator) }
         _viewModel = StateObject(wrappedValue: vm)
     }
 

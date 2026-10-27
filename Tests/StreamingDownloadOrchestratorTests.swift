@@ -277,7 +277,7 @@ final class StreamingDownloadOrchestratorTests: XCTestCase {
             segmentExecutor: WritingSegmentExecutor(),
             downloadEngine: engine
         )
-        engine.streamingOrchestrator = orchestrator
+        await engine.setStreamingOrchestrator(orchestrator)
 
         // 1. Pause
         await orchestrator.pause(transferID: manifestURL.absoluteString)
@@ -294,7 +294,9 @@ final class StreamingDownloadOrchestratorTests: XCTestCase {
         )
         XCTAssertTrue(FileManager.default.fileExists(atPath: result.destinationURL.path))
         let snapshots = await engine.allSnapshots()
+        XCTAssertEqual(snapshots.count, 1)
         XCTAssertEqual(snapshots.first?.state, .completed)
+        XCTAssertEqual(snapshots.first?.destinationURL.path, result.destinationURL.path)
     }
 
     func testDASHExecutionAssemblesSingleVideoThroughExistingExecutor() async throws {

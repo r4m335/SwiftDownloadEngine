@@ -229,6 +229,10 @@ public actor DownloadEngine {
 
     public weak var streamingOrchestrator: StreamingDownloadOrchestrator?
 
+    public func setStreamingOrchestrator(_ orchestrator: StreamingDownloadOrchestrator?) {
+        self.streamingOrchestrator = orchestrator
+    }
+
     private var listenersAttached = false
 
     /// Attaches internal listeners to `DownloadQueueManager` for automated event broadcasting.
@@ -565,7 +569,7 @@ public actor DownloadEngine {
     public func cancelDownload(id: DownloadID, deleteFile: Bool = false) async throws {
         if let orchestrator = streamingOrchestrator, await orchestrator.isManaging(id: id) {
             await orchestrator.cancel(transferID: id)
-            await queueManager.cancel(id: id, deleteDestinationFile: deleteFile)
+            try await queueManager.cancel(id: id, deleteDestinationFile: deleteFile)
             return
         }
         try await queueManager.cancel(id: id, deleteDestinationFile: deleteFile)

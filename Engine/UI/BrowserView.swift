@@ -173,8 +173,10 @@ public final class BrowserViewModel: NSObject, ObservableObject {
             orchestrator = StreamingDownloadOrchestrator.createDefault()
         }
         if let vm = downloadDelegate as? DownloadManagerViewModel {
-            vm.engine.streamingOrchestrator = orchestrator
-            Task { await orchestrator.setDownloadEngine(vm.engine) }
+            Task {
+                await vm.engine.setStreamingOrchestrator(orchestrator)
+                await orchestrator.setDownloadEngine(vm.engine)
+            }
         }
         self.streamingOrchestrator = orchestrator
         StreamingDownloadOrchestrator.shared = orchestrator
