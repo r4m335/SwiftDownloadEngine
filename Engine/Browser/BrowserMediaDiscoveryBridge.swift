@@ -1297,24 +1297,41 @@ public final class BrowserMediaDiscoveryBridge: NSObject, @unchecked Sendable {
         on webView: WKWebView,
         contentWorld: WKContentWorld
     ) async throws -> String {
-        try await withCheckedThrowingContinuation { continuation in
-            webView.callAsyncJavaScript(
-                script,
-                arguments: arguments,
-                in: nil,
-                in: contentWorld
-            ) { (result: Result<Any, Error>) in
-                switch result {
-                case .success(let anyValue):
-                    if let text = anyValue as? String, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        continuation.resume(returning: text)
-                    } else {
-                        continuation.resume(throwing: StreamingManifestLoadError.invalidResponse)
+        guard webView.url != nil else {
+            throw StreamingManifestLoadError.browserFetchUnavailable
+        }
+
+        return try await withThrowingTaskGroup(of: String.self) { group in
+            group.addTask { @MainActor in
+                try await withCheckedThrowingContinuation { continuation in
+                    webView.callAsyncJavaScript(
+                        script,
+                        arguments: arguments,
+                        in: nil,
+                        in: contentWorld
+                    ) { (result: Result<Any, Error>) in
+                        switch result {
+                        case .success(let anyValue):
+                            if let text = anyValue as? String, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                                continuation.resume(returning: text)
+                            } else {
+                                continuation.resume(throwing: StreamingManifestLoadError.invalidResponse)
+                            }
+                        case .failure(let error):
+                            continuation.resume(throwing: error)
+                        }
                     }
-                case .failure(let error):
-                    continuation.resume(throwing: error)
                 }
             }
+
+            group.addTask {
+                try await Task.sleep(nanoseconds: 15_000_000_000)
+                throw StreamingManifestLoadError.failed("Browser manifest fetch timed out after 15 seconds")
+            }
+
+            let result = try await group.next()!
+            group.cancelAll()
+            return result
         }
     }
 
