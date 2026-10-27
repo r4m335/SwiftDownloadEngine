@@ -878,7 +878,7 @@ public actor StreamingDownloadOrchestrator {
                     totalEstimatedBytes = videoBytes + audioBytes
                 } else if let bw = selectedVariantBandwidth, bw > 0 {
                     let totalDuration = parsed.segments.reduce(0.0) { $0 + $1.duration }
-                    let effectiveDuration = totalDuration > 0 ? totalDuration : (Double(parsed.segments.count) * (parsed.targetDuration ?? 6.0))
+                    let effectiveDuration = totalDuration > 0 ? totalDuration : (Double(parsed.segments.count) * 6.0)
                     let videoBytes = Int64(Double(bw) / 8.0 * effectiveDuration)
                     let audioBytes = audioPlan?.reduce(Int64(0)) { $0 + ($1.byteRange?.length ?? 0) } ?? 0
                     totalEstimatedBytes = videoBytes + audioBytes
