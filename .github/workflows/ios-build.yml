@@ -32,9 +32,8 @@ jobs:
         run: |
           set -o pipefail
           swift test 2>&1 | tee test.log || {
-            grep -E "(failed:|Test Case.*failed|XCTAssert)" test.log | tail -n 15 | while read -r l; do
-              echo "::error::$l"
-            done
+            echo "::error::FAILED TESTS: $(grep -E "Test Case '.*' failed" test.log | tr '\n' ' | ')"
+            echo "::error::FAILURE DETAILS: $(grep -E "(failed:|\/Tests\/.*error:)" test.log | tail -n 10 | tr '\n' ' | ')"
             exit 1
           }
 
