@@ -351,6 +351,14 @@ public enum HLSManifestParser {
         guard !value.isEmpty, let resolved = URL(string: value, relativeTo: baseURL)?.absoluteURL, isHTTPURL(resolved) else {
             throw ManifestParserError.invalidURL
         }
+        // If the child URL has no query parameters, but the baseURL has query parameters (e.g. ?token=... or ?expires=...),
+        // inherit the query parameters so that authentication tokens are not stripped on sub-variants or segments.
+        if (resolved.query == nil || resolved.query?.isEmpty == true),
+           let baseQuery = baseURL.query, !baseQuery.isEmpty,
+           var components = URLComponents(url: resolved, resolvingAgainstBaseURL: false) {
+            components.percentEncodedQuery = baseURL.percentEncodedQuery ?? baseQuery
+            return components.url ?? resolved
+        }
         return resolved
     }
 
@@ -361,8 +369,7 @@ public enum HLSManifestParser {
 
     private static func resolveKeyURL(_ value: String?, method: String, baseURL: URL) throws -> URL? {
         guard let value else { return nil }
-        guard let resolved = URL(string: value, relativeTo: baseURL)?.absoluteURL,
-              let scheme = resolved.scheme?.lowercased(), !scheme.isEmpty else {
+        guard let resolved = try resolveURL(value, against: baseURL) else {
             throw ManifestParserError.invalidURL
         }
         if method.uppercased() == "AES-128" && !isHTTPURL(resolved) {

@@ -226,6 +226,12 @@ public enum DASHManifestParser {
         guard let url = URL(string: value, relativeTo: baseURL)?.absoluteURL, isHTTPURL(url) else {
             throw ManifestParserError.invalidURL
         }
+        if (url.query == nil || url.query?.isEmpty == true),
+           let baseQuery = baseURL.query, !baseQuery.isEmpty,
+           var components = URLComponents(url: url, resolvingAgainstBaseURL: false) {
+            components.percentEncodedQuery = baseURL.percentEncodedQuery ?? baseQuery
+            return components.url ?? url
+        }
         return url
     }
 

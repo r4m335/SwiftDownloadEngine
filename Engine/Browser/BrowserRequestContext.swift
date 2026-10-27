@@ -51,6 +51,23 @@ public struct BrowserCookie: Sendable, Hashable, Codable {
         self.expiresDate = httpCookie.expiresDate
     }
 
+    /// Converts back to a Foundation `HTTPCookie` for session injection or URLRequest enrichment.
+    public func toHTTPCookie() -> HTTPCookie? {
+        var properties: [HTTPCookiePropertyKey: Any] = [
+            .name: name,
+            .value: value,
+            .domain: domain,
+            .path: path
+        ]
+        if isSecure {
+            properties[.secure] = "TRUE"
+        }
+        if let expiresDate {
+            properties[.expires] = expiresDate
+        }
+        return HTTPCookie(properties: properties)
+    }
+
     /// Evaluates if this cookie is eligible to be sent to the target URL per RFC 6265.
     public func matches(url: URL, now: Date = Date()) -> Bool {
         // 1. Expiration check

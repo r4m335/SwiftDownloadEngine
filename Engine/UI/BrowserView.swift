@@ -1016,8 +1016,21 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         Task { @MainActor [weak self] in
             guard let self else { return }
             do {
+                #if canImport(WebKit)
+                let sessionSnapshot: BrowserSessionSnapshot?
+                if let wv = self.webView {
+                    sessionSnapshot = await DownloadRequestEnricher.snapshot(from: wv)
+                } else {
+                    sessionSnapshot = DownloadRequestEnricher.sharedSessionSnapshot.snapshot
+                }
+                #else
+                let sessionSnapshot = DownloadRequestEnricher.sharedSessionSnapshot.snapshot
+                #endif
                 print("[HLS Pipeline] Creating StreamingManifestCandidate and preparing proposal with orchestrator...")
-                let candidate = try StreamingManifestCandidate(resource: resource)
+                let candidate = try StreamingManifestCandidate(
+                    resource: resource,
+                    browserSessionSnapshot: sessionSnapshot
+                )
                 let proposal = try await orchestrator.prepare(candidate: candidate)
                 print("[HLS Pipeline] Proposal prepared successfully. Showing confirmation sheet.")
                 // Small delay to allow any dismissing sheets (such as the resource inspector)
@@ -1506,6 +1519,12 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         }
 
         guard !targets.isEmpty else { return }
+
+        #if canImport(WebKit)
+        if let wv = self.webView {
+            _ = await DownloadRequestEnricher.snapshot(from: wv)
+        }
+        #endif
 
         for resource in targets {
             let url = resource.url

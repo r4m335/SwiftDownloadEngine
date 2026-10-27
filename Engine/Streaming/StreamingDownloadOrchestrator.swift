@@ -10,12 +10,14 @@ public struct StreamingManifestCandidate: Sendable, Equatable {
     public let url: URL
     public let mimeType: String?
     public let browserRequestContext: BrowserRequestContext?
+    public let browserSessionSnapshot: BrowserSessionSnapshot?
     public let hlsVariantPreferences: HLSVariantSelectionPreferences
 
     public init(
         url: URL,
         mimeType: String? = nil,
         browserRequestContext: BrowserRequestContext? = nil,
+        browserSessionSnapshot: BrowserSessionSnapshot? = nil,
         hlsVariantPreferences: HLSVariantSelectionPreferences = HLSVariantSelectionPreferences()
     ) throws {
         guard BrowserURLResolver.isValidDownloadURL(url) else {
@@ -24,14 +26,19 @@ public struct StreamingManifestCandidate: Sendable, Equatable {
         self.url = url
         self.mimeType = mimeType
         self.browserRequestContext = browserRequestContext
+        self.browserSessionSnapshot = browserSessionSnapshot ?? DownloadRequestEnricher.sharedSessionSnapshot.snapshot
         self.hlsVariantPreferences = hlsVariantPreferences
     }
 
-    public init(resource: WebpageResource) throws {
+    public init(
+        resource: WebpageResource,
+        browserSessionSnapshot: BrowserSessionSnapshot? = nil
+    ) throws {
         try self.init(
             url: resource.url,
             mimeType: resource.mimeType,
             browserRequestContext: resource.requestContext,
+            browserSessionSnapshot: browserSessionSnapshot ?? DownloadRequestEnricher.sharedSessionSnapshot.snapshot,
             hlsVariantPreferences: HLSVariantSelectionPreferences()
         )
     }
@@ -87,11 +94,37 @@ public final class URLSessionStreamingManifestLoader: StreamingManifestLoader, @
                 request.setValue(value, forHTTPHeaderField: name)
             }
         }
-        request = DownloadRequestEnricher.enrich(request)
+        let effectiveSnapshot: BrowserSessionSnapshot?
+        if let s = candidate.browserSessionSnapshot ?? DownloadRequestEnricher.sharedSessionSnapshot.snapshot {
+            effectiveSnapshot = s
+        } else if let ctx = candidate.browserRequestContext {
+            let httpCookies = ctx.cookies.compactMap { $0.toHTTPCookie() }
+            effectiveSnapshot = BrowserSessionSnapshot(
+                userAgent: ctx.userAgent ?? "",
+                acceptLanguage: Locale.preferredLanguages.first ?? "en-US",
+                allCookies: httpCookies,
+                pageURL: ctx.pageURL
+            )
+        } else {
+            effectiveSnapshot = nil
+        }
+        request = DownloadRequestEnricher.enrich(request, snapshot: effectiveSnapshot)
+
+        // Ensure User-Agent and Referer are populated from browserRequestContext if still missing
+        if request.value(forHTTPHeaderField: "User-Agent") == nil,
+           let ua = candidate.browserRequestContext?.userAgent, !ua.isEmpty {
+            request.setValue(ua, forHTTPHeaderField: "User-Agent")
+        }
+        if request.value(forHTTPHeaderField: "Referer") == nil {
+            if let ref = candidate.browserRequestContext?.referer ?? candidate.browserRequestContext?.pageURL?.absoluteString {
+                request.setValue(ref, forHTTPHeaderField: "Referer")
+            }
+        }
 
         let delegate = StreamingRedirectDelegate(
             originalURL: candidate.url,
-            headers: headers
+            headers: headers,
+            snapshot: effectiveSnapshot
         )
         let (data, response) = try await session.data(for: request, delegate: delegate)
         guard let httpResponse = response as? HTTPURLResponse else {
@@ -371,6 +404,7 @@ public final class URLSessionStreamingSegmentExecutor: StreamingSegmentExecutor,
         if let byteRange = request.byteRange {
             urlRequest.setValue(byteRange.headerValue, forHTTPHeaderField: "Range")
         }
+        urlRequest = DownloadRequestEnricher.enrich(urlRequest)
 
         let (tempURL, response) = try await session.download(for: urlRequest)
         guard let httpResponse = response as? HTTPURLResponse,
@@ -589,6 +623,7 @@ public actor StreamingDownloadOrchestrator {
                         url: variant.uri,
                         mimeType: "application/vnd.apple.mpegurl",
                         browserRequestContext: candidate.browserRequestContext,
+                        browserSessionSnapshot: candidate.browserSessionSnapshot,
                         hlsVariantPreferences: candidate.hlsVariantPreferences
                     )
                     response = try await manifestLoader.load(
@@ -622,6 +657,7 @@ public actor StreamingDownloadOrchestrator {
                         url: audioURI,
                         mimeType: "application/vnd.apple.mpegurl",
                         browserRequestContext: candidate.browserRequestContext,
+                        browserSessionSnapshot: candidate.browserSessionSnapshot,
                         hlsVariantPreferences: candidate.hlsVariantPreferences
                     )
                     let audioResponse = try await manifestLoader.load(
@@ -889,10 +925,14 @@ public actor StreamingDownloadOrchestrator {
         manifestURL: URL,
         destinationDirectory: URL? = nil,
         outputURL: URL? = nil,
+        browserSessionSnapshot: BrowserSessionSnapshot? = nil,
         progress: (@Sendable (StreamingTransferProgress) -> Void)? = nil
     ) async throws -> MediaAssemblyOutput {
         print("[HLS Pipeline] downloadHLS started for manifest: \(manifestURL.absoluteString)")
-        let candidate = try StreamingManifestCandidate(url: manifestURL)
+        let candidate = try StreamingManifestCandidate(
+            url: manifestURL,
+            browserSessionSnapshot: browserSessionSnapshot
+        )
         print("[HLS Pipeline] 1. Manifest candidate created. Fetching and preparing proposal...")
         let proposal = try await prepare(candidate: candidate)
         guard case .hls(let transferPlan) = proposal.manifest else {
@@ -921,9 +961,13 @@ public actor StreamingDownloadOrchestrator {
         manifestURL: URL,
         destinationDirectory: URL? = nil,
         outputURL: URL? = nil,
+        browserSessionSnapshot: BrowserSessionSnapshot? = nil,
         progress: (@Sendable (StreamingTransferProgress) -> Void)? = nil
     ) async throws -> MediaAssemblyOutput {
-        let candidate = try StreamingManifestCandidate(url: manifestURL)
+        let candidate = try StreamingManifestCandidate(
+            url: manifestURL,
+            browserSessionSnapshot: browserSessionSnapshot
+        )
         let proposal = try await prepare(candidate: candidate)
         guard case .dash(let transferPlan) = proposal.manifest else {
             throw StreamingDownloadOrchestratorError.unsupportedManifest(.hls)
@@ -1055,10 +1099,12 @@ public struct StreamingTransferResult: Sendable, Equatable {
 private final class StreamingRedirectDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
     private let originalURL: URL?
     private let headers: [String: String]?
+    private let snapshot: BrowserSessionSnapshot?
 
-    init(originalURL: URL? = nil, headers: [String: String]? = nil) {
+    init(originalURL: URL? = nil, headers: [String: String]? = nil, snapshot: BrowserSessionSnapshot? = nil) {
         self.originalURL = originalURL
         self.headers = headers
+        self.snapshot = snapshot
     }
 
     func urlSession(
@@ -1071,7 +1117,8 @@ private final class StreamingRedirectDelegate: NSObject, URLSessionTaskDelegate,
         let redirected = DownloadRequestEnricher.handleRedirect(
             task: task,
             response: response,
-            newRequest: request
+            newRequest: request,
+            snapshot: snapshot
         )
         completionHandler(redirected)
     }

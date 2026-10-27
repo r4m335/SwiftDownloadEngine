@@ -390,6 +390,134 @@ final class StreamingDownloadOrchestratorTests: XCTestCase {
 
         XCTAssertTrue(FileManager.default.fileExists(atPath: result.destinationURL.path))
     }
+
+    func testStreamingDownloadOrchestrator_EnrichedManifestFetch_RejectsNakedRequestWith403_AcceptsEnrichedWith200() async throws {
+        let manifestURL = URL(string: "https://auth.example.com/hls/manifest.m3u8?token=xyz123&expires=1999999999")!
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [MockURLProtocol.self]
+        let mockSession = URLSession(configuration: config)
+        MockURLProtocol.reset()
+        defer { MockURLProtocol.reset() }
+
+        MockURLProtocol.setHandler(for: manifestURL) { request in
+            let cookie = request.value(forHTTPHeaderField: "Cookie")
+            let ua = request.value(forHTTPHeaderField: "User-Agent")
+            let referer = request.value(forHTTPHeaderField: "Referer")
+            // Require session cookie, User-Agent, and Referer headers supplied by DownloadRequestEnricher
+            guard let cookie, cookie.contains("session_id=authorized_user_777"),
+                  let ua, !ua.isEmpty,
+                  let referer, referer.contains("auth.example.com") else {
+                let forbiddenResponse = HTTPURLResponse(
+                    url: manifestURL,
+                    statusCode: 403,
+                    httpVersion: "HTTP/1.1",
+                    headerFields: ["Content-Type": "text/plain"]
+                )!
+                return (forbiddenResponse, Data("403 Forbidden".utf8))
+            }
+
+            let playlist = """
+            #EXTM3U
+            #EXT-X-VERSION:3
+            #EXT-X-TARGETDURATION:4
+            #EXT-X-MEDIA-SEQUENCE:0
+            #EXTINF:4.0,
+            segment0.ts
+            #EXT-X-ENDLIST
+            """.data(using: .utf8)!
+            let successResponse = HTTPURLResponse(
+                url: manifestURL,
+                statusCode: 200,
+                httpVersion: "HTTP/1.1",
+                headerFields: ["Content-Type": "application/vnd.apple.mpegurl"]
+            )!
+            return (successResponse, playlist)
+        }
+
+        let loader = URLSessionStreamingManifestLoader(session: mockSession)
+        let orchestrator = StreamingDownloadOrchestrator(
+            manifestLoader: loader,
+            segmentExecutor: WritingSegmentExecutor()
+        )
+
+        // 1. Naked request (missing cookies/headers) -> Must throw authenticationRequired (403)
+        let nakedSnapshot = BrowserSessionSnapshot(
+            userAgent: "",
+            acceptLanguage: "",
+            allCookies: [],
+            pageURL: nil
+        )
+        let nakedCandidate = try StreamingManifestCandidate(
+            url: manifestURL,
+            browserSessionSnapshot: nakedSnapshot
+        )
+
+        do {
+            _ = try await orchestrator.prepare(candidate: nakedCandidate)
+            XCTFail("Expected naked request to be rejected with authenticationRequired (HTTP 403)")
+        } catch let error as StreamingManifestLoadError {
+            XCTAssertEqual(error, .authenticationRequired)
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+
+        // 2. Enriched request with session snapshot -> Must succeed with HTTP 200 and return proposal
+        let sessionCookie = HTTPCookie(properties: [
+            .name: "session_id",
+            .value: "authorized_user_777",
+            .domain: "auth.example.com",
+            .path: "/"
+        ])!
+        let enrichedSnapshot = BrowserSessionSnapshot(
+            userAgent: "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15",
+            acceptLanguage: "en-US",
+            allCookies: [sessionCookie],
+            pageURL: URL(string: "https://auth.example.com/watch/video1")
+        )
+        let enrichedCandidate = try StreamingManifestCandidate(
+            url: manifestURL,
+            browserSessionSnapshot: enrichedSnapshot
+        )
+
+        let proposal = try await orchestrator.prepare(candidate: enrichedCandidate)
+        XCTAssertEqual(proposal.resources.count, 1)
+        XCTAssertTrue(proposal.resources.first?.url.absoluteString.contains("segment0.ts") == true)
+        // Verify token from manifest URL was preserved on segment URL
+        XCTAssertTrue(proposal.resources.first?.url.query?.contains("token=xyz123") == true)
+        XCTAssertTrue(proposal.resources.first?.url.query?.contains("expires=1999999999") == true)
+    }
+
+    func testStreamingDownloadOrchestrator_PreservesQueryParametersAndTokensAcrossVariantsAndSegments() throws {
+        let masterURL = URL(string: "https://cdn.example.com/live/master.m3u8?token=AUTH_SEC_99&expires=1850000000")!
+        let masterManifest = """
+        #EXTM3U
+        #EXT-X-STREAM-INF:BANDWIDTH=1280000,RESOLUTION=1280x720
+        variant_720p.m3u8
+        """
+
+        let parsedMaster = try HLSManifestParser.parse(masterManifest, baseURL: masterURL)
+        XCTAssertEqual(parsedMaster.variants.count, 1)
+        let variantURI = try XCTUnwrap(parsedMaster.variants.first?.uri)
+        XCTAssertEqual(variantURI.host, "cdn.example.com")
+        XCTAssertEqual(variantURI.path, "/live/variant_720p.m3u8")
+        XCTAssertEqual(variantURI.query, "token=AUTH_SEC_99&expires=1850000000", "Variant URI must inherit parent query parameters")
+
+        let mediaManifest = """
+        #EXTM3U
+        #EXT-X-VERSION:3
+        #EXT-X-TARGETDURATION:4
+        #EXT-X-MEDIA-SEQUENCE:0
+        #EXTINF:4.0,
+        chunk0.ts
+        #EXT-X-ENDLIST
+        """
+
+        let parsedMedia = try HLSManifestParser.parse(mediaManifest, baseURL: variantURI)
+        XCTAssertEqual(parsedMedia.segments.count, 1)
+        let segmentURI = try XCTUnwrap(parsedMedia.segments.first?.uri)
+        XCTAssertEqual(segmentURI.path, "/live/chunk0.ts")
+        XCTAssertEqual(segmentURI.query, "token=AUTH_SEC_99&expires=1850000000", "Segment URI must inherit parent query parameters")
+    }
 }
 
 private actor RecordingManifestLoader: StreamingManifestLoader {
