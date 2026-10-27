@@ -11,8 +11,15 @@ public enum HLSManifestParser {
         guard data.count <= limits.maxBytes else {
             throw ManifestParserError.inputTooLarge(limit: limits.maxBytes)
         }
-        guard let text = String(data: data, encoding: .utf8) else {
-            throw ManifestParserError.malformed(reason: "Playlist is not valid UTF-8.")
+        let text: String
+        if let utf8 = String(data: data, encoding: .utf8) {
+            text = utf8
+        } else if let latin1 = String(data: data, encoding: .isoLatin1) {
+            text = latin1
+        } else if let ascii = String(data: data, encoding: .ascii) {
+            text = ascii
+        } else {
+            throw ManifestParserError.malformed(reason: "Playlist is not valid text.")
         }
         return try parse(text, baseURL: baseURL, inputByteCount: data.count, limits: limits)
     }

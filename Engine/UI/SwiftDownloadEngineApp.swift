@@ -159,11 +159,15 @@ public struct SwiftDownloadEngineApp: App {
             downloadsDirectory: downloadsDir,
             userDefaults: .standard
         )
+        let orchestrator = StreamingDownloadOrchestrator(downloadCoordinator: engine.coordinator)
+        StreamingDownloadOrchestrator.shared = orchestrator
         _viewModel = StateObject(wrappedValue: vm)
     }
 
     /// Primary designated initializer allowing custom view model injection (e.g., testing or preview).
     public init(viewModel: DownloadManagerViewModel) {
+        let orchestrator = StreamingDownloadOrchestrator(downloadCoordinator: viewModel.engine.coordinator)
+        StreamingDownloadOrchestrator.shared = orchestrator
         _viewModel = StateObject(wrappedValue: viewModel)
     }
 
@@ -175,6 +179,8 @@ public struct SwiftDownloadEngineApp: App {
             downloadsDirectory: downloadsDirectory,
             userDefaults: .standard
         )
+        let orchestrator = StreamingDownloadOrchestrator(downloadCoordinator: engine.coordinator)
+        StreamingDownloadOrchestrator.shared = orchestrator
         _viewModel = StateObject(wrappedValue: vm)
     }
 

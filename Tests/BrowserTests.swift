@@ -1220,5 +1220,19 @@ final class BrowserTests: XCTestCase {
         XCTAssertFalse(vm.isShowingDownloadSheet)
         XCTAssertTrue(vm.isPreparingStreaming || vm.isShowingStreamingConfirmation || vm.streamingErrorMessage != nil)
     }
+
+    @MainActor
+    func testPromptStreamingDownload_SurfacesErrorToBlobCaptureErrorMessageWhenFailing() async {
+        let vm = BrowserViewModel()
+        let resource = WebpageResource(
+            url: URL(string: "https://example.com/unreachable/manifest.m3u8")!,
+            title: "Test Stream",
+            suggestedFilename: "manifest.m3u8",
+            resourceType: .video
+        )
+        vm.promptStreamingDownload(for: resource)
+        try? await Task.sleep(nanoseconds: 500_000_000)
+        XCTAssertNotNil(vm.blobCaptureErrorMessage ?? vm.streamingErrorMessage)
+    }
     #endif
 }

@@ -258,7 +258,7 @@ public struct BrowserResourceInspectorSheet: View {
                         }
                     },
                     onDownload: {
-                        if resource.isStreamingManifest {
+                        if resource.isStreamingManifest || resource.url.pathExtension.lowercased() == "m3u8" || resource.url.pathExtension.lowercased() == "mpd" {
                             viewModel.promptStreamingDownload(for: resource)
                         } else {
                             viewModel.promptDownloadFromInspector(for: resource)
@@ -393,9 +393,15 @@ public struct BrowserResourceInspectorSheet: View {
             do {
                 try await viewModel.downloadSelectedResources()
                 isDownloadingBatch = false
-                presentationMode.wrappedValue.dismiss()
+                if let err = viewModel.blobCaptureErrorMessage ?? viewModel.streamingErrorMessage {
+                    batchErrorMessage = err
+                } else {
+                    presentationMode.wrappedValue.dismiss()
+                }
             } catch {
-                batchErrorMessage = error.localizedDescription
+                let errorMsg = error.localizedDescription
+                batchErrorMessage = errorMsg
+                viewModel.blobCaptureErrorMessage = errorMsg
                 isDownloadingBatch = false
             }
         }

@@ -159,18 +159,18 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         self.downloadDelegate = downloadDelegate
         self.magnetDelegate = magnetDelegate
         self.onDownloadInitiated = onDownloadInitiated
-        let orchestrator: StreamingDownloadOrchestrator?
+        let orchestrator: StreamingDownloadOrchestrator
         if let streamingOrchestrator {
             orchestrator = streamingOrchestrator
         } else if let vm = downloadDelegate as? DownloadManagerViewModel {
             orchestrator = StreamingDownloadOrchestrator(downloadCoordinator: vm.engine.coordinator)
+        } else if let shared = StreamingDownloadOrchestrator.shared {
+            orchestrator = shared
         } else {
-            orchestrator = StreamingDownloadOrchestrator.shared
+            orchestrator = StreamingDownloadOrchestrator.createDefault()
         }
         self.streamingOrchestrator = orchestrator
-        if let orchestrator {
-            StreamingDownloadOrchestrator.shared = orchestrator
-        }
+        StreamingDownloadOrchestrator.shared = orchestrator
         self.streamingDestinationDirectoryURL = streamingDestinationDirectoryURL ??
             FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first?.appendingPathComponent("Downloads", isDirectory: true) ??
             FileManager.default.temporaryDirectory.appendingPathComponent("LIDDownloads", isDirectory: true)
@@ -989,15 +989,25 @@ public final class BrowserViewModel: NSObject, ObservableObject {
     }
 
     public func promptStreamingDownload(for resource: WebpageResource) {
+        print("[HLS Pipeline] promptStreamingDownload invoked for resource: \(resource.url.absoluteString)")
         guard resource.isStreamingManifest || resource.url.pathExtension.lowercased() == "m3u8" || resource.url.pathExtension.lowercased() == "mpd" else {
-            streamingErrorMessage = "This resource is not a recognized HLS or DASH manifest."
+            let errorMsg = "This resource is not a recognized HLS or DASH manifest."
+            print("[HLS Pipeline] \(errorMsg)")
+            streamingErrorMessage = errorMsg
+            blobCaptureErrorMessage = errorMsg
             return
         }
-        guard let orchestrator = streamingOrchestrator else {
-            streamingErrorMessage = "Streaming downloads are unavailable in this browser configuration."
+        guard let orchestrator = streamingOrchestrator ?? StreamingDownloadOrchestrator.shared else {
+            let errorMsg = "Streaming downloads are unavailable: StreamingDownloadOrchestrator is nil."
+            print("[HLS Pipeline] \(errorMsg)")
+            streamingErrorMessage = errorMsg
+            blobCaptureErrorMessage = errorMsg
             return
         }
-        guard !isPreparingStreaming, !isExecutingStreaming else { return }
+        guard !isPreparingStreaming, !isExecutingStreaming else {
+            print("[HLS Pipeline] Streaming download is already preparing or executing.")
+            return
+        }
 
         isShowingResourceInspector = false
         isPreparingStreaming = true
@@ -1008,15 +1018,20 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         Task { @MainActor [weak self] in
             guard let self else { return }
             do {
+                print("[HLS Pipeline] Creating StreamingManifestCandidate and preparing proposal with orchestrator...")
                 let candidate = try StreamingManifestCandidate(resource: resource)
                 let proposal = try await orchestrator.prepare(candidate: candidate)
+                print("[HLS Pipeline] Proposal prepared successfully. Showing confirmation sheet.")
                 // Small delay to allow any dismissing sheets (such as the resource inspector)
                 // to finish dismissing before presenting the streaming confirmation sheet
                 try? await Task.sleep(nanoseconds: 350_000_000)
                 self.streamingProposal = proposal
                 self.isShowingStreamingConfirmation = true
             } catch {
-                self.streamingErrorMessage = error.localizedDescription
+                let errorMsg = "Streaming preparation failed: \(error.localizedDescription)"
+                print("[HLS Pipeline] \(errorMsg)")
+                self.streamingErrorMessage = errorMsg
+                self.blobCaptureErrorMessage = errorMsg
             }
             self.isPreparingStreaming = false
         }
@@ -1092,7 +1107,10 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                 self?.isExecutingStreaming = false
             } catch {
                 self?.isExecutingStreaming = false
-                self?.streamingErrorMessage = error.localizedDescription
+                let errorMsg = "Streaming download failed: \(error.localizedDescription)"
+                print("[HLS Pipeline] \(errorMsg)")
+                self?.streamingErrorMessage = errorMsg
+                self?.blobCaptureErrorMessage = errorMsg
             }
         }
     }
@@ -1497,6 +1515,13 @@ public final class BrowserViewModel: NSObject, ObservableObject {
 
             // 1. Intercept streaming playlist manifests upfront
             if resource.isStreamingManifest || url.pathExtension.lowercased() == "m3u8" || url.pathExtension.lowercased() == "mpd" {
+                if streamingOrchestrator == nil && StreamingDownloadOrchestrator.shared == nil {
+                    let errorMsg = "Streaming downloads are unavailable: StreamingDownloadOrchestrator is nil."
+                    print("[HLS Pipeline] \(errorMsg)")
+                    blobCaptureErrorMessage = errorMsg
+                    streamingErrorMessage = errorMsg
+                    return
+                }
                 promptStreamingDownload(for: resource)
                 continue
             }

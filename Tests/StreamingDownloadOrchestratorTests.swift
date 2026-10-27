@@ -300,6 +300,96 @@ final class StreamingDownloadOrchestratorTests: XCTestCase {
         XCTAssertEqual(requests.count, 1)
         XCTAssertTrue(requests[0].url.absoluteString.contains("resolved=true"))
     }
+
+    @MainActor
+    func testStreamingDownloadOrchestrator_SharedInstanceIsInitializedByDefault() {
+        XCTAssertNotNil(StreamingDownloadOrchestrator.shared)
+    }
+
+    func testStreamingDownloadOrchestrator_RecursiveVariantResolution() async throws {
+        let master1URL = URL(string: "https://example.com/master1.m3u8")!
+        let master2URL = URL(string: "https://example.com/master2.m3u8")!
+        let mediaURL = URL(string: "https://example.com/media.m3u8")!
+
+        let master1Data = Data("""
+        #EXTM3U
+        #EXT-X-STREAM-INF:BANDWIDTH=2000000
+        master2.m3u8
+        """.utf8)
+
+        let master2Data = Data("""
+        #EXTM3U
+        #EXT-X-STREAM-INF:BANDWIDTH=3000000
+        media.m3u8
+        """.utf8)
+
+        let mediaData = Data("""
+        #EXTM3U
+        #EXT-X-VERSION:3
+        #EXT-X-TARGETDURATION:6
+        #EXTINF:6.0,
+        segment1.ts
+        #EXTINF:6.0,
+        segment2.ts
+        #EXT-X-ENDLIST
+        """.utf8)
+
+        let loader = VariantManifestLoader(responses: [
+            master1URL: StreamingManifestResponse(data: master1Data, finalURL: master1URL, mimeType: "application/vnd.apple.mpegurl"),
+            master2URL: StreamingManifestResponse(data: master2Data, finalURL: master2URL, mimeType: "application/vnd.apple.mpegurl"),
+            mediaURL: StreamingManifestResponse(data: mediaData, finalURL: mediaURL, mimeType: "application/vnd.apple.mpegurl")
+        ])
+
+        let executor = RecordingSegmentExecutor()
+        let orchestrator = StreamingDownloadOrchestrator(
+            manifestLoader: loader,
+            segmentExecutor: executor
+        )
+
+        let candidate = try StreamingManifestCandidate(url: master1URL)
+        let proposal = try await orchestrator.prepare(candidate: candidate)
+
+        guard case .hls(let plan) = proposal.manifest else {
+            XCTFail("Expected HLS manifest plan")
+            return
+        }
+
+        XCTAssertEqual(plan.resources.count, 2)
+        XCTAssertEqual(plan.manifestURL, mediaURL)
+    }
+
+    func testStreamingDownloadOrchestrator_downloadHLSSucceedsWithWritingExecutor() async throws {
+        let mediaURL = URL(string: "https://example.com/stream.m3u8")!
+        let mediaData = Data("""
+        #EXTM3U
+        #EXT-X-VERSION:3
+        #EXT-X-TARGETDURATION:6
+        #EXTINF:6.0,
+        segment1.ts
+        #EXT-X-ENDLIST
+        """.utf8)
+
+        let loader = VariantManifestLoader(responses: [
+            mediaURL: StreamingManifestResponse(data: mediaData, finalURL: mediaURL, mimeType: "application/vnd.apple.mpegurl")
+        ])
+        let executor = WritingSegmentExecutor()
+        let orchestrator = StreamingDownloadOrchestrator(
+            manifestLoader: loader,
+            segmentExecutor: executor
+        )
+
+        let dest = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let out = dest.appendingPathComponent("stream_output.mp4")
+        defer { try? FileManager.default.removeItem(at: dest) }
+
+        let result = try await orchestrator.downloadHLS(
+            manifestURL: mediaURL,
+            destinationDirectory: dest,
+            outputURL: out
+        )
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: result.destinationURL.path))
+    }
 }
 
 private actor RecordingManifestLoader: StreamingManifestLoader {
