@@ -187,6 +187,7 @@ public struct StreamingByteRange: Sendable, Equatable, Hashable, Codable {
     }
 
     public var length: Int64 { end - start + 1 }
+    public var headerValue: String { "bytes=\(start)-\(end)" }
 }
 
 /// A secret-free, stable identity for one resource in a streaming transfer.

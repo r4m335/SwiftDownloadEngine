@@ -175,9 +175,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
             FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first?.appendingPathComponent("Downloads", isDirectory: true) ??
             FileManager.default.temporaryDirectory.appendingPathComponent("LIDDownloads", isDirectory: true)
         super.init()
-        if let orchestrator {
-            Task { await orchestrator.setURLResolver(self) }
-        }
+        Task { await orchestrator.setURLResolver(self) }
         publishTabState()
         mediaDiscoveryBridge.observationHandler = { [weak self] observation in
             DispatchQueue.main.async { [weak self] in
