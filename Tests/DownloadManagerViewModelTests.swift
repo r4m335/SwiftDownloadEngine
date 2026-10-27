@@ -654,6 +654,7 @@ final class DownloadManagerViewModelTests: XCTestCase {
             rawURL: "blob:https://twitter.com/x-stream",
             kind: .mediaSource,
             blobKind: .mediaSource,
+            suggestedFilename: "stream.bin",
             availability: .metadataOnly
         )
         await viewModel.handleDownloadTap(candidate: mediaSourceCandidate)
@@ -665,6 +666,7 @@ final class DownloadManagerViewModelTests: XCTestCase {
             url: URL(string: "https://example.com/stream.m3u8")!,
             rawURL: "https://example.com/stream.m3u8",
             kind: .hlsManifest,
+            suggestedFilename: "stream.m3u8",
             availability: .requiresPlanning
         )
         await viewModel.handleDownloadTap(candidate: manifestCandidate)
