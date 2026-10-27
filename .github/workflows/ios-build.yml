@@ -32,8 +32,8 @@ jobs:
         run: |
           set -o pipefail
           swift test 2>&1 | tee test_output.log || {
-            ERR_MSG=$(grep -E "(Test Case|failed|Fatal error|fatalError|XCTAssert)" test_output.log | tail -n 25 | tr '\n' ' ')
-            echo "::error::$ERR_MSG"
+            echo "::error::LAST TESTS: $(grep 'Test Case' test_output.log | tail -n 8 | tr '\n' ' | ')"
+            echo "::error::CRASH CONTEXT: $(grep -B 8 -A 5 'fatalError' test_output.log | tr '\n' ' | ')"
             exit 1
           }
 
