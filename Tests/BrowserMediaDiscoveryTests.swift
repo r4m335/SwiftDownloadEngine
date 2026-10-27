@@ -1,5 +1,8 @@
 import Foundation
 import XCTest
+#if canImport(WebKit)
+import WebKit
+#endif
 @testable import DM_Reverse_engineering
 
 final class BrowserMediaDiscoveryTests: XCTestCase {
@@ -315,7 +318,7 @@ final class BrowserMediaDiscoveryTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(scripts.count, 3)
 
         // First script should be urlResolutionHookScript at .atDocumentStart
-        XCTAssertEqual(scripts.first?.injectionTime, .atDocumentStart)
+        XCTAssertEqual(scripts.first?.injectionTime, WKUserScriptInjectionTime.atDocumentStart)
         XCTAssertFalse(scripts.first?.isForMainFrameOnly ?? true)
 
         // Custom script should be present at .atDocumentStart
