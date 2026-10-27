@@ -364,6 +364,20 @@ final class BrowserMediaDiscoveryTests: XCTestCase {
         XCTAssertEqual(resolved, originalURL)
         #endif
     }
+
+    #if canImport(WebKit)
+    func testFetchManifestTextThrowsOnUnreachableURL() async {
+        let bridge = BrowserMediaDiscoveryBridge()
+        let webView = await MainActor.run { WKWebView() }
+        let url = URL(string: "https://127.0.0.1:59999/manifest.m3u8")!
+        do {
+            _ = try await bridge.fetchManifestText(from: url, on: webView)
+            XCTFail("Expected error on unreachable webview fetch")
+        } catch {
+            XCTAssertNotNil(error)
+        }
+    }
+    #endif
 }
 
 

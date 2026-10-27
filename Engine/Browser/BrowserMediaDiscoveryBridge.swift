@@ -1246,6 +1246,52 @@ public final class BrowserMediaDiscoveryBridge: NSObject, @unchecked Sendable {
         return resolved
     }
 
+    /// Evaluates a JavaScript `fetch()` request directly in the given webview.
+    /// This bypasses URLSession to guarantee the exact browser TLS fingerprint,
+    /// cookies, and session authentication are used to retrieve the manifest text.
+    @MainActor
+    public func fetchManifestText(from url: URL, on webView: WKWebView) async throws -> String {
+        let rawString = url.absoluteString
+        let escaped = rawString
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+            .replacingOccurrences(of: "\n", with: "\\n")
+            .replacingOccurrences(of: "\r", with: "\\r")
+
+        let script = """
+        fetch("\(escaped)", { method: "GET", credentials: "include" })
+            .then(function(r) {
+                if (!r.ok) { throw new Error("HTTP " + r.status); }
+                return r.text();
+            })
+            .then(function(t) { return t; })
+        """
+
+        do {
+            if let result = try await webView.evaluateJavaScript(script) as? String,
+               !result.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return result
+            }
+        } catch {
+            let asyncScript = """
+            const r = await fetch(url, { method: 'GET', credentials: 'include' });
+            if (!r.ok) { throw new Error('HTTP ' + r.status); }
+            return await r.text();
+            """
+            if let asyncResult = try? await webView.callAsyncJavaScript(
+                asyncScript,
+                arguments: ["url": rawString],
+                in: nil,
+                in: .page
+            ) as? String, !asyncResult.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return asyncResult
+            }
+            throw error
+        }
+
+        throw StreamingManifestLoadError.invalidResponse
+    }
+
     public func userContentController(
         _ userContentController: WKUserContentController,
         didReceive message: WKScriptMessage

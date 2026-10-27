@@ -428,6 +428,54 @@ final class StreamingDownloadOrchestratorTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: output.path))
     }
 
+    func testStreamingDownloadOrchestrator_fallsBackToJSFetchWhenURLSessionFailsWith403() async throws {
+        final class JSFallbackURLResolver: BrowserMediaURLResolver {
+            let manifestText: String
+            init(manifestText: String) { self.manifestText = manifestText }
+
+            @MainActor
+            func resolveMediaURL(_ rawURL: URL) async throws -> URL { rawURL }
+
+            @MainActor
+            func fetchManifestText(from url: URL) async throws -> String {
+                manifestText
+            }
+        }
+
+        let manifestURL = URL(string: "https://auth.example.com/protected.m3u8")!
+        struct Failing403ManifestLoader: StreamingManifestLoader {
+            func load(
+                candidate: StreamingManifestCandidate,
+                headers: [String: String],
+                limits: ManifestParsingLimits
+            ) async throws -> StreamingManifestResponse {
+                throw StreamingManifestLoadError.authenticationRequired
+            }
+        }
+
+        let fallbackM3U8 = """
+        #EXTM3U
+        #EXT-X-VERSION:3
+        #EXT-X-TARGETDURATION:4
+        #EXTINF:4.0,
+        segment-auth.ts
+        #EXT-X-ENDLIST
+        """
+
+        let resolver = JSFallbackURLResolver(manifestText: fallbackM3U8)
+        let orchestrator = StreamingDownloadOrchestrator(
+            manifestLoader: Failing403ManifestLoader(),
+            segmentExecutor: RecordingSegmentExecutor(),
+            urlResolver: resolver
+        )
+
+        let candidate = try StreamingManifestCandidate(url: manifestURL)
+        let proposal = try await orchestrator.prepare(candidate: candidate)
+
+        XCTAssertEqual(proposal.resources.count, 1)
+        XCTAssertEqual(proposal.resources.first?.url.lastPathComponent, "segment-auth.ts")
+    }
+
     func testStreamingDownloadOrchestrator_EnrichedManifestFetch_RejectsNakedRequestWith403_AcceptsEnrichedWith200() async throws {
         let manifestURL = URL(string: "https://auth.example.com/hls/manifest.m3u8?token=xyz123&expires=1999999999")!
         let config = URLSessionConfiguration.ephemeral

@@ -1026,6 +1026,8 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                 #else
                 let sessionSnapshot = DownloadRequestEnricher.sharedSessionSnapshot.snapshot
                 #endif
+                print("[HLS Pipeline] Setting active BrowserViewModel as urlResolver on orchestrator...")
+                await orchestrator.setURLResolver(self)
                 print("[HLS Pipeline] Creating StreamingManifestCandidate and preparing proposal with orchestrator...")
                 let candidate = try StreamingManifestCandidate(
                     resource: resource,
@@ -1952,6 +1954,19 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         return await mediaDiscoveryBridge.resolveMediaURL(rawURL, on: activeWebView)
         #else
         return rawURL
+        #endif
+    }
+
+    @MainActor
+    public func fetchManifestText(from url: URL) async throws -> String {
+        #if canImport(WebKit)
+        let activeWebView = self.webView ?? (activeTabID.flatMap { tabSessions[$0]?.webView })
+        guard let activeWebView else {
+            throw StreamingManifestLoadError.browserFetchUnavailable
+        }
+        return try await mediaDiscoveryBridge.fetchManifestText(from: url, on: activeWebView)
+        #else
+        throw StreamingManifestLoadError.browserFetchUnavailable
         #endif
     }
 }

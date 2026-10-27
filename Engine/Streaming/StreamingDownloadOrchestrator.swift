@@ -69,6 +69,14 @@ public protocol StreamingManifestLoader: Sendable {
 /// Resolves raw segment or manifest media URLs via client/browser context when required.
 public protocol BrowserMediaURLResolver: Sendable {
     @MainActor func resolveMediaURL(_ rawURL: URL) async throws -> URL
+    @MainActor func fetchManifestText(from url: URL) async throws -> String
+}
+
+extension BrowserMediaURLResolver {
+    @MainActor
+    public func fetchManifestText(from url: URL) async throws -> String {
+        throw StreamingManifestLoadError.browserFetchUnavailable
+    }
 }
 
 /// URLSession-backed manifest loader. Redirects are followed only after applying
@@ -171,6 +179,7 @@ public enum StreamingManifestLoadError: Error, LocalizedError, Sendable, Equatab
     case expiredOrMissing
     case unexpectedStatus(Int)
     case invalidRedirect
+    case browserFetchUnavailable
 
     public var errorDescription: String? {
         switch self {
@@ -184,6 +193,8 @@ public enum StreamingManifestLoadError: Error, LocalizedError, Sendable, Equatab
             return "The manifest request failed with HTTP status \(status)."
         case .invalidRedirect:
             return "The manifest redirect resolved to an unsupported URL."
+        case .browserFetchUnavailable:
+            return "Browser JavaScript manifest fetch is unavailable."
         }
     }
 }
@@ -541,6 +552,47 @@ public actor StreamingDownloadOrchestrator {
         self.urlResolver = resolver
     }
 
+    private func loadManifestResponse(
+        candidate: StreamingManifestCandidate,
+        headers: [String: String]
+    ) async throws -> StreamingManifestResponse {
+        do {
+            return try await manifestLoader.load(
+                candidate: candidate,
+                headers: headers,
+                limits: parsingLimits
+            )
+        } catch let error as ManifestParserError {
+            throw error
+        } catch {
+            print("[HLS Pipeline] URLSession manifest load failed for \(candidate.url.absoluteString) (\(error.localizedDescription)). Attempting JavaScript Fetch Fallback in WKWebView...")
+            if let resolver = self.urlResolver {
+                do {
+                    let text = try await resolver.fetchManifestText(from: candidate.url)
+                    let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !trimmed.isEmpty else {
+                        print("[HLS Pipeline] JavaScript Fetch Fallback returned empty text.")
+                        throw error
+                    }
+                    let data = Data(trimmed.utf8)
+                    print("[HLS Pipeline] JavaScript Fetch Fallback succeeded (\(data.count) bytes). Parsing manifest directly.")
+                    return StreamingManifestResponse(
+                        data: data,
+                        finalURL: candidate.url,
+                        mimeType: candidate.mimeType,
+                        statusCode: 200
+                    )
+                } catch let jsError {
+                    print("[HLS Pipeline] JavaScript Fetch Fallback failed: \(jsError.localizedDescription)")
+                    throw error
+                }
+            } else {
+                print("[HLS Pipeline] JavaScript Fetch Fallback was unavailable (urlResolver is nil).")
+                throw error
+            }
+        }
+    }
+
     public func prepare(candidate: StreamingManifestCandidate) async throws -> StreamingTransferProposal {
         let candidateMIME = candidate.mimeType ?? ""
         let metadataFingerprint = EngineSHA256.hash(
@@ -553,18 +605,13 @@ public actor StreamingDownloadOrchestrator {
         let headers = manifestHeaders(for: candidate)
         var response: StreamingManifestResponse
         do {
-            response = try await manifestLoader.load(
+            response = try await loadManifestResponse(
                 candidate: candidate,
-                headers: headers,
-                limits: parsingLimits
+                headers: headers
             )
         } catch let error as ManifestParserError {
             throw StreamingDownloadOrchestratorError.manifestParseFailed(error)
         } catch {
-            if let loadError = error as? StreamingManifestLoadError,
-               loadError == .authenticationRequired || loadError == .expiredOrMissing {
-                throw error
-            }
             throw error
         }
 
@@ -635,10 +682,9 @@ public actor StreamingDownloadOrchestrator {
                         browserSessionSnapshot: candidate.browserSessionSnapshot,
                         hlsVariantPreferences: candidate.hlsVariantPreferences
                     )
-                    response = try await manifestLoader.load(
+                    response = try await loadManifestResponse(
                         candidate: variantCandidate,
-                        headers: manifestHeaders(for: variantCandidate),
-                        limits: parsingLimits
+                        headers: manifestHeaders(for: variantCandidate)
                     )
                     currentURL = response.finalURL
                     parsed = try HLSManifestParser.parse(
@@ -678,10 +724,9 @@ public actor StreamingDownloadOrchestrator {
                         browserSessionSnapshot: candidate.browserSessionSnapshot,
                         hlsVariantPreferences: candidate.hlsVariantPreferences
                     )
-                    let audioResponse = try await manifestLoader.load(
+                    let audioResponse = try await loadManifestResponse(
                         candidate: audioCandidate,
-                        headers: manifestHeaders(for: audioCandidate),
-                        limits: parsingLimits
+                        headers: manifestHeaders(for: audioCandidate)
                     )
                     let parsedAudio = try HLSManifestParser.parse(
                         audioResponse.data,

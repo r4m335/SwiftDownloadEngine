@@ -139,6 +139,7 @@ public enum DownloadRequestEnricher {
             pageURL: webView.url
         )
         sharedSessionSnapshot.snapshot = snapshot
+        print("[DownloadRequestEnricher] Snapshot captured: \(cookies.count) cookies, User-Agent: '\(ua)', pageURL: \(webView.url?.absoluteString ?? "nil")")
         return snapshot
     }
     #endif
