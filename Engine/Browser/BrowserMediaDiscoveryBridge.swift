@@ -4,6 +4,41 @@ import Foundation
 import WebKit
 #endif
 
+public enum BrowserUserScriptInjectionTime: String, Codable, Sendable, Equatable {
+    case atDocumentStart
+    case atDocumentEnd
+
+    #if canImport(WebKit)
+    public var wkInjectionTime: WKUserScriptInjectionTime {
+        switch self {
+        case .atDocumentStart: return .atDocumentStart
+        case .atDocumentEnd: return .atDocumentEnd
+        }
+    }
+    #endif
+}
+
+public struct BrowserUserScript: Identifiable, Sendable, Equatable {
+    public let id: String
+    public let source: String
+    public let injectionTime: BrowserUserScriptInjectionTime
+    public let forMainFrameOnly: Bool
+
+    public init(
+        id: String = UUID().uuidString,
+        source: String,
+        injectionTime: BrowserUserScriptInjectionTime = .atDocumentStart,
+        forMainFrameOnly: Bool = false
+    ) {
+        self.id = id
+        self.source = source
+        self.injectionTime = injectionTime
+        self.forMainFrameOnly = forMainFrameOnly
+    }
+}
+
+public typealias BrowserUserScriptManager = BrowserMediaDiscoveryBridge.UserScriptManager
+
 public enum BrowserMediaDiscoverySource: String, Codable, Sendable, Equatable {
     case fetch
     case xmlHttpRequest
@@ -136,6 +171,112 @@ public enum BrowserMediaDiscoveryBridgeError: Error, LocalizedError, Equatable, 
 /// captured later for a same-origin observation; cross-origin and cross-frame
 /// observations are forwarded without credential inheritance.
 public final class BrowserMediaDiscoveryBridge: NSObject, @unchecked Sendable {
+    public typealias UserScript = BrowserUserScript
+    public typealias UserScriptInjectionTime = BrowserUserScriptInjectionTime
+
+    /// Generic User Script Manager capable of loading custom JavaScript strings
+    /// and injecting them into WKWebView at .atDocumentStart or .atDocumentEnd.
+    public final class UserScriptManager: @unchecked Sendable {
+        private let lock = NSLock()
+        private var scripts: [BrowserUserScript] = []
+
+        public init() {}
+
+        @discardableResult
+        public func loadScript(
+            _ source: String,
+            id: String = UUID().uuidString,
+            injectionTime: BrowserUserScriptInjectionTime = .atDocumentStart,
+            forMainFrameOnly: Bool = false
+        ) -> BrowserUserScript {
+            lock.lock()
+            defer { lock.unlock() }
+            let script = BrowserUserScript(
+                id: id,
+                source: source,
+                injectionTime: injectionTime,
+                forMainFrameOnly: forMainFrameOnly
+            )
+            scripts.removeAll { $0.id == id }
+            scripts.append(script)
+            return script
+        }
+
+        @discardableResult
+        public func loadCustomScript(_ source: String, id: String = UUID().uuidString) -> BrowserUserScript {
+            loadScript(source, id: id, injectionTime: .atDocumentStart, forMainFrameOnly: false)
+        }
+
+        public func registerScript(_ script: BrowserUserScript) {
+            lock.lock()
+            defer { lock.unlock() }
+            scripts.removeAll { $0.id == script.id }
+            scripts.append(script)
+        }
+
+        @discardableResult
+        public func unregisterScript(id: String) -> BrowserUserScript? {
+            lock.lock()
+            defer { lock.unlock() }
+            guard let idx = scripts.firstIndex(where: { $0.id == id }) else { return nil }
+            return scripts.remove(at: idx)
+        }
+
+        @discardableResult
+        public func removeScript(id: String) -> BrowserUserScript? {
+            unregisterScript(id: id)
+        }
+
+        public func removeAllScripts() {
+            lock.lock()
+            defer { lock.unlock() }
+            scripts.removeAll()
+        }
+
+        public func allScripts() -> [BrowserUserScript] {
+            lock.lock()
+            defer { lock.unlock() }
+            return scripts
+        }
+
+        public func script(withID id: String) -> BrowserUserScript? {
+            lock.lock()
+            defer { lock.unlock() }
+            return scripts.first(where: { $0.id == id })
+        }
+
+        public func hasScript(id: String) -> Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            return scripts.contains(where: { $0.id == id })
+        }
+
+        public var count: Int {
+            lock.lock()
+            defer { lock.unlock() }
+            return scripts.count
+        }
+
+        #if canImport(WebKit)
+        public func inject(into configuration: WKWebViewConfiguration) {
+            let current = allScripts()
+            for script in current {
+                configuration.userContentController.addUserScript(
+                    WKUserScript(
+                        source: script.source,
+                        injectionTime: script.injectionTime.wkInjectionTime,
+                        forMainFrameOnly: script.forMainFrameOnly
+                    )
+                )
+            }
+        }
+
+        public func install(on configuration: WKWebViewConfiguration) {
+            inject(into: configuration)
+        }
+        #endif
+    }
+
     public static let messageName = "browserMediaDiscovery"
     public static let maximumCandidateLength = 8_192
     public static let maximumMetadataLength = 65_536
@@ -655,12 +796,18 @@ public final class BrowserMediaDiscoveryBridge: NSObject, @unchecked Sendable {
 
     public var observationHandler: ((BrowserMediaDiscoveryObservation) -> Void)?
     public var errorHandler: ((BrowserMediaDiscoveryBridgeError) -> Void)?
+    public let userScriptManager: UserScriptManager
 
     private let lock = NSLock()
     private var seenKeys: Set<String> = []
 
-    public override init() {
+    public init(userScriptManager: UserScriptManager = UserScriptManager()) {
+        self.userScriptManager = userScriptManager
         super.init()
+    }
+
+    public override convenience init() {
+        self.init(userScriptManager: UserScriptManager())
     }
 
     public func reset() {
@@ -864,6 +1011,7 @@ public final class BrowserMediaDiscoveryBridge: NSObject, @unchecked Sendable {
                 forMainFrameOnly: false
             )
         )
+        userScriptManager.inject(into: configuration)
         configuration.userContentController.addUserScript(
             WKUserScript(
                 source: Self.observerScript,
@@ -872,6 +1020,44 @@ public final class BrowserMediaDiscoveryBridge: NSObject, @unchecked Sendable {
             )
         )
         configuration.userContentController.add(self, name: Self.messageName)
+    }
+
+    /// Evaluates client-side URL transformation in the given webview.
+    /// Uses `window.resolvePlayerURL(url)` if defined (e.g. by custom user scripts or the page),
+    /// and gracefully falls back to returning the original `rawURL` if no custom script is loaded,
+    /// if the evaluation fails or throws, or if the returned string is not a valid download URL.
+    @MainActor
+    public func resolveMediaURL(_ rawURL: URL, on webView: WKWebView) async -> URL {
+        let rawString = rawURL.absoluteString
+        let escaped = rawString
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+            .replacingOccurrences(of: "\n", with: "\\n")
+            .replacingOccurrences(of: "\r", with: "\\r")
+        let script = """
+        (function(raw) {
+            try {
+                if (typeof window.resolvePlayerURL === 'function') {
+                    return window.resolvePlayerURL(raw);
+                }
+                if (typeof window.__resolveMediaURL === 'function') {
+                    return window.__resolveMediaURL(raw);
+                }
+                if (window.ytplayer && window.ytplayer.config && typeof window.ytplayer.config.resolveURL === 'function') {
+                    return window.ytplayer.config.resolveURL(raw);
+                }
+                return raw;
+            } catch (e) {
+                return raw;
+            }
+        })("\(escaped)")
+        """
+        guard let result = try? await webView.evaluateJavaScript(script) as? String,
+              let resolved = URL(string: result),
+              BrowserURLResolver.isValidDownloadURL(resolved) else {
+            return rawURL
+        }
+        return resolved
     }
 
     public func userContentController(
@@ -899,6 +1085,10 @@ public final class BrowserMediaDiscoveryBridge: NSObject, @unchecked Sendable {
         } catch {
             errorHandler?(.malformedMessage)
         }
+    }
+    #else
+    public func resolveMediaURL(_ rawURL: URL, on webView: AnyObject? = nil) async -> URL {
+        return rawURL
     }
     #endif
 

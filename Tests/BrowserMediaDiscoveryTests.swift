@@ -242,4 +242,105 @@ final class BrowserMediaDiscoveryTests: XCTestCase {
             XCTAssertEqual(error as? BrowserMediaDiscoveryBridgeError, .metadataTooLong)
         }
     }
+
+    // MARK: - User Script Manager & URL Resolution Hook Tests
+
+    func testUserScriptManagerLoadsAndManagesCustomScripts() {
+        let manager = BrowserMediaDiscoveryBridge.UserScriptManager()
+        XCTAssertEqual(manager.count, 0)
+
+        let scriptSource = """
+        window.resolvePlayerURL = function(url) {
+            return url + "&token=resolved";
+        };
+        """
+        let customScript = manager.loadCustomScript(scriptSource, id: "player-resolver")
+
+        XCTAssertEqual(customScript.id, "player-resolver")
+        XCTAssertEqual(customScript.source, scriptSource)
+        XCTAssertEqual(customScript.injectionTime, .atDocumentStart)
+        XCTAssertFalse(customScript.forMainFrameOnly)
+        XCTAssertEqual(manager.count, 1)
+        XCTAssertTrue(manager.hasScript(id: "player-resolver"))
+        XCTAssertEqual(manager.script(withID: "player-resolver")?.source, scriptSource)
+
+        // Registering another script via BrowserUserScript
+        let secondScript = BrowserUserScript(
+            id: "analytics-blocker",
+            source: "console.log('injected');",
+            injectionTime: .atDocumentStart,
+            forMainFrameOnly: true
+        )
+        manager.registerScript(secondScript)
+        XCTAssertEqual(manager.count, 2)
+
+        let all = manager.allScripts()
+        XCTAssertEqual(all.count, 2)
+        XCTAssertTrue(all.contains { $0.id == "player-resolver" })
+        XCTAssertTrue(all.contains { $0.id == "analytics-blocker" })
+
+        // Unregister
+        let removed = manager.unregisterScript(id: "player-resolver")
+        XCTAssertEqual(removed?.id, "player-resolver")
+        XCTAssertEqual(manager.count, 1)
+        XCTAssertFalse(manager.hasScript(id: "player-resolver"))
+
+        manager.removeAllScripts()
+        XCTAssertEqual(manager.count, 0)
+    }
+
+    func testBridgeIntegratesUserScriptManagerAndHookScript() {
+        let bridge = BrowserMediaDiscoveryBridge()
+        let customJS = "window.resolvePlayerURL = function(url) { return url.replace('raw', 'authorized'); };"
+        bridge.userScriptManager.loadCustomScript(customJS, id: "custom-hook")
+
+        XCTAssertEqual(bridge.userScriptManager.count, 1)
+        XCTAssertTrue(bridge.userScriptManager.hasScript(id: "custom-hook"))
+
+        // Verify base urlResolutionHookScript establishes safe default that allows custom override
+        XCTAssertTrue(BrowserMediaDiscoveryBridge.urlResolutionHookScript.contains("window.resolvePlayerURL"))
+        XCTAssertTrue(BrowserMediaDiscoveryBridge.urlResolutionHookScript.contains("typeof window.resolvePlayerURL !== \"function\""))
+    }
+
+    #if canImport(WebKit)
+    func testBridgeInstallRegistersScriptsOnWKWebViewConfiguration() {
+        let bridge = BrowserMediaDiscoveryBridge()
+        bridge.userScriptManager.loadCustomScript("window.resolvePlayerURL = function(url) { return url; };", id: "hook-test")
+
+        let config = WKWebViewConfiguration()
+        bridge.install(on: config)
+
+        let scripts = config.userContentController.userScripts
+        // Should contain urlResolutionHookScript, custom script, and observerScript
+        XCTAssertGreaterThanOrEqual(scripts.count, 3)
+
+        // First script should be urlResolutionHookScript at .atDocumentStart
+        XCTAssertEqual(scripts.first?.injectionTime, .atDocumentStart)
+        XCTAssertFalse(scripts.first?.isForMainFrameOnly ?? true)
+
+        // Custom script should be present at .atDocumentStart
+        let hasCustom = scripts.contains { $0.source.contains("window.resolvePlayerURL = function(url)") }
+        XCTAssertTrue(hasCustom)
+
+        // Observer script should also be present
+        let hasObserver = scripts.contains { $0.source.contains("__lidMediaDiscoveryInstalled") }
+        XCTAssertTrue(hasObserver)
+    }
+    #endif
+
+    func testURLResolutionFallbackReturnsOriginalURL() async {
+        let bridge = BrowserMediaDiscoveryBridge()
+        let originalURL = URL(string: "https://video.example/segment-001.ts?raw=1")!
+
+        #if canImport(WebKit)
+        let webView = await MainActor.run { WKWebView() }
+        let resolved = await bridge.resolveMediaURL(originalURL, on: webView)
+        XCTAssertEqual(resolved, originalURL)
+        #else
+        let resolved = await bridge.resolveMediaURL(originalURL, on: nil)
+        XCTAssertEqual(resolved, originalURL)
+        #endif
+    }
 }
+
+
