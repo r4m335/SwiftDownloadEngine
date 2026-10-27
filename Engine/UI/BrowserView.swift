@@ -1050,7 +1050,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
 
     public func executeStreamingProposal() {
         guard let proposal = streamingProposal,
-              let orchestrator = streamingOrchestrator,
+              let orchestrator = streamingOrchestrator ?? StreamingDownloadOrchestrator.shared,
               !isExecutingStreaming else { return }
 
         isExecutingStreaming = true

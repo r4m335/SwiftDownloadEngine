@@ -177,10 +177,196 @@ public final class BrowserMediaDiscoveryBridge: NSObject, @unchecked Sendable {
     /// Generic User Script Manager capable of loading custom JavaScript strings
     /// and injecting them into WKWebView at .atDocumentStart or .atDocumentEnd.
     public final class UserScriptManager: @unchecked Sendable {
+        public static let defaultURLResolutionScriptID = "defaultPlayerURLResolutionScript"
+
+        /// Default user script loaded at .atDocumentStart to intercept and resolve
+        /// dynamically signed media and segment URLs (e.g. signature and n-parameter transformation).
+        public static let defaultURLResolutionScript = #"""
+        (function() {
+            "use strict";
+
+            function parseQueryParams(urlString) {
+                var params = {};
+                try {
+                    var qIdx = urlString.indexOf("?");
+                    if (qIdx === -1) return params;
+                    var hashIdx = urlString.indexOf("#", qIdx);
+                    var query = hashIdx === -1 ? urlString.slice(qIdx + 1) : urlString.slice(qIdx + 1, hashIdx);
+                    var pairs = query.split("&");
+                    for (var i = 0; i < pairs.length; i++) {
+                        if (!pairs[i]) continue;
+                        var eqIdx = pairs[i].indexOf("=");
+                        var key = eqIdx === -1 ? pairs[i] : pairs[i].slice(0, eqIdx);
+                        var val = eqIdx === -1 ? "" : pairs[i].slice(eqIdx + 1);
+                        params[decodeURIComponent(key)] = decodeURIComponent(val);
+                    }
+                } catch (_) {}
+                return params;
+            }
+
+            function updateQueryParam(urlString, key, newValue) {
+                try {
+                    var base = (window.location && window.location.href) ? window.location.href : "https://localhost/";
+                    var url = new URL(urlString, base);
+                    url.searchParams.set(key, newValue);
+                    return url.href;
+                } catch (_) {
+                    var regex = new RegExp("([?&])" + key + "=([^&#]*)");
+                    if (regex.test(urlString)) {
+                        return urlString.replace(regex, "$1" + key + "=" + encodeURIComponent(newValue));
+                    } else {
+                        var separator = urlString.indexOf("?") === -1 ? "?" : "&";
+                        return urlString + separator + key + "=" + encodeURIComponent(newValue);
+                    }
+                }
+            }
+
+            function removeQueryParam(urlString, key) {
+                try {
+                    var base = (window.location && window.location.href) ? window.location.href : "https://localhost/";
+                    var url = new URL(urlString, base);
+                    url.searchParams.delete(key);
+                    return url.href;
+                } catch (_) {
+                    var regex = new RegExp("([?&])" + key + "(=[^&#]*)?(&|$)");
+                    var res = urlString.replace(regex, function(match, p1, p2, p3) {
+                        return p3 === "&" ? p1 : "";
+                    });
+                    return res.replace(/[?&]$/, "");
+                }
+            }
+
+            function findPlatformTransformFunctions() {
+                var sigFunc = null;
+                var nFunc = null;
+
+                if (typeof window.__transformMediaSignature === "function") {
+                    sigFunc = window.__transformMediaSignature;
+                }
+                if (typeof window.__transformMediaNParam === "function") {
+                    nFunc = window.__transformMediaNParam;
+                }
+
+                var candidates = [
+                    window.ytplayer && window.ytplayer.config,
+                    window._playerConfig,
+                    window.yt && window.yt.config_,
+                    window.playerConfig,
+                    window.__PLAYER_CONFIG__,
+                    window.ytplayer
+                ];
+
+                for (var i = 0; i < candidates.length; i++) {
+                    var cfg = candidates[i];
+                    if (!cfg || typeof cfg !== "object") continue;
+
+                    if (!sigFunc) {
+                        if (typeof cfg.transformSignature === "function") sigFunc = cfg.transformSignature;
+                        else if (typeof cfg.signatureTransform === "function") sigFunc = cfg.signatureTransform;
+                        else if (typeof cfg.decodeSignature === "function") sigFunc = cfg.decodeSignature;
+                        else if (typeof cfg.sigTransform === "function") sigFunc = cfg.sigTransform;
+                        else if (typeof cfg.resolveSignature === "function") sigFunc = cfg.resolveSignature;
+                        else if (cfg.args && typeof cfg.args.signatureTransform === "function") sigFunc = cfg.args.signatureTransform;
+                        else if (cfg.args && typeof cfg.args.transformSignature === "function") sigFunc = cfg.args.transformSignature;
+                    }
+
+                    if (!nFunc) {
+                        if (typeof cfg.transformNParam === "function") nFunc = cfg.transformNParam;
+                        else if (typeof cfg.nTransform === "function") nFunc = cfg.nTransform;
+                        else if (typeof cfg.resolveNParam === "function") nFunc = cfg.resolveNParam;
+                        else if (typeof cfg.decodeN === "function") nFunc = cfg.decodeN;
+                        else if (cfg.args && typeof cfg.args.nTransform === "function") nFunc = cfg.args.nTransform;
+                        else if (cfg.args && typeof cfg.args.transformNParam === "function") nFunc = cfg.args.transformNParam;
+                    }
+                }
+
+                return { sig: sigFunc, n: nFunc };
+            }
+
+            window.resolvePlayerURL = function(url) {
+                if (!url || typeof url !== "string") {
+                    return url;
+                }
+
+                try {
+                    var transforms = findPlatformTransformFunctions();
+                    if (!transforms.sig && !transforms.n) {
+                        return url;
+                    }
+
+                    var params = parseQueryParams(url);
+                    var modified = url;
+                    var transformed = false;
+
+                    // Handle 'sig' or obfuscated 's' signature parameter
+                    var rawSig = params.sig || params.s;
+                    if (rawSig && typeof transforms.sig === "function") {
+                        try {
+                            var resolvedSig = transforms.sig(rawSig);
+                            if (resolvedSig && typeof resolvedSig === "string") {
+                                if (params.s) {
+                                    modified = removeQueryParam(modified, "s");
+                                }
+                                modified = updateQueryParam(modified, "sig", resolvedSig);
+                                transformed = true;
+                            }
+                        } catch (errSig) {
+                            console.warn("[UserScript] Failed to transform signature:", errSig);
+                        }
+                    }
+
+                    // Handle 'n' parameter
+                    var rawN = params.n;
+                    if (rawN && typeof transforms.n === "function") {
+                        try {
+                            var resolvedN = transforms.n(rawN);
+                            if (resolvedN && typeof resolvedN === "string") {
+                                modified = updateQueryParam(modified, "n", resolvedN);
+                                transformed = true;
+                            }
+                        } catch (errN) {
+                            console.warn("[UserScript] Failed to transform n-parameter:", errN);
+                        }
+                    }
+
+                    return transformed ? modified : url;
+                } catch (err) {
+                    console.warn("[UserScript] resolvePlayerURL execution error:", err);
+                    return url;
+                }
+            };
+        })();
+        """#
+
         private let lock = NSLock()
         private var scripts: [BrowserUserScript] = []
 
-        public init() {}
+        public init(loadDefaultScript: Bool = true) {
+            if loadDefaultScript {
+                loadScript(
+                    Self.defaultURLResolutionScript,
+                    id: Self.defaultURLResolutionScriptID,
+                    injectionTime: .atDocumentStart,
+                    forMainFrameOnly: false
+                )
+            }
+        }
+
+        public func loadDefaultURLResolutionScript() {
+            loadScript(
+                Self.defaultURLResolutionScript,
+                id: Self.defaultURLResolutionScriptID,
+                injectionTime: .atDocumentStart,
+                forMainFrameOnly: false
+            )
+        }
+
+        public func resetToDefaults() {
+            lock.lock()
+            scripts.removeAll()
+            lock.unlock()
+            loadDefaultURLResolutionScript()
+        }
 
         @discardableResult
         public func loadScript(

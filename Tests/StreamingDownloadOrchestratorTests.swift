@@ -391,6 +391,43 @@ final class StreamingDownloadOrchestratorTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: result.destinationURL.path))
     }
 
+    func testStreamingDownloadOrchestrator_downloadDASHSucceedsWithWritingExecutor() async throws {
+        let url = URL(string: "https://video.example/dash/manifest.mpd")!
+        let mpd = """
+        <MPD type="static" mediaPresentationDuration="PT2S">
+          <Period id="p0" duration="PT2S">
+            <AdaptationSet contentType="video" mimeType="video/mp4" codecs="avc1">
+              <Representation id="v1" bandwidth="1000">
+                <SegmentTemplate timescale="1" duration="2" initialization="init.mp4" media="segment-$Number$.m4s"/>
+              </Representation>
+            </AdaptationSet>
+          </Period>
+        </MPD>
+        """
+        let orchestrator = StreamingDownloadOrchestrator(
+            manifestLoader: RecordingManifestLoader(
+                data: Data(mpd.utf8),
+                finalURL: url,
+                mimeType: "application/dash+xml"
+            ),
+            segmentExecutor: DASHWritingSegmentExecutor()
+        )
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("dash-direct-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let output = directory.appendingPathComponent("direct_dash_assembled.mp4")
+
+        let result = try await orchestrator.downloadDASH(
+            manifestURL: url,
+            destinationDirectory: directory,
+            outputURL: output
+        )
+
+        XCTAssertEqual(result.container, .fragmentedMP4)
+        XCTAssertEqual(result.trackCount, 1)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: output.path))
+    }
+
     func testStreamingDownloadOrchestrator_EnrichedManifestFetch_RejectsNakedRequestWith403_AcceptsEnrichedWith200() async throws {
         let manifestURL = URL(string: "https://auth.example.com/hls/manifest.m3u8?token=xyz123&expires=1999999999")!
         let config = URLSessionConfiguration.ephemeral

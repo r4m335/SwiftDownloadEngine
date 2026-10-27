@@ -248,8 +248,25 @@ final class BrowserMediaDiscoveryTests: XCTestCase {
 
     // MARK: - User Script Manager & URL Resolution Hook Tests
 
-    func testUserScriptManagerLoadsAndManagesCustomScripts() {
+    func testUserScriptManagerLoadsDefaultScriptAtDocumentStart() {
         let manager = BrowserMediaDiscoveryBridge.UserScriptManager()
+        XCTAssertEqual(manager.count, 1)
+        XCTAssertTrue(manager.hasScript(id: BrowserMediaDiscoveryBridge.UserScriptManager.defaultURLResolutionScriptID))
+
+        let defaultScript = manager.script(withID: BrowserMediaDiscoveryBridge.UserScriptManager.defaultURLResolutionScriptID)
+        XCTAssertNotNil(defaultScript)
+        XCTAssertEqual(defaultScript?.injectionTime, .atDocumentStart)
+        XCTAssertFalse(defaultScript?.forMainFrameOnly ?? true)
+        XCTAssertTrue(defaultScript?.source.contains("window.resolvePlayerURL") ?? false)
+        XCTAssertTrue(defaultScript?.source.contains("transforms.sig") ?? false)
+        XCTAssertTrue(defaultScript?.source.contains("transforms.n") ?? false)
+
+        let emptyManager = BrowserMediaDiscoveryBridge.UserScriptManager(loadDefaultScript: false)
+        XCTAssertEqual(emptyManager.count, 0)
+    }
+
+    func testUserScriptManagerLoadsAndManagesCustomScripts() {
+        let manager = BrowserMediaDiscoveryBridge.UserScriptManager(loadDefaultScript: false)
         XCTAssertEqual(manager.count, 0)
 
         let scriptSource = """
@@ -294,10 +311,13 @@ final class BrowserMediaDiscoveryTests: XCTestCase {
 
     func testBridgeIntegratesUserScriptManagerAndHookScript() {
         let bridge = BrowserMediaDiscoveryBridge()
+        XCTAssertTrue(bridge.userScriptManager.hasScript(id: BrowserMediaDiscoveryBridge.UserScriptManager.defaultURLResolutionScriptID))
+        XCTAssertEqual(bridge.userScriptManager.count, 1)
+
         let customJS = "window.resolvePlayerURL = function(url) { return url.replace('raw', 'authorized'); };"
         bridge.userScriptManager.loadCustomScript(customJS, id: "custom-hook")
 
-        XCTAssertEqual(bridge.userScriptManager.count, 1)
+        XCTAssertEqual(bridge.userScriptManager.count, 2)
         XCTAssertTrue(bridge.userScriptManager.hasScript(id: "custom-hook"))
 
         // Verify base urlResolutionHookScript establishes safe default that allows custom override
