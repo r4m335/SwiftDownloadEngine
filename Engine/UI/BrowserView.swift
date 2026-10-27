@@ -1979,6 +1979,7 @@ extension BrowserViewModel: @unchecked Sendable, BrowserMediaURLResolver {}
 public struct BrowserView: View {
     @StateObject public var viewModel: BrowserViewModel
     @FocusState private var isAddressBarFocused: Bool
+    @State private var isShowingDiagnosticLogs: Bool = false
 
     public init(viewModel: BrowserViewModel) {
         _viewModel = StateObject(wrappedValue: viewModel)
@@ -2104,6 +2105,9 @@ public struct BrowserView: View {
         .sheet(isPresented: $viewModel.isShowingTabSwitcher) {
             BrowserTabSwitcherView(viewModel: viewModel)
         }
+        .sheet(isPresented: $isShowingDiagnosticLogs) {
+            DiagnosticLogView()
+        }
         .alert(item: $viewModel.externalAppLinkPrompt) { link in
             Alert(
                 title: Text("Open in App?"),
@@ -2154,6 +2158,17 @@ public struct BrowserView: View {
                             .font(.subheadline)
                             .foregroundColor(.primary)
                         Spacer()
+                        Button {
+                            isShowingDiagnosticLogs = true
+                        } label: {
+                            Text("Logs")
+                                .font(.caption.bold())
+                                .foregroundColor(.blue)
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 4)
+                                .background(Color.blue.opacity(0.12))
+                                .cornerRadius(6)
+                        }
                         Button {
                             withAnimation { viewModel.blobCaptureErrorMessage = nil }
                         } label: {

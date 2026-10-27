@@ -46,6 +46,7 @@ public enum ActiveSheet: Identifiable {
     case addDownload
     case saveToFiles(URL)
     case shareFile(URL)
+    case diagnostics
 
     public var id: String {
         switch self {
@@ -55,6 +56,8 @@ public enum ActiveSheet: Identifiable {
             return "saveToFiles_\(url.path)"
         case .shareFile(let url):
             return "shareFile_\(url.path)"
+        case .diagnostics:
+            return "diagnostics"
         }
     }
 }
@@ -289,6 +292,14 @@ public struct DownloadsView: View {
 
                         Divider()
 
+                        Button {
+                            activeSheet = .diagnostics
+                        } label: {
+                            Label("Pipeline Diagnostics", systemImage: "doc.text.magnifyingglass")
+                        }
+
+                        Divider()
+
                         Button(role: .destructive) {
                             Task { @MainActor in await viewModel.cancelAll(deleteFiles: false) }
                         } label: {
@@ -332,6 +343,8 @@ public struct DownloadsView: View {
                     }
                     .padding()
                     #endif
+                case .diagnostics:
+                    DiagnosticLogView()
                 }
             }
             .alert(item: $activeAlert) { alert in

@@ -476,6 +476,89 @@ final class StreamingDownloadOrchestratorTests: XCTestCase {
         XCTAssertEqual(proposal.resources.first?.url.lastPathComponent, "segment-auth.ts")
     }
 
+    func testPipelineLogger_RedactsSensitiveDataAndMaintainsBoundedBuffer() {
+        let logger = PipelineLogger()
+        logger.clear()
+
+        // 1. Verify token, signature, expiry, cookie, and auth header redaction
+        let rawURLWithTokens = "https://example.com/playlist.m3u8?token=superSecretToken123&expires=1899999999&sig=a1b2c3d4e5f6"
+        let redactedURL = PipelineLogger.redact(rawURLWithTokens)
+        XCTAssertFalse(redactedURL.contains("superSecretToken123"))
+        XCTAssertFalse(redactedURL.contains("1899999999"))
+        XCTAssertFalse(redactedURL.contains("a1b2c3d4e5f6"))
+        XCTAssertTrue(redactedURL.contains("?token=REDACTED"))
+        XCTAssertTrue(redactedURL.contains("&expires=REDACTED"))
+        XCTAssertTrue(redactedURL.contains("&sig=REDACTED"))
+
+        let rawHeaders = "Authorization: Bearer secret_jwt_token_999\nCookie: session_id=session_val_456; cf_clearance=cf_val_789"
+        let redactedHeaders = PipelineLogger.redact(rawHeaders)
+        XCTAssertFalse(redactedHeaders.contains("secret_jwt_token_999"))
+        XCTAssertFalse(redactedHeaders.contains("session_val_456"))
+        XCTAssertTrue(redactedHeaders.contains("Authorization: [REDACTED]"))
+        XCTAssertTrue(redactedHeaders.contains("Cookie: [REDACTED]"))
+
+        // 2. Verify bounded capacity of 200 items
+        for i in 1...250 {
+            logger.log("Log entry number \(i)")
+        }
+        let storedLogs = logger.allLogs()
+        XCTAssertEqual(storedLogs.count, 200)
+        XCTAssertTrue(storedLogs.first?.contains("Log entry number 51") == true)
+        XCTAssertTrue(storedLogs.last?.contains("Log entry number 250") == true)
+    }
+
+    func testStreamingDownloadOrchestrator_CombinedErrorMessage_WhenURLSessionAndJSFallbackBothFail() async throws {
+        struct Failing403Loader: StreamingManifestLoader {
+            func load(
+                candidate: StreamingManifestCandidate,
+                headers: [String: String],
+                limits: ManifestParsingLimits
+            ) async throws -> StreamingManifestResponse {
+                throw StreamingManifestLoadError.authenticationRequired
+            }
+        }
+
+        struct FailingJSResolver: BrowserMediaURLResolver {
+            func resolveMediaURL(_ rawURL: URL) async throws -> URL { rawURL }
+            func fetchManifestText(from url: URL) async throws -> String {
+                let userInfo = ["WKErrorJavaScriptExceptionMessageKey": "TypeError: Failed to fetch"]
+                throw NSError(domain: "WKErrorDomain", code: 4, userInfo: userInfo)
+            }
+        }
+
+        PipelineLogger.shared.clear()
+        let manifestURL = URL(string: "https://auth.example.com/stream.m3u8?token=secret123")!
+        let orchestrator = StreamingDownloadOrchestrator(
+            manifestLoader: Failing403Loader(),
+            segmentExecutor: RecordingSegmentExecutor(),
+            urlResolver: FailingJSResolver()
+        )
+
+        let candidate = try StreamingManifestCandidate(url: manifestURL)
+
+        do {
+            _ = try await orchestrator.prepare(candidate: candidate)
+            XCTFail("Expected prepare to fail with combined error")
+        } catch let error as StreamingManifestLoadError {
+            guard case .failed(let combinedMessage) = error else {
+                XCTFail("Expected .failed case, got \(error)")
+                return
+            }
+            // Check that both underlying causes are preserved in the single combined message
+            XCTAssertTrue(combinedMessage.contains("HTTP 401/403"), "Expected HTTP 401/403 in combined message: \(combinedMessage)")
+            XCTAssertTrue(combinedMessage.contains("TypeError: Failed to fetch"), "Expected JS failure reason in combined message: \(combinedMessage)")
+
+            // Check that PipelineLogger recorded the stages
+            let allLogs = PipelineLogger.shared.formattedLogText()
+            XCTAssertTrue(allLogs.contains("[HLS Pipeline] Step 1: URLSession manifest fetch"))
+            XCTAssertTrue(allLogs.contains("[HLS Pipeline] Step 1b: JS fetch fallback"))
+            XCTAssertTrue(allLogs.contains("[HLS Pipeline] Error:"))
+            XCTAssertFalse(allLogs.contains("secret123"), "Token must be redacted in pipeline logs")
+        } catch {
+            XCTFail("Unexpected error type: \(error)")
+        }
+    }
+
     func testStreamingDownloadOrchestrator_EnrichedManifestFetch_RejectsNakedRequestWith403_AcceptsEnrichedWith200() async throws {
         let manifestURL = URL(string: "https://auth.example.com/hls/manifest.m3u8?token=xyz123&expires=1999999999")!
         let config = URLSessionConfiguration.ephemeral

@@ -180,6 +180,7 @@ public enum StreamingManifestLoadError: Error, LocalizedError, Sendable, Equatab
     case unexpectedStatus(Int)
     case invalidRedirect
     case browserFetchUnavailable
+    case failed(String)
 
     public var errorDescription: String? {
         switch self {
@@ -195,6 +196,8 @@ public enum StreamingManifestLoadError: Error, LocalizedError, Sendable, Equatab
             return "The manifest redirect resolved to an unsupported URL."
         case .browserFetchUnavailable:
             return "Browser JavaScript manifest fetch is unavailable."
+        case .failed(let message):
+            return message
         }
     }
 }
@@ -552,42 +555,96 @@ public actor StreamingDownloadOrchestrator {
         self.urlResolver = resolver
     }
 
+    private func manifestStatusDescription(for error: Error) -> String {
+        if let manifestErr = error as? StreamingManifestLoadError {
+            switch manifestErr {
+            case .unexpectedStatus(let status):
+                return "HTTP \(status)"
+            case .authenticationRequired:
+                return "HTTP 401/403"
+            case .expiredOrMissing:
+                return "HTTP 404/410"
+            case .invalidResponse:
+                return "Invalid Response"
+            case .invalidRedirect:
+                return "Invalid Redirect"
+            case .browserFetchUnavailable:
+                return "Browser Fetch Unavailable"
+            case .failed(let msg):
+                return msg
+            }
+        }
+        return error.localizedDescription
+    }
+
+    private func browserFetchErrorReason(for error: Error) -> String {
+        let nsError = error as NSError
+        #if canImport(WebKit)
+        if let jsMsg = nsError.userInfo["WKErrorJavaScriptExceptionMessageKey"] as? String, !jsMsg.isEmpty {
+            return jsMsg
+        }
+        #endif
+        if let manifestErr = error as? StreamingManifestLoadError {
+            return manifestErr.localizedDescription
+        }
+        return error.localizedDescription
+    }
+
     private func loadManifestResponse(
         candidate: StreamingManifestCandidate,
         headers: [String: String]
     ) async throws -> StreamingManifestResponse {
         do {
-            return try await manifestLoader.load(
+            let response = try await manifestLoader.load(
                 candidate: candidate,
                 headers: headers,
                 limits: parsingLimits
             )
+            PipelineLogger.shared.log("[HLS Pipeline] Step 1: URLSession manifest fetch (status: \(response.statusCode))")
+            return response
         } catch let error as ManifestParserError {
+            PipelineLogger.shared.log("[HLS Pipeline] Error: Manifest parser failed: \(error.localizedDescription)")
             throw error
         } catch {
-            print("[HLS Pipeline] URLSession manifest load failed for \(candidate.url.absoluteString) (\(error.localizedDescription)). Attempting JavaScript Fetch Fallback in WKWebView...")
+            let status = manifestStatusDescription(for: error)
+            PipelineLogger.shared.log("[HLS Pipeline] Step 1: URLSession manifest fetch (status: \(status))")
             if let resolver = self.urlResolver {
                 do {
                     let text = try await resolver.fetchManifestText(from: candidate.url)
                     let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
                     guard !trimmed.isEmpty else {
-                        print("[HLS Pipeline] JavaScript Fetch Fallback returned empty text.")
-                        throw error
+                        let jsReason = "Empty manifest response"
+                        PipelineLogger.shared.log("[HLS Pipeline] Step 1b: JS fetch fallback (status: \(jsReason))")
+                        let combinedMessage = "Manifest \(status); browser fetch failed: \(jsReason)"
+                        PipelineLogger.shared.log("[HLS Pipeline] Error: \(combinedMessage)")
+                        throw StreamingManifestLoadError.failed(combinedMessage)
                     }
                     let data = Data(trimmed.utf8)
-                    print("[HLS Pipeline] JavaScript Fetch Fallback succeeded (\(data.count) bytes). Parsing manifest directly.")
+                    PipelineLogger.shared.log("[HLS Pipeline] Step 1b: JS fetch fallback (status: 200)")
                     return StreamingManifestResponse(
                         data: data,
                         finalURL: candidate.url,
                         mimeType: candidate.mimeType,
                         statusCode: 200
                     )
-                } catch let jsError {
-                    print("[HLS Pipeline] JavaScript Fetch Fallback failed: \(jsError.localizedDescription)")
-                    throw error
+                } catch let jsError as StreamingManifestLoadError {
+                    if case .failed = jsError {
+                        throw jsError
+                    }
+                    let jsReason = browserFetchErrorReason(for: jsError)
+                    PipelineLogger.shared.log("[HLS Pipeline] Step 1b: JS fetch fallback (status: \(jsReason))")
+                    let combinedMessage = "Manifest \(status); browser fetch failed: \(jsReason)"
+                    PipelineLogger.shared.log("[HLS Pipeline] Error: \(combinedMessage)")
+                    throw StreamingManifestLoadError.failed(combinedMessage)
+                } catch {
+                    let jsReason = browserFetchErrorReason(for: error)
+                    PipelineLogger.shared.log("[HLS Pipeline] Step 1b: JS fetch fallback (status: \(jsReason))")
+                    let combinedMessage = "Manifest \(status); browser fetch failed: \(jsReason)"
+                    PipelineLogger.shared.log("[HLS Pipeline] Error: \(combinedMessage)")
+                    throw StreamingManifestLoadError.failed(combinedMessage)
                 }
             } else {
-                print("[HLS Pipeline] JavaScript Fetch Fallback was unavailable (urlResolver is nil).")
+                PipelineLogger.shared.log("[HLS Pipeline] Error: Manifest fetch failed (\(status)) and browser resolver is unavailable.")
                 throw error
             }
         }
@@ -632,13 +689,13 @@ public actor StreamingDownloadOrchestrator {
         do {
             switch classification.kind {
             case .hls:
-                print("[HLS Pipeline] 1. Manifest fetched from \(response.finalURL.absoluteString) (\(response.data.count) bytes). Parsing with HLSManifestParser...")
+                PipelineLogger.shared.log("[HLS Pipeline] 1. Manifest fetched from \(response.finalURL.absoluteString) (\(response.data.count) bytes). Parsing with HLSManifestParser...")
                 var parsed = try HLSManifestParser.parse(
                     response.data,
                     baseURL: response.finalURL,
                     limits: parsingLimits
                 )
-                print("[HLS Pipeline] 2. HLSManifestParser initial parse completed: playlistType=\(parsed.playlistType), variants=\(parsed.variants.count), segments=\(parsed.segments.count)")
+                PipelineLogger.shared.log("[HLS Pipeline] 2. HLSManifestParser initial parse completed: playlistType=\(parsed.playlistType), variants=\(parsed.variants.count), segments=\(parsed.segments.count)")
 
                 var selectedAudioRendition: HLSRendition?
                 var currentURL = response.finalURL
@@ -662,10 +719,10 @@ public actor StreamingDownloadOrchestrator {
                             )
                         }
                     } catch let error as HLSVariantSelectionError {
-                        print("[HLS Pipeline] Error during variant selection: \(error.localizedDescription)")
+                        PipelineLogger.shared.log("[HLS Pipeline] Error during variant selection: \(error.localizedDescription)")
                         throw StreamingDownloadOrchestratorError.hlsVariantSelectionFailed(error)
                     }
-                    print("[HLS Pipeline] Master playlist detected. Selected highest quality variant [depth=\(resolutionDepth)]: \(variant.uri.absoluteString), bandwidth=\(variant.bandwidth ?? 0)")
+                    PipelineLogger.shared.log("[HLS Pipeline] Master playlist detected. Selected highest quality variant [depth=\(resolutionDepth)]: \(variant.uri.absoluteString), bandwidth=\(variant.bandwidth ?? 0)")
                     let variantURI: URL
                     if (variant.uri.query == nil || variant.uri.query?.isEmpty == true),
                        let parentQuery = currentURL.query ?? candidate.url.query, !parentQuery.isEmpty,
@@ -692,22 +749,22 @@ public actor StreamingDownloadOrchestrator {
                         baseURL: currentURL,
                         limits: parsingLimits
                     )
-                    print("[HLS Pipeline] 2. Sub-playlist parsed: playlistType=\(parsed.playlistType), segments=\(parsed.segments.count)")
+                    PipelineLogger.shared.log("[HLS Pipeline] 2. Sub-playlist parsed: playlistType=\(parsed.playlistType), segments=\(parsed.segments.count)")
                 }
                 guard parsed.playlistType == .media else {
-                    print("[HLS Pipeline] Error: Expected media playlist with segments, but got: \(parsed.playlistType)")
+                    PipelineLogger.shared.log("[HLS Pipeline] Error: Expected media playlist with segments, but got: \(parsed.playlistType)")
                     throw StreamingDownloadOrchestratorError.playlistRequiresVariantSelection
                 }
-                print("[HLS Pipeline] 2. Final media playlist confirmed. Segments found: \(parsed.segments.count)")
+                PipelineLogger.shared.log("[HLS Pipeline] 2. Final media playlist confirmed. Segments found: \(parsed.segments.count)")
 
                 let videoPlan = try HLSTransferPlanner.makeVODPlan(
                     from: parsed,
                     browserRequestContext: candidate.browserRequestContext
                 )
-                print("[HLS Pipeline] 3. HLSTransferPlanner generated video transfer plan with \(videoPlan.resources.count) segments (estimated bytes: \(videoPlan.estimatedTransferBytes ?? 0)).")
+                PipelineLogger.shared.log("[HLS Pipeline] 3. HLSTransferPlanner generated video transfer plan with \(videoPlan.resources.count) segments (estimated bytes: \(videoPlan.estimatedTransferBytes ?? 0)).")
                 let audioPlan: [HLSPlannedResource]?
                 if let audioURI = selectedAudioRendition?.uri {
-                    print("[HLS Pipeline] Separate audio rendition detected: \(audioURI.absoluteString). Fetching audio manifest...")
+                    PipelineLogger.shared.log("[HLS Pipeline] Separate audio rendition detected: \(audioURI.absoluteString). Fetching audio manifest...")
                     let audioFinalURI: URL
                     if (audioURI.query == nil || audioURI.query?.isEmpty == true),
                        let parentQuery = currentURL.query ?? candidate.url.query, !parentQuery.isEmpty,
@@ -734,7 +791,7 @@ public actor StreamingDownloadOrchestrator {
                         limits: parsingLimits
                     )
                     guard parsedAudio.playlistType == .media else {
-                        print("[HLS Pipeline] Audio playlist did not resolve to media segments.")
+                        PipelineLogger.shared.log("[HLS Pipeline] Audio playlist did not resolve to media segments.")
                         throw StreamingDownloadOrchestratorError.manifestNotRecognized
                     }
                     let parsedAudioPlan = try HLSTransferPlanner.makeVODPlan(
@@ -742,7 +799,7 @@ public actor StreamingDownloadOrchestrator {
                         browserRequestContext: candidate.browserRequestContext
                     )
                     audioPlan = parsedAudioPlan.resources
-                    print("[HLS Pipeline] Audio plan generated with \(parsedAudioPlan.resources.count) audio segments.")
+                    PipelineLogger.shared.log("[HLS Pipeline] Audio plan generated with \(parsedAudioPlan.resources.count) audio segments.")
                 } else {
                     audioPlan = nil
                 }
@@ -819,7 +876,8 @@ public actor StreamingDownloadOrchestrator {
         }
         defer { runningTransfers.remove(proposal.transferID) }
 
-        print("[HLS Pipeline] 4. SegmentDownloader starting execution for transfer \(proposal.transferID) with \(proposal.resources.count) total resources.")
+        let pipelineTag = proposal.manifest.kind == .dash ? "[DASH Pipeline]" : "[HLS Pipeline]"
+        PipelineLogger.shared.log("\(pipelineTag) Step 2: Segment download started (transferID: \(proposal.transferID), totalSegments: \(proposal.resources.count))")
         try FileManager.default.createDirectory(at: destinationDirectory, withIntermediateDirectories: true)
         var completed: [StreamingSegmentIdentity] = []
         var localFiles: [URL] = []
@@ -888,12 +946,17 @@ public actor StreamingDownloadOrchestrator {
                 ))
             }
         } catch is CancellationError {
+            PipelineLogger.shared.log("\(pipelineTag) Error: Segment download cancelled.")
             await segmentExecutor.cancel(transferID: proposal.transferID)
             throw StreamingDownloadOrchestratorError.cancelled
         } catch let error as StreamingDownloadOrchestratorError {
+            PipelineLogger.shared.log("\(pipelineTag) Error: \(error.localizedDescription)")
             if case .cancelled = error {
                 await segmentExecutor.cancel(transferID: proposal.transferID)
             }
+            throw error
+        } catch {
+            PipelineLogger.shared.log("\(pipelineTag) Error: \(error.localizedDescription)")
             throw error
         }
 
@@ -991,30 +1054,36 @@ public actor StreamingDownloadOrchestrator {
         browserSessionSnapshot: BrowserSessionSnapshot? = nil,
         progress: (@Sendable (StreamingTransferProgress) -> Void)? = nil
     ) async throws -> MediaAssemblyOutput {
-        print("[HLS Pipeline] downloadHLS started for manifest: \(manifestURL.absoluteString)")
-        let candidate = try StreamingManifestCandidate(
-            url: manifestURL,
-            browserSessionSnapshot: browserSessionSnapshot
-        )
-        print("[HLS Pipeline] 1. Manifest candidate created. Fetching and preparing proposal...")
-        let proposal = try await prepare(candidate: candidate)
-        guard case .hls(let transferPlan) = proposal.manifest else {
-            print("[HLS Pipeline] Error: Prepared proposal is not HLS.")
-            throw StreamingDownloadOrchestratorError.unsupportedManifest(.dash)
+        PipelineLogger.shared.log("[HLS Pipeline] downloadHLS started for manifest: \(manifestURL.absoluteString)")
+        do {
+            let candidate = try StreamingManifestCandidate(
+                url: manifestURL,
+                browserSessionSnapshot: browserSessionSnapshot
+            )
+            PipelineLogger.shared.log("[HLS Pipeline] 1. Manifest candidate created. Fetching and preparing proposal...")
+            let proposal = try await prepare(candidate: candidate)
+            guard case .hls(let transferPlan) = proposal.manifest else {
+                let errorMsg = "Prepared proposal is not HLS."
+                PipelineLogger.shared.log("[HLS Pipeline] Error: \(errorMsg)")
+                throw StreamingDownloadOrchestratorError.unsupportedManifest(.dash)
+            }
+            PipelineLogger.shared.log("[HLS Pipeline] 3. HLSTransferPlanner generated transfer plan with \(transferPlan.resources.count) segments.")
+            let dest = destinationDirectory ?? FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+            let finalOut = outputURL ?? dest.appendingPathComponent(HLSVODReconstructionPlanner.suggestedFilename(for: transferPlan), isDirectory: false)
+            PipelineLogger.shared.log("[HLS Pipeline] 4. SegmentDownloader starting downloads. Output destination: \(finalOut.path)")
+            let result = try await executeAndAssembleHLS(
+                proposal,
+                approved: true,
+                destinationDirectory: dest,
+                outputURL: finalOut,
+                progress: progress
+            )
+            PipelineLogger.shared.log("[HLS Pipeline] downloadHLS successfully completed: \(result.destinationURL.path)")
+            return result
+        } catch {
+            PipelineLogger.shared.log("[HLS Pipeline] Error: \(error.localizedDescription)")
+            throw error
         }
-        print("[HLS Pipeline] 3. HLSTransferPlanner generated transfer plan with \(transferPlan.resources.count) segments.")
-        let dest = destinationDirectory ?? FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
-        let finalOut = outputURL ?? dest.appendingPathComponent(HLSVODReconstructionPlanner.suggestedFilename(for: transferPlan), isDirectory: false)
-        print("[HLS Pipeline] 4. SegmentDownloader starting downloads. Output destination: \(finalOut.path)")
-        let result = try await executeAndAssembleHLS(
-            proposal,
-            approved: true,
-            destinationDirectory: dest,
-            outputURL: finalOut,
-            progress: progress
-        )
-        print("[HLS Pipeline] downloadHLS successfully completed: \(result.destinationURL.path)")
-        return result
     }
 
     /// Convenience method to download a DASH stream directly from a manifest URL,
@@ -1027,23 +1096,36 @@ public actor StreamingDownloadOrchestrator {
         browserSessionSnapshot: BrowserSessionSnapshot? = nil,
         progress: (@Sendable (StreamingTransferProgress) -> Void)? = nil
     ) async throws -> MediaAssemblyOutput {
-        let candidate = try StreamingManifestCandidate(
-            url: manifestURL,
-            browserSessionSnapshot: browserSessionSnapshot
-        )
-        let proposal = try await prepare(candidate: candidate)
-        guard case .dash(let transferPlan) = proposal.manifest else {
-            throw StreamingDownloadOrchestratorError.unsupportedManifest(.hls)
+        PipelineLogger.shared.log("[DASH Pipeline] downloadDASH started for manifest: \(manifestURL.absoluteString)")
+        do {
+            let candidate = try StreamingManifestCandidate(
+                url: manifestURL,
+                browserSessionSnapshot: browserSessionSnapshot
+            )
+            PipelineLogger.shared.log("[DASH Pipeline] 1. Manifest candidate created. Fetching and preparing proposal...")
+            let proposal = try await prepare(candidate: candidate)
+            guard case .dash(let transferPlan) = proposal.manifest else {
+                let errorMsg = "Prepared proposal is not DASH."
+                PipelineLogger.shared.log("[DASH Pipeline] Error: \(errorMsg)")
+                throw StreamingDownloadOrchestratorError.unsupportedManifest(.hls)
+            }
+            PipelineLogger.shared.log("[DASH Pipeline] 3. DASHTransferPlanner generated transfer plan with \(transferPlan.resources.count) segments.")
+            let dest = destinationDirectory ?? FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+            let finalOut = outputURL ?? dest.appendingPathComponent(DASHVODReconstructionPlanner.suggestedFilename(for: transferPlan), isDirectory: false)
+            PipelineLogger.shared.log("[DASH Pipeline] 4. SegmentDownloader starting downloads. Output destination: \(finalOut.path)")
+            let result = try await executeAndAssembleDASH(
+                proposal,
+                approved: true,
+                destinationDirectory: dest,
+                outputURL: finalOut,
+                progress: progress
+            )
+            PipelineLogger.shared.log("[DASH Pipeline] downloadDASH successfully completed: \(result.destinationURL.path)")
+            return result
+        } catch {
+            PipelineLogger.shared.log("[DASH Pipeline] Error: \(error.localizedDescription)")
+            throw error
         }
-        let dest = destinationDirectory ?? FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
-        let finalOut = outputURL ?? dest.appendingPathComponent(DASHVODReconstructionPlanner.suggestedFilename(for: transferPlan), isDirectory: false)
-        return try await executeAndAssembleDASH(
-            proposal,
-            approved: true,
-            destinationDirectory: dest,
-            outputURL: finalOut,
-            progress: progress
-        )
     }
 
     public func cancel(transferID: String) async {

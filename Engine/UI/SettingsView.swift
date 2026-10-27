@@ -27,6 +27,7 @@ public struct SettingsView: View {
     // UI Feedback
     @State private var showingSavedAlert: Bool = false
     @State private var statusMessage: String? = nil
+    @State private var showingDiagnostics: Bool = false
 
     public init(viewModel: DownloadManagerViewModel) {
         self.viewModel = viewModel
@@ -158,7 +159,19 @@ public struct SettingsView: View {
                     }
                 }
 
-                // Section 7: Save Action
+                // Section 7: Pipeline Diagnostics & Remote Debugging
+                Section(
+                    header: Text("Diagnostics & Remote Debugging"),
+                    footer: Text("Inspect in-memory diagnostic logs for HLS and DASH stream downloads with sensitive tokens and cookies redacted.")
+                ) {
+                    Button {
+                        showingDiagnostics = true
+                    } label: {
+                        Label("View Pipeline Diagnostics", systemImage: "doc.text.magnifyingglass")
+                    }
+                }
+
+                // Section 8: Save Action
                 Section {
                     Button {
                         saveSettings()
@@ -173,6 +186,9 @@ public struct SettingsView: View {
                 }
             }
             .navigationTitle("Settings")
+            .sheet(isPresented: $showingDiagnostics) {
+                DiagnosticLogView()
+            }
             .onAppear {
                 loadCurrentSettings()
             }
