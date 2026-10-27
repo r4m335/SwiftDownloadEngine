@@ -1139,7 +1139,7 @@ public actor StreamingDownloadOrchestrator {
         guard case .hls(let transferPlan) = proposal.manifest else {
             throw StreamingDownloadOrchestratorError.unsupportedManifest(.dash)
         }
-        let finalOutputURL = outputURL.pathExtension.lowercased() == "mp4" ? outputURL : outputURL.deletingPathExtension().appendingPathExtension("mp4")
+        let finalOutputURL = outputURL
         let originalSourceURL = candidatesByTransfer[proposal.transferID]?.url ?? transferPlan.manifestURL
         let manifestKey = originalSourceURL.absoluteString
         registeredTransferIDs[manifestKey] = proposal.transferID
@@ -1215,7 +1215,7 @@ public actor StreamingDownloadOrchestrator {
         guard case .dash(let transferPlan) = proposal.manifest else {
             throw StreamingDownloadOrchestratorError.unsupportedManifest(.hls)
         }
-        let finalOutputURL = outputURL.pathExtension.lowercased() == "mp4" ? outputURL : outputURL.deletingPathExtension().appendingPathExtension("mp4")
+        let finalOutputURL = outputURL
         let originalSourceURL = candidatesByTransfer[proposal.transferID]?.url ?? transferPlan.manifestURL
         let manifestKey = originalSourceURL.absoluteString
         registeredTransferIDs[manifestKey] = proposal.transferID

@@ -328,7 +328,7 @@ final class StreamingDownloadOrchestratorTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
         let engine = try DownloadEngine(storageDirectoryURL: tempDir)
-        let router = RouterManifestLoader(responses: [
+        let router = VariantManifestLoader(responses: [
             masterURL: StreamingManifestResponse(data: Data(masterM3U8.utf8), finalURL: masterURL, mimeType: "application/vnd.apple.mpegurl"),
             variantURL: StreamingManifestResponse(data: Data(variantM3U8.utf8), finalURL: variantURL, mimeType: "application/vnd.apple.mpegurl")
         ])
@@ -875,23 +875,6 @@ private actor RecordingManifestLoader: StreamingManifestLoader {
     ) async throws -> StreamingManifestResponse {
         loadCount += 1
         return StreamingManifestResponse(data: data, finalURL: finalURL, mimeType: mimeType)
-    }
-}
-
-private actor RouterManifestLoader: StreamingManifestLoader {
-    private let responses: [URL: StreamingManifestResponse]
-
-    init(responses: [URL: StreamingManifestResponse]) {
-        self.responses = responses
-    }
-
-    func load(
-        candidate: StreamingManifestCandidate,
-        headers: [String: String],
-        limits: ManifestParsingLimits
-    ) async throws -> StreamingManifestResponse {
-        if let res = responses[candidate.url] { return res }
-        throw StreamingDownloadOrchestratorError.invalidManifestURL
     }
 }
 

@@ -32,8 +32,12 @@ jobs:
         run: |
           set -o pipefail
           swift test 2>&1 | tee test_run.log || {
-            echo "::error::Swift test failed. Failure details:"
-            grep -E "Test Case '.*' failed|error:" test_run.log || true
+            echo "::error::Swift test failed. Printing failure details:"
+            grep -E "Test Case '.*' failed|error:|failed - " test_run.log | while IFS= read -r line; do
+              echo "::error::$line"
+            done
+            echo "=== Test Failure Summary ==="
+            tail -n 60 test_run.log
             exit 1
           }
 
