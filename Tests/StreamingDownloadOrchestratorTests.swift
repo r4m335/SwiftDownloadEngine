@@ -253,6 +253,53 @@ final class StreamingDownloadOrchestratorTests: XCTestCase {
         XCTAssertEqual(result.trackCount, 1)
         XCTAssertTrue(FileManager.default.fileExists(atPath: output.path))
     }
+
+    func testStreamingDownloadOrchestrator_UsesURLResolverWhenAvailable() async throws {
+        final class MockURLResolver: BrowserMediaURLResolver {
+            @MainActor
+            func resolveMediaURL(_ rawURL: URL) async throws -> URL {
+                var comp = URLComponents(url: rawURL, resolvingAgainstBaseURL: false)!
+                var items = comp.queryItems ?? []
+                items.append(URLQueryItem(name: "resolved", value: "true"))
+                comp.queryItems = items
+                return comp.url!
+            }
+        }
+
+        let resolver = MockURLResolver()
+        let executor = RecordingSegmentExecutor()
+        let manifestData = Data("""
+        #EXTM3U
+        #EXT-X-VERSION:3
+        #EXT-X-TARGETDURATION:5
+        #EXTINF:5.0,
+        segment-0.ts
+        #EXT-X-ENDLIST
+        """.utf8)
+        let orchestrator = StreamingDownloadOrchestrator(
+            manifestLoader: RecordingManifestLoader(
+                data: manifestData,
+                finalURL: URL(string: "https://example.com/vod.m3u8")!,
+                mimeType: "application/vnd.apple.mpegurl"
+            ),
+            segmentExecutor: executor,
+            urlResolver: resolver
+        )
+        let candidate = try StreamingManifestCandidate(url: URL(string: "https://example.com/vod.m3u8")!)
+        let proposal = try await orchestrator.prepare(candidate: candidate)
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        _ = try await orchestrator.execute(
+            proposal,
+            approved: true,
+            destinationDirectory: dir
+        )
+        let requests = await executor.requests
+        XCTAssertEqual(requests.count, 1)
+        XCTAssertTrue(requests[0].url.absoluteString.contains("resolved=true"))
+    }
 }
 
 private actor RecordingManifestLoader: StreamingManifestLoader {

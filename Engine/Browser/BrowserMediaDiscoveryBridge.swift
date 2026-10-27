@@ -140,6 +140,20 @@ public final class BrowserMediaDiscoveryBridge: NSObject, @unchecked Sendable {
     public static let maximumCandidateLength = 8_192
     public static let maximumMetadataLength = 65_536
 
+    /// Injects a generic client-side URL resolution hook into the page context.
+    /// Platforms that dynamically generate or rewrite media URLs can define or
+    /// override `window.resolvePlayerURL(url)` to return authorized segment URLs.
+    public static let urlResolutionHookScript = #"""
+    (function() {
+        "use strict";
+        if (typeof window.resolvePlayerURL !== "function") {
+            window.resolvePlayerURL = function(url) {
+                return url;
+            };
+        }
+    })();
+    """#
+
     /// This script observes page-owned resource signals only. It does not read
     /// cookies, request bodies, or authorization headers. Possible manifests get
     /// only a bounded text prefix from a cloned response; ordinary responses are
@@ -843,6 +857,13 @@ public final class BrowserMediaDiscoveryBridge: NSObject, @unchecked Sendable {
 
     #if canImport(WebKit)
     public func install(on configuration: WKWebViewConfiguration) {
+        configuration.userContentController.addUserScript(
+            WKUserScript(
+                source: Self.urlResolutionHookScript,
+                injectionTime: .atDocumentStart,
+                forMainFrameOnly: false
+            )
+        )
         configuration.userContentController.addUserScript(
             WKUserScript(
                 source: Self.observerScript,
