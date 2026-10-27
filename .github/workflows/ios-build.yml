@@ -30,7 +30,12 @@ jobs:
 
       - name: Build Swift Package and Tests (macOS)
         run: |
-          swift build --build-tests
+          set -o pipefail
+          swift build --build-tests 2>&1 | tee build.log || {
+            ERRS=$(grep -E "(: error:|error: )" build.log | head -n 8 | tr '\n' ' | ')
+            echo "::error::COMPILER ERRORS: $ERRS"
+            exit 1
+          }
 
       - name: Run Swift Package Tests (macOS)
         run: |
