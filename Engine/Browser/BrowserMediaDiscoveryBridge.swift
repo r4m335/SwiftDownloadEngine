@@ -1246,50 +1246,55 @@ public final class BrowserMediaDiscoveryBridge: NSObject, @unchecked Sendable {
         return resolved
     }
 
-    /// Evaluates a JavaScript `fetch()` request directly in the given webview.
-    /// This bypasses URLSession to guarantee the exact browser TLS fingerprint,
-    /// cookies, and session authentication are used to retrieve the manifest text.
+    /// Evaluates a JavaScript `fetch()` request directly in the given webview using `callAsyncJavaScript`.
+    /// This properly awaits asynchronous Promises and bypasses URLSession to guarantee the exact
+    /// browser TLS fingerprint, cookies, and session authentication are used to retrieve the manifest text.
     @MainActor
     public func fetchManifestText(from url: URL, on webView: WKWebView) async throws -> String {
         let rawString = url.absoluteString
-        let escaped = rawString
-            .replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "\"", with: "\\\"")
-            .replacingOccurrences(of: "\n", with: "\\n")
-            .replacingOccurrences(of: "\r", with: "\\r")
 
-        let script = """
-        fetch("\(escaped)", { method: "GET", credentials: "include" })
-            .then(function(r) {
-                if (!r.ok) { throw new Error("HTTP " + r.status); }
-                return r.text();
-            })
-            .then(function(t) { return t; })
+        let asyncScript = """
+        const response = await fetch(url, {
+            method: 'GET',
+            credentials: 'include',
+            headers: {
+                'Accept': '*/*'
+            }
+        });
+        if (!response.ok) {
+            throw new Error('HTTP ' + response.status);
+        }
+        return await response.text();
         """
 
         do {
-            if let result = try await webView.evaluateJavaScript(script) as? String,
-               !result.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                return result
-            }
-        } catch {
-            let asyncScript = """
-            const r = await fetch(url, { method: 'GET', credentials: 'include' });
-            if (!r.ok) { throw new Error('HTTP ' + r.status); }
-            return await r.text();
-            """
-            if let asyncResult = try? await webView.callAsyncJavaScript(
+            let result = try await webView.callAsyncJavaScript(
                 asyncScript,
                 arguments: ["url": rawString],
                 in: nil,
                 in: .page
-            ) as? String, !asyncResult.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                return asyncResult
+            )
+            if let text = result as? String, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return text
             }
-            throw error
+            throw StreamingManifestLoadError.invalidResponse
+        } catch let pageError {
+            // Attempt in .defaultClient world if .page fails (e.g. CSP restrictions)
+            do {
+                let fallbackResult = try await webView.callAsyncJavaScript(
+                    asyncScript,
+                    arguments: ["url": rawString],
+                    in: nil,
+                    in: .defaultClient
+                )
+                if let text = fallbackResult as? String, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    return text
+                }
+            } catch {
+                // Ignore fallback error and throw pageError
+            }
+            throw pageError
         }
-
-        throw StreamingManifestLoadError.invalidResponse
     }
 
     public func userContentController(

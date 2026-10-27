@@ -517,6 +517,7 @@ public actor StreamingDownloadOrchestrator {
     private let segmentExecutor: any StreamingSegmentExecutor
     private let parsingLimits: ManifestParsingLimits
     public var urlResolver: (any BrowserMediaURLResolver)?
+    public var downloadEngine: DownloadEngine?
     private var proposals: [String: StreamingTransferProposal] = [:]
     private var runningTransfers: Set<String> = []
     private var completedTransfers: [String: StreamingTransferResult] = [:]
@@ -525,16 +526,19 @@ public actor StreamingDownloadOrchestrator {
         manifestLoader: any StreamingManifestLoader = URLSessionStreamingManifestLoader(),
         segmentExecutor: any StreamingSegmentExecutor,
         parsingLimits: ManifestParsingLimits = .default,
-        urlResolver: (any BrowserMediaURLResolver)? = nil
+        urlResolver: (any BrowserMediaURLResolver)? = nil,
+        downloadEngine: DownloadEngine? = nil
     ) {
         self.manifestLoader = manifestLoader
         self.segmentExecutor = segmentExecutor
         self.parsingLimits = parsingLimits
         self.urlResolver = urlResolver
+        self.downloadEngine = downloadEngine
     }
 
     public init(
         downloadCoordinator: DownloadCoordinator,
+        downloadEngine: DownloadEngine? = nil,
         manifestLoader: any StreamingManifestLoader = URLSessionStreamingManifestLoader(),
         parsingLimits: ManifestParsingLimits = .default,
         retryCount: Int = 2,
@@ -547,12 +551,17 @@ public actor StreamingDownloadOrchestrator {
                 retryCount: retryCount
             ),
             parsingLimits: parsingLimits,
-            urlResolver: urlResolver
+            urlResolver: urlResolver,
+            downloadEngine: downloadEngine
         )
     }
 
     public func setURLResolver(_ resolver: (any BrowserMediaURLResolver)?) {
         self.urlResolver = resolver
+    }
+
+    public func setDownloadEngine(_ engine: DownloadEngine?) {
+        self.downloadEngine = engine
     }
 
     private func manifestStatusDescription(for error: Error) -> String {
@@ -1078,6 +1087,19 @@ public actor StreamingDownloadOrchestrator {
                 outputURL: finalOut,
                 progress: progress
             )
+            if let engine = self.downloadEngine {
+                do {
+                    _ = try await engine.importCompletedFile(
+                        fileURL: result.destinationURL,
+                        originalURL: manifestURL,
+                        filename: result.destinationURL.lastPathComponent,
+                        mimeType: "video/mp4"
+                    )
+                    PipelineLogger.shared.log("[HLS Pipeline] Successfully registered completed file in DownloadEngine persistence.")
+                } catch {
+                    PipelineLogger.shared.log("[HLS Pipeline] Warning: Could not register in DownloadEngine: \(error.localizedDescription)")
+                }
+            }
             PipelineLogger.shared.log("[HLS Pipeline] downloadHLS successfully completed: \(result.destinationURL.path)")
             return result
         } catch {
@@ -1120,6 +1142,19 @@ public actor StreamingDownloadOrchestrator {
                 outputURL: finalOut,
                 progress: progress
             )
+            if let engine = self.downloadEngine {
+                do {
+                    _ = try await engine.importCompletedFile(
+                        fileURL: result.destinationURL,
+                        originalURL: manifestURL,
+                        filename: result.destinationURL.lastPathComponent,
+                        mimeType: "video/mp4"
+                    )
+                    PipelineLogger.shared.log("[DASH Pipeline] Successfully registered completed file in DownloadEngine persistence.")
+                } catch {
+                    PipelineLogger.shared.log("[DASH Pipeline] Warning: Could not register in DownloadEngine: \(error.localizedDescription)")
+                }
+            }
             PipelineLogger.shared.log("[DASH Pipeline] downloadDASH successfully completed: \(result.destinationURL.path)")
             return result
         } catch {

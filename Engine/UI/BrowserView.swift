@@ -163,11 +163,17 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         if let streamingOrchestrator {
             orchestrator = streamingOrchestrator
         } else if let vm = downloadDelegate as? DownloadManagerViewModel {
-            orchestrator = StreamingDownloadOrchestrator(downloadCoordinator: vm.engine.coordinator)
+            orchestrator = StreamingDownloadOrchestrator(
+                downloadCoordinator: vm.engine.coordinator,
+                downloadEngine: vm.engine
+            )
         } else if let shared = StreamingDownloadOrchestrator.shared {
             orchestrator = shared
         } else {
             orchestrator = StreamingDownloadOrchestrator.createDefault()
+        }
+        if let vm = downloadDelegate as? DownloadManagerViewModel {
+            Task { await orchestrator.setDownloadEngine(vm.engine) }
         }
         self.streamingOrchestrator = orchestrator
         StreamingDownloadOrchestrator.shared = orchestrator
@@ -1083,34 +1089,79 @@ public final class BrowserViewModel: NSObject, ObservableObject {
             }
             do {
                 let completionMessage: String
+                let assembledOutputURL: URL
+                let filename: String
+                let manifestURL: URL
+
+                let tempAssemblyDir = FileManager.default.temporaryDirectory
+                    .appendingPathComponent("Assemble-\(UUID().uuidString)", isDirectory: true)
+                try FileManager.default.createDirectory(at: tempAssemblyDir, withIntermediateDirectories: true)
+
                 switch proposal.manifest {
                 case .hls(let transferPlan):
-                    let outputURL = destination.appendingPathComponent(
-                        HLSVODReconstructionPlanner.suggestedFilename(for: transferPlan),
-                        isDirectory: false
-                    )
+                    manifestURL = transferPlan.manifestURL
+                    filename = HLSVODReconstructionPlanner.suggestedFilename(for: transferPlan)
+                    let tempOutputURL = tempAssemblyDir.appendingPathComponent(filename, isDirectory: false)
                     let result = try await orchestrator.executeAndAssembleHLS(
                         proposal,
                         approved: true,
-                        destinationDirectory: destination,
-                        outputURL: outputURL,
+                        destinationDirectory: tempAssemblyDir,
+                        outputURL: tempOutputURL,
                         progress: progressSink
                     )
-                    completionMessage = "Streaming download completed: \(result.destinationURL.lastPathComponent)."
+                    assembledOutputURL = result.destinationURL
+                    completionMessage = "Streaming download completed: \(filename)."
                 case .dash(let transferPlan):
-                    let outputURL = destination.appendingPathComponent(
-                        DASHVODReconstructionPlanner.suggestedFilename(for: transferPlan),
-                        isDirectory: false
-                    )
+                    manifestURL = transferPlan.manifestURL
+                    filename = DASHVODReconstructionPlanner.suggestedFilename(for: transferPlan)
+                    let tempOutputURL = tempAssemblyDir.appendingPathComponent(filename, isDirectory: false)
                     let result = try await orchestrator.executeAndAssembleDASH(
                         proposal,
                         approved: true,
-                        destinationDirectory: destination,
-                        outputURL: outputURL,
+                        destinationDirectory: tempAssemblyDir,
+                        outputURL: tempOutputURL,
                         progress: progressSink
                     )
-                    completionMessage = "Streaming download completed: \(result.destinationURL.lastPathComponent)."
+                    assembledOutputURL = result.destinationURL
+                    completionMessage = "Streaming download completed: \(filename)."
                 }
+
+                if let delegate = self?.downloadDelegate {
+                    do {
+                        try await delegate.importCompletedBrowserFile(
+                            fileURL: assembledOutputURL,
+                            filename: filename,
+                            expectedSize: nil,
+                            originalURL: manifestURL,
+                            mimeType: "video/mp4"
+                        )
+                        PipelineLogger.shared.log("[HLS Pipeline] Successfully registered and imported stream into Downloads UI: \(filename)")
+                    } catch {
+                        PipelineLogger.shared.log("[HLS Pipeline] Warning: Delegate import failed: \(error.localizedDescription)")
+                    }
+                } else if let engine = await orchestrator.downloadEngine {
+                    do {
+                        let finalDestination = destination.appendingPathComponent(filename, isDirectory: false)
+                        try? FileManager.default.removeItem(at: finalDestination)
+                        try FileManager.default.moveItem(at: assembledOutputURL, to: finalDestination)
+                        _ = try await engine.importCompletedFile(
+                            fileURL: finalDestination,
+                            originalURL: manifestURL,
+                            filename: filename,
+                            mimeType: "video/mp4"
+                        )
+                        PipelineLogger.shared.log("[HLS Pipeline] Successfully registered stream in DownloadEngine: \(filename)")
+                    } catch {
+                        PipelineLogger.shared.log("[HLS Pipeline] Warning: Engine import failed: \(error.localizedDescription)")
+                    }
+                } else {
+                    let finalDestination = destination.appendingPathComponent(filename, isDirectory: false)
+                    try? FileManager.default.removeItem(at: finalDestination)
+                    try FileManager.default.moveItem(at: assembledOutputURL, to: finalDestination)
+                }
+
+                try? FileManager.default.removeItem(at: tempAssemblyDir)
+
                 guard let self else { return }
                 self.isExecutingStreaming = false
                 self.isShowingStreamingConfirmation = false
@@ -2002,7 +2053,10 @@ public struct BrowserView: View {
             downloadDelegate: viewModel,
             magnetDelegate: viewModel,
             onDownloadInitiated: onDownloadInitiated,
-            streamingOrchestrator: StreamingDownloadOrchestrator(downloadCoordinator: viewModel.engine.coordinator),
+            streamingOrchestrator: StreamingDownloadOrchestrator(
+                downloadCoordinator: viewModel.engine.coordinator,
+                downloadEngine: viewModel.engine
+            ),
             streamingDestinationDirectoryURL: viewModel.downloadsDirectoryURL
         ))
     }

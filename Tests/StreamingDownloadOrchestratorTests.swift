@@ -215,6 +215,45 @@ final class StreamingDownloadOrchestratorTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: output.path))
     }
 
+    func testStreamingDownloadOrchestrator_RegistersWithDownloadEngineUponCompletion() async throws {
+        let manifestURL = URL(string: "https://video.example/vod/playlist.m3u8")!
+        let m3u8 = """
+        #EXTM3U
+        #EXT-X-VERSION:3
+        #EXT-X-TARGETDURATION:4
+        #EXTINF:4.0,
+        segment.ts
+        #EXT-X-ENDLIST
+        """
+        let persistence = InMemoryDownloadPersistence()
+        let coordinator = DownloadCoordinator(persistence: persistence)
+        let engine = DownloadEngine(coordinator: coordinator, persistence: persistence)
+
+        let orchestrator = StreamingDownloadOrchestrator(
+            manifestLoader: RecordingManifestLoader(
+                data: Data(m3u8.utf8),
+                finalURL: manifestURL,
+                mimeType: "application/vnd.apple.mpegurl"
+            ),
+            segmentExecutor: WritingSegmentExecutor(),
+            downloadEngine: engine
+        )
+
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent("reg-test-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let result = try await orchestrator.downloadHLS(
+            manifestURL: manifestURL,
+            destinationDirectory: tempDir
+        )
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: result.destinationURL.path))
+        let snapshots = await engine.allDownloads()
+        XCTAssertEqual(snapshots.count, 1)
+        XCTAssertEqual(snapshots.first?.state, .completed)
+        XCTAssertEqual(snapshots.first?.destinationURL.path, result.destinationURL.path)
+    }
+
     func testDASHExecutionAssemblesSingleVideoThroughExistingExecutor() async throws {
         let url = URL(string: "https://video.example/vod/manifest.mpd")!
         let mpd = """
