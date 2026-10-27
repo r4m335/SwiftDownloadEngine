@@ -135,6 +135,67 @@ final class HLSVODReconstructionTests: XCTestCase {
         }
     }
 
+    func testSeparateAudioRenditionGeneratesMultiTrackAssemblyPlan() throws {
+        let videoPlaylist = """
+        #EXTM3U
+        #EXT-X-VERSION:7
+        #EXT-X-PLAYLIST-TYPE:VOD
+        #EXT-X-MAP:URI="video-init.mp4"
+        #EXTINF:2,
+        video-1.m4s
+        #EXT-X-ENDLIST
+        """
+        let audioPlaylist = """
+        #EXTM3U
+        #EXT-X-VERSION:7
+        #EXT-X-PLAYLIST-TYPE:VOD
+        #EXT-X-MAP:URI="audio-init.mp4"
+        #EXTINF:2,
+        audio-1.m4s
+        #EXT-X-ENDLIST
+        """
+        let videoManifest = try HLSManifestParser.parse(videoPlaylist, baseURL: manifestURL)
+        let audioManifest = try HLSManifestParser.parse(audioPlaylist, baseURL: manifestURL)
+        let videoPlan = try HLSTransferPlanner.makeVODPlan(from: videoManifest)
+        let audioPlan = try HLSTransferPlanner.makeVODPlan(from: audioManifest)
+
+        let combinedPlan = HLSVODTransferPlan(
+            manifestURL: videoPlan.manifestURL,
+            resources: videoPlan.resources,
+            browserRequestContext: nil,
+            estimatedTransferBytes: nil,
+            audioPlan: audioPlan.resources
+        )
+
+        XCTAssertEqual(combinedPlan.allResources.count, 4)
+        XCTAssertEqual(HLSVODReconstructionPlanner.suggestedFilename(for: combinedPlan), "index.mp4")
+
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let initData = box("ftyp", [1]) + box("moov", [2])
+        let mediaData = box("moof", [3]) + box("mdat", [4])
+        let files = ["v-init.mp4", "v-1.m4s", "a-init.mp4", "a-1.m4s"].map { directory.appendingPathComponent($0) }
+        try initData.write(to: files[0])
+        try mediaData.write(to: files[1])
+        try initData.write(to: files[2])
+        try mediaData.write(to: files[3])
+
+        let completed = zip(combinedPlan.allResources, files).map {
+            HLSCompletedResource(resource: $0.0, fileURL: $0.1)
+        }
+
+        let plan = try HLSVODReconstructionPlanner.makePlan(
+            from: combinedPlan,
+            completedResources: completed,
+            destinationURL: directory.appendingPathComponent("output.mp4")
+        )
+
+        XCTAssertEqual(plan.assemblyRequest.tracks.count, 2)
+        XCTAssertEqual(plan.assemblyRequest.tracks[0].kind, .video)
+        XCTAssertEqual(plan.assemblyRequest.tracks[1].kind, .audio)
+    }
+
     private func makeTemporaryDirectory() throws -> URL {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("hls-reconstruction-\(UUID().uuidString)", isDirectory: true)

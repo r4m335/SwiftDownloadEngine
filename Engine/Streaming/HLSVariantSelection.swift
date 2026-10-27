@@ -84,11 +84,26 @@ public enum HLSVariantSelector {
         selectedVariant: HLSVariant,
         master: HLSManifest
     ) throws {
-        guard let groupID = selectedVariant.audioGroup else { return }
-        if master.renditions.contains(where: {
+        // Multi-track assembly is now supported for variants with separate audio renditions.
+    }
+
+    public static func selectAudioRendition(
+        for variant: HLSVariant,
+        master: HLSManifest,
+        preferredLanguage: String? = nil
+    ) -> HLSRendition? {
+        guard let groupID = variant.audioGroup else { return nil }
+        let candidates = master.renditions.filter {
             $0.type.uppercased() == "AUDIO" && $0.groupID == groupID && $0.uri != nil
-        }) {
-            throw HLSVariantSelectionError.separateAudioNotSupported
         }
+        guard !candidates.isEmpty else { return nil }
+        if let lang = preferredLanguage?.lowercased() {
+            if let matched = candidates.first(where: { $0.language?.lowercased() == lang }) {
+                return matched
+            }
+        }
+        return candidates.first(where: { $0.isDefault })
+            ?? candidates.first(where: { $0.isAutoSelect })
+            ?? candidates.first
     }
 }

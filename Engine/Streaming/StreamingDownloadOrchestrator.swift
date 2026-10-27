@@ -59,6 +59,11 @@ public protocol StreamingManifestLoader: Sendable {
     ) async throws -> StreamingManifestResponse
 }
 
+/// Resolves raw segment or manifest media URLs via client/browser context when required.
+public protocol BrowserMediaURLResolver: Sendable {
+    @MainActor func resolveMediaURL(_ rawURL: URL) async throws -> URL
+}
+
 /// URLSession-backed manifest loader. Redirects are followed only after applying
 /// the existing cross-origin credential stripping policy.
 public final class URLSessionStreamingManifestLoader: StreamingManifestLoader, @unchecked Sendable {
@@ -412,6 +417,7 @@ public actor StreamingDownloadOrchestrator {
     private let manifestLoader: any StreamingManifestLoader
     private let segmentExecutor: any StreamingSegmentExecutor
     private let parsingLimits: ManifestParsingLimits
+    public var urlResolver: (any BrowserMediaURLResolver)?
     private var proposals: [String: StreamingTransferProposal] = [:]
     private var runningTransfers: Set<String> = []
     private var completedTransfers: [String: StreamingTransferResult] = [:]
@@ -419,18 +425,21 @@ public actor StreamingDownloadOrchestrator {
     public init(
         manifestLoader: any StreamingManifestLoader = URLSessionStreamingManifestLoader(),
         segmentExecutor: any StreamingSegmentExecutor,
-        parsingLimits: ManifestParsingLimits = .default
+        parsingLimits: ManifestParsingLimits = .default,
+        urlResolver: (any BrowserMediaURLResolver)? = nil
     ) {
         self.manifestLoader = manifestLoader
         self.segmentExecutor = segmentExecutor
         self.parsingLimits = parsingLimits
+        self.urlResolver = urlResolver
     }
 
     public init(
         downloadCoordinator: DownloadCoordinator,
         manifestLoader: any StreamingManifestLoader = URLSessionStreamingManifestLoader(),
         parsingLimits: ManifestParsingLimits = .default,
-        retryCount: Int = 2
+        retryCount: Int = 2,
+        urlResolver: (any BrowserMediaURLResolver)? = nil
     ) {
         self.init(
             manifestLoader: manifestLoader,
@@ -438,8 +447,13 @@ public actor StreamingDownloadOrchestrator {
                 coordinator: downloadCoordinator,
                 retryCount: retryCount
             ),
-            parsingLimits: parsingLimits
+            parsingLimits: parsingLimits,
+            urlResolver: urlResolver
         )
+    }
+
+    public func setURLResolver(_ resolver: (any BrowserMediaURLResolver)?) {
+        self.urlResolver = resolver
     }
 
     public func prepare(candidate: StreamingManifestCandidate) async throws -> StreamingTransferProposal {
@@ -491,6 +505,7 @@ public actor StreamingDownloadOrchestrator {
                     baseURL: response.finalURL,
                     limits: parsingLimits
                 )
+                var selectedAudioRendition: HLSRendition?
                 if parsed.playlistType == .master {
                     let variant: HLSVariant
                     do {
@@ -500,6 +515,10 @@ public actor StreamingDownloadOrchestrator {
                         )
                         try HLSVariantSelector.validateAudioLayout(
                             selectedVariant: variant,
+                            master: parsed
+                        )
+                        selectedAudioRendition = HLSVariantSelector.selectAudioRendition(
+                            for: variant,
                             master: parsed
                         )
                     } catch let error as HLSVariantSelectionError {
@@ -534,9 +553,52 @@ public actor StreamingDownloadOrchestrator {
                 guard parsed.playlistType == .media else {
                     throw StreamingDownloadOrchestratorError.playlistRequiresVariantSelection
                 }
-                let plan = try HLSTransferPlanner.makeVODPlan(
+                let videoPlan = try HLSTransferPlanner.makeVODPlan(
                     from: parsed,
                     browserRequestContext: candidate.browserRequestContext
+                )
+                let audioPlan: [HLSPlannedResource]?
+                if let audioURI = selectedAudioRendition?.uri {
+                    let audioCandidate = try StreamingManifestCandidate(
+                        url: audioURI,
+                        mimeType: "application/vnd.apple.mpegurl",
+                        browserRequestContext: candidate.browserRequestContext,
+                        hlsVariantPreferences: candidate.hlsVariantPreferences
+                    )
+                    let audioResponse = try await manifestLoader.load(
+                        candidate: audioCandidate,
+                        headers: manifestHeaders(for: audioCandidate),
+                        limits: parsingLimits
+                    )
+                    let parsedAudio = try HLSManifestParser.parse(
+                        audioResponse.data,
+                        baseURL: audioResponse.finalURL,
+                        limits: parsingLimits
+                    )
+                    guard parsedAudio.playlistType == .media else {
+                        throw StreamingDownloadOrchestratorError.manifestNotRecognized
+                    }
+                    let parsedAudioPlan = try HLSTransferPlanner.makeVODPlan(
+                        from: parsedAudio,
+                        browserRequestContext: candidate.browserRequestContext
+                    )
+                    audioPlan = parsedAudioPlan.resources
+                } else {
+                    audioPlan = nil
+                }
+                let totalEstimatedBytes: Int64?
+                if let videoBytes = videoPlan.estimatedTransferBytes {
+                    let audioBytes = audioPlan?.reduce(Int64(0)) { $0 + ($1.byteRange?.length ?? 0) } ?? 0
+                    totalEstimatedBytes = videoBytes + audioBytes
+                } else {
+                    totalEstimatedBytes = nil
+                }
+                let plan = HLSVODTransferPlan(
+                    manifestURL: videoPlan.manifestURL,
+                    resources: videoPlan.resources,
+                    browserRequestContext: candidate.browserRequestContext,
+                    estimatedTransferBytes: totalEstimatedBytes,
+                    audioPlan: audioPlan
                 )
                 manifest = .hls(plan)
             case .dash:
@@ -608,9 +670,15 @@ public actor StreamingDownloadOrchestrator {
                     "\(resource.identity.value).part",
                     isDirectory: false
                 )
+                let targetURL: URL
+                if let urlResolver {
+                    targetURL = (try? await urlResolver.resolveMediaURL(resource.url)) ?? resource.url
+                } else {
+                    targetURL = resource.url
+                }
                 let request = StreamingSegmentTransferRequest(
                     identity: resource.identity,
-                    url: resource.url,
+                    url: targetURL,
                     headers: requestHeaders(for: resource, manifest: proposal.manifest),
                     byteRange: resource.byteRange,
                     destinationURL: destinationURL
@@ -696,7 +764,8 @@ public actor StreamingDownloadOrchestrator {
             progress: progress
         )
         try Task.checkCancellation()
-        let completed = zip(transferPlan.resources, result.localFiles).map {
+        let allPlanned = transferPlan.allResources
+        let completed = zip(allPlanned, result.localFiles).map {
             HLSCompletedResource(resource: $0.0, fileURL: $0.1)
         }
         do {
@@ -830,7 +899,7 @@ public actor StreamingDownloadOrchestrator {
         let headers: [String: String]
         switch manifest {
         case .hls(let plan):
-            guard let planned = plan.resources.first(where: { $0.url == resource.url && $0.order == resource.identity.order }) else { return [:] }
+            guard let planned = plan.allResources.first(where: { $0.url == resource.url && $0.order == resource.identity.order }) else { return [:] }
             headers = plan.requestHeaders(for: planned)
         case .dash(let plan):
             guard let planned = plan.resources.first(where: { $0.url == resource.url && $0.order == resource.identity.order }) else { return [:] }
@@ -850,7 +919,7 @@ public actor StreamingDownloadOrchestrator {
         switch manifest {
         case .hls(let plan):
             var previousEndByURL: [URL: Int64] = [:]
-            return try plan.resources.map { resource in
+            return try plan.allResources.map { resource in
                 let range: StreamingByteRange?
                 if let byteRange = resource.byteRange {
                     let start = byteRange.offset ?? ((previousEndByURL[resource.url] ?? -1) + 1)

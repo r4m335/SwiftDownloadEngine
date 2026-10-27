@@ -82,12 +82,13 @@ public enum HLSVODReconstructionPlanner {
         destinationURL: URL,
         temporaryDirectoryURL: URL? = nil
     ) throws -> HLSVODReconstructionPlan {
-        guard completedResources.count == transferPlan.resources.count else {
+        let expectedResources = transferPlan.allResources
+        guard completedResources.count == expectedResources.count else {
             throw HLSVODReconstructionError.resourceCountMismatch
         }
 
         for (index, completed) in completedResources.enumerated() {
-            guard completed.resource == transferPlan.resources[index] else {
+            guard completed.resource == expectedResources[index] else {
                 throw HLSVODReconstructionError.resourceOrderMismatch
             }
             guard completed.fileURL.isFileURL,
@@ -111,15 +112,18 @@ public enum HLSVODReconstructionPlanner {
             }
         }
 
-        let initialization = completedResources.filter { $0.resource.kind == .initializationMap }
-        guard initialization.count <= 1 else {
+        let videoCompleted = Array(completedResources.prefix(transferPlan.resources.count))
+        let audioCompleted = transferPlan.audioPlan != nil ? Array(completedResources.suffix(transferPlan.audioPlan!.count)) : []
+
+        let videoInit = videoCompleted.filter { $0.resource.kind == .initializationMap }
+        guard videoInit.count <= 1 else {
             throw HLSVODReconstructionError.unsupportedTrackLayout
         }
-        let format: HLSVODReconstructionFormat = initialization.isEmpty ? .mpegTS : .fragmentedMP4
-        let media = completedResources.filter { $0.resource.kind == .mediaSegment }
-        guard !media.isEmpty else { throw HLSVODReconstructionError.resourceCountMismatch }
+        let format: HLSVODReconstructionFormat = videoInit.isEmpty ? .mpegTS : .fragmentedMP4
+        let videoMedia = videoCompleted.filter { $0.resource.kind == .mediaSegment }
+        guard !videoMedia.isEmpty else { throw HLSVODReconstructionError.resourceCountMismatch }
 
-        let initializationSegment = initialization.first.map {
+        let videoInitSegment = videoInit.first.map {
             MediaAssemblySegment(
                 fileURL: $0.fileURL,
                 role: .initialization,
@@ -128,7 +132,7 @@ public enum HLSVODReconstructionPlanner {
                 actualByteCount: fileSize($0.fileURL)
             )
         }
-        let mediaSegments = media.enumerated().map { index, completed in
+        let videoMediaSegments = videoMedia.enumerated().map { index, completed in
             MediaAssemblySegment(
                 fileURL: completed.fileURL,
                 role: .media,
@@ -137,15 +141,53 @@ public enum HLSVODReconstructionPlanner {
                 actualByteCount: fileSize(completed.fileURL)
             )
         }
-        let track = MediaAssemblyTrack(
+        let videoTrack = MediaAssemblyTrack(
             kind: .video,
             container: format.mediaAssemblyContainer,
-            initializationSegment: initializationSegment,
-            mediaSegments: mediaSegments
+            initializationSegment: videoInitSegment,
+            mediaSegments: videoMediaSegments
         )
+
+        var tracks = [videoTrack]
+
+        if !audioCompleted.isEmpty {
+            let audioInit = audioCompleted.filter { $0.resource.kind == .initializationMap }
+            guard audioInit.count <= 1 else {
+                throw HLSVODReconstructionError.unsupportedTrackLayout
+            }
+            let audioMedia = audioCompleted.filter { $0.resource.kind == .mediaSegment }
+            guard !audioMedia.isEmpty else { throw HLSVODReconstructionError.resourceCountMismatch }
+
+            let audioInitSegment = audioInit.first.map {
+                MediaAssemblySegment(
+                    fileURL: $0.fileURL,
+                    role: .initialization,
+                    order: 0,
+                    expectedByteCount: $0.resource.byteRange?.length,
+                    actualByteCount: fileSize($0.fileURL)
+                )
+            }
+            let audioMediaSegments = audioMedia.enumerated().map { index, completed in
+                MediaAssemblySegment(
+                    fileURL: completed.fileURL,
+                    role: .media,
+                    order: index,
+                    expectedByteCount: completed.resource.byteRange?.length,
+                    actualByteCount: fileSize(completed.fileURL)
+                )
+            }
+            let audioTrack = MediaAssemblyTrack(
+                kind: .audio,
+                container: format.mediaAssemblyContainer,
+                initializationSegment: audioInitSegment,
+                mediaSegments: audioMediaSegments
+            )
+            tracks.append(audioTrack)
+        }
+
         let request = MediaAssemblyRequest(
             container: format.mediaAssemblyContainer,
-            tracks: [track],
+            tracks: tracks,
             destinationURL: destinationURL,
             temporaryDirectoryURL: temporaryDirectoryURL
         )
@@ -157,6 +199,9 @@ public enum HLSVODReconstructionPlanner {
         let stem = raw.isEmpty ? "hls-vod" : raw
         let safe = stem.map { character in
             character.isLetter || character.isNumber || character == "-" || character == "_" ? character : "_"
+        }
+        if transferPlan.audioPlan != nil && !transferPlan.audioPlan!.isEmpty {
+            return "\(String(safe)).mp4"
         }
         let format: HLSVODReconstructionFormat = transferPlan.resources.contains {
             $0.kind == .initializationMap
@@ -177,7 +222,8 @@ public enum HLSVODReconstructor {
         destinationURL: URL,
         temporaryDirectoryURL: URL? = nil
     ) throws -> MediaAssemblyOutput {
-        let hasEncryption = transferPlan.resources.contains {
+        let allPlanned = transferPlan.allResources
+        let hasEncryption = allPlanned.contains {
             $0.kind == .encryptionKey || ($0.encryption != nil && $0.encryption != .clear)
         }
 
@@ -265,11 +311,16 @@ public enum HLSVODReconstructor {
                 }
             }
 
+            let videoClearCount = clearResources.filter { $0.order < transferPlan.resources.count }.count
+            let videoClearResources = Array(clearResources[..<videoClearCount])
+            let audioClearResources = Array(clearResources[videoClearCount...])
+
             resolvedPlan = HLSVODTransferPlan(
                 manifestURL: transferPlan.manifestURL,
-                resources: clearResources,
+                resources: videoClearResources,
                 browserRequestContext: transferPlan.browserRequestContext,
-                estimatedTransferBytes: transferPlan.estimatedTransferBytes
+                estimatedTransferBytes: transferPlan.estimatedTransferBytes,
+                audioPlan: audioClearResources.isEmpty ? nil : audioClearResources
             )
             resolvedCompleted = clearCompleted
         } else {

@@ -175,6 +175,9 @@ public final class BrowserViewModel: NSObject, ObservableObject {
             FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first?.appendingPathComponent("Downloads", isDirectory: true) ??
             FileManager.default.temporaryDirectory.appendingPathComponent("LIDDownloads", isDirectory: true)
         super.init()
+        if let orchestrator {
+            Task { await orchestrator.setURLResolver(self) }
+        }
         publishTabState()
         mediaDiscoveryBridge.observationHandler = { [weak self] observation in
             DispatchQueue.main.async { [weak self] in
@@ -1894,7 +1897,46 @@ public final class BrowserViewModel: NSObject, ObservableObject {
             isShowingDownloadSheet = false
         }
     }
+
+    @MainActor
+    public func resolveMediaURL(_ rawURL: URL) async throws -> URL {
+        #if canImport(WebKit)
+        let activeWebView = self.webView ?? (activeTabID.flatMap { tabSessions[$0]?.webView })
+        guard let activeWebView else { return rawURL }
+        let rawString = rawURL.absoluteString
+        let escaped = rawString
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+            .replacingOccurrences(of: "\n", with: "\\n")
+            .replacingOccurrences(of: "\r", with: "\\r")
+        let script = """
+        (function(raw) {
+            try {
+                if (typeof window.__resolveMediaURL === 'function') {
+                    return window.__resolveMediaURL(raw);
+                }
+                if (typeof window.resolvePlayerURL === 'function') {
+                    return window.resolvePlayerURL(raw);
+                }
+                if (window.ytplayer && window.ytplayer.config && typeof window.ytplayer.config.resolveURL === 'function') {
+                    return window.ytplayer.config.resolveURL(raw);
+                }
+                return raw;
+            } catch (e) {
+                return raw;
+            }
+        })("\(escaped)")
+        """
+        if let result = try? await activeWebView.evaluateJavaScript(script) as? String,
+           let resolved = URL(string: result), BrowserURLResolver.isValidDownloadURL(resolved) {
+            return resolved
+        }
+        #endif
+        return rawURL
+    }
 }
+
+extension BrowserViewModel: @unchecked Sendable, BrowserMediaURLResolver {}
 
 // MARK: - Browser View (SwiftUI)
 

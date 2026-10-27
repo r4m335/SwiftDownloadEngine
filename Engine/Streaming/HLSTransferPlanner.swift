@@ -82,17 +82,38 @@ public struct HLSVODTransferPlan: Sendable, Equatable {
     public let resources: [HLSPlannedResource]
     public let browserRequestContext: BrowserRequestContext?
     public let estimatedTransferBytes: Int64?
+    public let audioPlan: [HLSPlannedResource]?
 
     public init(
         manifestURL: URL,
         resources: [HLSPlannedResource],
         browserRequestContext: BrowserRequestContext? = nil,
-        estimatedTransferBytes: Int64? = nil
+        estimatedTransferBytes: Int64? = nil,
+        audioPlan: [HLSPlannedResource]? = nil
     ) {
         self.manifestURL = manifestURL
         self.resources = resources
         self.browserRequestContext = browserRequestContext
         self.estimatedTransferBytes = estimatedTransferBytes
+        self.audioPlan = audioPlan
+    }
+
+    public var allResources: [HLSPlannedResource] {
+        guard let audioPlan, !audioPlan.isEmpty else { return resources }
+        var result = resources
+        let offset = resources.count
+        for item in audioPlan {
+            result.append(HLSPlannedResource(
+                order: offset + item.order,
+                kind: item.kind,
+                url: item.url,
+                byteRange: item.byteRange,
+                sequenceNumber: item.sequenceNumber,
+                duration: item.duration,
+                encryption: item.encryption
+            ))
+        }
+        return result
     }
 
     /// Returns headers eligible for this resource. Sensitive credentials are removed
