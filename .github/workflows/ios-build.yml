@@ -30,12 +30,7 @@ jobs:
 
       - name: Run Swift Package Tests (macOS)
         run: |
-          set -o pipefail
-          swift test 2>&1 | tee test.log || {
-            echo "::error::FAILED TESTS: $(grep -E "Test Case '.*' failed" test.log | tr '\n' ' | ')"
-            echo "::error::FAILURE DETAILS: $(grep -E "(failed:|\/Tests\/.*error:)" test.log | tail -n 10 | tr '\n' ' | ')"
-            exit 1
-          }
+          swift test
 
   milestone1-torrent-build:
     name: Milestone 1-3 — libtorrent 2.0 iOS Native Build, Bridge & Transfer Engine Test

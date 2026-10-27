@@ -281,11 +281,13 @@ final class StreamingDownloadOrchestratorTests: XCTestCase {
 
         // 1. Pause
         await orchestrator.pause(transferID: manifestURL.absoluteString)
-        XCTAssertTrue(await orchestrator.isPaused(transferID: manifestURL.absoluteString))
+        let pausedState = await orchestrator.isPaused(transferID: manifestURL.absoluteString)
+        XCTAssertTrue(pausedState)
 
         // 2. Resume
         await orchestrator.resume(transferID: manifestURL.absoluteString)
-        XCTAssertFalse(await orchestrator.isPaused(transferID: manifestURL.absoluteString))
+        let resumedState = await orchestrator.isPaused(transferID: manifestURL.absoluteString)
+        XCTAssertFalse(resumedState)
 
         // 3. Complete download
         let result = try await orchestrator.downloadHLS(
