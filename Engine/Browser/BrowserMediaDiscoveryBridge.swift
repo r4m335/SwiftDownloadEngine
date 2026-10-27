@@ -1268,32 +1268,53 @@ public final class BrowserMediaDiscoveryBridge: NSObject, @unchecked Sendable {
         """
 
         do {
-            let result = try await webView.callAsyncJavaScript(
+            return try await executeAsyncJavaScript(
                 asyncScript,
                 arguments: ["url": rawString],
-                in: nil,
-                in: .page
+                on: webView,
+                contentWorld: .page
             )
-            if let text = result as? String, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                return text
-            }
-            throw StreamingManifestLoadError.invalidResponse
         } catch let pageError {
             // Attempt in .defaultClient world if .page fails (e.g. CSP restrictions)
             do {
-                let fallbackResult = try await webView.callAsyncJavaScript(
+                return try await executeAsyncJavaScript(
                     asyncScript,
                     arguments: ["url": rawString],
-                    in: nil,
-                    in: .defaultClient
+                    on: webView,
+                    contentWorld: .defaultClient
                 )
-                if let text = fallbackResult as? String, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    return text
-                }
             } catch {
                 // Ignore fallback error and throw pageError
+                throw pageError
             }
-            throw pageError
+        }
+    }
+
+    @MainActor
+    private func executeAsyncJavaScript(
+        _ script: String,
+        arguments: [String: Any],
+        on webView: WKWebView,
+        contentWorld: WKContentWorld
+    ) async throws -> String {
+        try await withCheckedThrowingContinuation { continuation in
+            webView.callAsyncJavaScript(
+                script,
+                arguments: arguments,
+                in: nil,
+                in: contentWorld
+            ) { (result: Result<Any, Error>) in
+                switch result {
+                case .success(let anyValue):
+                    if let text = anyValue as? String, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        continuation.resume(returning: text)
+                    } else {
+                        continuation.resume(throwing: StreamingManifestLoadError.invalidResponse)
+                    }
+                case .failure(let error):
+                    continuation.resume(throwing: error)
+                }
+            }
         }
     }
 
