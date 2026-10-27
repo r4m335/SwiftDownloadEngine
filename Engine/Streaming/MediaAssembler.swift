@@ -413,6 +413,14 @@ public enum MediaAssembler {
         defer { try? fileManager.removeItem(at: tempMP4) }
 
         let asset = AVURLAsset(url: sourceTSURL)
+        if asset.tracks.isEmpty {
+            if fileManager.fileExists(atPath: destinationMP4URL.path) {
+                try? fileManager.removeItem(at: destinationMP4URL)
+            }
+            try fileManager.copyItem(at: sourceTSURL, to: destinationMP4URL)
+            return
+        }
+
         var didSucceed = false
 
         // Attempt 1: AVAssetExportSession passthrough
