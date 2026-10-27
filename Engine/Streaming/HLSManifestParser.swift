@@ -356,7 +356,7 @@ public enum HLSManifestParser {
         if (resolved.query == nil || resolved.query?.isEmpty == true),
            let baseQuery = baseURL.query, !baseQuery.isEmpty,
            var components = URLComponents(url: resolved, resolvingAgainstBaseURL: false) {
-            components.percentEncodedQuery = baseURL.percentEncodedQuery ?? baseQuery
+            components.query = baseQuery
             return components.url ?? resolved
         }
         return resolved

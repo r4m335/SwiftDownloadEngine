@@ -229,7 +229,7 @@ public enum DASHManifestParser {
         if (url.query == nil || url.query?.isEmpty == true),
            let baseQuery = baseURL.query, !baseQuery.isEmpty,
            var components = URLComponents(url: url, resolvingAgainstBaseURL: false) {
-            components.percentEncodedQuery = baseURL.percentEncodedQuery ?? baseQuery
+            components.query = baseQuery
             return components.url ?? url
         }
         return url
