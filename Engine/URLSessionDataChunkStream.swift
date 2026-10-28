@@ -30,6 +30,7 @@ final class URLSessionDataChunkStream: NSObject, URLSessionDataDelegate, @unchec
     init(session: URLSession, request: URLRequest) {
         self.request = request
         self.delegateSession = nil
+        super.init()
         self.delegateSession = URLSession(
             configuration: session.configuration,
             delegate: self,
