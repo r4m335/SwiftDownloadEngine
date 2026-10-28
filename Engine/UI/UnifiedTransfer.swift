@@ -211,6 +211,7 @@ public struct UnifiedTransfer: Identifiable, Sendable, Equatable {
         failureReason: String? = nil,
         checksumOutcome: ChecksumOutcome? = nil,
         transportPolicy: HTTPTransportPolicy? = nil,
+        networkPolicy: DownloadNetworkPolicy = .anyNetwork,
         infoHash: String? = nil,
         connectedPeers: Int? = nil,
         connectedSeeds: Int? = nil,
@@ -234,6 +235,7 @@ public struct UnifiedTransfer: Identifiable, Sendable, Equatable {
         self.failureReason = failureReason
         self.checksumOutcome = checksumOutcome
         self.transportPolicy = transportPolicy
+        self.networkPolicy = networkPolicy
         self.infoHash = infoHash
         self.connectedPeers = connectedPeers
         self.connectedSeeds = connectedSeeds
