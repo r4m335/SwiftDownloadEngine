@@ -1170,10 +1170,12 @@ extension DownloadManagerViewModel: BrowserDownloadDelegate {
         scheduleCoordinator.isScheduled(downloadID: transferID)
     }
 
-    public func toggleScheduled(transferID: String) async {
-        await scheduleCoordinator.toggleScheduled(downloadID: transferID)
-        self.scheduleRules = scheduleCoordinator.rules
-        self.userNotificationMessage = isScheduled(transferID: transferID) ? "Added to Schedule" : "Removed from Schedule"
+    public func toggleScheduled(transferID: String) {
+        Task { @MainActor in
+            await scheduleCoordinator.toggleScheduled(downloadID: transferID)
+            self.scheduleRules = scheduleCoordinator.rules
+            self.userNotificationMessage = isScheduled(transferID: transferID) ? "Added to Schedule" : "Removed from Schedule"
+        }
     }
 
     public func saveScheduleRule(_ rule: ScheduleRule) async {

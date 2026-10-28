@@ -360,9 +360,9 @@ public struct SettingsView: View {
         }
         currentRule.weekdays = scheduleWeekdays
         currentRule.wifiOnly = scheduleWifiOnly
-        viewModel.saveScheduleRule(currentRule)
 
         Task { @MainActor in
+            await viewModel.saveScheduleRule(currentRule)
             let exts = snifferExtensions
                 .split(separator: ",")
                 .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
