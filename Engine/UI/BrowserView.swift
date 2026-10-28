@@ -939,12 +939,15 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                     isMediaSourceMIME ||
                     (isGenericMIME && isBinOrStreamName)
                 if isMediaSource {
-                    if let manifest = discoveredCandidate?.associatedManifestURL ?? candidate.associatedManifestURL ?? self.discoveredResources.first(where: { $0.isStreamingManifest })?.url {
+                    if let manifestRes = self.discoveredResources.first(where: { $0.isStreamingManifest }) {
+                        self.promptStreamingDownload(for: manifestRes)
+                    } else if let manifest = discoveredCandidate?.associatedManifestURL ?? candidate.associatedManifestURL {
                         self.promptStreamingDownload(for: WebpageResource(
                             url: manifest,
                             title: resource.title,
                             suggestedFilename: resource.suggestedFilename.isEmpty ? "stream.mp4" : resource.suggestedFilename,
-                            resourceType: .video
+                            resourceType: .video,
+                            manifestText: candidate.cachedManifestText ?? discoveredCandidate?.cachedManifestText
                         ))
                     } else {
                         self.blobCaptureErrorMessage = "This site uses MediaSource streaming. You must download the manifest (.m3u8 or .mpd) instead."
@@ -1334,7 +1337,8 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                 mimeType: observation.declaredType ?? manifestType,
                 estimatedSize: observation.contentLength,
                 isSupported: false,
-                unsupportedReason: "Streaming playlist manifest. Prepare a manifest-aware transfer to continue."
+                unsupportedReason: "Streaming playlist manifest. Prepare a manifest-aware transfer to continue.",
+                manifestText: observation.manifestPrefix
             )]
         }
         guard var resource = resources.first,
@@ -1357,7 +1361,22 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                 mimeType: resource.mimeType ?? observation.declaredType ?? manifestType,
                 estimatedSize: observation.contentLength ?? resource.estimatedSize,
                 isSupported: false,
-                unsupportedReason: "Streaming playlist manifest. Prepare a manifest-aware transfer to continue."
+                unsupportedReason: "Streaming playlist manifest. Prepare a manifest-aware transfer to continue.",
+                manifestText: resource.manifestText ?? observation.manifestPrefix
+            )
+        } else if resource.manifestText == nil, let prefix = observation.manifestPrefix {
+            resource = WebpageResource(
+                id: resource.id,
+                url: resource.url,
+                title: resource.title,
+                suggestedFilename: resource.suggestedFilename,
+                resourceType: resource.resourceType,
+                mimeType: resource.mimeType,
+                estimatedSize: resource.estimatedSize,
+                isSupported: resource.isSupported,
+                unsupportedReason: resource.unsupportedReason,
+                requestContext: resource.requestContext,
+                manifestText: prefix
             )
         }
 
@@ -1487,7 +1506,8 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                         estimatedSize: resource.estimatedSize,
                         isSupported: resource.isSupported,
                         unsupportedReason: resource.unsupportedReason,
-                        requestContext: context
+                        requestContext: context,
+                        manifestText: resource.manifestText
                     )
                 }
                 DispatchQueue.main.async {

@@ -37,6 +37,8 @@ public struct WebpageResource: Identifiable, Hashable, Sendable {
     /// Request context captured from the page that exposed this resource.
     /// Credentials are filtered again when headers are assembled for a target URL.
     public let requestContext: BrowserRequestContext?
+    /// Raw manifest body text captured from in-page network discovery (XHR/Fetch hook).
+    public let manifestText: String?
 
     /// Manifest candidates are intentionally kept outside the ordinary
     /// `isSupported` download path. They require planning and coordinator-
@@ -98,7 +100,8 @@ public struct WebpageResource: Identifiable, Hashable, Sendable {
         estimatedSize: Int64? = nil,
         isSupported: Bool = true,
         unsupportedReason: String? = nil,
-        requestContext: BrowserRequestContext? = nil
+        requestContext: BrowserRequestContext? = nil,
+        manifestText: String? = nil
     ) {
         self.id = id
         self.url = url
@@ -110,6 +113,7 @@ public struct WebpageResource: Identifiable, Hashable, Sendable {
         self.isSupported = isSupported
         self.unsupportedReason = unsupportedReason
         self.requestContext = requestContext
+        self.manifestText = manifestText
     }
 }
 

@@ -12,13 +12,15 @@ public struct StreamingManifestCandidate: Sendable, Equatable {
     public let browserRequestContext: BrowserRequestContext?
     public let browserSessionSnapshot: BrowserSessionSnapshot?
     public let hlsVariantPreferences: HLSVariantSelectionPreferences
+    public let cachedManifestText: String?
 
     public init(
         url: URL,
         mimeType: String? = nil,
         browserRequestContext: BrowserRequestContext? = nil,
         browserSessionSnapshot: BrowserSessionSnapshot? = nil,
-        hlsVariantPreferences: HLSVariantSelectionPreferences = HLSVariantSelectionPreferences()
+        hlsVariantPreferences: HLSVariantSelectionPreferences = HLSVariantSelectionPreferences(),
+        cachedManifestText: String? = nil
     ) throws {
         guard BrowserURLResolver.isValidDownloadURL(url) else {
             throw StreamingDownloadOrchestratorError.invalidManifestURL
@@ -28,6 +30,7 @@ public struct StreamingManifestCandidate: Sendable, Equatable {
         self.browserRequestContext = browserRequestContext
         self.browserSessionSnapshot = browserSessionSnapshot ?? DownloadRequestEnricher.sharedSessionSnapshot.snapshot
         self.hlsVariantPreferences = hlsVariantPreferences
+        self.cachedManifestText = cachedManifestText
     }
 
     public init(
@@ -39,7 +42,8 @@ public struct StreamingManifestCandidate: Sendable, Equatable {
             mimeType: resource.mimeType,
             browserRequestContext: resource.requestContext,
             browserSessionSnapshot: browserSessionSnapshot ?? DownloadRequestEnricher.sharedSessionSnapshot.snapshot,
-            hlsVariantPreferences: HLSVariantSelectionPreferences()
+            hlsVariantPreferences: HLSVariantSelectionPreferences(),
+            cachedManifestText: resource.manifestText
         )
     }
 }
@@ -770,15 +774,26 @@ public actor StreamingDownloadOrchestrator {
 
         let headers = manifestHeaders(for: candidate)
         var response: StreamingManifestResponse
-        do {
-            response = try await loadManifestResponse(
-                candidate: candidate,
-                headers: headers
+
+        if let cachedText = candidate.cachedManifestText, !cachedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            PipelineLogger.shared.log("[Streaming Pipeline] Step 1: Using cached manifest text from network hook (\(cachedText.count) chars). Skipping network fetch.")
+            response = StreamingManifestResponse(
+                data: Data(cachedText.utf8),
+                finalURL: candidate.url,
+                mimeType: candidate.mimeType,
+                statusCode: 200
             )
-        } catch let error as ManifestParserError {
-            throw StreamingDownloadOrchestratorError.manifestParseFailed(error)
-        } catch {
-            throw error
+        } else {
+            do {
+                response = try await loadManifestResponse(
+                    candidate: candidate,
+                    headers: headers
+                )
+            } catch let error as ManifestParserError {
+                throw StreamingDownloadOrchestratorError.manifestParseFailed(error)
+            } catch {
+                throw error
+            }
         }
 
         if Self.isHTMLResponse(response.data) {

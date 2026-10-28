@@ -964,6 +964,55 @@ final class StreamingDownloadOrchestratorTests: XCTestCase {
             XCTFail("Unexpected error type: \(error)")
         }
     }
+
+    func testStreamingDownloadOrchestrator_UsesCachedManifestText_SkipsNetwork() async throws {
+        PipelineLogger.shared.clear()
+        let manifestURL = URL(string: "https://auth.example.com/expired_token_stream.m3u8?token=expired")!
+
+        struct ExplodingLoader: StreamingManifestLoader {
+            func load(
+                candidate: StreamingManifestCandidate,
+                headers: [String: String],
+                limits: ManifestParsingLimits
+            ) async throws -> StreamingManifestResponse {
+                XCTFail("Network fetch should not be called when cachedManifestText is present")
+                throw StreamingManifestLoadError.authenticationRequired
+            }
+        }
+
+        let validCachedM3U8 = """
+        #EXTM3U
+        #EXT-X-VERSION:3
+        #EXT-X-TARGETDURATION:5
+        #EXTINF:5.0,
+        cached_segment_01.ts
+        #EXT-X-ENDLIST
+        """
+
+        let resource = WebpageResource(
+            url: manifestURL,
+            title: "Cached Stream",
+            suggestedFilename: "cached_stream.mp4",
+            resourceType: .video,
+            manifestText: validCachedM3U8
+        )
+
+        let candidate = try StreamingManifestCandidate(resource: resource)
+        XCTAssertEqual(candidate.cachedManifestText, validCachedM3U8)
+
+        let orchestrator = StreamingDownloadOrchestrator(
+            manifestLoader: ExplodingLoader(),
+            segmentExecutor: RecordingSegmentExecutor()
+        )
+
+        let proposal = try await orchestrator.prepare(candidate: candidate)
+        XCTAssertEqual(proposal.manifest.kind, .hls)
+        XCTAssertEqual(proposal.resources.count, 1)
+        XCTAssertEqual(proposal.resources.first?.url.lastPathComponent, "cached_segment_01.ts")
+
+        let logs = PipelineLogger.shared.formattedLogText()
+        XCTAssertTrue(logs.contains("Using cached manifest text from network hook"))
+    }
 }
 
 private actor RecordingManifestLoader: StreamingManifestLoader {

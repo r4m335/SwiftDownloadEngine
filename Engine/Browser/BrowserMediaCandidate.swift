@@ -50,6 +50,7 @@ public struct BrowserMediaCandidate: Identifiable, Codable, Sendable, Equatable,
     public let requestContext: BrowserRequestContext?
     public let associatedManifestID: String?
     public let associatedManifestURL: URL?
+    public let cachedManifestText: String?
     public let lastObserved: Date
 
     public init(
@@ -68,6 +69,7 @@ public struct BrowserMediaCandidate: Identifiable, Codable, Sendable, Equatable,
         requestContext: BrowserRequestContext? = nil,
         associatedManifestID: String? = nil,
         associatedManifestURL: URL? = nil,
+        cachedManifestText: String? = nil,
         lastObserved: Date = Date()
     ) {
         self.id = id
@@ -89,6 +91,7 @@ public struct BrowserMediaCandidate: Identifiable, Codable, Sendable, Equatable,
         self.requestContext = requestContext
         self.associatedManifestID = associatedManifestID
         self.associatedManifestURL = associatedManifestURL
+        self.cachedManifestText = cachedManifestText
         self.lastObserved = lastObserved
     }
 
@@ -260,6 +263,7 @@ public enum BrowserMediaCandidateClassifier {
                 kind: .hlsManifest,
                 reason: classification.reason,
                 documentID: observation.documentID,
+                cachedManifestText: observation.manifestPrefix,
                 lastObserved: now
             )
         }
@@ -273,6 +277,7 @@ public enum BrowserMediaCandidateClassifier {
                 kind: .dashManifest,
                 reason: classification.reason,
                 documentID: observation.documentID,
+                cachedManifestText: observation.manifestPrefix,
                 lastObserved: now
             )
         }
@@ -382,6 +387,7 @@ public enum BrowserMediaCandidateClassifier {
             availability: availability,
             evidence: evidence,
             requestContext: safeRequestContext(resource.requestContext, for: resource.url),
+            cachedManifestText: resource.manifestText,
             lastObserved: now
         )
     }
@@ -405,6 +411,7 @@ public enum BrowserMediaCandidateClassifier {
         kind: BrowserMediaCandidateKind,
         reason: String,
         documentID: String?,
+        cachedManifestText: String? = nil,
         lastObserved: Date
     ) -> BrowserMediaCandidate {
         BrowserMediaCandidate(
@@ -418,6 +425,7 @@ public enum BrowserMediaCandidateClassifier {
             availability: .requiresPlanning,
             evidence: ["streaming manifest recognized", reason],
             documentID: documentID,
+            cachedManifestText: cachedManifestText,
             lastObserved: lastObserved
         )
     }

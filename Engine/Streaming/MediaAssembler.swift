@@ -478,40 +478,73 @@ public enum MediaAssembler {
 
                 completionSemaphore.wait()
 
-                if hasFailed {
+                var fallbackSucceeded = false
+                if hasFailed || writer.status != .completed {
                     for ctx in contexts {
                         ctx.reader.cancelReading()
                     }
                     writer.cancelWriting()
                     let reason = failureReason ?? writer.error?.localizedDescription ?? "Muxing failed"
-                    PipelineLogger.shared.log("[MediaAssembler] assembleMultipleTracks failed: \(reason)")
-                    throw MediaAssemblyError.assetWriterFailed(reason: reason)
+                    PipelineLogger.shared.log("[MediaAssembler] AVAssetWriter muxing failed: \(reason). Attempting AVAssetExportSession passthrough fallback...")
+                    if exportMultipleTracksWithPassthrough(request: request, sourceURLs: sourceURLs, outputURL: temporaryOutput) {
+                        PipelineLogger.shared.log("[MediaAssembler] AVAssetExportSession passthrough fallback succeeded.")
+                        fallbackSucceeded = true
+                    } else {
+                        PipelineLogger.shared.log("[MediaAssembler] assembleMultipleTracks failed: \(reason)")
+                        throw MediaAssemblyError.assetWriterFailed(reason: reason)
+                    }
+                } else {
+                    let finishSemaphore = DispatchSemaphore(value: 0)
+                    writer.finishWriting {
+                        finishSemaphore.signal()
+                    }
+                    finishSemaphore.wait()
+
+                    if writer.status != .completed {
+                        let err = writer.error?.localizedDescription ?? "writer status: \(writer.status.rawValue)"
+                        PipelineLogger.shared.log("[MediaAssembler] writer.finishWriting failed: \(err). Attempting AVAssetExportSession passthrough fallback...")
+                        if exportMultipleTracksWithPassthrough(request: request, sourceURLs: sourceURLs, outputURL: temporaryOutput) {
+                            PipelineLogger.shared.log("[MediaAssembler] AVAssetExportSession passthrough fallback succeeded.")
+                            fallbackSucceeded = true
+                        } else {
+                            throw MediaAssemblyError.assetWriterFailed(reason: err)
+                        }
+                    }
                 }
 
-                let finishSemaphore = DispatchSemaphore(value: 0)
-                writer.finishWriting {
-                    finishSemaphore.signal()
+                if !fallbackSucceeded {
+                    do {
+                        try validateMuxedOutput(
+                            temporaryOutput,
+                            expectedKinds: request.tracks.map(\.kind),
+                            writerError: writer.error
+                        )
+                    } catch {
+                        PipelineLogger.shared.log("[MediaAssembler] validateMuxedOutput failed: \(error.localizedDescription). Attempting AVAssetExportSession passthrough fallback...")
+                        if exportMultipleTracksWithPassthrough(request: request, sourceURLs: sourceURLs, outputURL: temporaryOutput) {
+                            PipelineLogger.shared.log("[MediaAssembler] AVAssetExportSession passthrough fallback succeeded after validation failure.")
+                        } else {
+                            throw error
+                        }
+                    }
                 }
-                finishSemaphore.wait()
-
-                if writer.status != .completed {
-                    let err = writer.error?.localizedDescription ?? "writer status: \(writer.status.rawValue)"
-                    PipelineLogger.shared.log("[MediaAssembler] writer.finishWriting failed: \(err)")
-                    throw MediaAssemblyError.assetWriterFailed(reason: err)
-                }
-
-                try validateMuxedOutput(
-                    temporaryOutput,
-                    expectedKinds: request.tracks.map(\.kind),
-                    writerError: writer.error
-                )
             }
         } catch let error as MediaAssemblyError {
-            throw error
+            PipelineLogger.shared.log("[MediaAssembler] assembleMultipleTracks caught error: \(error.localizedDescription). Attempting AVAssetExportSession passthrough fallback...")
+            if exportMultipleTracksWithPassthrough(request: request, sourceURLs: sourceURLs, outputURL: temporaryOutput) {
+                PipelineLogger.shared.log("[MediaAssembler] AVAssetExportSession passthrough fallback succeeded from outer catch.")
+            } else {
+                throw error
+            }
         } catch {
-            let reason = error.localizedDescription
-            PipelineLogger.shared.log("[MediaAssembler] assembleMultipleTracks unexpected error: \(reason)")
-            throw MediaAssemblyError.assetWriterFailed(reason: reason)
+            PipelineLogger.shared.log("[MediaAssembler] assembleMultipleTracks caught error: \(error.localizedDescription). Attempting AVAssetExportSession passthrough fallback...")
+            if exportMultipleTracksWithPassthrough(request: request, sourceURLs: sourceURLs, outputURL: temporaryOutput) {
+                PipelineLogger.shared.log("[MediaAssembler] AVAssetExportSession passthrough fallback succeeded from outer catch.")
+            } else {
+                let reason = error.localizedDescription
+                PipelineLogger.shared.log("[MediaAssembler] assembleMultipleTracks unexpected error: \(reason)")
+                throw MediaAssemblyError.assetWriterFailed(reason: reason)
+            }
         }
 
         do {
@@ -583,6 +616,50 @@ public enum MediaAssembler {
                 throw MediaAssemblyError.assetWriterFailed(reason: reason)
             }
         }
+    }
+
+    private static func exportMultipleTracksWithPassthrough(
+        request: MediaAssemblyRequest,
+        sourceURLs: [URL],
+        outputURL: URL
+    ) -> Bool {
+        let composition = AVMutableComposition()
+        for (track, sourceURL) in zip(request.tracks, sourceURLs) {
+            let asset = AVURLAsset(url: sourceURL)
+            let mediaType: AVMediaType = track.kind == .video ? .video : .audio
+            guard let sourceTrack = asset.tracks(withMediaType: mediaType).first else { continue }
+            guard let compTrack = composition.addMutableTrack(withMediaType: mediaType, preferredTrackID: kCMPersistentTrackID_Invalid) else { continue }
+            let duration = sourceTrack.timeRange.duration
+            let timeRange = CMTimeRange(start: .zero, duration: duration.isValid && duration > .zero ? duration : asset.duration)
+            try? compTrack.insertTimeRange(timeRange, of: sourceTrack, at: .zero)
+        }
+
+        guard !composition.tracks.isEmpty else { return false }
+
+        guard let exportSession = AVAssetExportSession(asset: composition, presetName: AVAssetExportPresetPassthrough) else {
+            return false
+        }
+
+        try? FileManager.default.removeItem(at: outputURL)
+        exportSession.outputURL = outputURL
+        exportSession.outputFileType = .mp4
+        exportSession.shouldOptimizeForNetworkUse = true
+
+        let sema = DispatchSemaphore(value: 0)
+        exportSession.exportAsynchronously {
+            sema.signal()
+        }
+        sema.wait()
+
+        if exportSession.status == .completed && FileManager.default.fileExists(atPath: outputURL.path) {
+            let size = (try? FileManager.default.attributesOfItem(atPath: outputURL.path)[.size] as? Int64) ?? 0
+            if size > 0 {
+                PipelineLogger.shared.log("[MediaAssembler] Passthrough export succeeded as fallback: \(size) bytes")
+                return true
+            }
+        }
+        PipelineLogger.shared.log("[MediaAssembler] Passthrough export fallback status=\(exportSession.status.rawValue), error=\(exportSession.error?.localizedDescription ?? "none")")
+        return false
     }
 
     private static func remuxMPEGTSFileToMP4(sourceTSURL: URL, destinationMP4URL: URL) throws {

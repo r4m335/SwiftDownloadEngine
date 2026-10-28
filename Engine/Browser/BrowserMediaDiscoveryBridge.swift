@@ -465,7 +465,7 @@ public final class BrowserMediaDiscoveryBridge: NSObject, @unchecked Sendable {
 
     public static let messageName = "browserMediaDiscovery"
     public static let maximumCandidateLength = 8_192
-    public static let maximumMetadataLength = 65_536
+    public static let maximumMetadataLength = 524_288
 
     /// Injects a generic client-side URL resolution hook into the page context.
     /// Platforms that dynamically generate or rewrite media URLs can define or
@@ -551,7 +551,7 @@ public final class BrowserMediaDiscoveryBridge: NSObject, @unchecked Sendable {
         }
 
         var nextEventID = 0;
-        var MAX_INSPECTION_BYTES = 65536;
+        var MAX_INSPECTION_BYTES = 524288;
 
         function manifestKindFor(url, declaredType, prefix) {
             var mime = declaredType ? String(declaredType).toLowerCase().split(";", 1)[0].trim() : "";
