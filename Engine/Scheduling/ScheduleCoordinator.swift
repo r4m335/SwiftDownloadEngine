@@ -126,8 +126,10 @@ public final class ScheduleCoordinator: ObservableObject {
     public func nextOccurrence(
         after date: Date = Date(),
         matching components: DateComponents,
-        weekdays: Set<Int>
+        weekdays: Set<Int>,
+        calendar customCalendar: Calendar? = nil
     ) -> Date? {
+        let cal = customCalendar ?? self.calendar
         guard !weekdays.isEmpty, let targetHour = components.hour, let targetMinute = components.minute else {
             return nil
         }
@@ -140,7 +142,7 @@ public final class ScheduleCoordinator: ObservableObject {
             matching.second = 0
             matching.weekday = weekday
 
-            if let next = calendar.nextDate(
+            if let next = cal.nextDate(
                 after: date,
                 matching: matching,
                 matchingPolicy: .nextTime,
@@ -154,14 +156,19 @@ public final class ScheduleCoordinator: ObservableObject {
 
     /// Evaluates whether a date falls within the schedule window.
     /// Handles same-day windows (09:00 -> 17:00) and overnight windows (23:00 -> 06:00).
-    public func isDateInScheduleWindow(_ date: Date = Date(), rule: ScheduleRule) -> Bool {
+    public func isDateInScheduleWindow(
+        _ date: Date = Date(),
+        rule: ScheduleRule,
+        calendar customCalendar: Calendar? = nil
+    ) -> Bool {
         guard rule.isEnabled else { return false }
         guard let startHour = rule.startTime.hour, let startMinute = rule.startTime.minute else { return false }
 
-        let currentHour = calendar.component(.hour, from: date)
-        let currentMinute = calendar.component(.minute, from: date)
+        let cal = customCalendar ?? self.calendar
+        let currentHour = cal.component(.hour, from: date)
+        let currentMinute = cal.component(.minute, from: date)
         let currentMinutesOfDay = currentHour * 60 + currentMinute
-        let currentWeekday = calendar.component(.weekday, from: date)
+        let currentWeekday = cal.component(.weekday, from: date)
 
         let startMinutes = startHour * 60 + startMinute
 
