@@ -118,6 +118,48 @@ public struct TorrentProgress: Codable, Equatable, Sendable {
     }
 }
 
+/// Represents a BitTorrent info-hash supporting both BitTorrent v1 (20-byte SHA-1) and BitTorrent v2 (32-byte SHA-256), or Hybrid torrents containing both.
+public struct TorrentInfoHash: Sendable, Codable, Equatable, Hashable, CustomStringConvertible {
+    public let v1: String?
+    public let v2: String?
+
+    public init(v1: String? = nil, v2: String? = nil) {
+        self.v1 = v1?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        self.v2 = v2?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+
+    public init(hexString: String) {
+        let clean = hexString.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if clean.count == 64 {
+            self.v1 = nil
+            self.v2 = clean
+        } else {
+            self.v1 = clean
+            self.v2 = nil
+        }
+    }
+
+    public var bestIdentifier: String {
+        v1 ?? v2 ?? ""
+    }
+
+    public var description: String {
+        bestIdentifier
+    }
+
+    public var isHybrid: Bool {
+        v1 != nil && v2 != nil
+    }
+
+    public var isV2Only: Bool {
+        v1 == nil && v2 != nil
+    }
+
+    public var isV1Only: Bool {
+        v1 != nil && v2 == nil
+    }
+}
+
 /// Persistent identity and user-visible state for one torrent.
 public struct TorrentTask: Identifiable, Codable, Equatable, Sendable {
     public let id: UUID
@@ -129,10 +171,17 @@ public struct TorrentTask: Identifiable, Codable, Equatable, Sendable {
     public var errorMessage: String?
     public let createdAt: Date
     public let infoHash: String
+    public var infoHashV1: String?
+    public var infoHashV2: String?
     public var priority: TorrentPriority
     public var isExplicitlyPaused: Bool
     public var filePriorities: [Int: TorrentFilePriority]?
     public var seedingPreference: SeedingPreference?
+
+    public var structuredInfoHash: TorrentInfoHash {
+        TorrentInfoHash(v1: infoHashV1 ?? (infoHash.count == 40 ? infoHash : nil),
+                        v2: infoHashV2 ?? (infoHash.count == 64 ? infoHash : nil))
+    }
 
     public init(
         id: UUID = UUID(),
@@ -144,6 +193,8 @@ public struct TorrentTask: Identifiable, Codable, Equatable, Sendable {
         errorMessage: String? = nil,
         createdAt: Date = Date(),
         infoHash: String = "",
+        infoHashV1: String? = nil,
+        infoHashV2: String? = nil,
         priority: TorrentPriority = .normal,
         isExplicitlyPaused: Bool = false,
         filePriorities: [Int: TorrentFilePriority]? = nil,
@@ -157,7 +208,10 @@ public struct TorrentTask: Identifiable, Codable, Equatable, Sendable {
         self.progress = progress
         self.errorMessage = errorMessage
         self.createdAt = createdAt
-        self.infoHash = infoHash.lowercased()
+        let cleanHash = infoHash.lowercased()
+        self.infoHash = cleanHash
+        self.infoHashV1 = infoHashV1?.lowercased() ?? (cleanHash.count == 40 ? cleanHash : nil)
+        self.infoHashV2 = infoHashV2?.lowercased() ?? (cleanHash.count == 64 ? cleanHash : nil)
         self.priority = priority
         self.isExplicitlyPaused = isExplicitlyPaused
         self.filePriorities = filePriorities

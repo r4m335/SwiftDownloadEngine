@@ -9,6 +9,19 @@ import UIKit
 public struct SettingsView: View {
     @ObservedObject public var viewModel: DownloadManagerViewModel
 
+    // Engine Execution Settings (Codable AppSettings Layer)
+    @State private var timeoutSeconds: Int = 30
+    @State private var customUserAgent: String = ""
+    @State private var maxRetryAttempts: Int = 3
+    @State private var duplicateNamingRule: DuplicateNamingRule = .autoRename
+    @State private var allowCellular: Bool = true
+
+    // Keychain Sensitive Authentication & Proxy (Hardware-backed iOS Keychain, never in AppSettings)
+    @State private var authServer: String = ""
+    @State private var authUsername: String = ""
+    @State private var authPassword: String = ""
+    @State private var keychainFeedbackMessage: String? = nil
+
     // HTTP Settings
     @State private var maxConcurrent: Int = 3
     @State private var maxGlobalRequests: Int = 12
@@ -57,62 +70,90 @@ public struct SettingsView: View {
                     Stepper("Max Concurrent HTTP Downloads: \(maxConcurrent)", value: $maxConcurrent, in: 1...10)
                 }
 
-                // Section 2: BitTorrent Concurrency & Network Ports
+                // Section 2: Network Rules & Engine Execution
                 Section(
-                    header: Text("BitTorrent Queueing & Ports"),
-                    footer: Text("Limits concurrent active torrent downloads, displays the verified native listening socket, and binds the 6881–6891 port range.")
+                    header: Text("Network Rules & Execution"),
+                    footer: Text("Platform rules and execution timeouts for all downloads. Cellular downloads can be restricted to Wi-Fi only.")
                 ) {
-                    Stepper("Max Concurrent Torrents: \(maxConcurrentTorrents)", value: $maxConcurrentTorrents, in: 1...10)
+                    Toggle("Allow Cellular Data", isOn: $allowCellular)
 
-                    Picker("Default Priority", selection: $defaultTorrentPriority) {
-                        Text("Low").tag(TorrentPriority.low)
-                        Text("Normal").tag(TorrentPriority.normal)
-                        Text("High").tag(TorrentPriority.high)
+                    Stepper("Request Timeout: \(timeoutSeconds)s", value: $timeoutSeconds, in: 5...120, step: 5)
+
+                    Stepper("Max Retry Attempts: \(maxRetryAttempts)", value: $maxRetryAttempts, in: 0...10)
+
+                    Picker("Duplicate Filename Rule", selection: $duplicateNamingRule) {
+                        ForEach(DuplicateNamingRule.allCases, id: \.self) { rule in
+                            Text(rule.rawValue).tag(rule)
+                        }
                     }
 
-                    HStack {
-                        Text("Active Listen Port")
-                        Spacer()
-                        Text(viewModel.torrentActivePortString)
-                            .font(.caption.monospaced())
-                            .foregroundColor(viewModel.torrentSessionStatus?.isListening == true ? .green : .secondary)
-                    }
-
-                    HStack {
-                        Text("Configured Range")
-                        Spacer()
-                        Text(viewModel.torrentPortRangeString)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Custom User-Agent (Optional)")
                             .font(.caption)
                             .foregroundColor(.secondary)
+                        TextField("Default iOS User-Agent", text: $customUserAgent)
+                            .textFieldStyle(RoundedBorderTextFieldStyle())
                     }
                 }
 
-                // Section 3: BitTorrent Seeding Policy
-                Section(
-                    header: Text("BitTorrent Seeding Behavior"),
-                    footer: Text("Defines automatic seeding cessation once a transfer completes. Settings are enforced by the scheduler and stored persistently.")
-                ) {
-                    Picker("Seeding Mode", selection: $seedingMode) {
-                        Text("Stop when complete").tag(SeedingMode.doNotSeed)
-                        Text("Seed until ratio").tag(SeedingMode.ratio)
-                        Text("Seed for duration").tag(SeedingMode.duration)
-                        Text("Seed indefinitely").tag(SeedingMode.indefinitely)
-                    }
+                // Section 3: BitTorrent Concurrency & Network Ports (Platform Gated)
+                if viewModel.isTorrentEngineAvailable {
+                    Section(
+                        header: Text("BitTorrent Queueing & Ports"),
+                        footer: Text("Limits concurrent active torrent downloads, displays the verified native listening socket, and binds the 6881–6891 port range.")
+                    ) {
+                        Stepper("Max Concurrent Torrents: \(maxConcurrentTorrents)", value: $maxConcurrentTorrents, in: 1...10)
 
-                    if seedingMode == .ratio {
+                        Picker("Default Priority", selection: $defaultTorrentPriority) {
+                            Text("Low").tag(TorrentPriority.low)
+                            Text("Normal").tag(TorrentPriority.normal)
+                            Text("High").tag(TorrentPriority.high)
+                        }
+
                         HStack {
-                            Text("Target Ratio")
+                            Text("Active Listen Port")
                             Spacer()
-                            Text(String(format: "%.1fx", targetRatio))
+                            Text(viewModel.torrentActivePortString)
+                                .font(.caption.monospaced())
+                                .foregroundColor(viewModel.torrentSessionStatus?.isListening == true ? .green : .secondary)
+                        }
+
+                        HStack {
+                            Text("Configured Range")
+                            Spacer()
+                            Text(viewModel.torrentPortRangeString)
+                                .font(.caption)
                                 .foregroundColor(.secondary)
                         }
-                        Slider(value: $targetRatio, in: 0.5...5.0, step: 0.1)
-                    } else if seedingMode == .duration {
-                        Stepper("Duration: \(targetDurationMinutes) min", value: $targetDurationMinutes, in: 5...1440, step: 15)
+                    }
+
+                    // Section 4: BitTorrent Seeding Policy
+                    Section(
+                        header: Text("BitTorrent Seeding Behavior"),
+                        footer: Text("Defines automatic seeding cessation once a transfer completes. Settings are enforced by the scheduler and stored persistently.")
+                    ) {
+                        Picker("Seeding Mode", selection: $seedingMode) {
+                            Text("Stop when complete").tag(SeedingMode.doNotSeed)
+                            Text("Seed until ratio").tag(SeedingMode.ratio)
+                            Text("Seed for duration").tag(SeedingMode.duration)
+                            Text("Seed indefinitely").tag(SeedingMode.indefinitely)
+                        }
+
+                        if seedingMode == .ratio {
+                            HStack {
+                                Text("Target Ratio")
+                                Spacer()
+                                Text(String(format: "%.1fx", targetRatio))
+                                    .foregroundColor(.secondary)
+                            }
+                            Slider(value: $targetRatio, in: 0.5...5.0, step: 0.1)
+                        } else if seedingMode == .duration {
+                            Stepper("Duration: \(targetDurationMinutes) min", value: $targetDurationMinutes, in: 5...1440, step: 15)
+                        }
                     }
                 }
 
-                // Section 4: HTTP Connection & Request Budgeting
+                // Section 5: HTTP Connection & Request Budgeting
                 Section(
                     header: Text("HTTP Request Budget"),
                     footer: Text("Limits total in-flight HTTP range requests across all segment workers to avoid socket exhaustion.")
@@ -120,7 +161,7 @@ public struct SettingsView: View {
                     Stepper("Max Global In-Flight Requests: \(maxGlobalRequests)", value: $maxGlobalRequests, in: 2...32)
                 }
 
-                // Section 5: Bandwidth Management
+                // Section 6: Bandwidth Management
                 Section(
                     header: Text("Bandwidth Throttling"),
                     footer: Text("Token-bucket rate limiter dynamically enforces download throughput caps.")
@@ -138,6 +179,44 @@ public struct SettingsView: View {
                                 .multilineTextAlignment(.trailing)
                                 .frame(maxWidth: 120)
                         }
+                    }
+                }
+
+                // Section 7: Secure Credentials & Proxy (Stored in iOS Keychain)
+                Section(
+                    header: Text("Secure Authentication & Proxy"),
+                    footer: Text("Sensitive auth passwords and proxy credentials are encrypted in the iOS Keychain (kSecClassInternetPassword) and never stored in plain AppSettings.")
+                ) {
+                    TextField("Server / Host (e.g. example.com)", text: $authServer)
+                        #if canImport(UIKit)
+                        .autocapitalization(.none)
+                        .keyboardType(.URL)
+                        #endif
+                    TextField("Username", text: $authUsername)
+                        #if canImport(UIKit)
+                        .autocapitalization(.none)
+                        #endif
+                    SecureField("Password / Token", text: $authPassword)
+
+                    HStack {
+                        Button("Save to Keychain") {
+                            saveKeychainCredentials()
+                        }
+                        .disabled(authServer.isEmpty || authUsername.isEmpty || authPassword.isEmpty)
+
+                        Spacer()
+
+                        Button("Clear") {
+                            clearKeychainCredentials()
+                        }
+                        .foregroundColor(.red)
+                        .disabled(authServer.isEmpty)
+                    }
+
+                    if let msg = keychainFeedbackMessage {
+                        Text(msg)
+                            .font(.caption)
+                            .foregroundColor(.blue)
                     }
                 }
 
@@ -283,7 +362,7 @@ public struct SettingsView: View {
             }
             .navigationTitle("Settings")
             .sheet(isPresented: $showingDiagnostics) {
-                DiagnosticLogView()
+                DiagnosticLogView(configuration: viewModel.activeEngineConfiguration)
             }
             .onAppear {
                 loadCurrentSettings()
@@ -291,29 +370,29 @@ public struct SettingsView: View {
             .alert("Settings Applied", isPresented: $showingSavedAlert) {
                 Button("OK", role: .cancel) {}
             } message: {
-                Text("Engine concurrency limits, seeding preferences, scheduler rules, and speed controls have been updated.")
+                Text("Engine execution state, UI preferences, scheduler rules, and security policies have been updated.")
             }
         }
     }
 
     private func loadCurrentSettings() {
-        self.maxConcurrent = viewModel.maxConcurrentDownloads
-        self.maxGlobalRequests = viewModel.maxGlobalRequests
-        self.maxConcurrentTorrents = viewModel.maxConcurrentTorrents
-        self.defaultTorrentPriority = viewModel.defaultTorrentPriority
+        let settings = viewModel.appSettings
+        self.maxConcurrent = settings.maxConcurrentDownloads
+        self.maxGlobalRequests = settings.maxGlobalRequests
+        self.timeoutSeconds = settings.timeoutSeconds
+        self.customUserAgent = settings.customUserAgent ?? ""
+        self.maxRetryAttempts = settings.maxRetryAttempts
+        self.duplicateNamingRule = settings.duplicateNamingRule
+        self.allowCellular = settings.allowCellular
 
-        let seeding = viewModel.defaultSeedingPreference
-        self.seedingMode = seeding.mode
-        self.targetRatio = seeding.targetRatio
-        self.targetDurationMinutes = Int(seeding.targetDurationSeconds / 60)
+        self.maxConcurrentTorrents = settings.maxConcurrentTorrents
+        self.defaultTorrentPriority = settings.defaultTorrentPriority
+        self.seedingMode = settings.seedingMode
+        self.targetRatio = settings.targetRatio
+        self.targetDurationMinutes = settings.targetDurationMinutes
 
-        if let bytes = viewModel.globalBandwidthLimitBytesPerSecond, bytes > 0 {
-            self.enableGlobalSpeedLimit = true
-            self.globalSpeedLimitKBps = String(bytes / 1024)
-        } else {
-            self.enableGlobalSpeedLimit = false
-            self.globalSpeedLimitKBps = "2048"
-        }
+        self.enableGlobalSpeedLimit = settings.enableGlobalSpeedLimit
+        self.globalSpeedLimitKBps = String(settings.globalSpeedLimitKBps)
 
         let sniffer = BrowserSnifferFilter.load()
         self.enableSnifferFilter = sniffer.isFilterEnabled
@@ -336,17 +415,23 @@ public struct SettingsView: View {
     }
 
     private func saveSettings() {
-        let limit: Int64?
-        if enableGlobalSpeedLimit, let kb = Int64(globalSpeedLimitKBps), kb > 0 {
-            limit = kb * 1024
-        } else {
-            limit = nil
-        }
-
-        let preference = SeedingPreference(
-            mode: seedingMode,
+        let speedKB = Int(globalSpeedLimitKBps) ?? 2048
+        let updatedSettings = AppSettings(
+            version: AppSettings.currentVersion,
+            maxConcurrentDownloads: maxConcurrent,
+            maxGlobalRequests: maxGlobalRequests,
+            timeoutSeconds: timeoutSeconds,
+            customUserAgent: customUserAgent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : customUserAgent,
+            maxRetryAttempts: maxRetryAttempts,
+            duplicateNamingRule: duplicateNamingRule,
+            allowCellular: allowCellular,
+            enableGlobalSpeedLimit: enableGlobalSpeedLimit,
+            globalSpeedLimitKBps: speedKB,
+            maxConcurrentTorrents: maxConcurrentTorrents,
+            defaultTorrentPriority: defaultTorrentPriority,
+            seedingMode: seedingMode,
             targetRatio: targetRatio,
-            targetDurationSeconds: TimeInterval(targetDurationMinutes * 60)
+            targetDurationMinutes: targetDurationMinutes
         )
 
         var currentRule = viewModel.scheduleRules.first ?? ScheduleRule()
@@ -378,19 +463,40 @@ public struct SettingsView: View {
             )
             filter.save()
 
-            try? await viewModel.updateSettings(
-                maxConcurrent: maxConcurrent,
-                maxGlobalRequests: maxGlobalRequests,
-                globalBandwidthLimit: limit
-            )
-            try? await viewModel.updateTorrentSettings(
-                maxConcurrentTorrents: maxConcurrentTorrents,
-                defaultPriority: defaultTorrentPriority,
-                seedingPreference: preference
-            )
+            try? await viewModel.applySettings(updatedSettings)
             await viewModel.reconcileSchedule()
             showingSavedAlert = true
         }
+    }
+
+    private func saveKeychainCredentials() {
+        let cleanHost = authServer.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleanUser = authUsername.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanHost.isEmpty, !cleanUser.isEmpty, !authPassword.isEmpty else { return }
+
+        let success = KeychainManager.shared.storeInternetPassword(
+            username: cleanUser,
+            password: authPassword,
+            server: cleanHost
+        )
+        if success {
+            keychainFeedbackMessage = "Credentials securely saved in Keychain for \(cleanHost)."
+            authPassword = ""
+        } else {
+            keychainFeedbackMessage = "Failed to store credentials in Keychain."
+        }
+    }
+
+    private func clearKeychainCredentials() {
+        let cleanHost = authServer.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanHost.isEmpty else { return }
+        let cleanUser = authUsername.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !cleanUser.isEmpty {
+            _ = KeychainManager.shared.deleteInternetPassword(server: cleanHost, username: cleanUser)
+        }
+        authUsername = ""
+        authPassword = ""
+        keychainFeedbackMessage = "Cleared credentials for \(cleanHost)."
     }
 }
 #endif

@@ -1,3 +1,15 @@
+import Foundation
+
+/// Identifiable wrapper for file URLs to be presented cleanly in SwiftUI sheets and fullScreenCovers.
+public struct IdentifiableURL: Identifiable, Equatable, Sendable {
+    public var id: String { url.absoluteString }
+    public let url: URL
+
+    public init(url: URL) {
+        self.url = url
+    }
+}
+
 #if canImport(SwiftUI)
 import SwiftUI
 
@@ -10,16 +22,6 @@ import UIKit
 #elseif canImport(AppKit)
 import AppKit
 #endif
-
-/// Identifiable wrapper for file URLs to be presented cleanly in SwiftUI sheets and fullScreenCovers.
-public struct IdentifiableURL: Identifiable, Equatable {
-    public var id: String { url.absoluteString }
-    public let url: URL
-
-    public init(url: URL) {
-        self.url = url
-    }
-}
 
 #if canImport(QuickLook) && canImport(UIKit)
 /// Custom UIViewControllerRepresentable wrapping Apple's QLPreviewController for universal file previewing.

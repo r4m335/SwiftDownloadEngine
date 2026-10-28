@@ -2144,7 +2144,7 @@ public struct BrowserView: View {
             BrowserTabSwitcherView(viewModel: viewModel)
         }
         .sheet(isPresented: $isShowingDiagnosticLogs) {
-            DiagnosticLogView()
+            DiagnosticLogView(configuration: viewModel.activeEngineConfiguration)
         }
         .alert(item: $viewModel.externalAppLinkPrompt) { link in
             Alert(

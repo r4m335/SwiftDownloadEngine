@@ -397,7 +397,7 @@ public struct DownloadsView: View {
                     .padding()
                     #endif
                 case .diagnostics:
-                    DiagnosticLogView()
+                    DiagnosticLogView(configuration: viewModel.activeEngineConfiguration)
                 }
             }
             .alert(item: $activeAlert) { alert in

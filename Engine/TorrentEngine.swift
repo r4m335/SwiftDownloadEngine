@@ -3,6 +3,8 @@ import Foundation
 #if canImport(LibTorrent)
 import LibTorrent
 
+public typealias TorrentSession = TorrentEngine
+
 /// Swift-concurrency facade for the native libtorrent session, queue scheduling, and fast-resume persistence.
 ///
 /// Milestone 4: Torrent Persistence, Fast-Resume, Crash Recovery, and Queue Management.
@@ -14,20 +16,22 @@ public actor TorrentEngine {
     private let portStart: UInt
     private let portEnd: UInt
     private let defaultMaxConcurrentTorrents: Int
+    public private(set) var configuration: EngineConfiguration
     private var isRunning = false
     private var tasks: [String: TorrentTask] = [:]
 
     public init(
+        configuration: EngineConfiguration = .default,
         storageDirectoryURL: URL,
         portStart: UInt = 6881,
         portEnd: UInt = 6891,
-        maxConcurrentTorrents: Int = 3,
         persistenceStore: TorrentPersistenceStore? = nil
     ) throws {
+        self.configuration = configuration
         self.storageDirectoryURL = storageDirectoryURL
         self.portStart = portStart
         self.portEnd = portEnd
-        self.defaultMaxConcurrentTorrents = maxConcurrentTorrents
+        self.defaultMaxConcurrentTorrents = configuration.maxConcurrentTorrents
         self.bridge = TorrentSessionBridge(
             storagePath: storageDirectoryURL.path,
             portStart: Int(portStart),
@@ -39,6 +43,29 @@ public actor TorrentEngine {
             let persistURL = storageDirectoryURL.appendingPathComponent("TorrentMetadata", isDirectory: true)
             self.persistenceStore = try TorrentPersistenceStore(storageDirectoryURL: persistURL)
         }
+    }
+
+    public init(
+        storageDirectoryURL: URL,
+        portStart: UInt = 6881,
+        portEnd: UInt = 6891,
+        maxConcurrentTorrents: Int,
+        persistenceStore: TorrentPersistenceStore? = nil
+    ) throws {
+        var config = EngineConfiguration.default
+        config.maxConcurrentTorrents = maxConcurrentTorrents
+        try self.init(
+            configuration: config,
+            storageDirectoryURL: storageDirectoryURL,
+            portStart: portStart,
+            portEnd: portEnd,
+            persistenceStore: persistenceStore
+        )
+    }
+
+    public func updateConfiguration(_ newConfig: EngineConfiguration) async throws {
+        self.configuration = newConfig
+        try await setMaxConcurrentTorrents(newConfig.maxConcurrentTorrents)
     }
 
     /// Starts the native session, restores persisted torrents with fast-resume, and starts queue scheduling.
@@ -636,26 +663,51 @@ public actor TorrentEngine {
     private let portStart: UInt
     private let portEnd: UInt
     private var currentMaxConcurrentTorrents: Int
+    public private(set) var configuration: EngineConfiguration
     private var isRunning = false
     private var tasks: [String: TorrentTask] = [:]
 
     public init(
+        configuration: EngineConfiguration = .default,
         storageDirectoryURL: URL,
         portStart: UInt = 6881,
         portEnd: UInt = 6891,
-        maxConcurrentTorrents: Int = 3,
         persistenceStore: TorrentPersistenceStore? = nil
     ) throws {
+        self.configuration = configuration
         self.storageDirectoryURL = storageDirectoryURL
         self.portStart = portStart
         self.portEnd = portEnd
-        self.currentMaxConcurrentTorrents = maxConcurrentTorrents
+        self.currentMaxConcurrentTorrents = configuration.maxConcurrentTorrents
         if let store = persistenceStore {
             self.persistenceStore = store
         } else {
             let persistURL = storageDirectoryURL.appendingPathComponent("TorrentMetadata", isDirectory: true)
             self.persistenceStore = try TorrentPersistenceStore(storageDirectoryURL: persistURL)
         }
+    }
+
+    public init(
+        storageDirectoryURL: URL,
+        portStart: UInt = 6881,
+        portEnd: UInt = 6891,
+        maxConcurrentTorrents: Int,
+        persistenceStore: TorrentPersistenceStore? = nil
+    ) throws {
+        var config = EngineConfiguration.default
+        config.maxConcurrentTorrents = maxConcurrentTorrents
+        try self.init(
+            configuration: config,
+            storageDirectoryURL: storageDirectoryURL,
+            portStart: portStart,
+            portEnd: portEnd,
+            persistenceStore: persistenceStore
+        )
+    }
+
+    public func updateConfiguration(_ newConfig: EngineConfiguration) async throws {
+        self.configuration = newConfig
+        try await setMaxConcurrentTorrents(newConfig.maxConcurrentTorrents)
     }
 
     public func start() async throws {

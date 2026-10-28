@@ -840,6 +840,7 @@ public actor DownloadCoordinator {
             // Step 3: Disk-space preflight & preallocation check
             if let totalSize = probeResult.totalSize, totalSize > 0 {
                 let homeURL = URL(fileURLWithPath: NSHomeDirectory())
+                #if canImport(Darwin)
                 let keys: Set<URLResourceKey> = [.volumeAvailableCapacityForImportantUsageKey, .volumeAvailableCapacityKey]
                 if let values = try? homeURL.resourceValues(forKeys: keys) {
                     let available = values.volumeAvailableCapacityForImportantUsage ?? values.volumeAvailableCapacity.map(Int64.init) ?? 0
@@ -847,6 +848,15 @@ public actor DownloadCoordinator {
                         throw DownloadCoordinatorError.insufficientDiskSpace(required: totalSize, available: available)
                     }
                 }
+                #else
+                let keys: Set<URLResourceKey> = [.volumeAvailableCapacityKey]
+                if let values = try? homeURL.resourceValues(forKeys: keys) {
+                    let available = values.volumeAvailableCapacity.map(Int64.init) ?? 0
+                    if available > 0 && available < totalSize {
+                        throw DownloadCoordinatorError.insufficientDiskSpace(required: totalSize, available: available)
+                    }
+                }
+                #endif
                 do {
                     _ = try DownloadFileWriter.requireSufficientDiskSpace(
                         for: request.destinationURL,
@@ -1477,7 +1487,7 @@ public actor DownloadCoordinator {
         var urlRequest = URLRequest(url: probeResult.finalURL)
         urlRequest.httpMethod = "GET"
         urlRequest.allowsCellularAccess = request.networkPolicy.allowsCellularAccess
-        #if canImport(Foundation)
+        #if canImport(Darwin)
         if #available(iOS 13.0, macOS 10.15, *) {
             urlRequest.allowsExpensiveNetworkAccess = request.networkPolicy.allowsCellularAccess
             urlRequest.allowsConstrainedNetworkAccess = request.networkPolicy.allowsCellularAccess

@@ -130,15 +130,20 @@ public struct DiagnosticActivitySheet: UIViewControllerRepresentable {
 }
 #endif
 
-/// Monospaced in-app diagnostic log viewer sheet with copy and share support.
+/// Monospaced in-app diagnostic log viewer sheet with copy and share support,
+/// and live active EngineConfiguration inspection for remote / Xcode-free debugging.
 public struct DiagnosticLogView: View {
+    public let configuration: EngineConfiguration
     @ObservedObject private var logger = PipelineLogger.shared
     @Environment(\.dismiss) private var dismiss
     @State private var copiedAlert: Bool = false
     @State private var filterText: String = ""
     @State private var isShowingShareSheet: Bool = false
+    @State private var isConfigExpanded: Bool = true
 
-    public init() {}
+    public init(configuration: EngineConfiguration? = nil) {
+        self.configuration = configuration ?? AppSettings.load().makeEngineConfiguration()
+    }
 
     private var filteredEntries: [String] {
         let trimmed = filterText.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -148,9 +153,74 @@ public struct DiagnosticLogView: View {
         return logger.entries.filter { $0.localizedCaseInsensitiveContains(trimmed) }
     }
 
+    private var activeEngineConfigurationCard: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Button {
+                withAnimation {
+                    isConfigExpanded.toggle()
+                }
+            } label: {
+                HStack {
+                    Image(systemName: "cpu")
+                        .foregroundColor(.blue)
+                    Text("Active Engine Configuration")
+                        .font(.subheadline.bold())
+                        .foregroundColor(.primary)
+                    Spacer()
+                    Image(systemName: isConfigExpanded ? "chevron.up" : "chevron.down")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+            }
+            .buttonStyle(.plain)
+
+            if isConfigExpanded {
+                VStack(spacing: 6) {
+                    configRow(title: "Max Concurrent Downloads", value: "\(configuration.maxConcurrentDownloads)")
+                    configRow(title: "Max Global In-Flight Requests", value: "\(configuration.maxGlobalRequests)")
+                    configRow(title: "Global Timeout", value: "\(Int(configuration.requestTimeoutSeconds))s req / \(Int(configuration.resourceTimeoutSeconds))s res")
+                    configRow(title: "User-Agent", value: configuration.userAgent)
+                    configRow(title: "Max Retry Attempts", value: "\(configuration.maxRetryAttempts)")
+                    configRow(title: "Duplicate Naming Rule", value: configuration.duplicateNamingRule.rawValue)
+                    configRow(title: "Cellular Usage", value: configuration.allowCellular ? "Allowed" : "Wi-Fi Only")
+                    configRow(title: "Global Speed Limit", value: configuration.globalBandwidthLimitBytesPerSecond != nil ? "\(configuration.globalBandwidthLimitBytesPerSecond! / 1024) KB/s" : "Unlimited")
+                    configRow(title: "Max Concurrent Torrents", value: "\(configuration.maxConcurrentTorrents)")
+                    configRow(title: "Default Torrent Priority", value: "\(configuration.defaultTorrentPriority)")
+                    configRow(title: "Default Seeding Behavior", value: "\(configuration.defaultSeedingPreference.mode.rawValue)")
+                }
+                .padding(.top, 4)
+            }
+        }
+        .padding(12)
+        #if canImport(UIKit)
+        .background(Color(UIColor.secondarySystemBackground))
+        #else
+        .background(Color.secondary.opacity(0.1))
+        #endif
+        .cornerRadius(10)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+    }
+
+    private func configRow(title: String, value: String) -> some View {
+        HStack(alignment: .top) {
+            Text(title)
+                .font(.caption)
+                .foregroundColor(.secondary)
+            Spacer()
+            Text(value)
+                .font(.caption.monospaced())
+                .foregroundColor(.primary)
+                .multilineTextAlignment(.trailing)
+                .lineLimit(2)
+        }
+    }
+
     public var body: some View {
         NavigationView {
             VStack(spacing: 0) {
+                activeEngineConfigurationCard
+                Divider()
                 if logger.entries.isEmpty {
                     VStack(spacing: 12) {
                         Image(systemName: "doc.text.magnifyingglass")

@@ -155,7 +155,7 @@ final class HTTPRangeProbe: Sendable {
         request.httpMethod = configuration.probeMethod.rawValue
         request.timeoutInterval = configuration.timeoutInterval
         request.allowsCellularAccess = configuration.allowsCellularAccess
-        #if canImport(Foundation)
+        #if canImport(Darwin)
         if #available(iOS 13.0, macOS 10.15, *) {
             request.allowsExpensiveNetworkAccess = configuration.allowsCellularAccess
             request.allowsConstrainedNetworkAccess = configuration.allowsCellularAccess

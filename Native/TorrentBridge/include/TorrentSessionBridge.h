@@ -24,6 +24,9 @@ NS_SWIFT_NAME(TorrentBridgeStatus)
 @interface TorrentBridgeStatus : NSObject
 
 @property (nonatomic, readonly, copy) NSString *infoHash;
+@property (nonatomic, readonly, nullable, copy) NSString *infoHashV1;
+@property (nonatomic, readonly, nullable, copy) NSString *infoHashV2;
+@property (nonatomic, readonly) BOOL isHybrid;
 @property (nonatomic, readonly, copy) NSString *name;
 @property (nonatomic, readonly, copy) NSString *savePath;
 @property (nonatomic, readonly) TorrentBridgeState state;
@@ -37,6 +40,8 @@ NS_SWIFT_NAME(TorrentBridgeStatus)
 @property (nonatomic, readonly, nullable, copy) NSString *errorMessage;
 
 - (instancetype)initWithInfoHash:(NSString *)infoHash
+                      infoHashV1:(nullable NSString *)infoHashV1
+                      infoHashV2:(nullable NSString *)infoHashV2
                             name:(NSString *)name
                         savePath:(NSString *)savePath
                            state:(TorrentBridgeState)state
@@ -48,6 +53,19 @@ NS_SWIFT_NAME(TorrentBridgeStatus)
                         numSeeds:(NSInteger)numSeeds
                         progress:(float)progress
                     errorMessage:(nullable NSString *)errorMessage NS_DESIGNATED_INITIALIZER;
+
+- (instancetype)initWithInfoHash:(NSString *)infoHash
+                            name:(NSString *)name
+                        savePath:(NSString *)savePath
+                           state:(TorrentBridgeState)state
+                       totalDone:(int64_t)totalDone
+                     totalWanted:(int64_t)totalWanted
+             downloadPayloadRate:(double)downloadPayloadRate
+               uploadPayloadRate:(double)uploadPayloadRate
+                        numPeers:(NSInteger)numPeers
+                        numSeeds:(NSInteger)numSeeds
+                        progress:(float)progress
+                    errorMessage:(nullable NSString *)errorMessage;
 
 - (instancetype)init NS_UNAVAILABLE;
 + (instancetype)new NS_UNAVAILABLE;

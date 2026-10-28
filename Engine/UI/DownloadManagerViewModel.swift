@@ -83,6 +83,14 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
     @Published public var filterText: String = ""
     @Published public var selectedFilter: DownloadFilter = .all
 
+    // Codable UI Settings Model
+    @Published public var appSettings: AppSettings
+
+    /// Live active decoupled EngineConfiguration mapped from UI settings.
+    public var activeEngineConfiguration: EngineConfiguration {
+        appSettings.makeEngineConfiguration()
+    }
+
     // HTTP Settings
     @Published public var maxConcurrentDownloads: Int = 3
     @Published public var maxGlobalRequests: Int = 12
@@ -147,45 +155,50 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
             engine: engine,
             persistenceStore: engine.persistenceStore
         )
+
+        var loadedSettings = AppSettings.load(from: userDefaults)
+        let legacyConcurrent = userDefaults.integer(forKey: SettingsKeys.maxConcurrentDownloads)
+        if legacyConcurrent > 0 {
+            loadedSettings.maxConcurrentDownloads = legacyConcurrent
+        }
+        let legacyRequests = userDefaults.integer(forKey: SettingsKeys.maxGlobalRequests)
+        if legacyRequests > 0 {
+            loadedSettings.maxGlobalRequests = legacyRequests
+        }
+        if let rawLimit = userDefaults.object(forKey: SettingsKeys.globalBandwidthLimit) as? NSNumber {
+            let limit = rawLimit.int64Value
+            if limit > 0 {
+                loadedSettings.enableGlobalSpeedLimit = true
+                loadedSettings.globalSpeedLimitKBps = Int(limit / 1024)
+                loadedSettings.globalBandwidthLimitBytes = limit
+            }
+        }
+        let legacyTorrents = userDefaults.integer(forKey: SettingsKeys.maxConcurrentTorrents)
+        if legacyTorrents > 0 {
+            loadedSettings.maxConcurrentTorrents = legacyTorrents
+        }
+        if let legacyPriorityRaw = userDefaults.object(forKey: SettingsKeys.defaultTorrentPriority) as? Int,
+           let prio = TorrentPriority(rawValue: legacyPriorityRaw) {
+            loadedSettings.defaultTorrentPriority = prio
+        }
+        self.appSettings = loadedSettings
+
+        self.maxConcurrentDownloads = loadedSettings.maxConcurrentDownloads
+        self.maxGlobalRequests = loadedSettings.maxGlobalRequests
+        self.globalBandwidthLimitBytesPerSecond = loadedSettings.enableGlobalSpeedLimit
+            ? (loadedSettings.globalBandwidthLimitBytes ?? Int64(loadedSettings.globalSpeedLimitKBps) * 1024)
+            : nil
+
+        self.maxConcurrentTorrents = loadedSettings.maxConcurrentTorrents
+        self.defaultTorrentPriority = loadedSettings.defaultTorrentPriority
+        self.defaultSeedingPreference = SeedingPreference(
+            mode: loadedSettings.seedingMode,
+            targetRatio: loadedSettings.targetRatio,
+            targetDurationSeconds: TimeInterval(loadedSettings.targetDurationMinutes * 60)
+        )
+
         Task { [weak self] in
             await self?.loadScheduleRules()
-        }
-
-        let savedConcurrent = userDefaults.integer(forKey: SettingsKeys.maxConcurrentDownloads)
-        self.maxConcurrentDownloads = savedConcurrent > 0 ? savedConcurrent : 3
-
-        let savedRequests = userDefaults.integer(forKey: SettingsKeys.maxGlobalRequests)
-        self.maxGlobalRequests = savedRequests > 0 ? savedRequests : 12
-
-        if userDefaults.object(forKey: SettingsKeys.globalBandwidthLimit) != nil {
-            let savedLimit = userDefaults.object(forKey: SettingsKeys.globalBandwidthLimit) as? Int64
-                ?? Int64(userDefaults.integer(forKey: SettingsKeys.globalBandwidthLimit))
-            self.globalBandwidthLimitBytesPerSecond = savedLimit > 0 ? savedLimit : nil
-        } else {
-            self.globalBandwidthLimitBytesPerSecond = nil
-        }
-
-        let savedTorrents = userDefaults.integer(forKey: SettingsKeys.maxConcurrentTorrents)
-        self.maxConcurrentTorrents = savedTorrents > 0 ? savedTorrents : 3
-
-        let prioVal = userDefaults.integer(forKey: SettingsKeys.defaultTorrentPriority)
-        if let prio = TorrentPriority(rawValue: prioVal) {
-            self.defaultTorrentPriority = prio
-        } else {
-            self.defaultTorrentPriority = .normal
-        }
-
-        if let savedModeStr = userDefaults.string(forKey: SettingsKeys.defaultSeedingMode),
-           let savedMode = SeedingMode(rawValue: savedModeStr) {
-            let savedRatio = userDefaults.double(forKey: SettingsKeys.defaultSeedingRatio)
-            let savedDuration = userDefaults.double(forKey: SettingsKeys.defaultSeedingDuration)
-            self.defaultSeedingPreference = SeedingPreference(
-                mode: savedMode,
-                targetRatio: savedRatio > 0 ? savedRatio : 1.0,
-                targetDurationSeconds: savedDuration > 0 ? savedDuration : 3600
-            )
-        } else {
-            self.defaultSeedingPreference = SeedingPreference(mode: .ratio, targetRatio: 1.0, targetDurationSeconds: 3600)
         }
     }
 
@@ -835,19 +848,15 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
             throw DownloadCoordinatorError.invalidRequest(reason: error)
         }
 
-        self.maxConcurrentTorrents = maxConcurrentTorrents
-        self.defaultTorrentPriority = defaultPriority
-
-        userDefaults.set(maxConcurrentTorrents, forKey: SettingsKeys.maxConcurrentTorrents)
-        userDefaults.set(defaultPriority.rawValue, forKey: SettingsKeys.defaultTorrentPriority)
-
+        var updated = appSettings
+        updated.maxConcurrentTorrents = maxConcurrentTorrents
+        updated.defaultTorrentPriority = defaultPriority
         if let pref = seedingPreference {
-            updateSeedingSettings(defaultPreference: pref)
+            updated.seedingMode = pref.mode
+            updated.targetRatio = pref.targetRatio
+            updated.targetDurationMinutes = Int(pref.targetDurationSeconds / 60)
         }
-
-        if let te = torrentEngine {
-            try? await te.setMaxConcurrentTorrents(maxConcurrentTorrents)
-        }
+        try await applySettings(updated)
     }
 
     public func updateTorrentSettings(maxConcurrent: Int, defaultPriority: TorrentPriority) async throws {
@@ -959,6 +968,42 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
 
     // MARK: - Settings Configuration & Persistence
 
+    /// Updates and persists complete AppSettings, seamlessly propagating decoupled
+    /// EngineConfiguration to DownloadEngine, TorrentEngine, and StreamingDownloadOrchestrator.
+    public func applySettings(_ newSettings: AppSettings) async throws {
+        newSettings.save(to: userDefaults)
+        // Also sync legacy keys so existing tests asserting on UserDefaults keys pass seamlessly:
+        userDefaults.set(newSettings.maxConcurrentDownloads, forKey: SettingsKeys.maxConcurrentDownloads)
+        userDefaults.set(newSettings.maxGlobalRequests, forKey: SettingsKeys.maxGlobalRequests)
+        if newSettings.enableGlobalSpeedLimit {
+            let limit = newSettings.globalBandwidthLimitBytes ?? (Int64(newSettings.globalSpeedLimitKBps) * 1024)
+            userDefaults.set(limit, forKey: SettingsKeys.globalBandwidthLimit)
+        } else {
+            userDefaults.removeObject(forKey: SettingsKeys.globalBandwidthLimit)
+        }
+        userDefaults.set(newSettings.maxConcurrentTorrents, forKey: SettingsKeys.maxConcurrentTorrents)
+        userDefaults.set(newSettings.defaultTorrentPriority.rawValue, forKey: SettingsKeys.defaultTorrentPriority)
+        userDefaults.set(newSettings.seedingMode.rawValue, forKey: SettingsKeys.defaultSeedingMode)
+        userDefaults.set(newSettings.targetRatio, forKey: SettingsKeys.defaultSeedingRatio)
+        userDefaults.set(TimeInterval(newSettings.targetDurationMinutes * 60), forKey: SettingsKeys.defaultSeedingDuration)
+
+        self.appSettings = newSettings
+        let engineConfig = newSettings.makeEngineConfiguration()
+
+        try await engine.updateConfiguration(engineConfig)
+        if let te = torrentEngine {
+            try? await te.updateConfiguration(engineConfig)
+        }
+        await engine.streamingOrchestrator?.updateConfiguration(engineConfig)
+
+        self.maxConcurrentDownloads = newSettings.maxConcurrentDownloads
+        self.maxGlobalRequests = newSettings.maxGlobalRequests
+        self.globalBandwidthLimitBytesPerSecond = engineConfig.globalBandwidthLimitBytesPerSecond
+        self.maxConcurrentTorrents = newSettings.maxConcurrentTorrents
+        self.defaultTorrentPriority = newSettings.defaultTorrentPriority
+        self.defaultSeedingPreference = engineConfig.defaultSeedingPreference
+    }
+
     public func updateSettings(
         maxConcurrent: Int,
         maxGlobalRequests: Int,
@@ -974,37 +1019,23 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
             self.errorMessage = error
             throw DownloadCoordinatorError.invalidRequest(reason: error)
         }
-        let sanitizedBandwidth: Int64? = (globalBandwidthLimit != nil && globalBandwidthLimit! > 0) ? globalBandwidthLimit : nil
 
-        do {
-            try await engine.setMaxConcurrentDownloads(maxConcurrent)
-            try await engine.setMaxGlobalRequests(maxGlobalRequests)
-            await engine.setGlobalSpeedLimit(sanitizedBandwidth)
-
-            self.maxConcurrentDownloads = maxConcurrent
-            self.maxGlobalRequests = maxGlobalRequests
-            self.globalBandwidthLimitBytesPerSecond = sanitizedBandwidth
-
-            userDefaults.set(maxConcurrent, forKey: SettingsKeys.maxConcurrentDownloads)
-            userDefaults.set(maxGlobalRequests, forKey: SettingsKeys.maxGlobalRequests)
-            if let limit = sanitizedBandwidth {
-                userDefaults.set(limit, forKey: SettingsKeys.globalBandwidthLimit)
-            } else {
-                userDefaults.removeObject(forKey: SettingsKeys.globalBandwidthLimit)
-            }
-        } catch {
-            self.errorMessage = error.localizedDescription
-            throw error
+        var updated = appSettings
+        updated.maxConcurrentDownloads = maxConcurrent
+        updated.maxGlobalRequests = maxGlobalRequests
+        if let limit = globalBandwidthLimit, limit > 0 {
+            updated.enableGlobalSpeedLimit = true
+            updated.globalSpeedLimitKBps = Int(limit / 1024)
+            updated.globalBandwidthLimitBytes = limit
+        } else {
+            updated.enableGlobalSpeedLimit = false
+            updated.globalBandwidthLimitBytes = nil
         }
+        try await applySettings(updated)
     }
 
     public func applyPersistedSettings() async throws {
-        try await engine.setMaxConcurrentDownloads(maxConcurrentDownloads)
-        try await engine.setMaxGlobalRequests(maxGlobalRequests)
-        await engine.setGlobalSpeedLimit(globalBandwidthLimitBytesPerSecond)
-        if let te = torrentEngine {
-            try? await te.setMaxConcurrentTorrents(maxConcurrentTorrents)
-        }
+        try await applySettings(appSettings)
     }
 
     public func restoreQueue(autoStart: Bool = false) async throws {

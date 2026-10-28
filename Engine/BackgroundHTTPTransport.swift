@@ -737,7 +737,7 @@ public final class BackgroundDownloadSessionManager: NSObject, @unchecked Sendab
         let targetURL = download.resolvedURL ?? download.originalURL
         var request = URLRequest(url: targetURL)
         request.allowsCellularAccess = download.networkPolicy.allowsCellularAccess
-        #if canImport(Foundation)
+        #if canImport(Darwin)
         if #available(iOS 13.0, macOS 10.15, *) {
             request.allowsExpensiveNetworkAccess = download.networkPolicy.allowsCellularAccess
             request.allowsConstrainedNetworkAccess = download.networkPolicy.allowsCellularAccess

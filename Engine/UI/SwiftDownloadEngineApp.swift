@@ -107,14 +107,15 @@ public struct SwiftDownloadEngineApp: App {
         }
         #endif
 
+        let initialSettings = AppSettings.load(from: .standard)
+        let engineConfig = initialSettings.makeEngineConfiguration()
+
         var engineInstance: DownloadEngine? = nil
         do {
             try FileManager.default.createDirectory(at: storeDir, withIntermediateDirectories: true)
             engineInstance = try DownloadEngine(
+                configuration: engineConfig,
                 storageDirectoryURL: storeDir,
-                maxConcurrentDownloads: 3,
-                maxGlobalRequests: 12,
-                globalBandwidthLimit: nil,
                 session: .shared,
                 backgroundSessionManager: bgManager
             )
@@ -123,10 +124,8 @@ public struct SwiftDownloadEngineApp: App {
             let fallbackStore = FileManager.default.temporaryDirectory.appendingPathComponent("1DMDownloads_Fallback", isDirectory: true)
             try? FileManager.default.createDirectory(at: fallbackStore, withIntermediateDirectories: true)
             engineInstance = try? DownloadEngine(
+                configuration: engineConfig,
                 storageDirectoryURL: fallbackStore,
-                maxConcurrentDownloads: 3,
-                maxGlobalRequests: 12,
-                globalBandwidthLimit: nil,
                 session: .shared,
                 backgroundSessionManager: nil
             )
@@ -141,14 +140,17 @@ public struct SwiftDownloadEngineApp: App {
             let persistence = (try? DownloadPersistenceStore(storageDirectoryURL: emergencyStore)) ?? DownloadPersistenceStore(inMemory: true)
             let coordinator = (try? DownloadCoordinator(session: .shared, persistenceStore: persistence)) ?? (try! DownloadCoordinator(session: .shared, persistenceStore: DownloadPersistenceStore(inMemory: true)))
             let qm = DownloadQueueManager(coordinator: coordinator, persistenceStore: persistence)
-            engine = DownloadEngine(queueManager: qm, coordinator: coordinator, persistenceStore: persistence)
+            engine = DownloadEngine(configuration: engineConfig, queueManager: qm, coordinator: coordinator, persistenceStore: persistence)
         }
 
         var torrentEngine: TorrentEngine? = nil
         do {
             let torrentStorage = storeDir.appendingPathComponent("Torrents", isDirectory: true)
             try? FileManager.default.createDirectory(at: torrentStorage, withIntermediateDirectories: true)
-            torrentEngine = try TorrentEngine(storageDirectoryURL: torrentStorage)
+            torrentEngine = try TorrentEngine(
+                configuration: engineConfig,
+                storageDirectoryURL: torrentStorage
+            )
         } catch {
             print("Notice: TorrentEngine initialization skipped or deferred: \(error.localizedDescription)")
         }
@@ -159,7 +161,11 @@ public struct SwiftDownloadEngineApp: App {
             downloadsDirectory: downloadsDir,
             userDefaults: .standard
         )
-        let orchestrator = StreamingDownloadOrchestrator(downloadCoordinator: engine.coordinator, downloadEngine: engine)
+        let orchestrator = StreamingDownloadOrchestrator(
+            configuration: engineConfig,
+            downloadCoordinator: engine.coordinator,
+            downloadEngine: engine
+        )
         StreamingDownloadOrchestrator.shared = orchestrator
         Task { await engine.setStreamingOrchestrator(orchestrator) }
         _viewModel = StateObject(wrappedValue: vm)

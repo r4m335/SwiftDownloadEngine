@@ -605,13 +605,17 @@ public actor StreamingDownloadOrchestrator {
         return false
     }
 
+    public private(set) var configuration: EngineConfiguration
+
     public init(
+        configuration: EngineConfiguration = .default,
         manifestLoader: any StreamingManifestLoader = URLSessionStreamingManifestLoader(),
         segmentExecutor: any StreamingSegmentExecutor,
         parsingLimits: ManifestParsingLimits = .default,
         urlResolver: (any BrowserMediaURLResolver)? = nil,
         downloadEngine: DownloadEngine? = nil
     ) {
+        self.configuration = configuration
         self.manifestLoader = manifestLoader
         self.segmentExecutor = segmentExecutor
         self.parsingLimits = parsingLimits
@@ -620,23 +624,29 @@ public actor StreamingDownloadOrchestrator {
     }
 
     public init(
+        configuration: EngineConfiguration = .default,
         downloadCoordinator: DownloadCoordinator,
         downloadEngine: DownloadEngine? = nil,
         manifestLoader: any StreamingManifestLoader = URLSessionStreamingManifestLoader(),
         parsingLimits: ManifestParsingLimits = .default,
-        retryCount: Int = 2,
+        retryCount: Int? = nil,
         urlResolver: (any BrowserMediaURLResolver)? = nil
     ) {
         self.init(
+            configuration: configuration,
             manifestLoader: manifestLoader,
             segmentExecutor: DownloadCoordinatorSegmentExecutor(
                 coordinator: downloadCoordinator,
-                retryCount: retryCount
+                retryCount: retryCount ?? configuration.maxRetryAttempts
             ),
             parsingLimits: parsingLimits,
             urlResolver: urlResolver,
             downloadEngine: downloadEngine
         )
+    }
+
+    public func updateConfiguration(_ newConfig: EngineConfiguration) {
+        self.configuration = newConfig
     }
 
     public func setURLResolver(_ resolver: (any BrowserMediaURLResolver)?) {
@@ -1060,6 +1070,7 @@ public actor StreamingDownloadOrchestrator {
         // Preflight disk space verification before downloading streaming segments
         if let estimatedSize = proposal.estimatedTotalBytes, estimatedSize > 0 {
             let homeURL = URL(fileURLWithPath: NSHomeDirectory())
+            #if canImport(Darwin)
             let keys: Set<URLResourceKey> = [.volumeAvailableCapacityForImportantUsageKey, .volumeAvailableCapacityKey]
             if let values = try? homeURL.resourceValues(forKeys: keys) {
                 let available = values.volumeAvailableCapacityForImportantUsage ?? values.volumeAvailableCapacity.map(Int64.init) ?? 0
@@ -1067,6 +1078,15 @@ public actor StreamingDownloadOrchestrator {
                     throw StreamingDownloadOrchestratorError.insufficientDiskSpace(required: estimatedSize, available: available)
                 }
             }
+            #else
+            let keys: Set<URLResourceKey> = [.volumeAvailableCapacityKey]
+            if let values = try? homeURL.resourceValues(forKeys: keys) {
+                let available = values.volumeAvailableCapacity.map(Int64.init) ?? 0
+                if available > 0 && available < estimatedSize {
+                    throw StreamingDownloadOrchestratorError.insufficientDiskSpace(required: estimatedSize, available: available)
+                }
+            }
+            #endif
         }
 
         try FileManager.default.createDirectory(at: destinationDirectory, withIntermediateDirectories: true)

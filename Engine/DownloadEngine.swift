@@ -221,24 +221,25 @@ public actor DownloadEngine {
     public let queueManager: DownloadQueueManager
     public let coordinator: DownloadCoordinator
     public let persistenceStore: DownloadPersistenceStore
+    public private(set) var configuration: EngineConfiguration
 
     private var subscribers: [UUID: AsyncStream<DownloadEvent>.Continuation] = [:]
     private var terminalEventsEmitted: Set<DownloadID> = []
     private var lastProgressEmittedAt: [DownloadID: TimeInterval] = [:]
     private var previousStates: [DownloadID: DownloadState] = [:]
 
-    /// Convenience initializer configuring engine with default storage and components.
+    /// Designated initializer accepting a decoupled EngineConfiguration.
+    /// The engine NEVER reads from UserDefaults or UI AppSettings directly.
     public init(
+        configuration: EngineConfiguration,
         storageDirectoryURL: URL? = nil,
-        maxConcurrentDownloads: Int = 3,
-        maxGlobalRequests: Int = 12,
-        globalBandwidthLimit: Int64? = nil,
         session: URLSession = .shared,
         backgroundSessionManager: BackgroundDownloadSessionManager? = nil
     ) throws {
+        self.configuration = configuration
         let persistence = try DownloadPersistenceStore(storageDirectoryURL: storageDirectoryURL)
-        let budget = SharedRequestBudget(maxGlobalRequests: maxGlobalRequests)
-        let limiter = BandwidthLimiter(bytesPerSecond: globalBandwidthLimit)
+        let budget = SharedRequestBudget(maxGlobalRequests: configuration.maxGlobalRequests)
+        let limiter = BandwidthLimiter(bytesPerSecond: configuration.globalBandwidthLimitBytesPerSecond)
         let bgManager = backgroundSessionManager ?? (try? BackgroundDownloadSessionManager(
             storageDirectoryURL: persistence.storageDirectoryURL,
             persistenceStore: persistence
@@ -253,7 +254,7 @@ public actor DownloadEngine {
         let queue = DownloadQueueManager(
             coordinator: coord,
             persistenceStore: persistence,
-            maxConcurrentDownloads: maxConcurrentDownloads
+            maxConcurrentDownloads: configuration.maxConcurrentDownloads
         )
         self.queueManager = queue
         self.coordinator = coord
@@ -264,12 +265,36 @@ public actor DownloadEngine {
         }
     }
 
+    /// Convenience initializer configuring engine with default storage and components.
+    public init(
+        storageDirectoryURL: URL? = nil,
+        maxConcurrentDownloads: Int = 3,
+        maxGlobalRequests: Int = 12,
+        globalBandwidthLimit: Int64? = nil,
+        session: URLSession = .shared,
+        backgroundSessionManager: BackgroundDownloadSessionManager? = nil
+    ) throws {
+        let config = EngineConfiguration(
+            maxConcurrentDownloads: maxConcurrentDownloads,
+            maxGlobalRequests: maxGlobalRequests,
+            globalBandwidthLimitBytesPerSecond: globalBandwidthLimit
+        )
+        try self.init(
+            configuration: config,
+            storageDirectoryURL: storageDirectoryURL,
+            session: session,
+            backgroundSessionManager: backgroundSessionManager
+        )
+    }
+
     /// Primary designated initializer accepting explicit engine components.
     public init(
+        configuration: EngineConfiguration = .default,
         queueManager: DownloadQueueManager,
         coordinator: DownloadCoordinator,
         persistenceStore: DownloadPersistenceStore
     ) {
+        self.configuration = configuration
         self.queueManager = queueManager
         self.coordinator = coordinator
         self.persistenceStore = persistenceStore
@@ -277,6 +302,28 @@ public actor DownloadEngine {
         Task { [weak self] in
             await self?.attachListeners()
         }
+    }
+
+    /// Convenience initializer without configuration for legacy component injection.
+    public init(
+        queueManager: DownloadQueueManager,
+        coordinator: DownloadCoordinator,
+        persistenceStore: DownloadPersistenceStore
+    ) {
+        self.init(
+            configuration: .default,
+            queueManager: queueManager,
+            coordinator: coordinator,
+            persistenceStore: persistenceStore
+        )
+    }
+
+    /// Dynamically applies a new EngineConfiguration at runtime.
+    public func updateConfiguration(_ newConfig: EngineConfiguration) async throws {
+        self.configuration = newConfig
+        try await queueManager.setMaxConcurrentDownloads(newConfig.maxConcurrentDownloads)
+        try await queueManager.setMaxGlobalRequests(newConfig.maxGlobalRequests)
+        await coordinator.globalBandwidthLimiter.setRateLimit(newConfig.globalBandwidthLimitBytesPerSecond)
     }
 
     public weak var streamingOrchestrator: StreamingDownloadOrchestrator?

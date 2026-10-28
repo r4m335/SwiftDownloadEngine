@@ -38,11 +38,25 @@ static std::string hexEncode(const uint8_t *bytes, size_t length) {
     return hex;
 }
 
-static std::string infoHashToHex(const libtorrent::info_hash_t &ih) {
+static std::string v1InfoHashToHex(const libtorrent::info_hash_t &ih) {
     if (ih.has_v1()) {
         return hexEncode(reinterpret_cast<const uint8_t *>(ih.v1.data()), 20);
-    } else if (ih.has_v2()) {
+    }
+    return "";
+}
+
+static std::string v2InfoHashToHex(const libtorrent::info_hash_t &ih) {
+    if (ih.has_v2()) {
         return hexEncode(reinterpret_cast<const uint8_t *>(ih.v2.data()), 32);
+    }
+    return "";
+}
+
+static std::string infoHashToHex(const libtorrent::info_hash_t &ih) {
+    if (ih.has_v1()) {
+        return v1InfoHashToHex(ih);
+    } else if (ih.has_v2()) {
+        return v2InfoHashToHex(ih);
     }
     return "";
 }
@@ -50,6 +64,8 @@ static std::string infoHashToHex(const libtorrent::info_hash_t &ih) {
 @implementation TorrentBridgeStatus
 
 - (instancetype)initWithInfoHash:(NSString *)infoHash
+                      infoHashV1:(nullable NSString *)infoHashV1
+                      infoHashV2:(nullable NSString *)infoHashV2
                             name:(NSString *)name
                         savePath:(NSString *)savePath
                            state:(TorrentBridgeState)state
@@ -64,6 +80,9 @@ static std::string infoHashToHex(const libtorrent::info_hash_t &ih) {
     self = [super init];
     if (self) {
         _infoHash = [infoHash copy];
+        _infoHashV1 = [infoHashV1 copy];
+        _infoHashV2 = [infoHashV2 copy];
+        _isHybrid = (infoHashV1 != nil && infoHashV2 != nil);
         _name = [name copy];
         _savePath = [savePath copy];
         _state = state;
@@ -77,6 +96,34 @@ static std::string infoHashToHex(const libtorrent::info_hash_t &ih) {
         _errorMessage = [errorMessage copy];
     }
     return self;
+}
+
+- (instancetype)initWithInfoHash:(NSString *)infoHash
+                            name:(NSString *)name
+                        savePath:(NSString *)savePath
+                           state:(TorrentBridgeState)state
+                       totalDone:(int64_t)totalDone
+                     totalWanted:(int64_t)totalWanted
+             downloadPayloadRate:(double)downloadPayloadRate
+               uploadPayloadRate:(double)uploadPayloadRate
+                        numPeers:(NSInteger)numPeers
+                        numSeeds:(NSInteger)numSeeds
+                        progress:(float)progress
+                    errorMessage:(nullable NSString *)errorMessage {
+    return [self initWithInfoHash:infoHash
+                       infoHashV1:(infoHash.length == 40 ? infoHash : nil)
+                       infoHashV2:(infoHash.length == 64 ? infoHash : nil)
+                             name:name
+                         savePath:savePath
+                            state:state
+                        totalDone:totalDone
+                      totalWanted:totalWanted
+              downloadPayloadRate:downloadPayloadRate
+                uploadPayloadRate:uploadPayloadRate
+                         numPeers:numPeers
+                         numSeeds:numSeeds
+                         progress:progress
+                     errorMessage:errorMessage];
 }
 
 @end
@@ -245,26 +292,38 @@ static std::string infoHashToHex(const libtorrent::info_hash_t &ih) {
     _session->pop_alerts(&alerts);
     for (libtorrent::alert const *a : alerts) {
         if (auto const *te = libtorrent::alert_cast<libtorrent::torrent_error_alert>(a)) {
-            std::string hash = infoHashToHex(te->handle.info_hashes());
-            if (!hash.empty()) {
-                _torrentErrors[hash] = [NSString stringWithUTF8String:te->error.message().c_str()];
-            }
+            auto const &ih = te->handle.info_hashes();
+            std::string v1 = v1InfoHashToHex(ih);
+            std::string v2 = v2InfoHashToHex(ih);
+            NSString *msg = [NSString stringWithUTF8String:te->error.message().c_str()];
+            if (!v1.empty()) _torrentErrors[v1] = msg;
+            if (!v2.empty()) _torrentErrors[v2] = msg;
         } else if (auto const *rda = libtorrent::alert_cast<libtorrent::save_resume_data_alert>(a)) {
-            std::string hash = infoHashToHex(rda->handle.info_hashes());
-            if (!hash.empty()) {
-                try {
-                    auto buf = libtorrent::write_resume_data_buf(rda->params);
-                    _cachedResumeData[hash] = std::move(buf);
-                    _resumeDataErrors.erase(hash);
-                } catch (const std::exception &ex) {
-                    _resumeDataErrors[hash] = [NSString stringWithUTF8String:ex.what()];
+            auto const &ih = rda->handle.info_hashes();
+            std::string v1 = v1InfoHashToHex(ih);
+            std::string v2 = v2InfoHashToHex(ih);
+            try {
+                auto buf = libtorrent::write_resume_data_buf(rda->params);
+                if (!v1.empty()) {
+                    _cachedResumeData[v1] = buf;
+                    _resumeDataErrors.erase(v1);
                 }
+                if (!v2.empty()) {
+                    _cachedResumeData[v2] = buf;
+                    _resumeDataErrors.erase(v2);
+                }
+            } catch (const std::exception &ex) {
+                NSString *msg = [NSString stringWithUTF8String:ex.what()];
+                if (!v1.empty()) _resumeDataErrors[v1] = msg;
+                if (!v2.empty()) _resumeDataErrors[v2] = msg;
             }
         } else if (auto const *fa = libtorrent::alert_cast<libtorrent::save_resume_data_failed_alert>(a)) {
-            std::string hash = infoHashToHex(fa->handle.info_hashes());
-            if (!hash.empty()) {
-                _resumeDataErrors[hash] = [NSString stringWithUTF8String:fa->error.message().c_str()];
-            }
+            auto const &ih = fa->handle.info_hashes();
+            std::string v1 = v1InfoHashToHex(ih);
+            std::string v2 = v2InfoHashToHex(ih);
+            NSString *msg = [NSString stringWithUTF8String:fa->error.message().c_str()];
+            if (!v1.empty()) _resumeDataErrors[v1] = msg;
+            if (!v2.empty()) _resumeDataErrors[v2] = msg;
         }
     }
 }
@@ -278,11 +337,22 @@ static std::string infoHashToHex(const libtorrent::info_hash_t &ih) {
 
 - (TorrentBridgeStatus *)statusFromLibtorrentStatus:(const libtorrent::torrent_status &)st
                                      infoHashString:(NSString *)hashStr {
+    auto const &ih = st.handle.info_hashes();
+    std::string v1 = v1InfoHashToHex(ih);
+    std::string v2 = v2InfoHashToHex(ih);
+    NSString *v1Str = !v1.empty() ? [NSString stringWithUTF8String:v1.c_str()] : nil;
+    NSString *v2Str = !v2.empty() ? [NSString stringWithUTF8String:v2.c_str()] : nil;
+
     std::string key = [hashStr UTF8String];
     NSString *err = _torrentErrors.count(key) ? _torrentErrors[key] : nil;
+    if (!err && !v1.empty() && _torrentErrors.count(v1)) err = _torrentErrors[v1];
+    if (!err && !v2.empty() && _torrentErrors.count(v2)) err = _torrentErrors[v2];
 
     TorrentBridgeState bridgeState = TorrentBridgeStateQueued;
-    if (_explicitlyPausedHashes.count(key) > 0) {
+    bool isPaused = (_explicitlyPausedHashes.count(key) > 0) ||
+                    (!v1.empty() && _explicitlyPausedHashes.count(v1) > 0) ||
+                    (!v2.empty() && _explicitlyPausedHashes.count(v2) > 0);
+    if (isPaused) {
         bridgeState = TorrentBridgeStatePaused;
         // Invariant self-healing: ensure native handle remains paused if libtorrent shifted
         auto it = _torrents.find(key);
@@ -329,6 +399,8 @@ static std::string infoHashToHex(const libtorrent::info_hash_t &ih) {
     NSString *savePath = [NSString stringWithUTF8String:st.save_path.c_str()];
 
     return [[TorrentBridgeStatus alloc] initWithInfoHash:hashStr
+                                              infoHashV1:v1Str
+                                              infoHashV2:v2Str
                                                     name:name
                                                 savePath:savePath
                                                    state:bridgeState
@@ -388,7 +460,11 @@ static std::string infoHashToHex(const libtorrent::info_hash_t &ih) {
             return nil;
         }
 
-        std::string hexHash = infoHashToHex(handle.info_hashes());
+        std::string v1 = v1InfoHashToHex(handle.info_hashes());
+        std::string v2 = v2InfoHashToHex(handle.info_hashes());
+        if (!v1.empty()) _torrents[v1] = handle;
+        if (!v2.empty()) _torrents[v2] = handle;
+        std::string hexHash = !v1.empty() ? v1 : v2;
         if (hexHash.empty()) {
             if (error) {
                 *error = [NSError errorWithDomain:@"com.r4m335.TorrentSessionBridge"
@@ -398,7 +474,6 @@ static std::string infoHashToHex(const libtorrent::info_hash_t &ih) {
             return nil;
         }
 
-        _torrents[hexHash] = handle;
         return [NSString stringWithUTF8String:hexHash.c_str()];
     } catch (const std::exception &ex) {
         if (error) {
@@ -446,7 +521,11 @@ static std::string infoHashToHex(const libtorrent::info_hash_t &ih) {
             return nil;
         }
 
-        std::string hexHash = infoHashToHex(handle.info_hashes());
+        std::string v1 = v1InfoHashToHex(handle.info_hashes());
+        std::string v2 = v2InfoHashToHex(handle.info_hashes());
+        if (!v1.empty()) _torrents[v1] = handle;
+        if (!v2.empty()) _torrents[v2] = handle;
+        std::string hexHash = !v1.empty() ? v1 : v2;
         if (hexHash.empty()) {
             if (error) {
                 *error = [NSError errorWithDomain:@"com.r4m335.TorrentSessionBridge"
@@ -456,7 +535,6 @@ static std::string infoHashToHex(const libtorrent::info_hash_t &ih) {
             return nil;
         }
 
-        _torrents[hexHash] = handle;
         return [NSString stringWithUTF8String:hexHash.c_str()];
     } catch (const std::exception &ex) {
         if (error) {
@@ -514,7 +592,11 @@ static std::string infoHashToHex(const libtorrent::info_hash_t &ih) {
             return nil;
         }
 
-        std::string hexHash = infoHashToHex(handle.info_hashes());
+        std::string v1 = v1InfoHashToHex(handle.info_hashes());
+        std::string v2 = v2InfoHashToHex(handle.info_hashes());
+        if (!v1.empty()) _torrents[v1] = handle;
+        if (!v2.empty()) _torrents[v2] = handle;
+        std::string hexHash = !v1.empty() ? v1 : v2;
         if (hexHash.empty()) {
             if (error) {
                 *error = [NSError errorWithDomain:@"com.r4m335.TorrentSessionBridge"
@@ -524,7 +606,6 @@ static std::string infoHashToHex(const libtorrent::info_hash_t &ih) {
             return nil;
         }
 
-        _torrents[hexHash] = handle;
         return [NSString stringWithUTF8String:hexHash.c_str()];
     } catch (const std::exception &ex) {
         if (error) {
@@ -620,15 +701,35 @@ static std::string infoHashToHex(const libtorrent::info_hash_t &ih) {
         return NO;
     }
 
-    if (it->second.is_valid()) {
+    libtorrent::torrent_handle handle = it->second;
+    if (handle.is_valid()) {
+        auto const &ih = handle.info_hashes();
+        std::string v1 = v1InfoHashToHex(ih);
+        std::string v2 = v2InfoHashToHex(ih);
         if (deleteFiles) {
-            _session->remove_torrent(it->second, libtorrent::session_handle::delete_files);
+            _session->remove_torrent(handle, libtorrent::session_handle::delete_files);
         } else {
-            _session->remove_torrent(it->second);
+            _session->remove_torrent(handle);
+        }
+        if (!v1.empty()) {
+            _torrents.erase(v1);
+            _torrentErrors.erase(v1);
+            _cachedResumeData.erase(v1);
+            _resumeDataErrors.erase(v1);
+            _explicitlyPausedHashes.erase(v1);
+        }
+        if (!v2.empty()) {
+            _torrents.erase(v2);
+            _torrentErrors.erase(v2);
+            _cachedResumeData.erase(v2);
+            _resumeDataErrors.erase(v2);
+            _explicitlyPausedHashes.erase(v2);
         }
     }
-    _torrents.erase(it);
+    _torrents.erase(key);
     _torrentErrors.erase(key);
+    _cachedResumeData.erase(key);
+    _resumeDataErrors.erase(key);
     _explicitlyPausedHashes.erase(key);
     return YES;
 }
@@ -651,11 +752,18 @@ static std::string infoHashToHex(const libtorrent::info_hash_t &ih) {
     std::lock_guard<std::mutex> lock(_sessionMutex);
     [self processAlertsLocked];
 
+    NSMutableSet<NSString *> *seenHashes = [NSMutableSet set];
     NSMutableArray<TorrentBridgeStatus *> *list = [NSMutableArray arrayWithCapacity:_torrents.size()];
     for (auto const &pair : _torrents) {
         if (pair.second.is_valid()) {
+            std::string canonical = infoHashToHex(pair.second.info_hashes());
+            NSString *canonKey = [NSString stringWithUTF8String:canonical.c_str()];
+            if ([seenHashes containsObject:canonKey]) {
+                continue;
+            }
+            [seenHashes addObject:canonKey];
             libtorrent::torrent_status st = pair.second.status();
-            TorrentBridgeStatus *status = [self statusFromLibtorrentStatus:st infoHashString:[NSString stringWithUTF8String:pair.first.c_str()]];
+            TorrentBridgeStatus *status = [self statusFromLibtorrentStatus:st infoHashString:canonKey];
             if (status) {
                 [list addObject:status];
             }
@@ -884,8 +992,11 @@ static std::string infoHashToHex(const libtorrent::info_hash_t &ih) {
             return nil;
         }
 
-        std::string hexHash = infoHashToHex(handle.info_hashes());
-        _torrents[hexHash] = handle;
+        std::string v1 = v1InfoHashToHex(handle.info_hashes());
+        std::string v2 = v2InfoHashToHex(handle.info_hashes());
+        if (!v1.empty()) _torrents[v1] = handle;
+        if (!v2.empty()) _torrents[v2] = handle;
+        std::string hexHash = !v1.empty() ? v1 : v2;
         return [NSString stringWithUTF8String:hexHash.c_str()];
     } catch (const std::exception &ex) {
         if (error) {
