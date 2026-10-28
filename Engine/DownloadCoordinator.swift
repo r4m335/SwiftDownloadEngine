@@ -615,7 +615,7 @@ public actor DownloadCoordinator {
         record.eTag = probeResult.eTag ?? record.eTag
         record.lastModified = probeResult.lastModified ?? record.lastModified
 
-        if case .valid = validation, probeResult.supportsRange {
+        if case .valid = validation, (probeResult.supportsRange || probeResult.canResume) {
             record.state = .paused
             try await persistenceStore.save(record)
         } else {
@@ -1442,6 +1442,7 @@ public actor DownloadCoordinator {
         // File Preallocation: Preallocate disk space to catch disk-full / quota errors at byte 0
         if let total = probeResult.totalSize, total > 0 {
             try? fileHandle.truncate(atOffset: UInt64(total))
+            try? fileHandle.seek(toOffset: 0)
         }
 
         var urlRequest = URLRequest(url: probeResult.finalURL)
