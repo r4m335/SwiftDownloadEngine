@@ -1251,8 +1251,9 @@ final class BrowserTests: XCTestCase {
             rawURL: "https://example.com/video.mp4",
             finalURL: URL(string: "https://example.com/video.mp4")!,
             kind: .directMedia,
-            availability: .ready,
-            mimeType: "video/mp4"
+            mimeType: "video/mp4",
+            suggestedFilename: "video.mp4",
+            availability: .downloadable
         )
         XCTAssertTrue(filter.matches(candidate: mp4Candidate))
 
@@ -1261,17 +1262,28 @@ final class BrowserTests: XCTestCase {
             url: URL(string: "https://example.com/image.png")!,
             rawURL: "https://example.com/image.png",
             finalURL: URL(string: "https://example.com/image.png")!,
-            kind: .directMedia,
-            availability: .ready,
-            mimeType: "image/png"
+            kind: .directFile,
+            mimeType: "image/png",
+            suggestedFilename: "image.png",
+            availability: .downloadable
         )
         XCTAssertFalse(filter.matches(candidate: imageCandidate))
 
+        let manifestCandidate = BrowserMediaCandidate(
+            id: "3",
+            url: URL(string: "https://example.com/stream.m3u8")!,
+            rawURL: "https://example.com/stream.m3u8",
+            kind: .hlsManifest,
+            suggestedFilename: "stream.m3u8",
+            availability: .requiresPlanning
+        )
+        XCTAssertTrue(filter.matches(candidate: manifestCandidate))
+
         let filtered = BrowserMediaDiscoveryBridge.filter(
-            candidates: [mp4Candidate, imageCandidate],
+            candidates: [mp4Candidate, imageCandidate, manifestCandidate],
             using: filter
         )
-        XCTAssertEqual(filtered.count, 1)
-        XCTAssertEqual(filtered.first?.id, "1")
+        XCTAssertEqual(filtered.count, 2)
+        XCTAssertEqual(filtered.map(\.id), ["1", "3"])
     }
 }

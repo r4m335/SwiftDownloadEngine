@@ -1467,15 +1467,18 @@ public struct BrowserSnifferFilter: Codable, Sendable, Equatable {
     public func matches(candidate: BrowserMediaCandidate) -> Bool {
         guard isFilterEnabled else { return true }
         // Preserve streaming manifests and media source blobs
-        if candidate.kind == .hlsVOD || candidate.kind == .dashVOD || candidate.kind == .mediaSource || candidate.blobKind == .mediaSource {
+        if candidate.kind == .hlsManifest || candidate.kind == .dashManifest || candidate.kind == .mediaSource || candidate.blobKind == .mediaSource {
             return true
         }
         if candidate.associatedManifestURL != nil {
             return true
         }
 
-        // Check path extension if present
-        if let ext = candidate.url?.pathExtension.lowercased(), !ext.isEmpty {
+        // Check path extension if present in URL or suggested filename
+        let urlExt = candidate.url?.pathExtension.lowercased() ?? ""
+        let filenameExt = (candidate.suggestedFilename as NSString).pathExtension.lowercased()
+        let ext = !urlExt.isEmpty ? urlExt : filenameExt
+        if !ext.isEmpty {
             if allowedExtensions.contains(where: { $0.caseInsensitiveCompare(ext) == .orderedSame }) {
                 return true
             }
