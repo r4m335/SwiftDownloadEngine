@@ -364,4 +364,39 @@ final class DownloadPersistenceTests: XCTestCase {
         XCTAssertEqual(fetched?.completedBytes, 50)
         try? FileManager.default.removeItem(at: tempDir)
     }
+
+    // MARK: - 7. File Collision & Conflict Resolver
+
+    func testFileConflictResolverSanitizesIllegalCharacters() {
+        let dirty = "my/video:episode*1?\"<cool>|name.mp4"
+        let clean = FileConflictResolver.sanitizeFilename(dirty)
+        XCTAssertFalse(clean.contains("/"))
+        XCTAssertFalse(clean.contains(":"))
+        XCTAssertFalse(clean.contains("*"))
+        XCTAssertFalse(clean.contains("?"))
+        XCTAssertFalse(clean.contains("\""))
+        XCTAssertFalse(clean.contains("<"))
+        XCTAssertFalse(clean.contains(">"))
+        XCTAssertFalse(clean.contains("|"))
+        XCTAssertEqual(clean, "my_video_episode_1___cool__name.mp4")
+
+        let emptyClean = FileConflictResolver.sanitizeFilename("   ")
+        XCTAssertEqual(emptyClean, "download")
+    }
+
+    func testFileConflictResolverNumberedDuplicates() throws {
+        let testDir = FileManager.default.temporaryDirectory.appendingPathComponent("ConflictTest_\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: testDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: testDir) }
+
+        let originalFile = testDir.appendingPathComponent("video.mp4")
+        try "video content".write(to: originalFile, atomically: true, encoding: .utf8)
+
+        let candidate1 = FileConflictResolver.uniqueDestinationURL(desiredFilename: "video.mp4", directory: testDir)
+        XCTAssertEqual(candidate1.lastPathComponent, "video (1).mp4")
+        try "v1 content".write(to: candidate1, atomically: true, encoding: .utf8)
+
+        let candidate2 = FileConflictResolver.uniqueDestinationURL(desiredFilename: "video.mp4", directory: testDir)
+        XCTAssertEqual(candidate2.lastPathComponent, "video (2).mp4")
+    }
 }

@@ -167,9 +167,7 @@ public enum DownloadRequestEnricher {
     /// Falls back to KeychainManager or HTTPCookieStorage.shared if WebKit is unavailable.
     public static func dynamicCookies(for url: URL) async -> [HTTPCookie] {
         #if canImport(WebKit)
-        let cookies = await MainActor.run {
-            await fetchDynamicCookies(for: url)
-        }
+        let cookies = await fetchDynamicCookies(for: url)
         if !cookies.isEmpty {
             return cookies
         }

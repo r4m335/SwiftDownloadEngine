@@ -293,6 +293,16 @@ public struct HLSManifest: Codable, Sendable, Equatable {
         self.segments = segments
         self.encryption = encryption
     }
+
+    /// All renditions with TYPE=SUBTITLES extracted from the manifest.
+    public var subtitleRenditions: [HLSRendition] {
+        renditions.filter { $0.type.uppercased() == "SUBTITLES" }
+    }
+
+    /// All subtitle URIs declared in the manifest.
+    public var subtitleURIs: [URL] {
+        subtitleRenditions.compactMap { $0.uri }
+    }
 }
 
 public enum DASHPresentationType: String, Codable, Sendable, Equatable {

@@ -475,7 +475,7 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
             resolvedFilename = (!last.isEmpty && last != "/") ? last : "download_\(UUID().uuidString.prefix(8)).bin"
         }
 
-        let destURL = downloadsDirectoryURL.appendingPathComponent(resolvedFilename)
+        let destURL = FileConflictResolver.uniqueDestinationURL(desiredFilename: resolvedFilename, directory: downloadsDirectoryURL)
         let sanitizedLimit: Int64? = (speedLimitBytesPerSecond != nil && speedLimitBytesPerSecond! > 0) ? speedLimitBytesPerSecond : nil
         let request = DownloadRequest(
             url: url,

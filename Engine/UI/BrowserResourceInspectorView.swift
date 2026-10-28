@@ -1,6 +1,41 @@
 #if canImport(SwiftUI)
 import Foundation
 import SwiftUI
+#if canImport(AVKit)
+import AVKit
+#endif
+
+public struct MediaPreviewItem: Identifiable {
+    public let id = UUID()
+    public let url: URL
+    public let title: String
+
+    public init(url: URL, title: String) {
+        self.url = url
+        self.title = title
+    }
+}
+
+#if canImport(AVKit) && (os(iOS) || os(tvOS) || targetEnvironment(macCatalyst))
+public struct AVPlayerViewRepresentable: UIViewControllerRepresentable {
+    public let url: URL
+
+    public init(url: URL) {
+        self.url = url
+    }
+
+    public func makeUIViewController(context: Context) -> AVPlayerViewController {
+        let controller = AVPlayerViewController()
+        let player = AVPlayer(url: url)
+        controller.player = player
+        controller.showsPlaybackControls = true
+        player.play()
+        return controller
+    }
+
+    public func updateUIViewController(_ uiViewController: AVPlayerViewController, context: Context) {}
+}
+#endif
 
 /// Sheet displaying media assets, documents, and downloadable files discovered inside the active webpage.
 public struct BrowserResourceInspectorSheet: View {
@@ -12,6 +47,7 @@ public struct BrowserResourceInspectorSheet: View {
     @State private var searchText: String = ""
     @State private var isDownloadingBatch: Bool = false
     @State private var batchErrorMessage: String? = nil
+    @State private var previewItem: MediaPreviewItem? = nil
 
     public init(viewModel: BrowserViewModel) {
         self.viewModel = viewModel
@@ -120,6 +156,39 @@ public struct BrowserResourceInspectorSheet: View {
                    let manifest = filteredResources.first(where: { $0.isStreamingManifest }) {
                     viewModel.selectedResourceIDs.insert(manifest.id)
                 }
+            }
+            .sheet(item: $previewItem) { item in
+                #if canImport(AVKit) && (os(iOS) || os(tvOS) || targetEnvironment(macCatalyst))
+                NavigationView {
+                    AVPlayerViewRepresentable(url: item.url)
+                        .edgesIgnoringSafeArea(.all)
+                        .navigationTitle(item.title)
+                        .navigationBarTitleDisplayMode(.inline)
+                        .toolbar {
+                            ToolbarItem(placement: .cancellationAction) {
+                                Button("Done") {
+                                    previewItem = nil
+                                }
+                            }
+                        }
+                }
+                #else
+                VStack(spacing: 16) {
+                    Text("Media Preview")
+                        .font(.headline)
+                    Text(item.title)
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+                    Text(item.url.absoluteString)
+                        .font(.caption)
+                        .lineLimit(2)
+                    Button("Close") {
+                        previewItem = nil
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+                .padding()
+                #endif
             }
         }
     }
@@ -263,6 +332,9 @@ public struct BrowserResourceInspectorSheet: View {
                         } else {
                             viewModel.promptDownloadFromInspector(for: resource)
                         }
+                    },
+                    onPreview: {
+                        previewItem = MediaPreviewItem(url: resource.url, title: resource.title)
                     }
                 )
             }
@@ -416,19 +488,22 @@ public struct ResourceRowView: View {
     public let isSelected: Bool
     public let onToggleSelect: () -> Void
     public let onDownload: () -> Void
+    public let onPreview: (() -> Void)?
 
     public init(
         resource: WebpageResource,
         candidate: BrowserMediaCandidate? = nil,
         isSelected: Bool,
         onToggleSelect: @escaping () -> Void,
-        onDownload: @escaping () -> Void
+        onDownload: @escaping () -> Void,
+        onPreview: (() -> Void)? = nil
     ) {
         self.resource = resource
         self.candidate = candidate
         self.isSelected = isSelected
         self.onToggleSelect = onToggleSelect
         self.onDownload = onDownload
+        self.onPreview = onPreview
     }
 
     private var isMediaSourceBlob: Bool {
@@ -558,22 +633,37 @@ public struct ResourceRowView: View {
 
             Spacer(minLength: 8)
 
-            // Individual Download Action Button
+            // Actions (Preview & Download)
+            let canPreview = onPreview != nil && (resource.isStreamingManifest ||
+                resource.url.pathExtension.lowercased() == "m3u8" ||
+                resource.url.pathExtension.lowercased() == "mp4" ||
+                resource.resourceType == .video)
             let canDownload = (resource.isSupported || resource.isStreamingManifest ||
                 resource.url.scheme?.lowercased() == "blob") && (!isMediaSourceBlob || hasManifest)
 
-            if canDownload {
-                Button(action: onDownload) {
-                    Image(systemName: "arrow.down.circle.fill")
-                        .font(.system(size: 24))
-                        .foregroundColor(.blue)
+            HStack(spacing: 8) {
+                if canPreview {
+                    Button(action: { onPreview?() }) {
+                        Image(systemName: "play.circle.fill")
+                            .font(.system(size: 24))
+                            .foregroundColor(.green)
+                    }
+                    .buttonStyle(PlainButtonStyle())
                 }
-                .buttonStyle(PlainButtonStyle())
-            } else if isMediaSourceBlob && !hasManifest {
-                Image(systemName: "clock.arrow.circlepath")
-                    .font(.system(size: 20))
-                    .foregroundColor(.secondary)
-                    .padding(.top, 4)
+
+                if canDownload {
+                    Button(action: onDownload) {
+                        Image(systemName: "arrow.down.circle.fill")
+                            .font(.system(size: 24))
+                            .foregroundColor(.blue)
+                    }
+                    .buttonStyle(PlainButtonStyle())
+                } else if isMediaSourceBlob && !hasManifest {
+                    Image(systemName: "clock.arrow.circlepath")
+                        .font(.system(size: 20))
+                        .foregroundColor(.secondary)
+                        .padding(.top, 4)
+                }
             }
         }
         .padding(.vertical, 4)

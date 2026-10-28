@@ -110,6 +110,8 @@ public struct DownloadsView: View {
     @State private var quickLookURL: URL? = nil
     @State private var selectedDownloadForDetails: DownloadSnapshot? = nil
     @State private var selectedTransferForDetails: UnifiedTransfer? = nil
+    @State private var detectedClipboardURL: URL? = nil
+    @State private var showClipboardBanner: Bool = false
 
     private var trailingToolbarPlacement: ToolbarItemPlacement {
         #if os(iOS)
@@ -147,6 +149,55 @@ public struct DownloadsView: View {
                 // Summary Header
                 if let summary = viewModel.queueSummary {
                     QueueSummaryHeader(summary: summary)
+                }
+
+                // Clipboard Auto-Detection Banner (1DM+ Architecture)
+                if showClipboardBanner, let url = detectedClipboardURL {
+                    HStack(spacing: 12) {
+                        Image(systemName: "doc.on.clipboard.fill")
+                            .font(.system(size: 20))
+                            .foregroundColor(.blue)
+
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Link found in clipboard. Download?")
+                                .font(.subheadline.bold())
+                            Text(url.absoluteString)
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                                .lineLimit(1)
+                        }
+
+                        Spacer()
+
+                        Button {
+                            Task { @MainActor in
+                                try? await viewModel.addDownload(urlText: url.absoluteString)
+                                showClipboardBanner = false
+                            }
+                        } label: {
+                            Text("Download")
+                                .font(.caption.bold())
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 5)
+                                .background(Color.blue)
+                                .foregroundColor(.white)
+                                .cornerRadius(6)
+                        }
+
+                        Button {
+                            showClipboardBanner = false
+                        } label: {
+                            Image(systemName: "xmark")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 8)
+                    .background(Color.secondary.opacity(0.12))
+                    .cornerRadius(10)
+                    .padding(.horizontal)
+                    .padding(.top, 4)
                 }
 
                 // Error Banner
@@ -411,7 +462,42 @@ public struct DownloadsView: View {
                 }
             }
             .filePreviewSheet(item: $quickLookURL)
+            .onAppear {
+                checkClipboardForURL()
+            }
         }
+    }
+
+    private func checkClipboardForURL() {
+        #if canImport(UIKit)
+        if #available(iOS 14.0, *) {
+            UIPasteboard.general.detectPatterns(for: [.probableWebURL]) { result in
+                DispatchQueue.main.async {
+                    switch result {
+                    case .success(let patterns):
+                        if patterns.contains(.probableWebURL),
+                           let text = UIPasteboard.general.string?.trimmingCharacters(in: .whitespacesAndNewlines),
+                           let url = URL(string: text),
+                           let scheme = url.scheme?.lowercased(),
+                           (scheme == "http" || scheme == "https"),
+                           let host = url.host, !host.isEmpty {
+                            self.detectedClipboardURL = url
+                            self.showClipboardBanner = true
+                        }
+                    case .failure:
+                        break
+                    }
+                }
+            }
+        } else if let text = UIPasteboard.general.string?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  let url = URL(string: text),
+                  let scheme = url.scheme?.lowercased(),
+                  (scheme == "http" || scheme == "https"),
+                  let host = url.host, !host.isEmpty {
+            self.detectedClipboardURL = url
+            self.showClipboardBanner = true
+        }
+        #endif
     }
 
     // MARK: - Actions

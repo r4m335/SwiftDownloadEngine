@@ -834,6 +834,7 @@ public actor StreamingDownloadOrchestrator {
                 PipelineLogger.shared.log("[HLS Pipeline] 2. HLSManifestParser initial parse completed: playlistType=\(parsed.playlistType), variants=\(parsed.variants.count), segments=\(parsed.segments.count)")
 
                 var selectedAudioRendition: HLSRendition?
+                var selectedSubtitleRendition: HLSRendition?
                 var selectedVariantBandwidth: Int? = nil
                 var currentURL = response.finalURL
                 var resolutionDepth = 0
@@ -855,6 +856,18 @@ public actor StreamingDownloadOrchestrator {
                                 for: variant,
                                 master: parsed
                             )
+                        }
+                        if selectedSubtitleRendition == nil {
+                            if let subGroup = variant.subtitlesGroup {
+                                selectedSubtitleRendition = parsed.renditions.first {
+                                    $0.type.uppercased() == "SUBTITLES" && $0.groupID == subGroup && $0.uri != nil
+                                }
+                            }
+                            if selectedSubtitleRendition == nil {
+                                selectedSubtitleRendition = parsed.renditions.first {
+                                    $0.type.uppercased() == "SUBTITLES" && $0.uri != nil
+                                }
+                            }
                         }
                     } catch let error as HLSVariantSelectionError {
                         PipelineLogger.shared.log("[HLS Pipeline] Error during variant selection: \(error.localizedDescription)")
@@ -954,12 +967,23 @@ public actor StreamingDownloadOrchestrator {
                 } else {
                     totalEstimatedBytes = nil
                 }
+                var resolvedSubtitleURL: URL? = selectedSubtitleRendition?.uri
+                if let subURI = resolvedSubtitleURL {
+                    if (subURI.query == nil || subURI.query?.isEmpty == true),
+                       let parentQuery = currentURL.query ?? candidate.url.query, !parentQuery.isEmpty,
+                       var components = URLComponents(url: subURI, resolvingAgainstBaseURL: false) {
+                        components.query = parentQuery
+                        resolvedSubtitleURL = components.url ?? subURI
+                    }
+                    PipelineLogger.shared.log("[HLS Pipeline] Subtitle stream detected: \(resolvedSubtitleURL?.absoluteString ?? "")")
+                }
                 let plan = HLSVODTransferPlan(
                     manifestURL: videoPlan.manifestURL,
                     resources: videoPlan.resources,
                     browserRequestContext: candidate.browserRequestContext,
                     estimatedTransferBytes: totalEstimatedBytes,
-                    audioPlan: audioPlan
+                    audioPlan: audioPlan,
+                    subtitleURL: resolvedSubtitleURL
                 )
                 manifest = .hls(plan)
             case .dash:
@@ -1282,6 +1306,13 @@ public actor StreamingDownloadOrchestrator {
                 )
                 PipelineLogger.shared.log("[HLS Pipeline] Successfully completed stream in DownloadEngine: \(assemblyOutput.destinationURL.path)")
             }
+            if let subtitleURL = transferPlan.subtitleURL {
+                await downloadAndSaveSubtitle(
+                    from: subtitleURL,
+                    candidate: candidatesByTransfer[proposal.transferID],
+                    finalOutputURL: assemblyOutput.destinationURL
+                )
+            }
             return assemblyOutput
         } catch let error as HLSVODReconstructionError {
             let failReason: String
@@ -1554,6 +1585,78 @@ public actor StreamingDownloadOrchestrator {
         switch manifest {
         case .hls(let plan): return plan.estimatedTransferBytes
         case .dash(let plan): return plan.estimatedTransferBytes
+        }
+    }
+
+    private func downloadAndSaveSubtitle(
+        from subtitleURL: URL,
+        candidate: StreamingManifestCandidate?,
+        finalOutputURL: URL
+    ) async {
+        PipelineLogger.shared.log("[HLS Pipeline] Fetching subtitle from \(subtitleURL.absoluteString)...")
+        do {
+            var request = URLRequest(url: subtitleURL)
+            request.httpMethod = "GET"
+            request.timeoutInterval = 30
+            let effectiveSnapshot = candidate?.browserSessionSnapshot ?? DownloadRequestEnricher.sharedSessionSnapshot.snapshot
+            request = DownloadRequestEnricher.enrich(request, snapshot: effectiveSnapshot)
+            if request.value(forHTTPHeaderField: "User-Agent") == nil,
+               let ua = candidate?.browserRequestContext?.userAgent, !ua.isEmpty {
+                request.setValue(ua, forHTTPHeaderField: "User-Agent")
+            }
+            if request.value(forHTTPHeaderField: "Referer") == nil {
+                if let ref = candidate?.browserRequestContext?.referer ?? candidate?.browserRequestContext?.pageURL?.absoluteString {
+                    request.setValue(ref, forHTTPHeaderField: "Referer")
+                }
+            }
+            let (data, response) = try await session.data(for: request)
+            guard let httpResponse = response as? HTTPURLResponse, (200...299).contains(httpResponse.statusCode) else {
+                PipelineLogger.shared.log("[HLS Pipeline] Subtitle HTTP request returned non-200 code")
+                return
+            }
+
+            let destinationVTT = finalOutputURL.deletingPathExtension().appendingPathExtension("vtt")
+            let contentString = String(decoding: data, as: UTF8.self)
+
+            if contentString.contains("WEBVTT") {
+                try data.write(to: destinationVTT, options: .atomic)
+                PipelineLogger.shared.log("[HLS Pipeline] Subtitle (.vtt) saved successfully to: \(destinationVTT.path)")
+                return
+            }
+
+            if contentString.contains("#EXTM3U") {
+                let lines = contentString.components(separatedBy: .newlines)
+                var segmentURLs: [URL] = []
+                for line in lines {
+                    let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !trimmed.isEmpty && !trimmed.hasPrefix("#") {
+                        if let segURL = URL(string: trimmed, relativeTo: subtitleURL)?.absoluteURL {
+                            segmentURLs.append(segURL)
+                        }
+                    }
+                }
+                if !segmentURLs.isEmpty {
+                    var combinedVTT = "WEBVTT\n\n"
+                    for segURL in segmentURLs {
+                        var segReq = URLRequest(url: segURL)
+                        segReq = DownloadRequestEnricher.enrich(segReq, snapshot: effectiveSnapshot)
+                        if let (segData, _) = try? await session.data(for: segReq) {
+                            let segText = String(decoding: segData, as: UTF8.self)
+                            let cleanText = segText.replacingOccurrences(of: "WEBVTT\n", with: "")
+                                .replacingOccurrences(of: "WEBVTT\r\n", with: "")
+                            combinedVTT += cleanText + "\n"
+                        }
+                    }
+                    try Data(combinedVTT.utf8).write(to: destinationVTT, options: .atomic)
+                    PipelineLogger.shared.log("[HLS Pipeline] Assembled \(segmentURLs.count) subtitle segments into: \(destinationVTT.path)")
+                    return
+                }
+            }
+
+            try data.write(to: destinationVTT, options: .atomic)
+            PipelineLogger.shared.log("[HLS Pipeline] Saved raw subtitle to: \(destinationVTT.path)")
+        } catch {
+            PipelineLogger.shared.log("[HLS Pipeline] Subtitle download skipped (non-fatal): \(error.localizedDescription)")
         }
     }
 }

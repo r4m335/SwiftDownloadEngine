@@ -284,4 +284,28 @@ final class StreamingManifestTests: XCTestCase {
         XCTAssertFalse(classification.isManifest)
         XCTAssertEqual(classification.kind, .unknown)
     }
+
+    func testHLSManifestParserExtractsSubtitles() throws {
+        let master = """
+        #EXTM3U
+        #EXT-X-VERSION:7
+        #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="audio",NAME="English",DEFAULT=YES,URI="audio.m3u8"
+        #EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",NAME="English",DEFAULT=YES,AUTOSELECT=YES,FORCED=NO,LANGUAGE="en",URI="subs/en.vtt"
+        #EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",NAME="Spanish",DEFAULT=NO,AUTOSELECT=YES,FORCED=NO,LANGUAGE="es",URI="subs/es.vtt"
+        #EXT-X-STREAM-INF:BANDWIDTH=1500000,AUDIO="audio",SUBTITLES="subs"
+        video.m3u8
+        """
+
+        let manifest = try HLSManifestParser.parse(master, baseURL: URL(string: "https://example.com/master.m3u8")!)
+        XCTAssertEqual(manifest.subtitleRenditions.count, 2)
+        XCTAssertEqual(manifest.subtitleRenditions[0].name, "English")
+        XCTAssertEqual(manifest.subtitleRenditions[0].language, "en")
+        XCTAssertTrue(manifest.subtitleRenditions[0].isDefault)
+        XCTAssertEqual(manifest.subtitleURIs.count, 2)
+        XCTAssertEqual(manifest.subtitleURIs[0].absoluteString, "https://example.com/subs/en.vtt")
+        XCTAssertEqual(manifest.subtitleURIs[1].absoluteString, "https://example.com/subs/es.vtt")
+
+        let extracted = HLSManifestParser.extractSubtitles(from: manifest)
+        XCTAssertEqual(extracted.count, 2)
+    }
 }

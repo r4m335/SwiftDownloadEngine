@@ -608,3 +608,46 @@ public actor DownloadPersistenceStore {
         try data.write(to: fileURL, options: .atomic)
     }
 }
+
+// MARK: - File Collision & Conflict Resolver (1DM+ Architecture)
+
+/// Manages filename sanitization and non-destructive duplicate resolution (e.g. "video (1).mp4").
+public enum FileConflictResolver {
+    /// Sanitizes filename by stripping illegal characters (/, \, :, *, ?, ", <, >, |).
+    public static func sanitizeFilename(_ name: String) -> String {
+        let illegalCharacters = CharacterSet(charactersIn: "/\\:*?\"<>|")
+        var sanitized = name.components(separatedBy: illegalCharacters).joined(separator: "_")
+        sanitized = sanitized.trimmingCharacters(in: .whitespacesAndNewlines)
+        if sanitized.isEmpty {
+            sanitized = "download"
+        }
+        return sanitized
+    }
+
+    /// Resolves file collisions: if `directory/filename` already exists on disk,
+    /// automatically produces `directory/filename (1).ext`, `directory/filename (2).ext`, etc.
+    public static func uniqueDestinationURL(
+        desiredFilename: String,
+        directory: URL,
+        fileManager: FileManager = .default
+    ) -> URL {
+        let sanitized = sanitizeFilename(desiredFilename)
+        let destination = directory.appendingPathComponent(sanitized, isDirectory: false)
+        if !fileManager.fileExists(atPath: destination.path) {
+            return destination
+        }
+
+        let baseName = destination.deletingPathExtension().lastPathComponent
+        let ext = destination.pathExtension
+
+        var counter = 1
+        while true {
+            let numberedName = ext.isEmpty ? "\(baseName) (\(counter))" : "\(baseName) (\(counter)).\(ext)"
+            let candidateURL = directory.appendingPathComponent(numberedName, isDirectory: false)
+            if !fileManager.fileExists(atPath: candidateURL.path) {
+                return candidateURL
+            }
+            counter += 1
+        }
+    }
+}

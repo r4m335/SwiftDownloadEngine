@@ -425,4 +425,19 @@ public enum HLSManifestParser {
         let rank: [HLSKeyClassification: Int] = [.clear: 0, .aes128: 1, .sampleEncrypted: 2, .unsupported: 3]
         return (rank[rhs] ?? 0) > (rank[lhs] ?? 0) ? rhs : lhs
     }
+
+    /// Extracts all subtitle renditions with their URIs from an HLS manifest.
+    public static func extractSubtitles(from manifest: HLSManifest) -> [HLSRendition] {
+        return manifest.subtitleRenditions
+    }
+
+    /// Parses an HLS manifest and extracts all subtitle renditions.
+    public static func extractSubtitles(
+        from data: Data,
+        baseURL: URL,
+        limits: ManifestParsingLimits = .default
+    ) throws -> [HLSRendition] {
+        let manifest = try parse(data, baseURL: baseURL, limits: limits)
+        return manifest.subtitleRenditions
+    }
 }

@@ -319,7 +319,8 @@ public enum HLSVODReconstructor {
                 resources: videoClearResources,
                 browserRequestContext: transferPlan.browserRequestContext,
                 estimatedTransferBytes: transferPlan.estimatedTransferBytes,
-                audioPlan: audioClearResources.isEmpty ? nil : audioClearResources
+                audioPlan: audioClearResources.isEmpty ? nil : audioClearResources,
+                subtitleURL: transferPlan.subtitleURL
             )
             resolvedCompleted = clearCompleted
         } else {

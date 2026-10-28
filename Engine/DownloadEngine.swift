@@ -92,14 +92,6 @@ public struct DownloadSnapshot: Sendable, Equatable, Identifiable, Codable {
         return false
     }
 
-    public var isRateLimited: Bool {
-        if case .failed(let reason) = state {
-            return reason.localizedCaseInsensitiveContains("rate limit") ||
-                   reason.localizedCaseInsensitiveContains("429")
-        }
-        return false
-    }
-
     public var isTokenExpired: Bool {
         isUnauthorized
     }

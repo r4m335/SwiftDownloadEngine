@@ -83,19 +83,22 @@ public struct HLSVODTransferPlan: Sendable, Equatable {
     public let browserRequestContext: BrowserRequestContext?
     public let estimatedTransferBytes: Int64?
     public let audioPlan: [HLSPlannedResource]?
+    public let subtitleURL: URL?
 
     public init(
         manifestURL: URL,
         resources: [HLSPlannedResource],
         browserRequestContext: BrowserRequestContext? = nil,
         estimatedTransferBytes: Int64? = nil,
-        audioPlan: [HLSPlannedResource]? = nil
+        audioPlan: [HLSPlannedResource]? = nil,
+        subtitleURL: URL? = nil
     ) {
         self.manifestURL = manifestURL
         self.resources = resources
         self.browserRequestContext = browserRequestContext
         self.estimatedTransferBytes = estimatedTransferBytes
         self.audioPlan = audioPlan
+        self.subtitleURL = subtitleURL
     }
 
     public var allResources: [HLSPlannedResource] {
