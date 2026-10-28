@@ -1203,8 +1203,8 @@ public actor StreamingDownloadOrchestrator {
             return assemblyOutput
         } catch let error as HLSVODReconstructionError {
             let failReason: String
-            if case .assemblyFailed = error {
-                failReason = "HLS assembly failed: Output is not a valid MP4"
+            if case .assemblyFailed(let assemblyError) = error {
+                failReason = assemblyError.localizedDescription
             } else {
                 failReason = error.localizedDescription
             }

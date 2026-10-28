@@ -286,6 +286,53 @@ final class MediaAssemblerTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: output), existing)
     }
 
+    func testAssembleMultipleTracksFragmentedMP4() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("media-assembler-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let videoInit = directory.appendingPathComponent("video-init.mp4")
+        let videoMedia = directory.appendingPathComponent("video-segment.m4s")
+        let audioInit = directory.appendingPathComponent("audio-init.mp4")
+        let audioMedia = directory.appendingPathComponent("audio-segment.m4s")
+        let output = directory.appendingPathComponent("muxed.mp4")
+
+        let vInitBytes = isoBox("ftyp", payload: Data([1])) + isoBox("moov", payload: Data([2]))
+        let vMediaBytes = isoBox("moof", payload: Data([3])) + isoBox("mdat", payload: Data([4]))
+        let aInitBytes = isoBox("ftyp", payload: Data([5])) + isoBox("moov", payload: Data([6]))
+        let aMediaBytes = isoBox("moof", payload: Data([7])) + isoBox("mdat", payload: Data([8]))
+
+        try vInitBytes.write(to: videoInit)
+        try vMediaBytes.write(to: videoMedia)
+        try aInitBytes.write(to: audioInit)
+        try aMediaBytes.write(to: audioMedia)
+
+        let request = MediaAssemblyRequest(
+            container: .fragmentedMP4,
+            tracks: [
+                MediaAssemblyTrack(
+                    kind: .video,
+                    container: .fragmentedMP4,
+                    initializationSegment: MediaAssemblySegment(fileURL: videoInit, role: .initialization, order: 0, actualByteCount: Int64(vInitBytes.count)),
+                    mediaSegments: [MediaAssemblySegment(fileURL: videoMedia, order: 0, actualByteCount: Int64(vMediaBytes.count))]
+                ),
+                MediaAssemblyTrack(
+                    kind: .audio,
+                    container: .fragmentedMP4,
+                    initializationSegment: MediaAssemblySegment(fileURL: audioInit, role: .initialization, order: 0, actualByteCount: Int64(aInitBytes.count)),
+                    mediaSegments: [MediaAssemblySegment(fileURL: audioMedia, order: 0, actualByteCount: Int64(aMediaBytes.count))]
+                )
+            ],
+            destinationURL: output
+        )
+
+        let result = try MediaAssembler.assemble(request)
+        XCTAssertEqual(result.container, .fragmentedMP4)
+        XCTAssertEqual(result.trackCount, 2)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: output.path))
+    }
+
     private func makeTrack(
         _ kind: MediaAssemblyTrackKind,
         container: MediaAssemblyContainer,

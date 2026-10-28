@@ -120,10 +120,8 @@ public enum HLSVODReconstructionPlanner {
         let audioCompleted = transferPlan.audioPlan != nil ? Array(completedResources.suffix(transferPlan.audioPlan!.count)) : []
 
         let videoInit = videoCompleted.filter { $0.resource.kind == .initializationMap }
-        guard videoInit.count <= 1 else {
-            throw HLSVODReconstructionError.unsupportedTrackLayout
-        }
-        let format: HLSVODReconstructionFormat = videoInit.isEmpty ? .mpegTS : .fragmentedMP4
+        let audioInit = audioCompleted.filter { $0.resource.kind == .initializationMap }
+        let format: HLSVODReconstructionFormat = (videoInit.isEmpty && audioInit.isEmpty) ? .mpegTS : .fragmentedMP4
         let videoMedia = videoCompleted.filter { $0.resource.kind == .mediaSegment }
         guard !videoMedia.isEmpty else { throw HLSVODReconstructionError.resourceCountMismatch }
 
@@ -155,10 +153,6 @@ public enum HLSVODReconstructionPlanner {
         var tracks = [videoTrack]
 
         if !audioCompleted.isEmpty {
-            let audioInit = audioCompleted.filter { $0.resource.kind == .initializationMap }
-            guard audioInit.count <= 1 else {
-                throw HLSVODReconstructionError.unsupportedTrackLayout
-            }
             let audioMedia = audioCompleted.filter { $0.resource.kind == .mediaSegment }
             guard !audioMedia.isEmpty else { throw HLSVODReconstructionError.resourceCountMismatch }
 

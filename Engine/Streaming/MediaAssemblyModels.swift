@@ -215,6 +215,7 @@ public enum MediaAssemblyError: Error, LocalizedError, Equatable, Sendable {
     case multipleTracksNotSupported
     case muxingUnavailable
     case muxingFailed
+    case assetWriterFailed(reason: String)
     case invalidMediaData(MediaAssemblyContainer)
     case fileOperationFailed
 
@@ -258,6 +259,8 @@ public enum MediaAssemblyError: Error, LocalizedError, Equatable, Sendable {
             return "This platform does not provide the media muxing support required for separate tracks."
         case .muxingFailed:
             return "Separate media tracks could not be muxed into a validated output."
+        case .assetWriterFailed(let reason):
+            return "Separate media tracks could not be muxed into a validated output: \(reason)"
         case .invalidMediaData(let container):
             return "Downloaded media does not contain a valid \(container.rawValue) structure."
         case .fileOperationFailed:

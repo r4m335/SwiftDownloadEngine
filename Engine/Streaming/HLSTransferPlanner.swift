@@ -153,13 +153,8 @@ public enum HLSTransferPlanner {
         var resources: [HLSPlannedResource] = []
         var seenResources = Set<ResourceIdentity>()
 
+        // Collect initialization map resources first so they are planned and downloaded before media segments
         for segment in manifest.segments {
-            guard segment.duration.isFinite, segment.duration >= 0 else {
-                throw HLSVODTransferPlanError.invalidSegmentMetadata
-            }
-            let segmentURL = try validatedURL(segment.uri, against: resolvedManifestURL)
-            let encryption = try encryptionRequirement(for: segment.encryption, baseURL: resolvedManifestURL)
-
             if let map = segment.initializationMap {
                 let mapURL = try validatedURL(map.uri, against: resolvedManifestURL)
                 appendIfNeeded(
@@ -173,6 +168,14 @@ public enum HLSTransferPlanner {
                     seen: &seenResources
                 )
             }
+        }
+
+        for segment in manifest.segments {
+            guard segment.duration.isFinite, segment.duration >= 0 else {
+                throw HLSVODTransferPlanError.invalidSegmentMetadata
+            }
+            let segmentURL = try validatedURL(segment.uri, against: resolvedManifestURL)
+            let encryption = try encryptionRequirement(for: segment.encryption, baseURL: resolvedManifestURL)
 
             if case let .aes128(keyURL, _) = encryption {
                 appendIfNeeded(
