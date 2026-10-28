@@ -332,6 +332,7 @@ public actor DownloadCoordinator {
     public static let sharedSession: URLSession = ForegroundURLSession.make()
 
     private let session: URLSession
+    private let connectivityGate = NetworkConnectivityGate.shared
     public let persistenceStore: DownloadPersistenceStore
 
     public let requestBudget: SharedRequestBudget
@@ -727,6 +728,9 @@ public actor DownloadCoordinator {
             var probeAttempt = 0
             while true {
                 try Task.checkCancellation()
+                try await connectivityGate.waitUntilAvailable(
+                    allowsCellular: request.networkPolicy.allowsCellularAccess
+                )
                 do {
                     probeResult = try await probe.probe(configuration: probeConfig)
                     break
@@ -743,6 +747,15 @@ public actor DownloadCoordinator {
                     }
                     if case HTTPRangeProbeError.resourceNotFound(let u) = error {
                         throw DownloadCoordinatorError.linkExpired(url: u)
+                    }
+                    guard HTTPRetryPolicy.isRetryable(error) else {
+                        throw error
+                    }
+                    if HTTPRetryPolicy.shouldWaitForConnectivity(error) {
+                        try await connectivityGate.waitUntilAvailable(
+                            allowsCellular: request.networkPolicy.allowsCellularAccess
+                        )
+                        continue
                     }
                     if probeAttempt >= request.retryCount {
                         if case HTTPRangeProbeError.rateLimited(let u, let retryAfter) = error {
@@ -1201,6 +1214,9 @@ public actor DownloadCoordinator {
                         var attempt = 0
                         while true {
                             try Task.checkCancellation()
+                            try await self.connectivityGate.waitUntilAvailable(
+                                allowsCellular: request.networkPolicy.allowsCellularAccess
+                            )
                             do {
                                 try await downloader.download(
                                     url: probeResult.finalURL,
@@ -1268,6 +1284,15 @@ public actor DownloadCoordinator {
                                 }
                                 if Self.isRangeIgnored(error) {
                                     throw error // Fail-fast to trigger fallback
+                                }
+                                guard HTTPRetryPolicy.isRetryable(error) else {
+                                    throw error
+                                }
+                                if HTTPRetryPolicy.shouldWaitForConnectivity(error) {
+                                    try await self.connectivityGate.waitUntilAvailable(
+                                        allowsCellular: request.networkPolicy.allowsCellularAccess
+                                    )
+                                    continue
                                 }
                                 if attempt >= request.retryCount {
                                     if case SegmentDownloaderError.rateLimited(let retryAfter) = error {

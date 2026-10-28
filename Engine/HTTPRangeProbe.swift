@@ -94,7 +94,7 @@ enum HTTPRangeProbeError: Error, LocalizedError, Equatable {
     case unauthorized(URL)
     case forbidden(URL)
     case rangeNotSatisfiable(URL)
-    case networkError(String)
+    case networkError(String, code: Int?)
     case invalidResponseFormat
 
     var errorDescription: String? {
@@ -117,7 +117,7 @@ enum HTTPRangeProbeError: Error, LocalizedError, Equatable {
             return "Access forbidden (HTTP 403). The server denied access to this resource. The download link may be expired, signed, or require active session cookies: \(BrowserURLResolver.sanitizeURLForLogging(url))"
         case .rangeNotSatisfiable(let url):
             return "Requested byte range not satisfiable (416): \(BrowserURLResolver.sanitizeURLForLogging(url))"
-        case .networkError(let message):
+        case .networkError(let message, _):
             return "Network error: \(message)"
         case .invalidResponseFormat:
             return "Server returned an unexpected or non-HTTP response"
@@ -132,7 +132,7 @@ enum HTTPRangeProbeError: Error, LocalizedError, Equatable {
 final class HTTPRangeProbe: Sendable {
     private let urlSession: URLSession
 
-    init(session: URLSession = .shared) {
+    init(session: URLSession = ForegroundURLSession.make(maximumConnectionsPerHost: 1)) {
         self.urlSession = session
     }
 
@@ -186,8 +186,13 @@ final class HTTPRangeProbe: Sendable {
             response = streamResponse
         } catch let error as HTTPRangeProbeError {
             throw error
+        } catch let urlError as URLError {
+            throw HTTPRangeProbeError.networkError(
+                urlError.localizedDescription,
+                code: urlError.code.rawValue
+            )
         } catch {
-            throw HTTPRangeProbeError.networkError(error.localizedDescription)
+            throw HTTPRangeProbeError.networkError(error.localizedDescription, code: nil)
         }
 
         guard let httpResponse = response as? HTTPURLResponse else {
