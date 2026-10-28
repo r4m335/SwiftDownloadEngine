@@ -11,10 +11,10 @@ final class URLSessionDataChunkStream: NSObject, URLSessionDataDelegate, @unchec
     private static let highWaterMark = 1 * 1024 * 1024
     private static let lowWaterMark = 256 * 1024
 
-    private let session: URLSession
     private let request: URLRequest
     private let lock = NSLock()
 
+    private var delegateSession: URLSession?
     private var task: URLSessionDataTask?
     private var responseContinuation: CheckedContinuation<HTTPURLResponse, Error>?
     private var response: HTTPURLResponse?
@@ -28,16 +28,24 @@ final class URLSessionDataChunkStream: NSObject, URLSessionDataDelegate, @unchec
     private var suspendedForBackpressure = false
 
     init(session: URLSession, request: URLRequest) {
-        self.session = session
         self.request = request
+        self.delegateSession = nil
+        self.delegateSession = URLSession(
+            configuration: session.configuration,
+            delegate: self,
+            delegateQueue: nil
+        )
     }
 
     deinit {
-        task?.cancel()
+        delegateSession?.invalidateAndCancel()
     }
 
     func start() async throws -> HTTPURLResponse {
-        let dataTask = session.dataTask(with: request, delegate: self)
+        guard let delegateSession else {
+            throw URLError(.cancelled)
+        }
+        let dataTask = delegateSession.dataTask(with: request)
         lock.lock()
         task = dataTask
         lock.unlock()
@@ -126,6 +134,7 @@ final class URLSessionDataChunkStream: NSObject, URLSessionDataDelegate, @unchec
         if shouldCancelTask {
             dataTask?.cancel()
         }
+        delegateSession?.invalidateAndCancel()
         responseToFail?.resume(throwing: cancellation)
         nextToFail?.resume(throwing: cancellation)
     }

@@ -492,7 +492,7 @@ public struct SettingsView: View {
         guard !cleanHost.isEmpty else { return }
         let cleanUser = authUsername.trimmingCharacters(in: .whitespacesAndNewlines)
         if !cleanUser.isEmpty {
-            _ = KeychainManager.shared.deleteInternetPassword(server: cleanHost, username: cleanUser)
+            _ = KeychainManager.shared.deleteInternetPassword(server: cleanHost)
         }
         authUsername = ""
         authPassword = ""

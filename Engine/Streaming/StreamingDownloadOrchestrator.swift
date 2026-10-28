@@ -1307,7 +1307,6 @@ public actor StreamingDownloadOrchestrator {
             downloadedBytes: segSize
         )
     }
-    }
 
     /// Executes a finite HLS proposal through the existing segment executor and
     /// then reconstructs the downloaded resources into one validated media file.

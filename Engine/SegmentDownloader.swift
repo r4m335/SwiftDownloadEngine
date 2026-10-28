@@ -315,7 +315,7 @@ public final class SegmentDownloader: Sendable {
                     )
                 }
 
-                try writer.writeDirect(chunk, at: currentOffset)
+                try await writer.writeDirect(chunk, at: currentOffset)
                 currentOffset += Int64(chunk.count)
                 receivedThisSession += Int64(chunk.count)
                 speedTracker?.record(bytes: Int64(chunk.count))

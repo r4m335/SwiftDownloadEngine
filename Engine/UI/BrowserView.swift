@@ -85,6 +85,13 @@ public final class BrowserViewModel: NSObject, ObservableObject {
     public let streamingDestinationDirectoryURL: URL
     private var streamingExecutionTask: Task<Void, Never>?
 
+    public var activeEngineConfiguration: EngineConfiguration {
+        if let manager = downloadDelegate as? DownloadManagerViewModel {
+            return manager.activeEngineConfiguration
+        }
+        return AppSettings.load().makeEngineConfiguration()
+    }
+
     // Bounded Blob export state. Blob bytes are written by the per-tab
     // capture service; the view model only presents progress and lifecycle.
     @Published public private(set) var blobCaptureSnapshot: BlobExportSnapshot?

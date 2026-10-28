@@ -19,9 +19,9 @@ actor NetworkConnectivityGate {
     init() {
         let monitor = NWPathMonitor()
         self.monitor = monitor
-        monitor.pathUpdateHandler = { [weak self] path in
+        monitor.pathUpdateHandler = { path in
             Task {
-                await self?.pathDidChange(path)
+                await NetworkConnectivityGate.shared.pathDidChange(path)
             }
         }
         monitor.start(queue: monitorQueue)
