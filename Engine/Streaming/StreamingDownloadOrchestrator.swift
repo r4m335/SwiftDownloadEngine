@@ -116,7 +116,24 @@ public final class URLSessionStreamingManifestLoader: StreamingManifestLoader, @
         } else {
             effectiveSnapshot = nil
         }
+        let urlString = candidate.url.absoluteString.lowercased()
+        let pathExt = candidate.url.pathExtension.lowercased()
+        let mime = candidate.mimeType?.lowercased() ?? ""
+
+        if pathExt == "mpd" || urlString.contains(".mpd") || mime.contains("dash") {
+            request.setValue("application/dash+xml, application/xml, text/xml, */*", forHTTPHeaderField: "Accept")
+        } else if pathExt == "m3u8" || urlString.contains(".m3u8") || mime.contains("mpegurl") {
+            request.setValue("application/vnd.apple.mpegurl, application/x-mpegURL, */*", forHTTPHeaderField: "Accept")
+        }
+
         request = DownloadRequestEnricher.enrich(request, snapshot: effectiveSnapshot)
+
+        // Ensure Accept header is specifically preserved if target was an MPD or M3U8 manifest
+        if pathExt == "mpd" || urlString.contains(".mpd") || mime.contains("dash") {
+            request.setValue("application/dash+xml, application/xml, text/xml, */*", forHTTPHeaderField: "Accept")
+        } else if pathExt == "m3u8" || urlString.contains(".m3u8") || mime.contains("mpegurl") {
+            request.setValue("application/vnd.apple.mpegurl, application/x-mpegURL, */*", forHTTPHeaderField: "Accept")
+        }
 
         // Ensure User-Agent and Referer are populated from browserRequestContext if still missing
         if request.value(forHTTPHeaderField: "User-Agent") == nil,
@@ -657,6 +674,21 @@ public actor StreamingDownloadOrchestrator {
         return error.localizedDescription
     }
 
+    public static func isHTMLResponse(_ data: Data) -> Bool {
+        guard !data.isEmpty else { return false }
+        let sample = String(decoding: data.prefix(2048), as: UTF8.self)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .drop(while: { $0 == "\u{FEFF}" })
+            .lowercased()
+        if sample.hasPrefix("<html") || sample.hasPrefix("<!doctype html") {
+            return true
+        }
+        if sample.hasPrefix("<!doctype") && sample.contains("html") {
+            return true
+        }
+        return false
+    }
+
     private func loadManifestResponse(
         candidate: StreamingManifestCandidate,
         headers: [String: String]
@@ -668,6 +700,11 @@ public actor StreamingDownloadOrchestrator {
                 limits: parsingLimits
             )
             PipelineLogger.shared.log("[HLS Pipeline] Step 1: URLSession manifest fetch (status: \(response.statusCode))")
+            if Self.isHTMLResponse(response.data) {
+                let htmlSnippet = String(decoding: response.data.prefix(500), as: UTF8.self)
+                PipelineLogger.shared.log("[Streaming Pipeline] Server blocked request. Returned HTML instead of manifest. Snippet:\n\(htmlSnippet)")
+                throw StreamingManifestLoadError.failed("Server blocked request. Returned HTML instead of manifest.")
+            }
             return response
         } catch let error as ManifestParserError {
             PipelineLogger.shared.log("[HLS Pipeline] Error: Manifest parser failed: \(error.localizedDescription)")
@@ -687,6 +724,11 @@ public actor StreamingDownloadOrchestrator {
                         throw StreamingManifestLoadError.failed(combinedMessage)
                     }
                     let data = Data(trimmed.utf8)
+                    if Self.isHTMLResponse(data) {
+                        let htmlSnippet = String(decoding: data.prefix(500), as: UTF8.self)
+                        PipelineLogger.shared.log("[Streaming Pipeline] Block page received from JS fallback (first 500 chars):\n\(htmlSnippet)")
+                        throw StreamingManifestLoadError.failed("Server blocked request. Returned HTML instead of manifest.")
+                    }
                     PipelineLogger.shared.log("[HLS Pipeline] Step 1b: JS fetch fallback (status: 200)")
                     return StreamingManifestResponse(
                         data: data,
@@ -737,6 +779,14 @@ public actor StreamingDownloadOrchestrator {
             throw StreamingDownloadOrchestratorError.manifestParseFailed(error)
         } catch {
             throw error
+        }
+
+        if Self.isHTMLResponse(response.data) {
+            let htmlSnippet = String(decoding: response.data.prefix(500), as: UTF8.self)
+            PipelineLogger.shared.log("[Streaming Pipeline] Server blocked request. Returned HTML instead of manifest. Snippet:\n\(htmlSnippet)")
+            throw StreamingDownloadOrchestratorError.manifestParseFailed(
+                ManifestParserError.malformed(reason: "Server blocked request. Returned HTML instead of manifest.")
+            )
         }
 
         let classification = StreamingManifestClassifier.classify(

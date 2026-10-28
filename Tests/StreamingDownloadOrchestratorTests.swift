@@ -854,6 +854,116 @@ final class StreamingDownloadOrchestratorTests: XCTestCase {
         let loadedCount = await loader.loadCount
         XCTAssertEqual(loadedCount, 2)
     }
+
+    func testStreamingDownloadOrchestrator_URLSessionReturnsHTML_TriggersJSFallback() async throws {
+        PipelineLogger.shared.clear()
+        let manifestURL = URL(string: "https://dash.akamaized.net/akamai/bbb_30fps/bbb_30fps.mpd")!
+        let htmlBlockPage = """
+        <!DOCTYPE html>
+        <html><head><meta http-equiv="Content-Type" content="text/html"><title>Akamai Access Denied</title></head>
+        <body>Reference #18.a1b2c3d4</body></html>
+        """
+
+        struct HTMLBlockLoader: StreamingManifestLoader {
+            let htmlData: Data
+            func load(
+                candidate: StreamingManifestCandidate,
+                headers: [String: String],
+                limits: ManifestParsingLimits
+            ) async throws -> StreamingManifestResponse {
+                return StreamingManifestResponse(
+                    data: htmlData,
+                    finalURL: candidate.url,
+                    mimeType: "text/html",
+                    statusCode: 200
+                )
+            }
+        }
+
+        let validDASHManifest = """
+        <?xml version="1.0"?>
+        <MPD xmlns="urn:mpeg:dash:schema:mpd:2011" minBufferTime="PT1.5S" type="static" mediaPresentationDuration="PT10S">
+          <Period id="0">
+            <AdaptationSet id="0" contentType="video" mimeType="video/mp4">
+              <Representation id="v0" bandwidth="1000000" codecs="avc1.4d401f" width="640" height="360">
+                <SegmentTemplate media="chunk-$Number$.m4s" initialization="init.mp4" startNumber="1" duration="2" timescale="1"/>
+              </Representation>
+            </AdaptationSet>
+          </Period>
+        </MPD>
+        """
+
+        struct ValidJSResolver: BrowserMediaURLResolver {
+            let text: String
+            func resolveMediaURL(_ rawURL: URL) async throws -> URL { rawURL }
+            func fetchManifestText(from url: URL) async throws -> String { text }
+        }
+
+        let orchestrator = StreamingDownloadOrchestrator(
+            manifestLoader: HTMLBlockLoader(htmlData: Data(htmlBlockPage.utf8)),
+            segmentExecutor: RecordingSegmentExecutor(),
+            urlResolver: ValidJSResolver(text: validDASHManifest)
+        )
+
+        let candidate = try StreamingManifestCandidate(url: manifestURL)
+        let proposal = try await orchestrator.prepare(candidate: candidate)
+
+        XCTAssertEqual(proposal.manifest.kind, .dash)
+        XCTAssertFalse(proposal.resources.isEmpty)
+
+        let logs = PipelineLogger.shared.formattedLogText()
+        XCTAssertTrue(logs.contains("Server blocked request. Returned HTML instead of manifest."))
+        XCTAssertTrue(logs.contains("Akamai Access Denied"))
+        XCTAssertTrue(logs.contains("[HLS Pipeline] Step 1b: JS fetch fallback"))
+    }
+
+    func testStreamingDownloadOrchestrator_BothReturnHTML_FailsWithCleanError() async throws {
+        PipelineLogger.shared.clear()
+        let manifestURL = URL(string: "https://dash.akamaized.net/akamai/bbb_30fps/bbb_30fps.mpd")!
+        let htmlBlockPage = "<!DOCTYPE html><html><head><title>Access Denied</title></head><body>Blocked</body></html>"
+
+        struct HTMLBlockLoader: StreamingManifestLoader {
+            let htmlData: Data
+            func load(
+                candidate: StreamingManifestCandidate,
+                headers: [String: String],
+                limits: ManifestParsingLimits
+            ) async throws -> StreamingManifestResponse {
+                return StreamingManifestResponse(
+                    data: htmlData,
+                    finalURL: candidate.url,
+                    mimeType: "text/html",
+                    statusCode: 200
+                )
+            }
+        }
+
+        struct HTMLJSResolver: BrowserMediaURLResolver {
+            let text: String
+            func resolveMediaURL(_ rawURL: URL) async throws -> URL { rawURL }
+            func fetchManifestText(from url: URL) async throws -> String { text }
+        }
+
+        let orchestrator = StreamingDownloadOrchestrator(
+            manifestLoader: HTMLBlockLoader(htmlData: Data(htmlBlockPage.utf8)),
+            segmentExecutor: RecordingSegmentExecutor(),
+            urlResolver: HTMLJSResolver(text: htmlBlockPage)
+        )
+
+        let candidate = try StreamingManifestCandidate(url: manifestURL)
+        do {
+            _ = try await orchestrator.prepare(candidate: candidate)
+            XCTFail("Expected prepare to throw")
+        } catch let error as StreamingManifestLoadError {
+            guard case .failed(let msg) = error else {
+                XCTFail("Expected .failed case, got \(error)")
+                return
+            }
+            XCTAssertTrue(msg.contains("Server blocked request. Returned HTML instead of manifest."))
+        } catch {
+            XCTFail("Unexpected error type: \(error)")
+        }
+    }
 }
 
 private actor RecordingManifestLoader: StreamingManifestLoader {

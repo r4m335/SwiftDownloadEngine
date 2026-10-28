@@ -1254,11 +1254,18 @@ public final class BrowserMediaDiscoveryBridge: NSObject, @unchecked Sendable {
         let rawString = url.absoluteString
 
         let asyncScript = """
+        let acceptHeader = '*/*';
+        const lowerUrl = url.toLowerCase();
+        if (lowerUrl.includes('.mpd')) {
+            acceptHeader = 'application/dash+xml, application/xml, text/xml, */*';
+        } else if (lowerUrl.includes('.m3u8')) {
+            acceptHeader = 'application/vnd.apple.mpegurl, application/x-mpegURL, */*';
+        }
         const response = await fetch(url, {
             method: 'GET',
             credentials: 'include',
             headers: {
-                'Accept': '*/*'
+                'Accept': acceptHeader
             }
         });
         if (!response.ok) {

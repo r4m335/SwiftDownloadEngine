@@ -234,4 +234,54 @@ final class StreamingManifestTests: XCTestCase {
             XCTAssertTrue(error.localizedDescription.contains("nesting") || error.localizedDescription.contains("XML"))
         }
     }
+
+    func testDASHManifestParserRejectsHTMLBlockPageWithCleanError() {
+        let htmlBlockPage = """
+        <!DOCTYPE html>
+        <html lang="en">
+        <head>
+            <meta charset="utf-8">
+            <title>Access Denied</title>
+        </head>
+        <body>
+            <h1>403 Forbidden</h1>
+            <p>Request blocked by security policy.</p>
+        </body>
+        </html>
+        """
+        XCTAssertThrowsError(try DASHManifestParser.parse(htmlBlockPage, baseURL: dashURL)) { error in
+            guard case ManifestParserError.malformed(let reason) = error else {
+                XCTFail("Expected ManifestParserError.malformed, got: \(error)")
+                return
+            }
+            XCTAssertEqual(reason, "Server blocked request. Returned HTML instead of manifest.")
+        }
+    }
+
+    func testHLSManifestParserRejectsHTMLBlockPageWithCleanError() {
+        let htmlBlockPage = """
+        <!DOCTYPE html>
+        <html>
+        <head><title>Cloudflare Challenge</title></head>
+        <body>Attention Required!</body>
+        </html>
+        """
+        XCTAssertThrowsError(try HLSManifestParser.parse(htmlBlockPage, baseURL: hlsURL)) { error in
+            guard case ManifestParserError.malformed(let reason) = error else {
+                XCTFail("Expected ManifestParserError.malformed, got: \(error)")
+                return
+            }
+            XCTAssertEqual(reason, "Server blocked request. Returned HTML instead of manifest.")
+        }
+    }
+
+    func testStreamingManifestClassifierRejectsHTMLResponse() {
+        let html = "<html><head><title>Block</title></head><body>Blocked</body></html>"
+        let classification = StreamingManifestClassifier.classify(
+            url: URL(string: "https://dash.akamaized.net/akamai/bbb_30fps/bbb_30fps.mpd")!,
+            content: html
+        )
+        XCTAssertFalse(classification.isManifest)
+        XCTAssertEqual(classification.kind, .unknown)
+    }
 }

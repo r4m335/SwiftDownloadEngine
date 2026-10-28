@@ -51,6 +51,15 @@ public enum HLSManifestParser {
             lines[0] = String(first.dropFirst())
         }
 
+        if let firstMeaningful = lines.first(where: { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }) {
+            let trimmedLower = firstMeaningful.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            if trimmedLower.hasPrefix("<html") || trimmedLower.hasPrefix("<!doctype html") || (trimmedLower.hasPrefix("<!doctype") && trimmedLower.contains("html")) {
+                let snippet = String(text.prefix(500))
+                PipelineLogger.shared.log("[HLS Pipeline] Server returned HTML block page instead of manifest. Snippet: \(snippet)")
+                throw ManifestParserError.malformed(reason: "Server blocked request. Returned HTML instead of manifest.")
+            }
+        }
+
         guard let firstMeaningful = lines.first(where: { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }),
               firstMeaningful.trimmingCharacters(in: .whitespacesAndNewlines) == "#EXTM3U" else {
             throw ManifestParserError.malformed(reason: "Playlist must begin with #EXTM3U.")

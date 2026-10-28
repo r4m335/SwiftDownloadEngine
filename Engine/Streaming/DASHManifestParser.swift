@@ -23,6 +23,15 @@ public enum DASHManifestParser {
         guard let text = String(data: data, encoding: .utf8) else {
             throw ManifestParserError.malformed(reason: "MPD is not valid UTF-8.")
         }
+        let trimmed = text
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .drop(while: { $0 == "\u{FEFF}" })
+        let lower = trimmed.lowercased()
+        if lower.hasPrefix("<html") || lower.hasPrefix("<!doctype html") || (lower.hasPrefix("<!doctype") && lower.contains("html")) {
+            let snippet = String(text.prefix(500))
+            PipelineLogger.shared.log("[DASH Pipeline] Server returned HTML block page instead of manifest. Snippet: \(snippet)")
+            throw ManifestParserError.malformed(reason: "Server blocked request. Returned HTML instead of manifest.")
+        }
         if text.range(of: "<!DOCTYPE", options: [.caseInsensitive]) != nil ||
             text.range(of: "<!ENTITY", options: [.caseInsensitive]) != nil {
             throw ManifestParserError.unsupported(reason: "DOCTYPE and entity declarations are not accepted.")

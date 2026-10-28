@@ -136,6 +136,10 @@ public enum StreamingManifestClassifier {
                 .trimmingCharacters(in: .whitespacesAndNewlines)
                 .drop(while: { $0 == "\u{FEFF}" })
         )
+        let lower = normalized.lowercased()
+        if lower.hasPrefix("<html") || lower.hasPrefix("<!doctype html") || (lower.hasPrefix("<!doctype") && lower.contains("html")) {
+            return .none
+        }
         let hls = normalized.hasPrefix("#EXTM3U")
         let dash = normalized.range(of: #"<\s*(?:[A-Za-z_][A-Za-z0-9_.-]*:)?MPD(?:\s|>)"#, options: .regularExpression) != nil
         if hls && dash { return .conflict }
