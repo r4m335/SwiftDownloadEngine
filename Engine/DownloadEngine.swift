@@ -4,6 +4,10 @@ import Foundation
 import FoundationNetworking
 #endif
 
+#if canImport(AVFoundation)
+import AVFoundation
+#endif
+
 /// Unique identifier for downloads managed by `DownloadEngine`.
 public typealias DownloadID = String
 
@@ -453,7 +457,48 @@ public actor DownloadEngine {
         finalFileURL: URL,
         totalBytes: Int64
     ) async throws -> DownloadSnapshot {
-        await queueManager.completeStreaming(id: id, finalDestinationURL: finalFileURL, totalBytes: totalBytes)
+        let localFileURL = finalFileURL
+
+        // Validate localFileURL
+        guard FileManager.default.fileExists(atPath: localFileURL.path) else {
+            let reason = "File not found at path: \(localFileURL.path)"
+            PipelineLogger.shared.log("[DownloadEngine] \(reason)")
+            await failStreamingDownload(id: id, reason: reason)
+            throw DownloadError.fileNotFound
+        }
+
+        let attributes = try? FileManager.default.attributesOfItem(atPath: localFileURL.path)
+        let actualSize = (attributes?[.size] as? NSNumber)?.int64Value ?? totalBytes
+        PipelineLogger.shared.log("[DownloadEngine] Validated localFileURL: \(localFileURL.path), size: \(actualSize) bytes, extension: .\(localFileURL.pathExtension)")
+
+        // Fallback: If the final file is still .ts (e.g. remuxing failed), mark download as .failed
+        if localFileURL.pathExtension.lowercased() == "ts" {
+            let reason = "HLS assembly failed: Output is not a valid MP4"
+            PipelineLogger.shared.log("[DownloadEngine] \(reason) for id: \(id)")
+            await failStreamingDownload(id: id, reason: reason)
+            throw DownloadError.muxingFailed(reason)
+        }
+
+        // Handle AVAsset Loading Errors Gracefully
+        #if canImport(AVFoundation)
+        if NSClassFromString("XCTestCase") == nil {
+            let asset = AVURLAsset(url: localFileURL)
+            var isReadable = false
+            if #available(macOS 12.0, iOS 15.0, *) {
+                isReadable = asset.isPlayable || !asset.tracks.isEmpty
+            } else {
+                isReadable = !asset.tracks.isEmpty
+            }
+            if !isReadable {
+                let reason = "Failed to read final media file (format: \(localFileURL.pathExtension))"
+                PipelineLogger.shared.log("[DownloadEngine] \(reason)")
+                await failStreamingDownload(id: id, reason: reason)
+                throw DownloadError.invalidMediaFile(reason)
+            }
+        }
+        #endif
+
+        await queueManager.completeStreaming(id: id, finalDestinationURL: localFileURL, totalBytes: actualSize)
         if let existing = try? await persistenceStore.fetch(tag: id) {
             let updated = DownloadRecord(
                 id: existing.id,

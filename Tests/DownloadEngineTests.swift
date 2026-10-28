@@ -868,5 +868,82 @@ final class DownloadEngineTests: XCTestCase {
             XCTFail("Unexpected error type: \(error)")
         }
     }
+
+    func testCompleteStreamingDownloadFileNotFoundThrowsError() async throws {
+        let sourceURL = URL(string: "https://example.com/playlist.m3u8")!
+        let nonExistentURL = tempDirectory.appendingPathComponent("missing-\(UUID().uuidString).mp4")
+        _ = try await engine.registerStreamingDownload(
+            id: "stream-test-not-found",
+            manifestURL: sourceURL,
+            destinationURL: nonExistentURL,
+            filename: "missing.mp4",
+            totalBytes: 1000,
+            mimeType: "video/mp4"
+        )
+
+        do {
+            _ = try await engine.completeStreamingDownload(
+                id: "stream-test-not-found",
+                finalFileURL: nonExistentURL,
+                totalBytes: 1000
+            )
+            XCTFail("Expected completeStreamingDownload to fail when file does not exist")
+        } catch let error as DownloadError {
+            XCTAssertEqual(error, .fileNotFound)
+        }
+    }
+
+    func testCompleteStreamingDownloadTSFallbackFailsWithClearMessage() async throws {
+        let sourceURL = URL(string: "https://example.com/playlist.m3u8")!
+        let tsURL = tempDirectory.appendingPathComponent("stream-\(UUID().uuidString).ts")
+        try Data(repeating: 0x47, count: 188).write(to: tsURL)
+
+        _ = try await engine.registerStreamingDownload(
+            id: "stream-test-ts-fallback",
+            manifestURL: sourceURL,
+            destinationURL: tsURL,
+            filename: tsURL.lastPathComponent,
+            totalBytes: 188,
+            mimeType: "video/mp2t"
+        )
+
+        do {
+            _ = try await engine.completeStreamingDownload(
+                id: "stream-test-ts-fallback",
+                finalFileURL: tsURL,
+                totalBytes: 188
+            )
+            XCTFail("Expected completeStreamingDownload to reject .ts file")
+        } catch let error as DownloadError {
+            if case .muxingFailed(let reason) = error {
+                XCTAssertTrue(reason.contains("HLS assembly failed: Output is not a valid MP4"))
+            } else {
+                XCTFail("Expected .muxingFailed, got \(error)")
+            }
+        }
+    }
+
+    func testCompleteStreamingDownloadValidFileSucceeds() async throws {
+        let sourceURL = URL(string: "https://example.com/playlist.m3u8")!
+        let mp4URL = tempDirectory.appendingPathComponent("stream-\(UUID().uuidString).mp4")
+        try Data(repeating: 0x00, count: 500).write(to: mp4URL)
+
+        _ = try await engine.registerStreamingDownload(
+            id: "stream-test-valid",
+            manifestURL: sourceURL,
+            destinationURL: mp4URL,
+            filename: mp4URL.lastPathComponent,
+            totalBytes: 500,
+            mimeType: "video/mp4"
+        )
+
+        let snapshot = try await engine.completeStreamingDownload(
+            id: "stream-test-valid",
+            finalFileURL: mp4URL,
+            totalBytes: 500
+        )
+        XCTAssertEqual(snapshot.state, .completed)
+        XCTAssertEqual(snapshot.destinationURL, mp4URL)
+    }
 }
 

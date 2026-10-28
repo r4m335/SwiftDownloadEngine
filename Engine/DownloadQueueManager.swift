@@ -112,6 +112,10 @@ public enum DownloadQueueError: Error, LocalizedError, Equatable, Sendable {
     case persistenceError(String)
     case unsupportedScheme(String)
     case invalidURL(String)
+    case fileNotFound
+    case fileNotFoundAtPath(String)
+    case invalidMediaFile(String)
+    case muxingFailed(String)
 
     public var errorDescription: String? {
         switch self {
@@ -129,9 +133,19 @@ public enum DownloadQueueError: Error, LocalizedError, Equatable, Sendable {
             return "Unsupported URL scheme: \(reason)"
         case .invalidURL(let reason):
             return "Invalid download URL: \(reason)"
+        case .fileNotFound:
+            return "File not found"
+        case .fileNotFoundAtPath(let path):
+            return "File not found at path: \(path)"
+        case .invalidMediaFile(let reason):
+            return reason
+        case .muxingFailed(let reason):
+            return reason
         }
     }
 }
+
+public typealias DownloadError = DownloadQueueError
 
 /// Persistent download queue and global lifecycle manager for the 1DM+-inspired Swift engine.
 ///

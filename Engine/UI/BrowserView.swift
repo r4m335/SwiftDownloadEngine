@@ -1092,10 +1092,13 @@ public final class BrowserViewModel: NSObject, ObservableObject {
             }
             do {
                 let completionMessage: String
-                let tempAssemblyDir = FileManager.default.temporaryDirectory
-                    .appendingPathComponent("Assemble-\(UUID().uuidString)", isDirectory: true)
+                let tempAssemblyDir = destination
+                    .appendingPathComponent(".assembly_temp_\(UUID().uuidString)", isDirectory: true)
                 try FileManager.default.createDirectory(at: tempAssemblyDir, withIntermediateDirectories: true)
                 try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+                defer {
+                    try? FileManager.default.removeItem(at: tempAssemblyDir)
+                }
 
                 switch proposal.manifest {
                 case .hls(let transferPlan):
@@ -1124,7 +1127,6 @@ public final class BrowserViewModel: NSObject, ObservableObject {
 
                 // Streaming downloads are registered, tracked, and completed directly in DownloadEngine
                 // through StreamingDownloadOrchestrator. Avoid calling importCompletedFile to prevent duplicates.
-                try? FileManager.default.removeItem(at: tempAssemblyDir)
 
                 guard let self else { return }
                 self.isExecutingStreaming = false

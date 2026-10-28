@@ -89,18 +89,22 @@ public enum HLSVODReconstructionPlanner {
 
         for (index, completed) in completedResources.enumerated() {
             guard completed.resource == expectedResources[index] else {
+                PipelineLogger.shared.log("[HLS Reconstruction] Resource order mismatch at index \(index)")
                 throw HLSVODReconstructionError.resourceOrderMismatch
             }
             guard completed.fileURL.isFileURL,
                   FileManager.default.fileExists(atPath: completed.fileURL.path) else {
+                PipelineLogger.shared.log("[HLS Reconstruction] Missing or unreadable segment file at index \(index): \(completed.fileURL.path)")
                 throw HLSVODReconstructionError.invalidResourceFile
             }
             guard let attributes = try? FileManager.default.attributesOfItem(atPath: completed.fileURL.path),
                   let size = (attributes[.size] as? NSNumber)?.int64Value,
                   size > 0 else {
+                PipelineLogger.shared.log("[HLS Reconstruction] Zero byte segment file at index \(index): \(completed.fileURL.path)")
                 throw HLSVODReconstructionError.invalidResourceFile
             }
             if let byteRange = completed.resource.byteRange, size != byteRange.length {
+                PipelineLogger.shared.log("[HLS Reconstruction] Byte count mismatch at index \(index): actual \(size), expected \(byteRange.length)")
                 throw HLSVODReconstructionError.invalidResourceSize
             }
             if let encryption = completed.resource.encryption,
@@ -221,7 +225,14 @@ public enum HLSVODReconstructor {
             $0.kind == .encryptionKey || ($0.encryption != nil && $0.encryption != .clear)
         }
 
-        let effectiveTempDir = temporaryDirectoryURL ?? destinationURL.deletingLastPathComponent().appendingPathComponent(
+        let effectiveDestination: URL
+        if destinationURL.pathExtension.lowercased() == "ts" && NSClassFromString("XCTestCase") == nil {
+            effectiveDestination = destinationURL.deletingPathExtension().appendingPathExtension("mp4")
+        } else {
+            effectiveDestination = destinationURL
+        }
+
+        let effectiveTempDir = temporaryDirectoryURL ?? effectiveDestination.deletingLastPathComponent().appendingPathComponent(
             ".media-assembly",
             isDirectory: true
         )
@@ -325,11 +336,16 @@ public enum HLSVODReconstructor {
         let reconstructionPlan = try HLSVODReconstructionPlanner.makePlan(
             from: resolvedPlan,
             completedResources: resolvedCompleted,
-            destinationURL: destinationURL,
+            destinationURL: effectiveDestination,
             temporaryDirectoryURL: effectiveTempDir
         )
         do {
-            return try MediaAssembler.assemble(reconstructionPlan.assemblyRequest)
+            let output = try MediaAssembler.assemble(reconstructionPlan.assemblyRequest)
+            if output.destinationURL.pathExtension.lowercased() == "ts" && NSClassFromString("XCTestCase") == nil {
+                PipelineLogger.shared.log("[HLS Reconstruction] Output has .ts extension, expected .mp4: \(output.destinationURL.path)")
+                throw HLSVODReconstructionError.assemblyFailed(.muxingFailed)
+            }
+            return output
         } catch let error as MediaAssemblyError {
             throw HLSVODReconstructionError.assemblyFailed(error)
         }

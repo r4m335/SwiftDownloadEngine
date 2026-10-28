@@ -1139,7 +1139,9 @@ public actor StreamingDownloadOrchestrator {
         guard case .hls(let transferPlan) = proposal.manifest else {
             throw StreamingDownloadOrchestratorError.unsupportedManifest(.dash)
         }
-        let finalOutputURL = outputURL
+        let finalOutputURL = outputURL.pathExtension.lowercased() == "ts"
+            ? outputURL.deletingPathExtension().appendingPathExtension("mp4")
+            : outputURL
         let originalSourceURL = candidatesByTransfer[proposal.transferID]?.url ?? transferPlan.manifestURL
         let manifestKey = originalSourceURL.absoluteString
         registeredTransferIDs[manifestKey] = proposal.transferID
@@ -1180,9 +1182,18 @@ public actor StreamingDownloadOrchestrator {
                     isDirectory: true
                 )
             )
+            if assemblyOutput.destinationURL.pathExtension.lowercased() == "ts" {
+                let reason = "HLS assembly failed: Output is not a valid MP4"
+                if let engine = self.downloadEngine {
+                    await engine.failStreamingDownload(id: manifestKey, reason: reason)
+                }
+                throw StreamingDownloadOrchestratorError.hlsReconstructionFailed(
+                    .assemblyFailed(.muxingFailed)
+                )
+            }
             if let engine = self.downloadEngine {
                 let finalSize = (try? FileManager.default.attributesOfItem(atPath: assemblyOutput.destinationURL.path)[.size] as? Int64) ?? 0
-                _ = try? await engine.completeStreamingDownload(
+                _ = try await engine.completeStreamingDownload(
                     id: manifestKey,
                     finalFileURL: assemblyOutput.destinationURL,
                     totalBytes: finalSize
@@ -1191,8 +1202,14 @@ public actor StreamingDownloadOrchestrator {
             }
             return assemblyOutput
         } catch let error as HLSVODReconstructionError {
+            let failReason: String
+            if case .assemblyFailed = error {
+                failReason = "HLS assembly failed: Output is not a valid MP4"
+            } else {
+                failReason = error.localizedDescription
+            }
             if let engine = self.downloadEngine {
-                await engine.failStreamingDownload(id: manifestKey, reason: error.localizedDescription)
+                await engine.failStreamingDownload(id: manifestKey, reason: failReason)
             }
             throw StreamingDownloadOrchestratorError.hlsReconstructionFailed(error)
         } catch {
