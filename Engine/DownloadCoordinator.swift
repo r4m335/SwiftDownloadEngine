@@ -418,6 +418,14 @@ public actor DownloadCoordinator {
         _ request: DownloadRequest,
         progress: ProgressHandler? = nil
     ) async throws {
+        try await startDownload(request: request, isResumeRequest: false, progress: progress)
+    }
+
+    private func startDownload(
+        request: DownloadRequest,
+        isResumeRequest: Bool,
+        progress: ProgressHandler? = nil
+    ) async throws {
         guard !request.id.isEmpty else {
             throw DownloadCoordinatorError.invalidRequest(reason: "Download ID cannot be empty")
         }
@@ -438,7 +446,7 @@ public actor DownloadCoordinator {
 
         // Spawn managed Task with an awaitable shutdown barrier
         let task = Task<Void, Error> {
-            try await self.executeDownload(request: request, progress: progress)
+            try await self.executeDownload(request: request, isResumeRequest: isResumeRequest, progress: progress)
         }
         activeTasks[request.id] = task
 
@@ -576,7 +584,7 @@ public actor DownloadCoordinator {
             throw DownloadCoordinatorError.cannotResume(reason: "URL mismatch with persisted record")
         }
 
-        try await start(request, progress: progress)
+        try await startDownload(request: request, isResumeRequest: true, progress: progress)
     }
 
     /// Refreshes the download URL and headers for an existing download (e.g. after a 403/404 expired token).
@@ -640,6 +648,7 @@ public actor DownloadCoordinator {
 
     private func executeDownload(
         request: DownloadRequest,
+        isResumeRequest: Bool = false,
         progress handler: ProgressHandler?
     ) async throws {
         if let requestedByteRange = request.requestedByteRange {
@@ -755,6 +764,11 @@ public actor DownloadCoordinator {
                     isResume = false
                     record = nil
                 } else if !probeResult.supportsRange {
+                    if isResumeRequest {
+                        throw DownloadCoordinatorError.cannotResume(
+                            reason: "Resume unavailable: This server doesn't support reliable download resumption. Restarting the download may be required."
+                        )
+                    }
                     // Remote server does not support byte ranges for resumption.
                     // 1DM+ architectural rule: automatically restart download from byte 0 instead of failing.
                     print("[DownloadCoordinator] Server does not support byte ranges on resume for \(request.id); restarting download from byte 0.")
@@ -799,6 +813,11 @@ public actor DownloadCoordinator {
                         }
                         record = nil
                     case .unsupportedNonResumable:
+                        if isResumeRequest {
+                            throw DownloadCoordinatorError.cannotResume(
+                                reason: "Resume unavailable: This server doesn't support reliable download resumption. Restarting the download may be required."
+                            )
+                        }
                         // 1DM+ rule: restart from 0 instead of failing with cannotResume
                         print("[DownloadCoordinator] Server non-resumable on resume for \(request.id); restarting download cleanly from byte 0.")
                         isResume = false
@@ -877,6 +896,11 @@ public actor DownloadCoordinator {
                         )
                     } catch {
                         if Self.isRangeIgnored(error) {
+                            if isResumeRequest {
+                                throw DownloadCoordinatorError.cannotResume(
+                                    reason: "Resume unavailable: This server doesn't support reliable download resumption. Restarting the download may be required."
+                                )
+                            }
                             if isResume {
                                 print("[DownloadCoordinator] Server ignored byte range on resume for \(request.id); restarting download cleanly from byte 0.")
                                 if FileManager.default.fileExists(atPath: executionRequest.destinationURL.path) {
