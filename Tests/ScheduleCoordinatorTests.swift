@@ -11,7 +11,7 @@ final class ScheduleCoordinatorTests: XCTestCase {
         tempDir = FileManager.default.temporaryDirectory
             .appendingPathComponent("ScheduleCoordinatorTests_\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
-        persistenceStore = DownloadPersistenceStore(baseDirectory: tempDir)
+        persistenceStore = try DownloadPersistenceStore(storageDirectoryURL: tempDir)
     }
 
     override func tearDown() async throws {
@@ -99,26 +99,28 @@ final class ScheduleCoordinatorTests: XCTestCase {
 
     // MARK: - Task 1: Persistence Store Tests
 
-    func testPersistenceStoreScheduleRuleCRUD() throws {
+    func testPersistenceStoreScheduleRuleCRUD() async throws {
         let rule1 = ScheduleRule(id: "rule-1", name: "Morning", targetDownloadIDs: ["d1"])
         let rule2 = ScheduleRule(id: "rule-2", name: "Evening", targetDownloadIDs: ["d2", "d3"])
 
-        try persistenceStore.saveScheduleRule(rule1)
-        try persistenceStore.saveScheduleRule(rule2)
+        try await persistenceStore.saveScheduleRule(rule1)
+        try await persistenceStore.saveScheduleRule(rule2)
 
-        let fetched1 = persistenceStore.fetchScheduleRule(id: "rule-1")
+        let fetched1 = try await persistenceStore.fetchScheduleRule(id: "rule-1")
         XCTAssertNotNil(fetched1)
         XCTAssertEqual(fetched1?.name, "Morning")
         XCTAssertEqual(fetched1?.targetDownloadIDs, ["d1"])
 
-        let all = persistenceStore.fetchAllScheduleRules()
+        let all = try await persistenceStore.fetchAllScheduleRules()
         XCTAssertEqual(all.count, 2)
         XCTAssertTrue(all.contains(where: { $0.id == "rule-1" }))
         XCTAssertTrue(all.contains(where: { $0.id == "rule-2" }))
 
-        try persistenceStore.deleteScheduleRule(id: "rule-1")
-        XCTAssertNil(persistenceStore.fetchScheduleRule(id: "rule-1"))
-        XCTAssertEqual(persistenceStore.fetchAllScheduleRules().count, 1)
+        try await persistenceStore.deleteScheduleRule(id: "rule-1")
+        let fetchedDeleted = try await persistenceStore.fetchScheduleRule(id: "rule-1")
+        XCTAssertNil(fetchedDeleted)
+        let allAfter = try await persistenceStore.fetchAllScheduleRules()
+        XCTAssertEqual(allAfter.count, 1)
     }
 
     // MARK: - Task 2: Schedule Window Calculation Tests
@@ -273,7 +275,7 @@ final class ScheduleCoordinatorTests: XCTestCase {
             weekdays: Set(1...7),
             targetDownloadIDs: ["dl-100"]
         )
-        try persistenceStore.saveScheduleRule(rule)
+        try await persistenceStore.saveScheduleRule(rule)
         await coordinator.loadRules()
 
         var calendar = Calendar(identifier: .gregorian)
