@@ -744,8 +744,7 @@ final class DownloadCoordinatorTests: XCTestCase {
                     startOffset: 0,
                     endOffset: totalSize - 1,
                     length: totalSize,
-                    completedBytes: 200,
-                    isCompleted: false
+                    completedBytes: 200
                 )
             ]
         )
@@ -855,8 +854,7 @@ final class DownloadCoordinatorTests: XCTestCase {
                     startOffset: 0,
                     endOffset: totalSize - 1,
                     length: totalSize,
-                    completedBytes: 800,
-                    isCompleted: false
+                    completedBytes: 800
                 )
             ]
         )
@@ -901,8 +899,7 @@ final class DownloadCoordinatorTests: XCTestCase {
                     startOffset: 0,
                     endOffset: totalSize - 1,
                     length: totalSize,
-                    completedBytes: 800,
-                    isCompleted: false
+                    completedBytes: 800
                 )
             ]
         )

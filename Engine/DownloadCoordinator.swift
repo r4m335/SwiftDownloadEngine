@@ -236,6 +236,21 @@ public enum DownloadCoordinatorError: Error, LocalizedError, Equatable, Sendable
             return "Insufficient disk space: required \(required) bytes, but only \(available) bytes are available."
         }
     }
+
+    public var isUnauthorized: Bool {
+        if case .unauthorized = self { return true }
+        return false
+    }
+
+    public var isForbidden: Bool {
+        if case .forbidden = self { return true }
+        return false
+    }
+
+    public var isLinkExpired: Bool {
+        if case .linkExpired = self { return true }
+        return false
+    }
 }
 
 /// Thread-safe accumulator computing aggregate progress across concurrent workers.
