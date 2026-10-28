@@ -65,12 +65,12 @@ final class PauseResumeAndRecoveryTests: XCTestCase {
     // MARK: - Phase 2A: Pause and Resume Tests
 
     func testPauseAndResumeSingleWorker() async throws {
-        let size = 400 * 1024 // 400 KB
+        let size = 2 * 1024 * 1024 // 2 MiB
         let payload = makePayload(size: size, seed: 0x11)
         let expectedSHA = EngineSHA256.hash(data: payload)
         let path = "/pause_single.bin"
-        // Introduce small 3ms delay per chunk so download can be paused midway
-        server.register(path: path, data: payload, chunkDelayMs: 3)
+        // Introduce 10ms delay per chunk so download can be reliably paused midway
+        server.register(path: path, data: payload, chunkDelayMs: 10)
 
         let destURL = tempDirectory.appendingPathComponent("pause_single.bin")
         let request = DownloadRequest(
