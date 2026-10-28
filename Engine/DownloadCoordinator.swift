@@ -1571,7 +1571,11 @@ public actor DownloadCoordinator {
         )
 
         var acquiredPermit = false
-        try await requestBudget.acquire(downloadID: request.id, maxPerDownload: request.maxConcurrentRequests)
+        try await requestBudget.acquire(
+            downloadID: request.id,
+            maxPerDownload: request.maxConcurrentRequests,
+            host: request.url.host
+        )
         acquiredPermit = true
 
         do {
@@ -1742,12 +1746,12 @@ public actor DownloadCoordinator {
             )
 
             if acquiredPermit {
-                await requestBudget.release(downloadID: request.id)
+                await requestBudget.release(downloadID: request.id, host: request.url.host)
                 acquiredPermit = false
             }
         } catch {
             if acquiredPermit {
-                await requestBudget.release(downloadID: request.id)
+                await requestBudget.release(downloadID: request.id, host: request.url.host)
                 acquiredPermit = false
             }
             throw error

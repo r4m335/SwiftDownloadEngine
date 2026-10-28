@@ -162,7 +162,11 @@ public final class SegmentDownloader: Sendable {
 
         var acquiredPermit = false
         if let budget = requestBudget {
-            try await budget.acquire(downloadID: downloadID, maxPerDownload: maxConcurrentRequests)
+            try await budget.acquire(
+                downloadID: downloadID,
+                maxPerDownload: maxConcurrentRequests,
+                host: url.host
+            )
             acquiredPermit = true
         }
 
@@ -178,12 +182,12 @@ public final class SegmentDownloader: Sendable {
                 progress: progress
             )
             if acquiredPermit, let budget = requestBudget {
-                await budget.release(downloadID: downloadID)
+                await budget.release(downloadID: downloadID, host: url.host)
                 acquiredPermit = false
             }
         } catch {
             if acquiredPermit, let budget = requestBudget {
-                await budget.release(downloadID: downloadID)
+                await budget.release(downloadID: downloadID, host: url.host)
                 acquiredPermit = false
             }
             throw error
