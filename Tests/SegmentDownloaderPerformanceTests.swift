@@ -13,6 +13,13 @@ final class SegmentDownloaderPerformanceTests: XCTestCase {
     private enum Mode {
         case byteIteration
         case dataChunks
+
+        var label: String {
+            switch self {
+            case .byteIteration: return "before/byte-loop"
+            case .dataChunks: return "after/data-chunks"
+            }
+        }
     }
 
     private let payloadSize = 8 * 1024 * 1024
@@ -96,7 +103,6 @@ final class SegmentDownloaderPerformanceTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: fileURL) }
 
         let writer = try DownloadFileWriter(destinationURL: fileURL, totalSize: Int64(payloadSize))
-        defer { try? writer.close() }
 
         let url = server.url(for: "/benchmark.bin")
         let segment = DownloadSegment(
@@ -138,31 +144,23 @@ final class SegmentDownloaderPerformanceTests: XCTestCase {
             for try await byte in bytes {
                 buffer.append(byte)
                 if buffer.count >= 64 * 1024 {
-                    try writer.writeDirect(buffer, at: offset)
+                    try await writer.writeDirect(buffer, at: offset)
                     offset += Int64(buffer.count)
                     buffer.removeAll(keepingCapacity: true)
                 }
             }
             if !buffer.isEmpty {
-                try writer.writeDirect(buffer, at: offset)
+                try await writer.writeDirect(buffer, at: offset)
                 offset += Int64(buffer.count)
             }
         }
 
-        try writer.synchronize()
+        try await writer.synchronize()
         let elapsed = max(Date().timeIntervalSince(started), 0.000_001)
         let attributes = try FileManager.default.attributesOfItem(atPath: fileURL.path)
         let bytesWritten = (attributes[.size] as? NSNumber)?.int64Value ?? 0
         XCTAssertEqual(bytesWritten, Int64(payloadSize))
+        try await writer.close()
         return BenchmarkResult(elapsed: elapsed, bytesWritten: bytesWritten)
-    }
-}
-
-private extension SegmentDownloaderPerformanceTests.Mode {
-    var label: String {
-        switch self {
-        case .byteIteration: return "before/byte-loop"
-        case .dataChunks: return "after/data-chunks"
-        }
     }
 }
