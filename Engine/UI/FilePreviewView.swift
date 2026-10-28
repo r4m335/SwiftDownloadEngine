@@ -163,7 +163,9 @@ public struct FilePreviewContainerView: View {
 
 extension View {
     /// Presents a file preview with guaranteed navigation and dismissal controls.
+    @ViewBuilder
     public func filePreviewSheet(item: Binding<URL?>) -> some View {
+        #if os(iOS)
         self.fullScreenCover(item: Binding<IdentifiableURL?>(
             get: { item.wrappedValue.map { IdentifiableURL(url: $0) } },
             set: { item.wrappedValue = $0?.url }
@@ -172,6 +174,16 @@ extension View {
                 item.wrappedValue = nil
             }
         }
+        #else
+        self.sheet(item: Binding<IdentifiableURL?>(
+            get: { item.wrappedValue.map { IdentifiableURL(url: $0) } },
+            set: { item.wrappedValue = $0?.url }
+        )) { previewItem in
+            FilePreviewContainerView(url: previewItem.url) {
+                item.wrappedValue = nil
+            }
+        }
+        #endif
     }
 }
 #endif
