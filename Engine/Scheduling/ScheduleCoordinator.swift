@@ -270,7 +270,7 @@ public final class ScheduleCoordinator: ObservableObject {
                 // Calculate next occurrence for the background session tasks
                 if let nextStart = nextOccurrence(after: now, matching: rule.startTime, weekdays: rule.weekdays) {
                     for downloadID in rule.targetDownloadIDs {
-                        await engine.setBackgroundEarliestBeginDate(nextStart, for: downloadID)
+                        await engine?.setBackgroundEarliestBeginDate(nextStart, for: downloadID)
                     }
                 }
             }
