@@ -829,6 +829,30 @@ public final class BackgroundDownloadSessionManager: NSObject, @unchecked Sendab
         }
     }
 
+    /// Sets earliestBeginDate on background tasks for a download (or all downloads) to support iOS native scheduling.
+    public func setEarliestBeginDate(_ date: Date?, for downloadID: String? = nil) async {
+        let tasks = await activeSessionTasks()
+        if let targetID = downloadID {
+            let records = await mappingStore.records(forDownloadID: targetID)
+            let matchingTaskIDs = Set(records.map { $0.taskIdentifier })
+            for task in tasks where matchingTaskIDs.contains(task.taskIdentifier) {
+                #if canImport(Darwin)
+                if #available(iOS 11.0, macOS 10.13, *) {
+                    task.earliestBeginDate = date
+                }
+                #endif
+            }
+        } else {
+            for task in tasks {
+                #if canImport(Darwin)
+                if #available(iOS 11.0, macOS 10.13, *) {
+                    task.earliestBeginDate = date
+                }
+                #endif
+            }
+        }
+    }
+
     /// Queries all active tasks for a download that are currently running in the system URLSession.
     public func activeTasks(for downloadID: String) async -> [BackgroundDownloadTaskRecord] {
         let allTasks = await activeSessionTasks()

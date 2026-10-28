@@ -93,6 +93,10 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
     @Published public var defaultTorrentPriority: TorrentPriority = .normal
     @Published public var defaultSeedingPreference: SeedingPreference = SeedingPreference(mode: .ratio, targetRatio: 1.0)
 
+    // Schedule Coordinator & Rules
+    public let scheduleCoordinator: ScheduleCoordinator
+    @Published public var scheduleRules: [ScheduleRule] = []
+
     /// Dynamic active listening port string formatted for UI inspection.
     public var torrentActivePortString: String {
         guard let status = torrentSessionStatus, status.isListening else {
@@ -139,6 +143,13 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
         self.torrentEngine = torrentEngine
         self.downloadsDirectoryURL = downloadsDirectory ?? Self.defaultDownloadsDirectory()
         self.userDefaults = userDefaults
+        self.scheduleCoordinator = ScheduleCoordinator(
+            engine: engine,
+            persistenceStore: engine.persistenceStore
+        )
+        Task { [weak self] in
+            await self?.loadScheduleRules()
+        }
 
         let savedConcurrent = userDefaults.integer(forKey: SettingsKeys.maxConcurrentDownloads)
         self.maxConcurrentDownloads = savedConcurrent > 0 ? savedConcurrent : 3
@@ -1145,6 +1156,40 @@ extension DownloadManagerViewModel: BrowserDownloadDelegate {
             } catch {
                 errorMessage = "Engine error: \(error.localizedDescription)"
             }
+        }
+    }
+
+    // MARK: - Schedule Integration
+
+    public func loadScheduleRules() async {
+        await scheduleCoordinator.loadRules()
+        self.scheduleRules = scheduleCoordinator.rules
+    }
+
+    public func isScheduled(transferID: String) -> Bool {
+        scheduleCoordinator.isScheduled(downloadID: transferID)
+    }
+
+    public func toggleScheduled(transferID: String) async {
+        await scheduleCoordinator.toggleScheduled(downloadID: transferID)
+        self.scheduleRules = scheduleCoordinator.rules
+        self.userNotificationMessage = isScheduled(transferID: transferID) ? "Added to Schedule" : "Removed from Schedule"
+    }
+
+    public func saveScheduleRule(_ rule: ScheduleRule) async {
+        do {
+            try await scheduleCoordinator.saveRule(rule)
+            self.scheduleRules = scheduleCoordinator.rules
+            self.userNotificationMessage = "Schedule updated successfully"
+        } catch {
+            self.errorMessage = "Failed to save schedule: \(error.localizedDescription)"
+        }
+    }
+
+    public func reconcileSchedule() async {
+        let report = await scheduleCoordinator.reconcile()
+        if !report.resumedDownloadIDs.isEmpty || !report.pausedDownloadIDs.isEmpty {
+            await refreshSnapshots()
         }
     }
 }

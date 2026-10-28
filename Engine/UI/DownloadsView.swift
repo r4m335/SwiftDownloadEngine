@@ -281,6 +281,7 @@ public struct DownloadsView: View {
                             .contextMenu {
                                 UnifiedTransferMenuContent(
                                     transfer: transfer,
+                                    isScheduled: viewModel.isScheduled(transferID: transfer.id),
                                     onOpen: { openTransferFile(transfer) },
                                     onSaveToFiles: { saveTransferToFiles(transfer) },
                                     onShare: { shareTransferFile(transfer) },
@@ -288,6 +289,7 @@ public struct DownloadsView: View {
                                     onShowDetails: { showTransferDetails(transfer) },
                                     onPause: { pauseTransfer(transfer) },
                                     onResume: { resumeTransfer(transfer) },
+                                    onToggleSchedule: { toggleTransferSchedule(transfer) },
                                     onRemoveQueue: { removeTransferFromQueue(transfer) },
                                     onDeleteFile: { promptDeleteTransferFile(transfer) }
                                 )
@@ -677,6 +679,12 @@ public struct DownloadsView: View {
     private func promptDeleteTransferFile(_ transfer: UnifiedTransfer) {
         activeAlert = .deleteTransferConfirmation(transfer)
     }
+
+    private func toggleTransferSchedule(_ transfer: UnifiedTransfer) {
+        viewModel.toggleScheduled(transferID: transfer.id)
+        let isNow = viewModel.isScheduled(transferID: transfer.id)
+        viewModel.showNotification(isNow ? "Added '\(transfer.name)' to schedule" : "Removed '\(transfer.name)' from schedule")
+    }
 }
 
 // MARK: - Download Menu Content (Shared for 3-Dot Menu and Long-Press Context Menu)
@@ -894,6 +902,12 @@ public struct UnifiedTransferRowView: View {
                     .font(.headline)
                     .lineLimit(1)
 
+                if viewModel.isScheduled(transferID: transfer.id) {
+                    Image(systemName: "clock.fill")
+                        .font(.caption2)
+                        .foregroundColor(.indigo)
+                }
+
                 Spacer()
 
                 TypeBadge(type: transfer.type)
@@ -902,6 +916,7 @@ public struct UnifiedTransferRowView: View {
                 Menu {
                     UnifiedTransferMenuContent(
                         transfer: transfer,
+                        isScheduled: viewModel.isScheduled(transferID: transfer.id),
                         onOpen: onOpen,
                         onSaveToFiles: onSaveToFiles,
                         onShare: onShare,
@@ -909,6 +924,7 @@ public struct UnifiedTransferRowView: View {
                         onShowDetails: onShowDetails,
                         onPause: onPause,
                         onResume: onResume,
+                        onToggleSchedule: { viewModel.toggleScheduled(transferID: transfer.id) },
                         onRemoveQueue: onRemoveQueue,
                         onDeleteFile: onDeleteFile
                     )
@@ -1046,6 +1062,7 @@ public struct UnifiedTransferRowView: View {
 
 public struct UnifiedTransferMenuContent: View {
     public let transfer: UnifiedTransfer
+    public var isScheduled: Bool = false
     public let onOpen: () -> Void
     public let onSaveToFiles: () -> Void
     public let onShare: () -> Void
@@ -1053,11 +1070,47 @@ public struct UnifiedTransferMenuContent: View {
     public let onShowDetails: () -> Void
     public let onPause: () -> Void
     public let onResume: () -> Void
+    public var onToggleSchedule: () -> Void = {}
     public let onRemoveQueue: () -> Void
     public let onDeleteFile: () -> Void
 
+    public init(
+        transfer: UnifiedTransfer,
+        isScheduled: Bool = false,
+        onOpen: @escaping () -> Void = {},
+        onSaveToFiles: @escaping () -> Void = {},
+        onShare: @escaping () -> Void = {},
+        onCopyLink: @escaping () -> Void = {},
+        onShowDetails: @escaping () -> Void = {},
+        onPause: @escaping () -> Void = {},
+        onResume: @escaping () -> Void = {},
+        onToggleSchedule: @escaping () -> Void = {},
+        onRemoveQueue: @escaping () -> Void = {},
+        onDeleteFile: @escaping () -> Void = {}
+    ) {
+        self.transfer = transfer
+        self.isScheduled = isScheduled
+        self.onOpen = onOpen
+        self.onSaveToFiles = onSaveToFiles
+        self.onShare = onShare
+        self.onCopyLink = onCopyLink
+        self.onShowDetails = onShowDetails
+        self.onPause = onPause
+        self.onResume = onResume
+        self.onToggleSchedule = onToggleSchedule
+        self.onRemoveQueue = onRemoveQueue
+        self.onDeleteFile = onDeleteFile
+    }
+
     public var body: some View {
         Group {
+            Button(action: onToggleSchedule) {
+                Label(
+                    isScheduled ? "Remove from Schedule" : "Add to Schedule",
+                    systemImage: isScheduled ? "clock.badge.xmark" : "clock.badge"
+                )
+            }
+
             if transfer.canPause {
                 Button(action: onPause) {
                     Label("Pause", systemImage: "pause.fill")

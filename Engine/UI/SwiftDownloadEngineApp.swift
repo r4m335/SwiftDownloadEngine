@@ -206,6 +206,7 @@ public struct SwiftDownloadEngineApp: App {
                         await viewModel.refreshSnapshots()
                         await viewModel.refreshTorrentSnapshots()
                     }
+                    await viewModel.reconcileSchedule()
                 }
             case .background:
                 #if canImport(UIKit) && !os(watchOS)
@@ -222,6 +223,7 @@ public struct SwiftDownloadEngineApp: App {
                     await viewModel.refreshSnapshots()
                     await viewModel.refreshTorrentSnapshots()
                     try? await viewModel.stopTorrentEngine()
+                    await viewModel.scheduleCoordinator.prepareForBackground()
 
                     #if canImport(UIKit) && !os(watchOS)
                     if bgTaskID != .invalid {

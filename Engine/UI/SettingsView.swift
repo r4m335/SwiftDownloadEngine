@@ -29,6 +29,14 @@ public struct SettingsView: View {
     @State private var snifferExtensions: String = ""
     @State private var snifferMIMETypes: String = ""
 
+    // Download Scheduler Settings (iOS URLSession & Local Notifications)
+    @State private var scheduleEnabled: Bool = false
+    @State private var scheduleStartTime: Date = Calendar.current.date(from: DateComponents(hour: 2, minute: 0)) ?? Date()
+    @State private var scheduleEnableStopTime: Bool = true
+    @State private var scheduleStopTime: Date = Calendar.current.date(from: DateComponents(hour: 6, minute: 0)) ?? Date()
+    @State private var scheduleWeekdays: Set<Int> = Set(1...7)
+    @State private var scheduleWifiOnly: Bool = true
+
     // UI Feedback
     @State private var showingSavedAlert: Bool = false
     @State private var statusMessage: String? = nil
@@ -202,7 +210,64 @@ public struct SettingsView: View {
                     }
                 }
 
-                // Section 8: Save Action
+                // Section 9: Download Scheduler (iOS Native URLSession & Local Notifications)
+                Section(
+                    header: Text("Download Scheduler"),
+                    footer: Text(ScheduleCoordinator.torrentBackgroundLimitationMessage)
+                ) {
+                    Toggle("Enable Scheduler", isOn: $scheduleEnabled)
+
+                    if scheduleEnabled {
+                        DatePicker("Start Time", selection: $scheduleStartTime, displayedComponents: .hourAndMinute)
+
+                        Toggle("Enable Stop Time", isOn: $scheduleEnableStopTime)
+
+                        if scheduleEnableStopTime {
+                            DatePicker("Stop Time", selection: $scheduleStopTime, displayedComponents: .hourAndMinute)
+                        }
+
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Active Days")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                            HStack(spacing: 6) {
+                                ForEach(ScheduleRule.orderedWeekdaySymbols, id: \.day) { item in
+                                    let isSelected = scheduleWeekdays.contains(item.day)
+                                    Button {
+                                        if isSelected {
+                                            if scheduleWeekdays.count > 1 {
+                                                scheduleWeekdays.remove(item.day)
+                                            }
+                                        } else {
+                                            scheduleWeekdays.insert(item.day)
+                                        }
+                                    } label: {
+                                        Text(item.symbol)
+                                            .font(.caption2.bold())
+                                            .frame(maxWidth: .infinity, minHeight: 28)
+                                            .background(isSelected ? Color.blue : Color.secondary.opacity(0.15))
+                                            .foregroundColor(isSelected ? .white : .primary)
+                                            .cornerRadius(6)
+                                    }
+                                    .buttonStyle(.borderless)
+                                }
+                            }
+                        }
+                        .padding(.vertical, 4)
+
+                        Toggle("Wi-Fi Only", isOn: $scheduleWifiOnly)
+
+                        HStack {
+                            Text("Scheduled Downloads Tagged")
+                            Spacer()
+                            Text("\(viewModel.scheduleRules.first?.targetDownloadIDs.count ?? 0) items")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                }
+
+                // Section 10: Save Action
                 Section {
                     Button {
                         saveSettings()
@@ -226,7 +291,7 @@ public struct SettingsView: View {
             .alert("Settings Applied", isPresented: $showingSavedAlert) {
                 Button("OK", role: .cancel) {}
             } message: {
-                Text("Engine concurrency limits, seeding preferences, and speed controls have been updated.")
+                Text("Engine concurrency limits, seeding preferences, scheduler rules, and speed controls have been updated.")
             }
         }
     }
@@ -254,6 +319,20 @@ public struct SettingsView: View {
         self.enableSnifferFilter = sniffer.isFilterEnabled
         self.snifferExtensions = sniffer.allowedExtensions.joined(separator: ", ")
         self.snifferMIMETypes = sniffer.allowedMIMETypes.joined(separator: ", ")
+
+        if let rule = viewModel.scheduleRules.first {
+            self.scheduleEnabled = rule.isEnabled
+            let cal = Calendar.current
+            self.scheduleStartTime = cal.date(from: rule.startTime) ?? Date()
+            if let stopComp = rule.stopTime {
+                self.scheduleEnableStopTime = true
+                self.scheduleStopTime = cal.date(from: stopComp) ?? Date()
+            } else {
+                self.scheduleEnableStopTime = false
+            }
+            self.scheduleWeekdays = rule.weekdays
+            self.scheduleWifiOnly = rule.wifiOnly
+        }
     }
 
     private func saveSettings() {
@@ -269,6 +348,19 @@ public struct SettingsView: View {
             targetRatio: targetRatio,
             targetDurationSeconds: TimeInterval(targetDurationMinutes * 60)
         )
+
+        var currentRule = viewModel.scheduleRules.first ?? ScheduleRule()
+        currentRule.isEnabled = scheduleEnabled
+        let cal = Calendar.current
+        currentRule.startTime = cal.dateComponents([.hour, .minute], from: scheduleStartTime)
+        if scheduleEnableStopTime {
+            currentRule.stopTime = cal.dateComponents([.hour, .minute], from: scheduleStopTime)
+        } else {
+            currentRule.stopTime = nil
+        }
+        currentRule.weekdays = scheduleWeekdays
+        currentRule.wifiOnly = scheduleWifiOnly
+        viewModel.saveScheduleRule(currentRule)
 
         Task { @MainActor in
             let exts = snifferExtensions
@@ -296,6 +388,7 @@ public struct SettingsView: View {
                 defaultPriority: defaultTorrentPriority,
                 seedingPreference: preference
             )
+            await viewModel.reconcileSchedule()
             showingSavedAlert = true
         }
     }

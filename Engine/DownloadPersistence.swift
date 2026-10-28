@@ -607,6 +607,82 @@ public actor DownloadPersistenceStore {
         // Atomic write to prevent partial/corrupt files on unexpected crash
         try data.write(to: fileURL, options: .atomic)
     }
+
+    // MARK: - Schedule Rules Persistence
+
+    private var scheduleRulesCache: [String: ScheduleRule] = [:]
+
+    private var scheduleDirectoryURL: URL {
+        storageDirectoryURL.appendingPathComponent("ScheduleRules", isDirectory: true)
+    }
+
+    private func scheduleRuleFileURL(id: String) -> URL {
+        scheduleDirectoryURL.appendingPathComponent("\(id).json")
+    }
+
+    /// Persists a schedule rule to memory cache and atomic disk JSON.
+    public func saveScheduleRule(_ rule: ScheduleRule) throws {
+        scheduleRulesCache[rule.id] = rule
+        let dir = scheduleDirectoryURL
+        if !FileManager.default.fileExists(atPath: dir.path) {
+            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        }
+        let fileURL = scheduleRuleFileURL(id: rule.id)
+        let data = try encoder.encode(rule)
+        try data.write(to: fileURL, options: .atomic)
+    }
+
+    /// Fetches a schedule rule by ID.
+    public func fetchScheduleRule(id: String) throws -> ScheduleRule? {
+        if let cached = scheduleRulesCache[id] {
+            return cached
+        }
+        let fileURL = scheduleRuleFileURL(id: id)
+        guard FileManager.default.fileExists(atPath: fileURL.path) else {
+            return nil
+        }
+        let data = try Data(contentsOf: fileURL)
+        let rule = try decoder.decode(ScheduleRule.self, from: data)
+        scheduleRulesCache[rule.id] = rule
+        return rule
+    }
+
+    /// Fetches all persisted schedule rules.
+    public func fetchAllScheduleRules() throws -> [ScheduleRule] {
+        let dir = scheduleDirectoryURL
+        guard FileManager.default.fileExists(atPath: dir.path) else {
+            return Array(scheduleRulesCache.values).sorted { $0.createdAt < $1.createdAt }
+        }
+        let fileURLs = (try? FileManager.default.contentsOfDirectory(
+            at: dir,
+            includingPropertiesForKeys: nil,
+            options: .skipsHiddenFiles
+        ).filter { $0.pathExtension == "json" }) ?? []
+
+        var results: [ScheduleRule] = []
+        for fileURL in fileURLs {
+            let id = fileURL.deletingPathExtension().lastPathComponent
+            if let cached = scheduleRulesCache[id] {
+                results.append(cached)
+                continue
+            }
+            if let data = try? Data(contentsOf: fileURL),
+               let rule = try? decoder.decode(ScheduleRule.self, from: data) {
+                scheduleRulesCache[rule.id] = rule
+                results.append(rule)
+            }
+        }
+        return results.sorted { $0.createdAt < $1.createdAt }
+    }
+
+    /// Deletes a schedule rule by ID.
+    public func deleteScheduleRule(id: String) throws {
+        scheduleRulesCache.removeValue(forKey: id)
+        let fileURL = scheduleRuleFileURL(id: id)
+        if FileManager.default.fileExists(atPath: fileURL.path) {
+            try FileManager.default.removeItem(at: fileURL)
+        }
+    }
 }
 
 // MARK: - File Collision & Conflict Resolver (1DM+ Architecture)
