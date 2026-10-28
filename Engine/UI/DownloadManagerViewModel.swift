@@ -588,7 +588,7 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
                 newHeaders: newHeaders
             )
             try await resumeDownload(id: id)
-            await refreshDownloads()
+            await refreshSnapshots()
         } catch {
             self.errorMessage = error.localizedDescription
             throw error
