@@ -581,7 +581,6 @@ public actor DownloadCoordinator {
         let probeConfig = HTTPRangeProbeConfiguration(
             url: newURL,
             customHeaders: newHeaders ?? record.headers,
-            retryCount: 2,
             allowsCellularAccess: record.networkPolicy.allowsCellularAccess
         )
         let probeResult = try await probe.probe(configuration: probeConfig)
