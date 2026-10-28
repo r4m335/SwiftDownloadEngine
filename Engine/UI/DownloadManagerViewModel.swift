@@ -582,20 +582,12 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
         }
 
         do {
-            let updatedRecord = try await coordinator.refreshDownload(
+            _ = try await engine.coordinator.refreshDownload(
                 id: id,
                 newURL: newURL,
                 newHeaders: newHeaders
             )
-            let request = DownloadRequest(
-                id: updatedRecord.id,
-                url: updatedRecord.resolvedURL ?? updatedRecord.originalURL,
-                destinationURL: updatedRecord.destinationURL,
-                totalSize: updatedRecord.totalSize > 0 ? updatedRecord.totalSize : nil,
-                headers: updatedRecord.headers,
-                networkPolicy: updatedRecord.networkPolicy
-            )
-            try await coordinator.start(request)
+            try await resumeDownload(id: id)
             await refreshDownloads()
         } catch {
             self.errorMessage = error.localizedDescription

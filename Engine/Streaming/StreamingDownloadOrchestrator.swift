@@ -1609,7 +1609,7 @@ public actor StreamingDownloadOrchestrator {
                     request.setValue(ref, forHTTPHeaderField: "Referer")
                 }
             }
-            let (data, response) = try await session.data(for: request)
+            let (data, response) = try await URLSession.shared.data(for: request)
             guard let httpResponse = response as? HTTPURLResponse, (200...299).contains(httpResponse.statusCode) else {
                 PipelineLogger.shared.log("[HLS Pipeline] Subtitle HTTP request returned non-200 code")
                 return
@@ -1619,16 +1619,16 @@ public actor StreamingDownloadOrchestrator {
             let contentString = String(decoding: data, as: UTF8.self)
 
             if contentString.contains("WEBVTT") {
-                try data.write(to: destinationVTT, options: .atomic)
+                try data.write(to: destinationVTT, options: Data.WritingOptions.atomic)
                 PipelineLogger.shared.log("[HLS Pipeline] Subtitle (.vtt) saved successfully to: \(destinationVTT.path)")
                 return
             }
 
             if contentString.contains("#EXTM3U") {
-                let lines = contentString.components(separatedBy: .newlines)
+                let lines = contentString.components(separatedBy: "\n")
                 var segmentURLs: [URL] = []
                 for line in lines {
-                    let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+                    let trimmed = line.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
                     if !trimmed.isEmpty && !trimmed.hasPrefix("#") {
                         if let segURL = URL(string: trimmed, relativeTo: subtitleURL)?.absoluteURL {
                             segmentURLs.append(segURL)
@@ -1640,20 +1640,20 @@ public actor StreamingDownloadOrchestrator {
                     for segURL in segmentURLs {
                         var segReq = URLRequest(url: segURL)
                         segReq = DownloadRequestEnricher.enrich(segReq, snapshot: effectiveSnapshot)
-                        if let (segData, _) = try? await session.data(for: segReq) {
+                        if let (segData, _) = try? await URLSession.shared.data(for: segReq) {
                             let segText = String(decoding: segData, as: UTF8.self)
                             let cleanText = segText.replacingOccurrences(of: "WEBVTT\n", with: "")
                                 .replacingOccurrences(of: "WEBVTT\r\n", with: "")
                             combinedVTT += cleanText + "\n"
                         }
                     }
-                    try Data(combinedVTT.utf8).write(to: destinationVTT, options: .atomic)
+                    try Data(combinedVTT.utf8).write(to: destinationVTT, options: Data.WritingOptions.atomic)
                     PipelineLogger.shared.log("[HLS Pipeline] Assembled \(segmentURLs.count) subtitle segments into: \(destinationVTT.path)")
                     return
                 }
             }
 
-            try data.write(to: destinationVTT, options: .atomic)
+            try data.write(to: destinationVTT, options: Data.WritingOptions.atomic)
             PipelineLogger.shared.log("[HLS Pipeline] Saved raw subtitle to: \(destinationVTT.path)")
         } catch {
             PipelineLogger.shared.log("[HLS Pipeline] Subtitle download skipped (non-fatal): \(error.localizedDescription)")
