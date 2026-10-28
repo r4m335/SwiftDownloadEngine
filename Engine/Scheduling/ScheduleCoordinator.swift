@@ -15,22 +15,28 @@ import UserNotifications
 public final class ScheduleCoordinator: ObservableObject {
     public static let torrentBackgroundLimitationMessage = "Torrents can only be downloaded while the app is in the foreground. iOS terminates background sockets. HTTP/HTTPS downloads will run via background scheduling."
 
-    public let engine: DownloadEngine
+    public let engine: DownloadEngine?
     public let persistenceStore: DownloadPersistenceStore
     public let calendar: Calendar
+    public var resumeHandler: ((String) async -> Void)?
+    public var pauseHandler: ((String) async -> Void)?
 
     @Published public private(set) var rules: [ScheduleRule] = []
     @Published public private(set) var isReconciling: Bool = false
     @Published public private(set) var lastReconciledAt: Date? = nil
 
     public init(
-        engine: DownloadEngine,
+        engine: DownloadEngine? = nil,
         persistenceStore: DownloadPersistenceStore,
-        calendar: Calendar = .current
+        calendar: Calendar = .current,
+        resumeHandler: ((String) async -> Void)? = nil,
+        pauseHandler: ((String) async -> Void)? = nil
     ) {
         self.engine = engine
         self.persistenceStore = persistenceStore
         self.calendar = calendar
+        self.resumeHandler = resumeHandler
+        self.pauseHandler = pauseHandler
     }
 
     /// Loads persisted schedule rules into memory.
@@ -210,28 +216,37 @@ public final class ScheduleCoordinator: ObservableObject {
             let isInsideWindow = isDateInScheduleWindow(now, rule: rule)
 
             for downloadID in rule.targetDownloadIDs {
-                guard let record = try? await persistenceStore.fetch(tag: downloadID) else {
-                    continue
-                }
+                let record = try? await persistenceStore.fetch(tag: downloadID)
+                let state = record?.state ?? (isInsideWindow ? .paused : .downloading)
 
                 if isInsideWindow {
                     // Inside window: Resume/start if paused or pending
-                    if record.state == .paused || record.state == .pending {
-                        do {
-                            try await engine.resumeDownload(id: downloadID)
+                    if state == .paused || state == .pending {
+                        if let handler = resumeHandler {
+                            await handler(downloadID)
                             resumedIDs.append(downloadID)
-                        } catch {
-                            print("[ScheduleCoordinator] Failed to resume scheduled download \(downloadID): \(error.localizedDescription)")
+                        } else if let engine = engine {
+                            do {
+                                try await engine.resumeDownload(id: downloadID)
+                                resumedIDs.append(downloadID)
+                            } catch {
+                                print("[ScheduleCoordinator] Failed to resume scheduled download \(downloadID): \(error.localizedDescription)")
+                            }
                         }
                     }
                 } else {
                     // Outside window: Pause if currently downloading
-                    if record.state == .downloading || record.state == .pending {
-                        do {
-                            try await engine.pauseDownload(id: downloadID)
+                    if state == .downloading || state == .pending {
+                        if let handler = pauseHandler {
+                            await handler(downloadID)
                             pausedIDs.append(downloadID)
-                        } catch {
-                            print("[ScheduleCoordinator] Failed to pause scheduled download \(downloadID): \(error.localizedDescription)")
+                        } else if let engine = engine {
+                            do {
+                                try await engine.pauseDownload(id: downloadID)
+                                pausedIDs.append(downloadID)
+                            } catch {
+                                print("[ScheduleCoordinator] Failed to pause scheduled download \(downloadID): \(error.localizedDescription)")
+                            }
                         }
                     }
                 }
@@ -254,10 +269,8 @@ public final class ScheduleCoordinator: ObservableObject {
             if !isDateInScheduleWindow(now, rule: rule) {
                 // Calculate next occurrence for the background session tasks
                 if let nextStart = nextOccurrence(after: now, matching: rule.startTime, weekdays: rule.weekdays) {
-                    if let bgManager = engine.coordinator.backgroundSessionManager {
-                        for downloadID in rule.targetDownloadIDs {
-                            await bgManager.setEarliestBeginDate(nextStart, for: downloadID)
-                        }
+                    for downloadID in rule.targetDownloadIDs {
+                        await engine.setBackgroundEarliestBeginDate(nextStart, for: downloadID)
                     }
                 }
             }

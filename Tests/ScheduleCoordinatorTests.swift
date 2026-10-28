@@ -274,7 +274,7 @@ final class ScheduleCoordinatorTests: XCTestCase {
             targetDownloadIDs: ["dl-100"]
         )
         try persistenceStore.saveScheduleRule(rule)
-        coordinator.loadRules()
+        await coordinator.loadRules()
 
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(secondsFromGMT: 0)!
@@ -296,16 +296,16 @@ final class ScheduleCoordinatorTests: XCTestCase {
     }
 
     @MainActor
-    func testScheduleTaggingHelpers() {
+    func testScheduleTaggingHelpers() async {
         let coordinator = ScheduleCoordinator(persistenceStore: persistenceStore)
-        coordinator.loadRules()
+        await coordinator.loadRules()
 
         XCTAssertFalse(coordinator.isScheduled(downloadID: "task-abc"))
 
-        coordinator.toggleScheduled(downloadID: "task-abc")
+        await coordinator.toggleScheduled(downloadID: "task-abc")
         XCTAssertTrue(coordinator.isScheduled(downloadID: "task-abc"))
 
-        coordinator.toggleScheduled(downloadID: "task-abc")
+        await coordinator.toggleScheduled(downloadID: "task-abc")
         XCTAssertFalse(coordinator.isScheduled(downloadID: "task-abc"))
     }
 }

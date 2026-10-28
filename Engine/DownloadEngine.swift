@@ -904,6 +904,11 @@ public actor DownloadEngine {
         )
     }
 
+    /// Configures earliestBeginDate on background session tasks via the coordinator.
+    public func setBackgroundEarliestBeginDate(_ date: Date?, for downloadID: String? = nil) async {
+        await coordinator.setBackgroundEarliestBeginDate(date, for: downloadID)
+    }
+
     /// Closes all active event streams upon engine termination.
     public func shutdown() {
         for continuation in subscribers.values {

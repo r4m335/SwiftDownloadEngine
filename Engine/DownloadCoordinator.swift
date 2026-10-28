@@ -376,6 +376,11 @@ public actor DownloadCoordinator {
         self.backgroundSessionManager
     }
 
+    /// Configures earliestBeginDate on background session tasks.
+    public func setBackgroundEarliestBeginDate(_ date: Date?, for downloadID: String? = nil) async {
+        await backgroundSessionManager?.setEarliestBeginDate(date, for: downloadID)
+    }
+
     /// Dynamically updates the global bandwidth limit.
     public func setGlobalSpeedLimit(_ bytesPerSecond: Int64?) async {
         await globalBandwidthLimiter.setRateLimit(bytesPerSecond)
