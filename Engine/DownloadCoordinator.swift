@@ -577,7 +577,8 @@ public actor DownloadCoordinator {
             throw DownloadCoordinatorError.invalidRequest(reason: "Download record not found for ID: \(id)")
         }
 
-        let probeConfig = ProbeConfiguration(
+        let probe = HTTPRangeProbe(session: session)
+        let probeConfig = HTTPRangeProbeConfiguration(
             url: newURL,
             customHeaders: newHeaders ?? record.headers,
             retryCount: 2,
@@ -610,8 +611,7 @@ public actor DownloadCoordinator {
                     startOffset: seg.startOffset,
                     endOffset: seg.endOffset,
                     length: seg.length,
-                    completedBytes: 0,
-                    isCompleted: false
+                    completedBytes: 0
                 )
             }
             record.segments = zeroSegments
