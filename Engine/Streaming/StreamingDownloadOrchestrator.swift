@@ -290,6 +290,7 @@ public struct StreamingTransferProposal: Sendable, Equatable {
     public let manifest: StreamingTransferManifest
     public let resources: [StreamingTransferResource]
     public let estimatedTransferBytes: Int64?
+    public var estimatedTotalBytes: Int64? { estimatedTransferBytes }
 
     public init(
         transferID: String,

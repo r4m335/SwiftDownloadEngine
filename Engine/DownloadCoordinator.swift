@@ -304,7 +304,7 @@ public actor DownloadCoordinator {
     public typealias ProgressHandler = @Sendable (CoordinatorProgress) -> Void
 
     private let session: URLSession
-    private let persistenceStore: DownloadPersistenceStore
+    public let persistenceStore: DownloadPersistenceStore
 
     public let requestBudget: SharedRequestBudget
     public let globalBandwidthLimiter: BandwidthLimiter
