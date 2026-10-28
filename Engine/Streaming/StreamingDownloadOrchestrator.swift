@@ -481,6 +481,7 @@ public enum StreamingDownloadOrchestratorError: Error, LocalizedError, Sendable,
     case cancelled
     case hlsReconstructionFailed(HLSVODReconstructionError)
     case dashReconstructionFailed(DASHVODReconstructionError)
+    case insufficientDiskSpace(required: Int64, available: Int64)
 
     public var errorDescription: String? {
         switch self {
@@ -518,6 +519,8 @@ public enum StreamingDownloadOrchestratorError: Error, LocalizedError, Sendable,
             return error.localizedDescription
         case .dashReconstructionFailed(let error):
             return error.localizedDescription
+        case .insufficientDiskSpace(let required, let available):
+            return "Insufficient disk space for streaming transfer: required \(required) bytes, but only \(available) bytes are available."
         }
     }
 }
@@ -1028,6 +1031,19 @@ public actor StreamingDownloadOrchestrator {
 
         let pipelineTag = proposal.manifest.kind == .dash ? "[DASH Pipeline]" : "[HLS Pipeline]"
         PipelineLogger.shared.log("\(pipelineTag) Step 2: Segment download started (transferID: \(proposal.transferID), totalSegments: \(proposal.resources.count))")
+
+        // Preflight disk space verification before downloading streaming segments
+        if let estimatedSize = proposal.estimatedTotalBytes, estimatedSize > 0 {
+            let homeURL = URL(fileURLWithPath: NSHomeDirectory())
+            let keys: Set<URLResourceKey> = [.volumeAvailableCapacityForImportantUsageKey, .volumeAvailableCapacityKey]
+            if let values = try? homeURL.resourceValues(forKeys: keys) {
+                let available = values.volumeAvailableCapacityForImportantUsage ?? values.volumeAvailableCapacity.map(Int64.init) ?? 0
+                if available > 0 && available < estimatedSize {
+                    throw StreamingDownloadOrchestratorError.insufficientDiskSpace(required: estimatedSize, available: available)
+                }
+            }
+        }
+
         try FileManager.default.createDirectory(at: destinationDirectory, withIntermediateDirectories: true)
         var completed: [StreamingSegmentIdentity] = []
         var localFiles: [URL] = []

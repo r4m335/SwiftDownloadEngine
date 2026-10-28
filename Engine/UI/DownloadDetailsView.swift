@@ -509,6 +509,22 @@ public struct DownloadDetailsView: View {
                 }
             }
 
+            // Network Rules
+            Section(
+                header: Text("Network Rules"),
+                footer: Text("When 'Wi-Fi Only' is enabled, this download will not use cellular data or expensive metered networks.")
+            ) {
+                Toggle("Wi-Fi Only (Disable Cellular)", isOn: Binding(
+                    get: { currentSnapshot?.networkPolicy == .wifiOnly || transfer.networkPolicy == .wifiOnly },
+                    set: { isWifiOnly in
+                        let policy: DownloadNetworkPolicy = isWifiOnly ? .wifiOnly : .anyNetwork
+                        Task { @MainActor in
+                            await viewModel.updateNetworkPolicy(for: transfer.id, policy: policy)
+                        }
+                    }
+                ))
+            }
+
             // File & Location Details
             Section(header: Text("File Details")) {
                 DetailRow(label: "Destination", value: transfer.destinationURL.path)

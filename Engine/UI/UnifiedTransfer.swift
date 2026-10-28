@@ -89,6 +89,7 @@ public struct UnifiedTransfer: Identifiable, Sendable, Equatable {
     public let failureReason: String?
     public let checksumOutcome: ChecksumOutcome?
     public let transportPolicy: HTTPTransportPolicy?
+    public let networkPolicy: DownloadNetworkPolicy
 
     // Torrent-specific properties
     public let infoHash: String?
@@ -137,6 +138,7 @@ public struct UnifiedTransfer: Identifiable, Sendable, Equatable {
         self.failureReason = snapshot.failureReason
         self.checksumOutcome = snapshot.checksumOutcome
         self.transportPolicy = snapshot.transportPolicy
+        self.networkPolicy = snapshot.networkPolicy
 
         self.infoHash = nil
         self.connectedPeers = nil
@@ -181,6 +183,7 @@ public struct UnifiedTransfer: Identifiable, Sendable, Equatable {
         self.failureReason = task.errorMessage
         self.checksumOutcome = nil
         self.transportPolicy = nil
+        self.networkPolicy = .anyNetwork
 
         self.infoHash = task.infoHash
         self.connectedPeers = task.progress.connectedPeers

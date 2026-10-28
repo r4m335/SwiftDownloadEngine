@@ -46,6 +46,8 @@ public enum SegmentDownloaderError: Error, LocalizedError, Equatable, Sendable {
     case totalSizeMismatch(expected: Int64, actual: Int64)
     case bodyLengthMismatch(expected: Int64, actual: Int64)
     case rateLimited(retryAfterSeconds: Double?)
+    case tokenExpired
+    case accessDenied
     case htmlErrorPageReceived(contentType: String)
     case cancelled
 
@@ -69,6 +71,10 @@ public enum SegmentDownloaderError: Error, LocalizedError, Equatable, Sendable {
             } else {
                 return "Server rate limit exceeded (HTTP 429). Please wait before retrying."
             }
+        case .tokenExpired:
+            return "Server rejected authorization token or session expired (HTTP 401)"
+        case .accessDenied:
+            return "Server access denied or forbidden (HTTP 403)"
         case .htmlErrorPageReceived(let contentType):
             return "Server returned HTML error or login page instead of binary content (\(contentType))"
         case .cancelled:
@@ -135,6 +141,7 @@ public final class SegmentDownloader: Sendable {
         expectedTotalSize: Int64? = nil,
         headers: [String: String] = [:],
         eTag: String? = nil,
+        networkPolicy: DownloadNetworkPolicy = .anyNetwork,
         progress: ProgressHandler? = nil
     ) async throws {
         guard completedBytes < segment.length else {
@@ -162,6 +169,7 @@ public final class SegmentDownloader: Sendable {
                 expectedTotalSize: expectedTotalSize,
                 headers: headers,
                 eTag: eTag,
+                networkPolicy: networkPolicy,
                 progress: progress
             )
             if acquiredPermit, let budget = requestBudget {
@@ -184,6 +192,7 @@ public final class SegmentDownloader: Sendable {
         expectedTotalSize: Int64?,
         headers: [String: String],
         eTag: String?,
+        networkPolicy: DownloadNetworkPolicy = .anyNetwork,
         progress: ProgressHandler?
     ) async throws {
         let startOffset = segment.startOffset + completedBytes
@@ -192,6 +201,13 @@ public final class SegmentDownloader: Sendable {
 
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
+        request.allowsCellularAccess = networkPolicy.allowsCellularAccess
+        #if canImport(Foundation)
+        if #available(iOS 13.0, macOS 10.15, *) {
+            request.allowsExpensiveNetworkAccess = networkPolicy.allowsCellularAccess
+            request.allowsConstrainedNetworkAccess = networkPolicy.allowsCellularAccess
+        }
+        #endif
 
         // HTTP Range Header: bytes=start-end (inclusive)
         request.setValue("bytes=\(startOffset)-\(endOffset)", forHTTPHeaderField: "Range")
@@ -234,6 +250,14 @@ public final class SegmentDownloader: Sendable {
 
         if let allHeaders = httpResponse.allHeaderFields as? [String: String] {
             DownloadRequestEnricher.recordResponseCookies(headers: allHeaders, for: url)
+        }
+
+        if httpResponse.statusCode == 401 {
+            throw SegmentDownloaderError.tokenExpired
+        }
+
+        if httpResponse.statusCode == 403 {
+            throw SegmentDownloaderError.accessDenied
         }
 
         if httpResponse.statusCode == 429 {

@@ -116,6 +116,11 @@ public enum DownloadQueueError: Error, LocalizedError, Equatable, Sendable {
     case fileNotFoundAtPath(String)
     case invalidMediaFile(String)
     case muxingFailed(String)
+    case tokenExpired(url: URL)
+    case accessDenied(url: URL, cooldownUntil: Date)
+    case rateLimited(url: URL, retryAfter: TimeInterval?)
+    case nonResumable(url: URL)
+    case outOfDiskSpace(required: Int64, available: Int64)
 
     public var errorDescription: String? {
         switch self {
@@ -141,6 +146,21 @@ public enum DownloadQueueError: Error, LocalizedError, Equatable, Sendable {
             return reason
         case .muxingFailed(let reason):
             return reason
+        case .tokenExpired(let url):
+            return "Session or token expired (HTTP 401) for \(url.host ?? url.absoluteString). Please re-login or refresh the download link."
+        case .accessDenied(let url, let cooldown):
+            let seconds = max(0, Int(cooldown.timeIntervalSinceNow))
+            return "Access denied (HTTP 403) for \(url.host ?? url.absoluteString). Automatic retry paused for \(seconds)s cooldown."
+        case .rateLimited(let url, let retryAfter):
+            if let sec = retryAfter {
+                return "Rate limited (HTTP 429) for \(url.host ?? url.absoluteString). Retry after \(Int(sec))s."
+            } else {
+                return "Rate limited (HTTP 429) for \(url.host ?? url.absoluteString). Backing off before retrying."
+            }
+        case .nonResumable(let url):
+            return "Server does not support range requests or reliable resumption for \(url.host ?? url.absoluteString)."
+        case .outOfDiskSpace(let required, let available):
+            return "Insufficient disk space: required \(required) bytes, but only \(available) bytes are available."
         }
     }
 }

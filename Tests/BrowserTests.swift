@@ -1235,4 +1235,43 @@ final class BrowserTests: XCTestCase {
         XCTAssertNotNil(vm.blobCaptureErrorMessage ?? vm.streamingErrorMessage)
     }
     #endif
+
+    // MARK: - Task 4: Sniffer Filter Tests
+
+    func testBrowserSnifferFilterMatching() {
+        let filter = BrowserSnifferFilter(
+            allowedExtensions: ["mp4", "mkv", "zip"],
+            allowedMIMETypes: ["video/mp4", "application/zip"],
+            isFilterEnabled: true
+        )
+
+        let mp4Candidate = BrowserMediaCandidate(
+            id: "1",
+            url: URL(string: "https://example.com/video.mp4")!,
+            rawURL: "https://example.com/video.mp4",
+            finalURL: URL(string: "https://example.com/video.mp4")!,
+            kind: .directMedia,
+            availability: .ready,
+            mimeType: "video/mp4"
+        )
+        XCTAssertTrue(filter.matches(candidate: mp4Candidate))
+
+        let imageCandidate = BrowserMediaCandidate(
+            id: "2",
+            url: URL(string: "https://example.com/image.png")!,
+            rawURL: "https://example.com/image.png",
+            finalURL: URL(string: "https://example.com/image.png")!,
+            kind: .directMedia,
+            availability: .ready,
+            mimeType: "image/png"
+        )
+        XCTAssertFalse(filter.matches(candidate: imageCandidate))
+
+        let filtered = BrowserMediaDiscoveryBridge.filter(
+            candidates: [mp4Candidate, imageCandidate],
+            using: filter
+        )
+        XCTAssertEqual(filtered.count, 1)
+        XCTAssertEqual(filtered.first?.id, "1")
+    }
 }

@@ -29,6 +29,19 @@ public struct DownloadByteRange: Sendable, Equatable, Codable, Hashable {
     }
 }
 
+/// Defines network usage policy for downloads (e.g. Wi-Fi Only vs Any Network).
+public enum DownloadNetworkPolicy: String, Codable, Sendable, Equatable, CaseIterable {
+    case anyNetwork = "anyNetwork"
+    case wifiOnly = "wifiOnly"
+
+    public var allowsCellularAccess: Bool {
+        switch self {
+        case .anyNetwork: return true
+        case .wifiOnly: return false
+        }
+    }
+}
+
 /// Request parameters for a download operation coordinated by `DownloadCoordinator`.
 public struct DownloadRequest: Sendable, Equatable, Codable {
     public let id: String
@@ -48,6 +61,7 @@ public struct DownloadRequest: Sendable, Equatable, Codable {
     public var speedLimitBytesPerSecond: Int64?
     public var resumePolicy: ResumeIntegrityPolicy
     public var transportPolicy: HTTPTransportPolicy
+    public var networkPolicy: DownloadNetworkPolicy
     /// An optional exact byte range for a standalone streaming resource.
     /// Ordinary downloads leave this `nil` and use the existing coordinator path.
     public var requestedByteRange: DownloadByteRange?
@@ -68,6 +82,7 @@ public struct DownloadRequest: Sendable, Equatable, Codable {
         speedLimitBytesPerSecond: Int64? = nil,
         resumePolicy: ResumeIntegrityPolicy = .compatibility,
         transportPolicy: HTTPTransportPolicy = .foreground,
+        networkPolicy: DownloadNetworkPolicy = .anyNetwork,
         requestedByteRange: DownloadByteRange? = nil
     ) {
         self.id = id
@@ -85,11 +100,12 @@ public struct DownloadRequest: Sendable, Equatable, Codable {
         self.speedLimitBytesPerSecond = speedLimitBytesPerSecond
         self.resumePolicy = resumePolicy
         self.transportPolicy = transportPolicy
+        self.networkPolicy = networkPolicy
         self.requestedByteRange = requestedByteRange
     }
 
     enum CodingKeys: String, CodingKey {
-        case id, url, destinationURL, headers, persistSensitiveHeaders, configuredThreadCount, advancedMode, storageMode, reserveDiskBytes, retryCount, expectedSHA256, maxConcurrentRequests, speedLimitBytesPerSecond, resumePolicy, transportPolicy, requestedByteRange
+        case id, url, destinationURL, headers, persistSensitiveHeaders, configuredThreadCount, advancedMode, storageMode, reserveDiskBytes, retryCount, expectedSHA256, maxConcurrentRequests, speedLimitBytesPerSecond, resumePolicy, transportPolicy, networkPolicy, requestedByteRange
     }
 
     public init(from decoder: Decoder) throws {
@@ -109,6 +125,7 @@ public struct DownloadRequest: Sendable, Equatable, Codable {
         speedLimitBytesPerSecond = try container.decodeIfPresent(Int64.self, forKey: .speedLimitBytesPerSecond)
         resumePolicy = try container.decodeIfPresent(ResumeIntegrityPolicy.self, forKey: .resumePolicy) ?? .compatibility
         transportPolicy = try container.decodeIfPresent(HTTPTransportPolicy.self, forKey: .transportPolicy) ?? .foreground
+        networkPolicy = try container.decodeIfPresent(DownloadNetworkPolicy.self, forKey: .networkPolicy) ?? .anyNetwork
         requestedByteRange = try container.decodeIfPresent(DownloadByteRange.self, forKey: .requestedByteRange)
     }
 }
@@ -169,6 +186,11 @@ public enum DownloadCoordinatorError: Error, LocalizedError, Equatable, Sendable
     case cancelled
     case checksumMismatch(expected: String, actual: String)
     case segmentLayoutInvalid(reason: String)
+    case tokenExpired(url: URL)
+    case accessDenied(url: URL, cooldownUntil: Date)
+    case rateLimited(url: URL, retryAfter: TimeInterval?)
+    case nonResumable(url: URL)
+    case insufficientDiskSpace(required: Int64, available: Int64)
 
     public var errorDescription: String? {
         switch self {
@@ -188,6 +210,21 @@ public enum DownloadCoordinatorError: Error, LocalizedError, Equatable, Sendable
             return "Checksum mismatch: expected \(expected), computed \(actual)"
         case .segmentLayoutInvalid(let reason):
             return "Invalid segment layout: \(reason)"
+        case .tokenExpired(let url):
+            return "Session or token expired (HTTP 401) for \(url.host ?? url.absoluteString). Please re-login or refresh the download link."
+        case .accessDenied(let url, let cooldown):
+            let seconds = max(0, Int(cooldown.timeIntervalSinceNow))
+            return "Access denied (HTTP 403) for \(url.host ?? url.absoluteString). Automatic retry paused for \(seconds)s cooldown."
+        case .rateLimited(let url, let retryAfter):
+            if let sec = retryAfter {
+                return "Rate limited (HTTP 429) for \(url.host ?? url.absoluteString). Retry after \(Int(sec))s."
+            } else {
+                return "Rate limited (HTTP 429) for \(url.host ?? url.absoluteString). Backing off before retrying."
+            }
+        case .nonResumable(let url):
+            return "Server does not support range requests or reliable resumption for \(url.host ?? url.absoluteString)."
+        case .insufficientDiskSpace(let required, let available):
+            return "Insufficient disk space: required \(required) bytes, but only \(available) bytes are available."
         }
     }
 }
@@ -584,7 +621,8 @@ public actor DownloadCoordinator {
             let probe = HTTPRangeProbe(session: session)
             let probeConfig = HTTPRangeProbeConfiguration(
                 url: request.url,
-                customHeaders: request.headers
+                customHeaders: request.headers,
+                allowsCellularAccess: request.networkPolicy.allowsCellularAccess
             )
             var probeResult: HTTPRangeProbeResult!
             var probeAttempt = 0
@@ -597,7 +635,17 @@ public actor DownloadCoordinator {
                     if Task.isCancelled {
                         throw CancellationError()
                     }
+                    if case HTTPRangeProbeError.unauthorized(let u) = error {
+                        throw DownloadCoordinatorError.tokenExpired(url: u)
+                    }
+                    if case HTTPRangeProbeError.forbidden(let u) = error {
+                        let cooldown = Date().addingTimeInterval(300)
+                        throw DownloadCoordinatorError.accessDenied(url: u, cooldownUntil: cooldown)
+                    }
                     if probeAttempt >= request.retryCount {
+                        if case HTTPRangeProbeError.rateLimited(let u, let retryAfter) = error {
+                            throw DownloadCoordinatorError.rateLimited(url: u, retryAfter: retryAfter)
+                        }
                         throw error
                     }
                     probeAttempt += 1
@@ -622,10 +670,13 @@ public actor DownloadCoordinator {
                     record = nil
                 } else if !probeResult.supportsRange {
                     // Remote server does not support byte ranges for resumption.
-                    // Preserve the file and notify the user clearly.
-                    throw DownloadCoordinatorError.cannotResume(
-                        reason: "Resume unavailable: This server doesn't support reliable download resumption. Restarting the download may be required."
-                    )
+                    // 1DM+ architectural rule: automatically restart download from byte 0 instead of failing.
+                    print("[DownloadCoordinator] Server does not support byte ranges on resume for \(request.id); restarting download from byte 0.")
+                    isResume = false
+                    if FileManager.default.fileExists(atPath: request.destinationURL.path) {
+                        try? FileManager.default.removeItem(at: request.destinationURL)
+                    }
+                    record = nil
                 } else {
                     let validation = existing.validateForResume(
                         remoteETag: probeResult.eTag,
@@ -662,9 +713,13 @@ public actor DownloadCoordinator {
                         }
                         record = nil
                     case .unsupportedNonResumable:
-                        throw DownloadCoordinatorError.cannotResume(
-                            reason: "Resume unavailable: This server doesn't support reliable download resumption. Restarting the download may be required."
-                        )
+                        // 1DM+ rule: restart from 0 instead of failing with cannotResume
+                        print("[DownloadCoordinator] Server non-resumable on resume for \(request.id); restarting download cleanly from byte 0.")
+                        isResume = false
+                        if FileManager.default.fileExists(atPath: request.destinationURL.path) {
+                            try? FileManager.default.removeItem(at: request.destinationURL)
+                        }
+                        record = nil
                     }
                 }
             } else {
@@ -672,13 +727,28 @@ public actor DownloadCoordinator {
                 record = nil
             }
 
-            // Step 3: Disk-space preflight
+            // Step 3: Disk-space preflight & preallocation check
             if let totalSize = probeResult.totalSize, totalSize > 0 {
-                _ = try DownloadFileWriter.requireSufficientDiskSpace(
-                    for: request.destinationURL,
-                    requiredBytes: totalSize,
-                    reserveBytes: request.reserveDiskBytes
-                )
+                let homeURL = URL(fileURLWithPath: NSHomeDirectory())
+                let keys: Set<URLResourceKey> = [.volumeAvailableCapacityForImportantUsageKey, .volumeAvailableCapacityKey]
+                if let values = try? homeURL.resourceValues(forKeys: keys) {
+                    let available = values.volumeAvailableCapacityForImportantUsage ?? values.volumeAvailableCapacity.map(Int64.init) ?? 0
+                    if available > 0 && available < totalSize {
+                        throw DownloadCoordinatorError.insufficientDiskSpace(required: totalSize, available: available)
+                    }
+                }
+                do {
+                    _ = try DownloadFileWriter.requireSufficientDiskSpace(
+                        for: request.destinationURL,
+                        requiredBytes: totalSize,
+                        reserveBytes: request.reserveDiskBytes
+                    )
+                } catch let error as DownloadFileWriterError {
+                    if case .insufficientDiskSpace(let req, let avail) = error {
+                        throw DownloadCoordinatorError.insufficientDiskSpace(required: req, available: avail)
+                    }
+                    throw error
+                }
             }
 
             // Step 4: Dispatch strategy based on server capabilities and transport policy
@@ -722,11 +792,12 @@ public actor DownloadCoordinator {
                     } catch {
                         if Self.isRangeIgnored(error) {
                             if isResume {
-                                throw DownloadCoordinatorError.cannotResume(
-                                    reason: "Resume unavailable: This server doesn't support reliable download resumption. Restarting the download may be required."
-                                )
+                                print("[DownloadCoordinator] Server ignored byte range on resume for \(request.id); restarting download cleanly from byte 0.")
+                                if FileManager.default.fileExists(atPath: executionRequest.destinationURL.path) {
+                                    try? FileManager.default.removeItem(at: executionRequest.destinationURL)
+                                }
                             }
-                            // Safe fallback for fresh downloads: Server returned 200 after ranged request
+                            // Safe fallback for fresh or restarted downloads: Server returned 200 after ranged request
                             try await runSingleStreamFallback(
                                 request: executionRequest,
                                 probeResult: probeResult,
@@ -1015,6 +1086,7 @@ public actor DownloadCoordinator {
                                         lastModified: probeResult.lastModified
                                     ),
                                     eTag: probeResult.eTag,
+                                    networkPolicy: request.networkPolicy,
                                     progress: { snapshot in
                                         Task {
                                             let agg = await progressAccumulator.update(
@@ -1057,10 +1129,20 @@ public actor DownloadCoordinator {
                                 if Task.isCancelled {
                                     throw CancellationError()
                                 }
+                                if case SegmentDownloaderError.tokenExpired = error {
+                                    throw DownloadCoordinatorError.tokenExpired(url: request.url)
+                                }
+                                if case SegmentDownloaderError.accessDenied = error {
+                                    let cooldown = Date().addingTimeInterval(300)
+                                    throw DownloadCoordinatorError.accessDenied(url: request.url, cooldownUntil: cooldown)
+                                }
                                 if Self.isRangeIgnored(error) {
                                     throw error // Fail-fast to trigger fallback
                                 }
                                 if attempt >= request.retryCount {
+                                    if case SegmentDownloaderError.rateLimited(let retryAfter) = error {
+                                        throw DownloadCoordinatorError.rateLimited(url: request.url, retryAfter: retryAfter)
+                                    }
                                     throw error
                                 }
                                 attempt += 1
@@ -1268,8 +1350,20 @@ public actor DownloadCoordinator {
             try? fileHandle.close()
         }
 
+        // File Preallocation: Preallocate disk space to catch disk-full / quota errors at byte 0
+        if let total = probeResult.totalSize, total > 0 {
+            try? fileHandle.truncate(atOffset: UInt64(total))
+        }
+
         var urlRequest = URLRequest(url: probeResult.finalURL)
         urlRequest.httpMethod = "GET"
+        urlRequest.allowsCellularAccess = request.networkPolicy.allowsCellularAccess
+        #if canImport(Foundation)
+        if #available(iOS 13.0, macOS 10.15, *) {
+            urlRequest.allowsExpensiveNetworkAccess = request.networkPolicy.allowsCellularAccess
+            urlRequest.allowsConstrainedNetworkAccess = request.networkPolicy.allowsCellularAccess
+        }
+        #endif
         urlRequest.setValue("identity", forHTTPHeaderField: "Accept-Encoding")
         for (name, value) in request.headers {
             if name.caseInsensitiveCompare("Accept-Encoding") == .orderedSame ||
@@ -1295,6 +1389,7 @@ public actor DownloadCoordinator {
             totalSize: expectedTotal ?? 0,
             state: .downloading,
             storageMode: .directSeek,
+            networkPolicy: request.networkPolicy,
             eTag: probeResult.eTag,
             lastModified: probeResult.lastModified,
             suggestedFilename: probeResult.suggestedFilename,

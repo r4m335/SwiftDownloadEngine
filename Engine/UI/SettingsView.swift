@@ -24,6 +24,11 @@ public struct SettingsView: View {
     @State private var targetRatio: Double = 1.0
     @State private var targetDurationMinutes: Int = 60
 
+    // Media Sniffer Filter Settings
+    @State private var enableSnifferFilter: Bool = true
+    @State private var snifferExtensions: String = ""
+    @State private var snifferMIMETypes: String = ""
+
     // UI Feedback
     @State private var showingSavedAlert: Bool = false
     @State private var statusMessage: String? = nil
@@ -171,6 +176,32 @@ public struct SettingsView: View {
                     }
                 }
 
+                // Section 8: Media Sniffer Filters
+                Section(
+                    header: Text("Media Sniffer Filters"),
+                    footer: Text("Filter browser Grabber media candidates by comma-separated file extensions and MIME type prefixes.")
+                ) {
+                    Toggle("Enable Media Sniffer Filter", isOn: $enableSnifferFilter)
+
+                    if enableSnifferFilter {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("Allowed Extensions")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                            TextField("mp4, mkv, mp3, m3u8, zip...", text: $snifferExtensions)
+                                .textFieldStyle(RoundedBorderTextFieldStyle())
+                        }
+
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("Allowed MIME Types")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                            TextField("video/, audio/, application/...", text: $snifferMIMETypes)
+                                .textFieldStyle(RoundedBorderTextFieldStyle())
+                        }
+                    }
+                }
+
                 // Section 8: Save Action
                 Section {
                     Button {
@@ -218,6 +249,11 @@ public struct SettingsView: View {
             self.enableGlobalSpeedLimit = false
             self.globalSpeedLimitKBps = "2048"
         }
+
+        let sniffer = BrowserSnifferFilter.load()
+        self.enableSnifferFilter = sniffer.isFilterEnabled
+        self.snifferExtensions = sniffer.allowedExtensions.joined(separator: ", ")
+        self.snifferMIMETypes = sniffer.allowedMIMETypes.joined(separator: ", ")
     }
 
     private func saveSettings() {
@@ -235,6 +271,21 @@ public struct SettingsView: View {
         )
 
         Task { @MainActor in
+            let exts = snifferExtensions
+                .split(separator: ",")
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+            let mimes = snifferMIMETypes
+                .split(separator: ",")
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+            let filter = BrowserSnifferFilter(
+                allowedExtensions: exts.isEmpty ? BrowserSnifferFilter.defaultExtensions : exts,
+                allowedMIMETypes: mimes.isEmpty ? BrowserSnifferFilter.defaultMIMETypes : mimes,
+                isFilterEnabled: enableSnifferFilter
+            )
+            filter.save()
+
             try? await viewModel.updateSettings(
                 maxConcurrent: maxConcurrent,
                 maxGlobalRequests: maxGlobalRequests,

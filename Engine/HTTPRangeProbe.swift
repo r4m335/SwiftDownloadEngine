@@ -155,6 +155,12 @@ final class HTTPRangeProbe: Sendable {
         request.httpMethod = configuration.probeMethod.rawValue
         request.timeoutInterval = configuration.timeoutInterval
         request.allowsCellularAccess = configuration.allowsCellularAccess
+        #if canImport(Foundation)
+        if #available(iOS 13.0, macOS 10.15, *) {
+            request.allowsExpensiveNetworkAccess = configuration.allowsCellularAccess
+            request.allowsConstrainedNetworkAccess = configuration.allowsCellularAccess
+        }
+        #endif
 
         // Replicating 1DM+ header setup:
         // Accept-Encoding: gzip, deflate (e.java:L5637, e.java:L7331)

@@ -644,5 +644,146 @@ final class DownloadCoordinatorTests: XCTestCase {
             XCTFail("Unexpected error type: \(error)")
         }
     }
+
+    // MARK: - Task 1: Network Policy Tests
+
+    func testNetworkPolicyCellularVsWifiOnly() {
+        let anyNet = DownloadNetworkPolicy.anyNetwork
+        XCTAssertTrue(anyNet.allowsCellularAccess)
+
+        let wifiOnly = DownloadNetworkPolicy.wifiOnly
+        XCTAssertFalse(wifiOnly.allowsCellularAccess)
+
+        let request = DownloadRequest(
+            id: "net-test",
+            url: URL(string: "https://example.com/file.zip")!,
+            destinationURL: tempDirectory.appendingPathComponent("file.zip"),
+            networkPolicy: .wifiOnly
+        )
+        XCTAssertEqual(request.networkPolicy, .wifiOnly)
+        XCTAssertFalse(request.networkPolicy.allowsCellularAccess)
+    }
+
+    // MARK: - Task 2: Mature Error Policy Tests
+
+    func testMatureErrorPolicyTokenExpired401() async throws {
+        let testURL = URL(string: "https://example.com/protected_token.zip")!
+        let destURL = tempDirectory.appendingPathComponent("protected_token.zip")
+
+        MockURLProtocol.setHandler(for: testURL) { _ in
+            let resp = HTTPURLResponse(url: testURL, statusCode: 401, httpVersion: "HTTP/1.1", headerFields: [:])!
+            return (resp, Data("Unauthorized".utf8))
+        }
+
+        let request = DownloadRequest(
+            id: "dl-401-test",
+            url: testURL,
+            destinationURL: destURL
+        )
+
+        do {
+            try await coordinator.start(request)
+            XCTFail("Expected coordinator.start to throw tokenExpired error")
+        } catch let error as DownloadCoordinatorError {
+            guard case .tokenExpired(let url) = error else {
+                XCTFail("Expected tokenExpired, got: \(error)")
+                return
+            }
+            XCTAssertEqual(url, testURL)
+        }
+    }
+
+    func testMatureErrorPolicyAccessDenied403Cooldown() async throws {
+        let testURL = URL(string: "https://example.com/forbidden.zip")!
+        let destURL = tempDirectory.appendingPathComponent("forbidden.zip")
+
+        MockURLProtocol.setHandler(for: testURL) { _ in
+            let resp = HTTPURLResponse(url: testURL, statusCode: 403, httpVersion: "HTTP/1.1", headerFields: [:])!
+            return (resp, Data("Forbidden".utf8))
+        }
+
+        let request = DownloadRequest(
+            id: "dl-403-test",
+            url: testURL,
+            destinationURL: destURL
+        )
+
+        do {
+            try await coordinator.start(request)
+            XCTFail("Expected coordinator.start to throw accessDenied error")
+        } catch let error as DownloadCoordinatorError {
+            guard case .accessDenied(let url, let cooldownUntil) = error else {
+                XCTFail("Expected accessDenied, got: \(error)")
+                return
+            }
+            XCTAssertEqual(url, testURL)
+            XCTAssertGreaterThan(cooldownUntil, Date())
+        }
+    }
+
+    func testNonResumableServerRestartsDownloadFromZero() async throws {
+        let testURL = URL(string: "https://example.com/non_resumable.bin")!
+        let destURL = tempDirectory.appendingPathComponent("non_resumable.bin")
+        let totalSize: Int64 = 1000
+
+        // Create an initial partial file on disk
+        let partialData = Data(repeating: 0x55, count: 200)
+        FileManager.default.createFile(atPath: destURL.path, contents: partialData)
+
+        // Seed persisted record with partially completed segment
+        let existingRecord = DownloadRecord(
+            id: "dl-non-resumable-test",
+            originalURL: testURL,
+            destinationURL: destURL,
+            totalSize: totalSize,
+            state: .paused,
+            storageMode: .directSeek,
+            segments: [
+                SegmentRecord(
+                    id: 0,
+                    startOffset: 0,
+                    endOffset: totalSize - 1,
+                    length: totalSize,
+                    completedBytes: 200,
+                    isCompleted: false
+                )
+            ]
+        )
+        try await persistenceStore.save(existingRecord)
+
+        // Remote server:
+        // Probe returns 200 (does not support byte ranges, accept-ranges: none)
+        // Download request returns full content
+        let fullData = Data(repeating: 0x99, count: Int(totalSize))
+        MockURLProtocol.setHandler(for: testURL) { request in
+            let headers = [
+                "Content-Length": "\(totalSize)",
+                "Accept-Ranges": "none"
+            ]
+            let resp = HTTPURLResponse(url: testURL, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: headers)!
+            return (resp, fullData)
+        }
+
+        let request = DownloadRequest(
+            id: "dl-non-resumable-test",
+            url: testURL,
+            destinationURL: destURL
+        )
+
+        try await coordinator.start(request)
+
+        // Verify file was cleanly downloaded from byte 0 (not corrupted or failed)
+        let downloadedData = try Data(contentsOf: destURL)
+        XCTAssertEqual(downloadedData.count, Int(totalSize))
+        XCTAssertEqual(downloadedData, fullData)
+    }
+
+    // MARK: - Task 3: Preallocation & Disk Space Check Tests
+
+    func testPreallocationAndDiskCheckModel() {
+        let error = DownloadCoordinatorError.insufficientDiskSpace(required: 1_000_000_000, available: 500_000_000)
+        XCTAssertTrue(error.errorDescription?.contains("Insufficient disk space") == true)
+        XCTAssertTrue(error.errorDescription?.contains("1000000000") == true)
+    }
 }
 

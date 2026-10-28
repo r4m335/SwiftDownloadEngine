@@ -29,6 +29,7 @@ public struct DownloadSnapshot: Sendable, Equatable, Identifiable, Codable {
     public let checksumOutcome: ChecksumOutcome
     public let enqueuedAt: Date
     public let transportPolicy: HTTPTransportPolicy
+    public var networkPolicy: DownloadNetworkPolicy
 
     public var isTerminal: Bool {
         state.isTerminal
@@ -63,6 +64,30 @@ public struct DownloadSnapshot: Sendable, Equatable, Identifiable, Codable {
         return false
     }
 
+    public var isTokenExpired: Bool {
+        if case .failed(let reason) = state {
+            return reason.localizedCaseInsensitiveContains("token expired") ||
+                   reason.localizedCaseInsensitiveContains("401")
+        }
+        return false
+    }
+
+    public var isAccessDenied: Bool {
+        if case .failed(let reason) = state {
+            return reason.localizedCaseInsensitiveContains("access denied") ||
+                   reason.localizedCaseInsensitiveContains("403")
+        }
+        return false
+    }
+
+    public var isOutOfDiskSpace: Bool {
+        if case .failed(let reason) = state {
+            return reason.localizedCaseInsensitiveContains("disk space") ||
+                   reason.localizedCaseInsensitiveContains("out of space")
+        }
+        return false
+    }
+
     public init(
         id: DownloadID,
         url: URL,
@@ -79,7 +104,8 @@ public struct DownloadSnapshot: Sendable, Equatable, Identifiable, Codable {
         failureReason: String? = nil,
         checksumOutcome: ChecksumOutcome = .notChecked,
         enqueuedAt: Date = Date(),
-        transportPolicy: HTTPTransportPolicy = .foreground
+        transportPolicy: HTTPTransportPolicy = .foreground,
+        networkPolicy: DownloadNetworkPolicy = .anyNetwork
     ) {
         self.id = id
         self.url = url
@@ -97,10 +123,11 @@ public struct DownloadSnapshot: Sendable, Equatable, Identifiable, Codable {
         self.checksumOutcome = checksumOutcome
         self.enqueuedAt = enqueuedAt
         self.transportPolicy = transportPolicy
+        self.networkPolicy = networkPolicy
     }
 
     enum CodingKeys: String, CodingKey {
-        case id, url, destinationURL, state, priority, completedBytes, totalBytes, progressFraction, currentBytesPerSecond, averageBytesPerSecond, elapsedTime, estimatedTimeRemaining, failureReason, checksumOutcome, enqueuedAt, transportPolicy
+        case id, url, destinationURL, state, priority, completedBytes, totalBytes, progressFraction, currentBytesPerSecond, averageBytesPerSecond, elapsedTime, estimatedTimeRemaining, failureReason, checksumOutcome, enqueuedAt, transportPolicy, networkPolicy
     }
 
     public init(from decoder: Decoder) throws {
@@ -121,6 +148,7 @@ public struct DownloadSnapshot: Sendable, Equatable, Identifiable, Codable {
         checksumOutcome = try container.decodeIfPresent(ChecksumOutcome.self, forKey: .checksumOutcome) ?? .notChecked
         enqueuedAt = try container.decodeIfPresent(Date.self, forKey: .enqueuedAt) ?? Date()
         transportPolicy = try container.decodeIfPresent(HTTPTransportPolicy.self, forKey: .transportPolicy) ?? .foreground
+        networkPolicy = try container.decodeIfPresent(DownloadNetworkPolicy.self, forKey: .networkPolicy) ?? .anyNetwork
     }
 }
 
@@ -851,7 +879,8 @@ public actor DownloadEngine {
             failureReason: failureReason,
             checksumOutcome: outcome,
             enqueuedAt: item.enqueuedAt,
-            transportPolicy: item.request.transportPolicy
+            transportPolicy: item.request.transportPolicy,
+            networkPolicy: item.request.networkPolicy
         )
     }
 

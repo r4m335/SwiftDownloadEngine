@@ -332,7 +332,9 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
                     estimatedTimeRemaining: existing.estimatedTimeRemaining,
                     failureReason: existing.failureReason,
                     checksumOutcome: outcome,
-                    enqueuedAt: existing.enqueuedAt
+                    enqueuedAt: existing.enqueuedAt,
+                    transportPolicy: existing.transportPolicy,
+                    networkPolicy: existing.networkPolicy
                 )
                 downloads[index] = updated
                 if selectedDownload?.id == id {
@@ -344,6 +346,19 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
         case .queueStateChanged(let summary):
             self.queueSummary = summary
         }
+    }
+
+    public func updateNetworkPolicy(for id: String, policy: DownloadNetworkPolicy) async {
+        if let index = downloads.firstIndex(where: { $0.id == id }) {
+            var existing = downloads[index]
+            existing.networkPolicy = policy
+            downloads[index] = existing
+            if selectedDownload?.id == id {
+                selectedDownload = existing
+            }
+            rebuildUnifiedTransfers()
+        }
+        _ = try? await engine.coordinator.persistenceStore.updateNetworkPolicy(tag: id, policy: policy)
     }
 
     private func upsertSnapshot(_ snap: DownloadSnapshot) {

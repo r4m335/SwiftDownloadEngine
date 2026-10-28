@@ -139,6 +139,7 @@ public struct DownloadRecord: Codable, Equatable, Identifiable, Sendable {
     public var state: DownloadState
     public var storageMode: DownloadStorageMode
     public var transportPolicy: HTTPTransportPolicy
+    public var networkPolicy: DownloadNetworkPolicy
     public var eTag: String?
     public var lastModified: String?
     public var suggestedFilename: String?
@@ -174,6 +175,7 @@ public struct DownloadRecord: Codable, Equatable, Identifiable, Sendable {
         state: DownloadState = .pending,
         storageMode: DownloadStorageMode = .directSeek,
         transportPolicy: HTTPTransportPolicy = .foreground,
+        networkPolicy: DownloadNetworkPolicy = .anyNetwork,
         eTag: String? = nil,
         lastModified: String? = nil,
         suggestedFilename: String? = nil,
@@ -191,6 +193,7 @@ public struct DownloadRecord: Codable, Equatable, Identifiable, Sendable {
         self.state = state
         self.storageMode = storageMode
         self.transportPolicy = transportPolicy
+        self.networkPolicy = networkPolicy
         self.eTag = eTag
         self.lastModified = lastModified
         self.suggestedFilename = suggestedFilename
@@ -202,7 +205,7 @@ public struct DownloadRecord: Codable, Equatable, Identifiable, Sendable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case id, originalURL, resolvedURL, destinationURL, totalSize, state, storageMode, transportPolicy
+        case id, originalURL, resolvedURL, destinationURL, totalSize, state, storageMode, transportPolicy, networkPolicy
         case eTag, lastModified, suggestedFilename, mimeType, headers, createdAt, updatedAt, segments
     }
 
@@ -216,6 +219,7 @@ public struct DownloadRecord: Codable, Equatable, Identifiable, Sendable {
         self.state = try container.decode(DownloadState.self, forKey: .state)
         self.storageMode = try container.decode(DownloadStorageMode.self, forKey: .storageMode)
         self.transportPolicy = try container.decodeIfPresent(HTTPTransportPolicy.self, forKey: .transportPolicy) ?? .foreground
+        self.networkPolicy = try container.decodeIfPresent(DownloadNetworkPolicy.self, forKey: .networkPolicy) ?? .anyNetwork
         self.eTag = try container.decodeIfPresent(String.self, forKey: .eTag)
         self.lastModified = try container.decodeIfPresent(String.self, forKey: .lastModified)
         self.suggestedFilename = try container.decodeIfPresent(String.self, forKey: .suggestedFilename)
@@ -456,6 +460,19 @@ public actor DownloadPersistenceStore {
         }
 
         record.transition(to: state)
+        cache[record.id] = record
+        try writeRecordToDisk(record)
+        return record
+    }
+
+    /// Updates the network usage policy of a download record.
+    @discardableResult
+    public func updateNetworkPolicy(tag: String, policy: DownloadNetworkPolicy) throws -> DownloadRecord {
+        guard var record = try fetch(tag: tag) else {
+            throw DownloadPersistenceError.recordNotFound(tag: tag)
+        }
+        record.networkPolicy = policy
+        record.updatedAt = Date()
         cache[record.id] = record
         try writeRecordToDisk(record)
         return record

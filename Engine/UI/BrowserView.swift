@@ -1419,7 +1419,8 @@ public final class BrowserViewModel: NSObject, ObservableObject {
             mediaCandidates = []
             return
         }
-        mediaCandidates = mediaCandidateCatalogs[activeTabID]?.candidates ?? []
+        let rawCandidates = mediaCandidateCatalogs[activeTabID]?.candidates ?? []
+        mediaCandidates = BrowserMediaDiscoveryBridge.filter(candidates: rawCandidates)
     }
 
     private func ingestMediaObservation(
