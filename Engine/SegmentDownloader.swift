@@ -96,6 +96,8 @@ public enum SegmentDownloaderError: Error, LocalizedError, Equatable, Sendable {
 /// - Writes incoming chunks directly to the shared `DownloadFileWriter` at the worker's assigned offset.
 /// - Validates both the `Content-Range` response header and the exact downloaded byte count.
 public final class SegmentDownloader: Sendable {
+    public static let sharedSession: URLSession = ForegroundURLSession.make()
+
     public typealias ProgressHandler = @Sendable (SegmentDownloadSnapshot) -> Void
 
     private let session: URLSession
@@ -108,7 +110,7 @@ public final class SegmentDownloader: Sendable {
     private let maxConcurrentRequests: Int?
 
     public init(
-        session: URLSession = .shared,
+        session: URLSession = SegmentDownloader.sharedSession,
         writer: DownloadFileWriter,
         requestBudget: SharedRequestBudget? = nil,
         globalBandwidthLimiter: BandwidthLimiter? = nil,
@@ -232,23 +234,20 @@ public final class SegmentDownloader: Sendable {
 
         request = await DownloadRequestEnricher.enrichAsync(request)
 
-        let response: URLResponse
-        let bytes: URLSession.AsyncBytes
+        let chunkStream = URLSessionDataChunkStream(session: session, request: request)
+        defer { chunkStream.cancel() }
 
+        let httpResponse: HTTPURLResponse
         do {
-            let (streamBytes, streamResponse) = try await session.bytes(for: request)
-            bytes = streamBytes
-            response = streamResponse
+            httpResponse = try await chunkStream.start()
         } catch is CancellationError {
             throw SegmentDownloaderError.cancelled
         } catch let urlError as URLError where urlError.code == .cancelled {
             throw SegmentDownloaderError.cancelled
+        } catch let urlError as URLError where urlError.code == .badServerResponse {
+            throw SegmentDownloaderError.invalidHTTPResponse
         } catch {
             throw error
-        }
-
-        guard let httpResponse = response as? HTTPURLResponse else {
-            throw SegmentDownloaderError.invalidHTTPResponse
         }
 
         if let allHeaders = httpResponse.allHeaderFields as? [String: String] {
@@ -296,55 +295,33 @@ public final class SegmentDownloader: Sendable {
 
         var currentOffset = startOffset
         var receivedThisSession: Int64 = 0
-        var buffer = Data()
-        buffer.reserveCapacity(64 * 1024) // 64 KiB I/O buffer
 
         do {
-            for try await byte in bytes {
+            while let chunk = try await chunkStream.next() {
                 try Task.checkCancellation()
-                buffer.append(byte)
 
-                if buffer.count >= 64 * 1024 {
-                    // Apply global and per-download rate limiting
-                    if globalBandwidthLimiter != nil || perDownloadBandwidthLimiter != nil {
-                        try await BandwidthLimiter.throttle(
-                            bytes: Int64(buffer.count),
-                            global: globalBandwidthLimiter,
-                            perDownload: perDownloadBandwidthLimiter
-                        )
-                    }
-
-                    try await writer.writeDirect(buffer, at: currentOffset)
-                    currentOffset += Int64(buffer.count)
-                    receivedThisSession += Int64(buffer.count)
-                    speedTracker?.record(bytes: Int64(buffer.count))
-                    buffer.removeAll(keepingCapacity: true)
-
-                    progress?(SegmentDownloadSnapshot(
-                        bytesReceived: completedBytes + receivedThisSession,
-                        expectedBytes: segment.length,
-                        completedSegments: 0,
-                        totalSegments: 1
-                    ))
-                }
-            }
-
-            // Flush remaining buffered bytes
-            if !buffer.isEmpty {
-                try Task.checkCancellation()
+                // URLSession has already coalesced network bytes into this Data
+                // chunk. Keep that chunk intact for the file write; unlike the
+                // old AsyncBytes loop, no async suspension occurs per byte.
                 if globalBandwidthLimiter != nil || perDownloadBandwidthLimiter != nil {
                     try await BandwidthLimiter.throttle(
-                        bytes: Int64(buffer.count),
+                        bytes: Int64(chunk.count),
                         global: globalBandwidthLimiter,
                         perDownload: perDownloadBandwidthLimiter
                     )
                 }
 
-                try await writer.writeDirect(buffer, at: currentOffset)
-                currentOffset += Int64(buffer.count)
-                receivedThisSession += Int64(buffer.count)
-                speedTracker?.record(bytes: Int64(buffer.count))
-                buffer.removeAll(keepingCapacity: false)
+                try writer.writeDirect(chunk, at: currentOffset)
+                currentOffset += Int64(chunk.count)
+                receivedThisSession += Int64(chunk.count)
+                speedTracker?.record(bytes: Int64(chunk.count))
+
+                progress?(SegmentDownloadSnapshot(
+                    bytesReceived: completedBytes + receivedThisSession,
+                    expectedBytes: segment.length,
+                    completedSegments: 0,
+                    totalSegments: 1
+                ))
             }
         } catch is CancellationError {
             throw SegmentDownloaderError.cancelled

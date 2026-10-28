@@ -86,9 +86,10 @@ extension BrowserMediaURLResolver {
 /// URLSession-backed manifest loader. Redirects are followed only after applying
 /// the existing cross-origin credential stripping policy.
 public final class URLSessionStreamingManifestLoader: StreamingManifestLoader, @unchecked Sendable {
+    public static let sharedSession: URLSession = ForegroundURLSession.make()
     private let session: URLSession
 
-    public init(session: URLSession = .shared) {
+    public init(session: URLSession = URLSessionStreamingManifestLoader.sharedSession) {
         self.session = session
     }
 
@@ -421,12 +422,14 @@ public final class DownloadCoordinatorSegmentExecutor: StreamingSegmentExecutor,
 
 /// Standalone segment executor using URLSession for environments where DownloadCoordinator is not yet injected.
 public final class URLSessionStreamingSegmentExecutor: StreamingSegmentExecutor, @unchecked Sendable {
+    public static let sharedSession: URLSession = ForegroundURLSession.make()
+
     private let session: URLSession
     private let lock = NSLock()
     private var activeTasks: [String: Set<URLSessionDownloadTask>] = [:]
 
-    public init(session: URLSession = .shared) {
-        self.session = session
+    public init(session: URLSession? = nil) {
+        self.session = session ?? Self.sharedSession
     }
 
     public func execute(
@@ -1065,7 +1068,8 @@ public actor StreamingDownloadOrchestrator {
         }
 
         let pipelineTag = proposal.manifest.kind == .dash ? "[DASH Pipeline]" : "[HLS Pipeline]"
-        PipelineLogger.shared.log("\(pipelineTag) Step 2: Segment download started (transferID: \(proposal.transferID), totalSegments: \(proposal.resources.count))")
+        let maxConcurrency = 6
+        PipelineLogger.shared.log("\(pipelineTag) Step 2: Parallel segment download started (Max concurrency: \(maxConcurrency))")
 
         // Preflight disk space verification before downloading streaming segments
         if let estimatedSize = proposal.estimatedTotalBytes, estimatedSize > 0 {
@@ -1090,66 +1094,80 @@ public actor StreamingDownloadOrchestrator {
         }
 
         try FileManager.default.createDirectory(at: destinationDirectory, withIntermediateDirectories: true)
-        var completed: [StreamingSegmentIdentity] = []
-        var localFiles: [URL] = []
+        let totalSegments = proposal.resources.count
+        var completedIdentities: [StreamingSegmentIdentity?] = Array(repeating: nil, count: totalSegments)
+        var localFiles: [URL?] = Array(repeating: nil, count: totalSegments)
+        var completedCount: Int = 0
         var actualDownloadedBytes: Int64 = 0
         var lastSpeedCheckTime = Date()
         var lastSpeedCheckBytes: Int64 = 0
         var currentBytesPerSecond: Double = 0.0
-        do {
-            for resource in proposal.resources {
-                if isCancelled(transferID: proposal.transferID) || Task.isCancelled {
-                    PipelineLogger.shared.log("\(pipelineTag) Transfer was cancelled.")
-                    throw StreamingDownloadOrchestratorError.cancelled
-                }
 
-                while isPaused(transferID: proposal.transferID) {
-                    try await Task.sleep(nanoseconds: 350_000_000)
-                    if isCancelled(transferID: proposal.transferID) || Task.isCancelled {
-                        PipelineLogger.shared.log("\(pipelineTag) Transfer was cancelled while paused.")
-                        throw StreamingDownloadOrchestratorError.cancelled
+        do {
+            try await withThrowingTaskGroup(of: DownloadedSegmentResult.self) { group in
+                var nextIndex = 0
+
+                // Launch initial concurrency pool up to maxConcurrency
+                while nextIndex < totalSegments && nextIndex < maxConcurrency {
+                    let indexToDownload = nextIndex
+                    let resource = proposal.resources[indexToDownload]
+                    nextIndex += 1
+
+                    group.addTask {
+                        try await self.downloadSegment(
+                            resource: resource,
+                            index: indexToDownload,
+                            proposal: proposal,
+                            destinationDirectory: destinationDirectory,
+                            pipelineTag: pipelineTag
+                        )
                     }
                 }
 
-                let completedBefore = completed.count
-                let destinationURL = destinationDirectory.appendingPathComponent(
-                    "\(resource.identity.value).part",
-                    isDirectory: false
-                )
-                let targetURL: URL
-                if let urlResolver {
-                    targetURL = (try? await urlResolver.resolveMediaURL(resource.url)) ?? resource.url
-                } else {
-                    targetURL = resource.url
-                }
-                let request = StreamingSegmentTransferRequest(
-                    identity: resource.identity,
-                    url: targetURL,
-                    headers: requestHeaders(for: resource, manifest: proposal.manifest),
-                    byteRange: resource.byteRange,
-                    destinationURL: destinationURL
-                )
+                // Process completions as segments finish (handling out-of-order completion safely)
+                while let result = try await group.next() {
+                    if isCancelled(transferID: proposal.transferID) || Task.isCancelled {
+                        group.cancelAll()
+                        PipelineLogger.shared.log("\(pipelineTag) Transfer was cancelled.")
+                        throw StreamingDownloadOrchestratorError.cancelled
+                    }
 
-                if let range = resource.byteRange,
-                   FileManager.default.fileExists(atPath: destinationURL.path),
-                   let attributes = try? FileManager.default.attributesOfItem(atPath: destinationURL.path),
-                   let size = attributes[.size] as? NSNumber,
-                   size.int64Value == range.length {
-                    completed.append(resource.identity)
-                    localFiles.append(destinationURL)
-                    actualDownloadedBytes += size.int64Value
-                    let currentFraction = Double(completed.count) / Double(max(1, proposal.resources.count))
+                    while isPaused(transferID: proposal.transferID) {
+                        try await Task.sleep(nanoseconds: 250_000_000)
+                        if isCancelled(transferID: proposal.transferID) || Task.isCancelled {
+                            group.cancelAll()
+                            PipelineLogger.shared.log("\(pipelineTag) Transfer was cancelled while paused.")
+                            throw StreamingDownloadOrchestratorError.cancelled
+                        }
+                    }
+
+                    // Save segment result to its original, deterministic order index
+                    completedIdentities[result.index] = result.identity
+                    localFiles[result.index] = result.destinationURL
+                    completedCount += 1
+                    actualDownloadedBytes += result.downloadedBytes
+
+                    let now = Date()
+                    let timeDelta = now.timeIntervalSince(lastSpeedCheckTime)
+                    if timeDelta >= 0.5 {
+                        currentBytesPerSecond = Double(actualDownloadedBytes - lastSpeedCheckBytes) / timeDelta
+                        lastSpeedCheckTime = now
+                        lastSpeedCheckBytes = actualDownloadedBytes
+                    }
+
+                    let currentFraction = Double(completedCount) / Double(max(1, totalSegments))
                     progress?(StreamingTransferProgress(
                         transferID: proposal.transferID,
-                        completedSegments: completed.count,
-                        totalSegments: proposal.resources.count,
-                        currentOrder: resource.identity.order,
+                        completedSegments: completedCount,
+                        totalSegments: totalSegments,
+                        currentOrder: result.identity.order,
                         currentFraction: currentFraction
                     ))
+
                     if let engine = self.downloadEngine {
                         let originalSourceURL = candidatesByTransfer[proposal.transferID]?.url ?? proposal.manifest.manifestURL
                         let manifestKey = originalSourceURL.absoluteString
-                        let estimatedTotal = proposal.estimatedTransferBytes ?? (Int64(proposal.resources.count) * 1_000_000)
+                        let estimatedTotal = proposal.estimatedTransferBytes ?? (Int64(totalSegments) * 1_000_000)
                         await engine.updateStreamingDownloadProgress(
                             id: manifestKey,
                             completedBytes: actualDownloadedBytes,
@@ -1157,76 +1175,23 @@ public actor StreamingDownloadOrchestrator {
                             bytesPerSecond: currentBytesPerSecond
                         )
                     }
-                    continue
-                }
 
-                do {
-                    try await segmentExecutor.execute(request) { fraction in
-                        let overallFraction = (Double(completedBefore) + fraction) / Double(max(1, proposal.resources.count))
-                        progress?(StreamingTransferProgress(
-                            transferID: proposal.transferID,
-                            completedSegments: completedBefore,
-                            totalSegments: proposal.resources.count,
-                            currentOrder: resource.identity.order,
-                            currentFraction: overallFraction
-                        ))
-                    }
-                } catch is CancellationError {
-                    throw StreamingDownloadOrchestratorError.cancelled
-                } catch {
-                    // Retry once with refreshed manifest tokens in case the session expired during pause
-                    PipelineLogger.shared.log("\(pipelineTag) Segment \(resource.identity.order) failed: \(error.localizedDescription). Attempting token refresh...")
-                    if let candidate = candidatesByTransfer[proposal.transferID],
-                       let freshProposal = try? await prepare(candidate: candidate),
-                       let freshResource = freshProposal.resources.first(where: { $0.identity.order == resource.identity.order }) {
-                        PipelineLogger.shared.log("\(pipelineTag) Successfully refreshed manifest. Retrying segment \(resource.identity.order)...")
-                        let freshRequest = StreamingSegmentTransferRequest(
-                            identity: freshResource.identity,
-                            url: freshResource.url,
-                            headers: requestHeaders(for: freshResource, manifest: freshProposal.manifest),
-                            byteRange: freshResource.byteRange,
-                            destinationURL: destinationURL
-                        )
-                        do {
-                            try await segmentExecutor.execute(freshRequest, progress: nil)
-                        } catch {
-                            throw StreamingDownloadOrchestratorError.segmentTransferFailed(order: resource.identity.order)
+                    // Replenish worker pool with next segment
+                    if nextIndex < totalSegments {
+                        let indexToDownload = nextIndex
+                        let resource = proposal.resources[indexToDownload]
+                        nextIndex += 1
+
+                        group.addTask {
+                            try await self.downloadSegment(
+                                resource: resource,
+                                index: indexToDownload,
+                                proposal: proposal,
+                                destinationDirectory: destinationDirectory,
+                                pipelineTag: pipelineTag
+                            )
                         }
-                    } else {
-                        throw StreamingDownloadOrchestratorError.segmentTransferFailed(order: resource.identity.order)
                     }
-                }
-                completed.append(resource.identity)
-                localFiles.append(destinationURL)
-                let segSize = (try? FileManager.default.attributesOfItem(atPath: destinationURL.path)[.size] as? Int64) ?? 0
-                actualDownloadedBytes += segSize
-
-                let now = Date()
-                let timeDelta = now.timeIntervalSince(lastSpeedCheckTime)
-                if timeDelta >= 0.5 {
-                    currentBytesPerSecond = Double(actualDownloadedBytes - lastSpeedCheckBytes) / timeDelta
-                    lastSpeedCheckTime = now
-                    lastSpeedCheckBytes = actualDownloadedBytes
-                }
-
-                let currentFraction = Double(completed.count) / Double(max(1, proposal.resources.count))
-                progress?(StreamingTransferProgress(
-                    transferID: proposal.transferID,
-                    completedSegments: completed.count,
-                    totalSegments: proposal.resources.count,
-                    currentOrder: resource.identity.order,
-                    currentFraction: currentFraction
-                ))
-                if let engine = self.downloadEngine {
-                    let originalSourceURL = candidatesByTransfer[proposal.transferID]?.url ?? proposal.manifest.manifestURL
-                    let manifestKey = originalSourceURL.absoluteString
-                    let estimatedTotal = proposal.estimatedTransferBytes ?? (Int64(proposal.resources.count) * 1_000_000)
-                    await engine.updateStreamingDownloadProgress(
-                        id: manifestKey,
-                        completedBytes: actualDownloadedBytes,
-                        totalBytes: estimatedTotal,
-                        bytesPerSecond: currentBytesPerSecond
-                    )
                 }
             }
         } catch is CancellationError {
@@ -1244,13 +1209,104 @@ public actor StreamingDownloadOrchestrator {
             throw error
         }
 
+        let orderedCompleted = completedIdentities.compactMap { $0 }
+        let orderedLocalFiles = localFiles.compactMap { $0 }
+        guard orderedCompleted.count == totalSegments && orderedLocalFiles.count == totalSegments else {
+            throw StreamingDownloadOrchestratorError.segmentTransferFailed(order: -1)
+        }
+
         let result = StreamingTransferResult(
             transferID: proposal.transferID,
-            completedSegments: completed,
-            localFiles: localFiles
+            completedSegments: orderedCompleted,
+            localFiles: orderedLocalFiles
         )
         completedTransfers[proposal.transferID] = result
         return result
+    }
+
+    private struct DownloadedSegmentResult: Sendable {
+        let index: Int
+        let identity: StreamingSegmentIdentity
+        let destinationURL: URL
+        let downloadedBytes: Int64
+    }
+
+    private func downloadSegment(
+        resource: StreamingTransferResource,
+        index: Int,
+        proposal: StreamingTransferProposal,
+        destinationDirectory: URL,
+        pipelineTag: String
+    ) async throws -> DownloadedSegmentResult {
+        let destinationURL = destinationDirectory.appendingPathComponent(
+            "\(resource.identity.value).part",
+            isDirectory: false
+        )
+
+        if let range = resource.byteRange,
+           FileManager.default.fileExists(atPath: destinationURL.path),
+           let attributes = try? FileManager.default.attributesOfItem(atPath: destinationURL.path),
+           let size = attributes[.size] as? NSNumber,
+           size.int64Value == range.length {
+            return DownloadedSegmentResult(
+                index: index,
+                identity: resource.identity,
+                destinationURL: destinationURL,
+                downloadedBytes: size.int64Value
+            )
+        }
+
+        let targetURL: URL
+        if let urlResolver {
+            targetURL = (try? await urlResolver.resolveMediaURL(resource.url)) ?? resource.url
+        } else {
+            targetURL = resource.url
+        }
+
+        let request = StreamingSegmentTransferRequest(
+            identity: resource.identity,
+            url: targetURL,
+            headers: requestHeaders(for: resource, manifest: proposal.manifest),
+            byteRange: resource.byteRange,
+            destinationURL: destinationURL
+        )
+
+        do {
+            try await segmentExecutor.execute(request, progress: nil)
+        } catch is CancellationError {
+            throw StreamingDownloadOrchestratorError.cancelled
+        } catch {
+            // Retry once with refreshed manifest tokens in case the session expired during pause
+            PipelineLogger.shared.log("\(pipelineTag) Segment \(resource.identity.order) failed: \(error.localizedDescription). Attempting token refresh...")
+            if let candidate = candidatesByTransfer[proposal.transferID],
+               let freshProposal = try? await prepare(candidate: candidate),
+               let freshResource = freshProposal.resources.first(where: { $0.identity.order == resource.identity.order }) {
+                PipelineLogger.shared.log("\(pipelineTag) Successfully refreshed manifest. Retrying segment \(resource.identity.order)...")
+                let freshRequest = StreamingSegmentTransferRequest(
+                    identity: freshResource.identity,
+                    url: freshResource.url,
+                    headers: requestHeaders(for: freshResource, manifest: freshProposal.manifest),
+                    byteRange: freshResource.byteRange,
+                    destinationURL: destinationURL
+                )
+                do {
+                    try await segmentExecutor.execute(freshRequest, progress: nil)
+                } catch {
+                    throw StreamingDownloadOrchestratorError.segmentTransferFailed(order: resource.identity.order)
+                }
+            } else {
+                throw StreamingDownloadOrchestratorError.segmentTransferFailed(order: resource.identity.order)
+            }
+        }
+
+        let segSize = (try? FileManager.default.attributesOfItem(atPath: destinationURL.path)[.size] as? Int64) ?? 0
+        return DownloadedSegmentResult(
+            index: index,
+            identity: resource.identity,
+            destinationURL: destinationURL,
+            downloadedBytes: segSize
+        )
+    }
     }
 
     /// Executes a finite HLS proposal through the existing segment executor and
@@ -1615,6 +1671,7 @@ public actor StreamingDownloadOrchestrator {
     ) async {
         PipelineLogger.shared.log("[HLS Pipeline] Fetching subtitle from \(subtitleURL.absoluteString)...")
         do {
+            let subtitleSession = ForegroundURLSession.make(maximumConnectionsPerHost: 1)
             var request = URLRequest(url: subtitleURL)
             request.httpMethod = "GET"
             request.timeoutInterval = 30
@@ -1629,7 +1686,7 @@ public actor StreamingDownloadOrchestrator {
                     request.setValue(ref, forHTTPHeaderField: "Referer")
                 }
             }
-            let (data, response) = try await URLSession.shared.data(for: request)
+            let (data, response) = try await subtitleSession.data(for: request)
             guard let httpResponse = response as? HTTPURLResponse, (200...299).contains(httpResponse.statusCode) else {
                 PipelineLogger.shared.log("[HLS Pipeline] Subtitle HTTP request returned non-200 code")
                 return
@@ -1660,7 +1717,7 @@ public actor StreamingDownloadOrchestrator {
                     for segURL in segmentURLs {
                         var segReq = URLRequest(url: segURL)
                         segReq = DownloadRequestEnricher.enrich(segReq, snapshot: effectiveSnapshot)
-                        if let (segData, _) = try? await URLSession.shared.data(for: segReq) {
+                        if let (segData, _) = try? await subtitleSession.data(for: segReq) {
                             let segText = String(decoding: segData, as: UTF8.self)
                             let cleanText = segText.replacingOccurrences(of: "WEBVTT\n", with: "")
                                 .replacingOccurrences(of: "WEBVTT\r\n", with: "")

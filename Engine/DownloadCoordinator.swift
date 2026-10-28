@@ -329,6 +329,8 @@ public actor DownloadCoordinator {
     public typealias BasicAuthChallengeHandler = @Sendable (_ host: String, _ realm: String) async -> (username: String, password: String)?
     public nonisolated(unsafe) static var basicAuthChallengeHandler: BasicAuthChallengeHandler?
 
+    public static let sharedSession: URLSession = ForegroundURLSession.make()
+
     private let session: URLSession
     public let persistenceStore: DownloadPersistenceStore
 
@@ -345,7 +347,7 @@ public actor DownloadCoordinator {
     private var backgroundSessionManager: BackgroundDownloadSessionManager?
 
     public init(
-        session: URLSession = .shared,
+        session: URLSession = DownloadCoordinator.sharedSession,
         persistenceStore: DownloadPersistenceStore? = nil,
         requestBudget: SharedRequestBudget? = nil,
         globalBandwidthLimiter: BandwidthLimiter? = nil,
