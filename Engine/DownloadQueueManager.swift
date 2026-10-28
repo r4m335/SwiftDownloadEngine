@@ -116,6 +116,9 @@ public enum DownloadQueueError: Error, LocalizedError, Equatable, Sendable {
     case fileNotFoundAtPath(String)
     case invalidMediaFile(String)
     case muxingFailed(String)
+    case unauthorized(url: URL)
+    case forbidden(url: URL)
+    case linkExpired(url: URL)
     case tokenExpired(url: URL)
     case accessDenied(url: URL, cooldownUntil: Date)
     case rateLimited(url: URL, retryAfter: TimeInterval?)
@@ -146,6 +149,12 @@ public enum DownloadQueueError: Error, LocalizedError, Equatable, Sendable {
             return reason
         case .muxingFailed(let reason):
             return reason
+        case .unauthorized(let url):
+            return "Authentication required (HTTP 401) for \(url.host ?? url.absoluteString). Please log in to continue download."
+        case .forbidden(let url):
+            return "Access forbidden (HTTP 403) for \(url.host ?? url.absoluteString). Please refresh the download link."
+        case .linkExpired(let url):
+            return "Download link expired or not found (HTTP 404/410) for \(url.host ?? url.absoluteString). Please refresh the download link."
         case .tokenExpired(let url):
             return "Session or token expired (HTTP 401) for \(url.host ?? url.absoluteString). Please re-login or refresh the download link."
         case .accessDenied(let url, let cooldown):

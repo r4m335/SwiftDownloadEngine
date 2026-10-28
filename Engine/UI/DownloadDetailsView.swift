@@ -25,6 +25,10 @@ public struct DownloadDetailsView: View {
     @State private var quickLookURL: URL? = nil
     @State private var torrentFiles: [TorrentFileInfo] = []
     @State private var isLoadingFiles: Bool = false
+    @State private var showingRefreshSheet: Bool = false
+    @State private var newRefreshURL: String = ""
+    @State private var isRefreshing: Bool = false
+    @State private var refreshStatusMessage: String? = nil
 
     public init(viewModel: DownloadManagerViewModel, transfer: UnifiedTransfer) {
         self.viewModel = viewModel
@@ -461,6 +465,33 @@ public struct DownloadDetailsView: View {
                             .font(.body)
                             .foregroundColor(.red)
                     }
+
+                    if snapshot?.isForbidden == true || snapshot?.isLinkExpired == true ||
+                       reason.localizedCaseInsensitiveContains("403") ||
+                       reason.localizedCaseInsensitiveContains("404") ||
+                       reason.localizedCaseInsensitiveContains("expired") {
+                        Button {
+                            newRefreshURL = snapshot?.url.absoluteString ?? ""
+                            refreshStatusMessage = nil
+                            showingRefreshSheet = true
+                        } label: {
+                            Label("Refresh Link", systemImage: "arrow.triangle.2.circlepath")
+                                .font(.headline)
+                        }
+                    }
+
+                    if snapshot?.isUnauthorized == true || reason.localizedCaseInsensitiveContains("401") {
+                        Button {
+                            if let pageURL = snapshot?.url {
+                                #if canImport(UIKit)
+                                UIApplication.shared.open(pageURL)
+                                #endif
+                            }
+                        } label: {
+                            Label("Log In in Browser", systemImage: "person.crop.circle.badge.exclamationmark")
+                                .font(.headline)
+                        }
+                    }
                 }
             }
 
@@ -587,6 +618,69 @@ public struct DownloadDetailsView: View {
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("Do you want to keep or delete the downloaded file from disk?")
+        }
+        .sheet(isPresented: $showingRefreshSheet) {
+            #if canImport(SwiftUI)
+            NavigationView {
+                Form {
+                    Section(
+                        header: Text("Update Download URL / Token"),
+                        footer: Text("If the ETag and file size match the original resource, the download resumes seamlessly. Otherwise, the engine restarts fresh.")
+                    ) {
+                        TextField("https://...", text: $newRefreshURL)
+                            #if os(iOS)
+                            .keyboardType(.URL)
+                            .autocapitalization(.none)
+                            .disableAutocorrection(true)
+                            #endif
+                    }
+
+                    if let msg = refreshStatusMessage {
+                        Section {
+                            Text(msg)
+                                .font(.caption)
+                                .foregroundColor(.red)
+                        }
+                    }
+
+                    Section {
+                        Button {
+                            guard let snap = snapshot else { return }
+                            isRefreshing = true
+                            refreshStatusMessage = nil
+                            Task {
+                                do {
+                                    try await viewModel.refreshDownloadLink(id: snap.id, newURLText: newRefreshURL)
+                                    isRefreshing = false
+                                    showingRefreshSheet = false
+                                } catch {
+                                    isRefreshing = false
+                                    refreshStatusMessage = error.localizedDescription
+                                }
+                            }
+                        } label: {
+                            if isRefreshing {
+                                HStack {
+                                    ProgressView()
+                                        .padding(.trailing, 6)
+                                    Text("Validating & Refreshing...")
+                                }
+                            } else {
+                                Text("Refresh & Resume")
+                                    .bold()
+                            }
+                        }
+                        .disabled(newRefreshURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isRefreshing)
+                    }
+                }
+                .navigationTitle("Refresh Link")
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Cancel") { showingRefreshSheet = false }
+                    }
+                }
+            }
+            #endif
         }
     }
 

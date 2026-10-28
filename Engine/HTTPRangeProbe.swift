@@ -469,4 +469,39 @@ private final class RedirectCaptureDelegate: NSObject, URLSessionTaskDelegate, @
         )
         completionHandler(safeRequest)
     }
+
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        didReceive challenge: URLAuthenticationChallenge,
+        completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
+    ) {
+        let space = challenge.protectionSpace
+        let host = space.host
+
+        if space.authenticationMethod == NSURLAuthenticationMethodHTTPBasic ||
+           space.authenticationMethod == NSURLAuthenticationMethodDefault ||
+           space.authenticationMethod == NSURLAuthenticationMethodHTTPDigest {
+            if let saved = KeychainManager.shared.getInternetPassword(server: host, path: "/") {
+                completionHandler(.useCredential, URLCredential(user: saved.username, password: saved.password, persistence: .none))
+                return
+            }
+            if let provider = DownloadCoordinator.basicAuthChallengeHandler {
+                Task {
+                    if let cred = await provider(host, space.realm ?? "") {
+                        KeychainManager.shared.storeInternetPassword(
+                            username: cred.username,
+                            password: cred.password,
+                            server: host
+                        )
+                        completionHandler(.useCredential, URLCredential(user: cred.username, password: cred.password, persistence: .none))
+                    } else {
+                        completionHandler(.cancelAuthenticationChallenge, nil)
+                    }
+                }
+                return
+            }
+        }
+        completionHandler(.performDefaultHandling, nil)
+    }
 }

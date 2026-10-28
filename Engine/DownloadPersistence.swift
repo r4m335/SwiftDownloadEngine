@@ -198,7 +198,18 @@ public struct DownloadRecord: Codable, Equatable, Identifiable, Sendable {
         self.lastModified = lastModified
         self.suggestedFilename = suggestedFilename
         self.mimeType = mimeType
-        self.headers = headers
+        var sanitizedHeaders: [String: String] = [:]
+        for (k, v) in headers {
+            let lower = k.lowercased()
+            if lower == "cookie" || lower == "authorization" || lower == "proxy-authorization" {
+                if let host = originalURL.host {
+                    KeychainManager.shared.storeGenericSecret(key: lower, account: host, data: Data(v.utf8))
+                }
+            } else {
+                sanitizedHeaders[k] = v
+            }
+        }
+        self.headers = sanitizedHeaders
         self.createdAt = createdAt
         self.updatedAt = updatedAt
         self.segments = segments
@@ -535,6 +546,7 @@ public actor DownloadPersistenceStore {
     /// Deletes a download record from memory and disk.
     public func delete(tag: String) throws {
         cache.removeValue(forKey: tag)
+        KeychainManager.shared.deleteCredentials(forDownloadId: tag)
         let fileURL = recordFileURL(tag: tag)
         if FileManager.default.fileExists(atPath: fileURL.path) {
             try FileManager.default.removeItem(at: fileURL)

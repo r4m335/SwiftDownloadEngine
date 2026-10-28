@@ -567,6 +567,42 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
         }
     }
 
+    /// Refreshes the download URL and token for a download (e.g. following a 401, 403, or 404/410 error).
+    /// Preserves existing segment progress if server validators match, or restarts fresh if non-resumable.
+    public func refreshDownloadLink(
+        id: DownloadID,
+        newURLText: String,
+        newHeaders: [String: String]? = nil
+    ) async throws {
+        let trimmed = newURLText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let newURL = URL(string: trimmed), let scheme = newURL.scheme?.lowercased(), scheme == "http" || scheme == "https" else {
+            let msg = "Invalid URL: must be HTTP or HTTPS"
+            self.errorMessage = msg
+            throw DownloadCoordinatorError.invalidRequest(reason: msg)
+        }
+
+        do {
+            let updatedRecord = try await coordinator.refreshDownload(
+                id: id,
+                newURL: newURL,
+                newHeaders: newHeaders
+            )
+            let request = DownloadRequest(
+                id: updatedRecord.id,
+                url: updatedRecord.resolvedURL ?? updatedRecord.originalURL,
+                destinationURL: updatedRecord.destinationURL,
+                totalSize: updatedRecord.totalSize > 0 ? updatedRecord.totalSize : nil,
+                headers: updatedRecord.headers,
+                networkPolicy: updatedRecord.networkPolicy
+            )
+            try await coordinator.start(request)
+            await refreshDownloads()
+        } catch {
+            self.errorMessage = error.localizedDescription
+            throw error
+        }
+    }
+
     // MARK: - Torrent Operations
 
     @discardableResult

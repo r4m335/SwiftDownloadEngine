@@ -785,5 +785,146 @@ final class DownloadCoordinatorTests: XCTestCase {
         XCTAssertTrue(error.errorDescription?.contains("Insufficient disk space") == true)
         XCTAssertTrue(error.errorDescription?.contains("1000000000") == true)
     }
+
+    // MARK: - Dynamic Auth & Keychain Tests
+
+    func testKeychainManagerStorageAndPurge() {
+        let km = KeychainManager.shared
+        km.resetFallbackStore()
+
+        // 1. Internet Password (HTTP Basic Auth)
+        XCTAssertTrue(km.storeInternetPassword(username: "admin", password: "secretPassword123", server: "example.com"))
+        let retrieved = km.getInternetPassword(server: "example.com")
+        XCTAssertNotNil(retrieved)
+        XCTAssertEqual(retrieved?.username, "admin")
+        XCTAssertEqual(retrieved?.password, "secretPassword123")
+
+        // 2. Origin-scoped Cookie storage
+        let cookie = HTTPCookie(properties: [
+            .name: "cf_clearance",
+            .value: "rotated_token_999",
+            .domain: "example.com",
+            .path: "/"
+        ])!
+        XCTAssertTrue(km.storeCookies([cookie], domain: "example.com", downloadId: "test-dl-keychain"))
+        let cookies = km.getCookies(domain: "example.com")
+        XCTAssertEqual(cookies.count, 1)
+        XCTAssertEqual(cookies.first?.value, "rotated_token_999")
+
+        // 3. Purge on download deletion
+        km.deleteCredentials(forDownloadId: "test-dl-keychain")
+        XCTAssertTrue(km.deleteInternetPassword(server: "example.com"))
+        XCTAssertNil(km.getInternetPassword(server: "example.com"))
+    }
+
+    func testGranularErrorStatesUnauthorizedForbiddenLinkExpired() {
+        let testURL = URL(string: "https://example.com/media.mp4")!
+
+        let unauth = DownloadCoordinatorError.unauthorized(url: testURL)
+        XCTAssertTrue(unauth.isUnauthorized)
+        XCTAssertTrue(unauth.errorDescription?.contains("401") == true)
+
+        let forbidden = DownloadCoordinatorError.forbidden(url: testURL)
+        XCTAssertTrue(forbidden.isForbidden)
+        XCTAssertTrue(forbidden.errorDescription?.contains("403") == true)
+
+        let expired = DownloadCoordinatorError.linkExpired(url: testURL)
+        XCTAssertTrue(expired.isLinkExpired)
+        XCTAssertTrue(expired.errorDescription?.contains("404") == true)
+    }
+
+    func testRefreshDownloadFlowResumesWithMatchingETag() async throws {
+        let initialURL = URL(string: "https://example.com/initial_token.zip")!
+        let refreshedURL = URL(string: "https://example.com/new_token.zip")!
+        let destURL = tempDirectory.appendingPathComponent("refresh_test.zip")
+        let totalSize: Int64 = 2000
+        let eTag = "\"stable-v1-hash\""
+
+        // Seed persisted record with partially completed segment
+        let existingRecord = DownloadRecord(
+            id: "dl-refresh-test",
+            originalURL: initialURL,
+            destinationURL: destURL,
+            totalSize: totalSize,
+            state: .failed(reason: "403 Forbidden"),
+            storageMode: .directSeek,
+            eTag: eTag,
+            segments: [
+                SegmentRecord(
+                    id: 0,
+                    startOffset: 0,
+                    endOffset: totalSize - 1,
+                    length: totalSize,
+                    completedBytes: 800,
+                    isCompleted: false
+                )
+            ]
+        )
+        try await persistenceStore.save(existingRecord)
+
+        // Remote server: Probing the refreshed URL returns the SAME ETag and size
+        MockURLProtocol.setHandler(for: refreshedURL) { _ in
+            let headers = [
+                "Content-Length": "\(totalSize)",
+                "Accept-Ranges": "bytes",
+                "ETag": eTag
+            ]
+            let resp = HTTPURLResponse(url: refreshedURL, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: headers)!
+            return (resp, Data())
+        }
+
+        let updated = try await coordinator.refreshDownload(id: "dl-refresh-test", newURL: refreshedURL)
+
+        // Invariant: Matching ETag preserves the 800 completed bytes!
+        XCTAssertEqual(updated.resolvedURL, refreshedURL)
+        XCTAssertEqual(updated.completedBytes, 800)
+        XCTAssertEqual(updated.state, .paused)
+    }
+
+    func testRefreshDownloadFlowRestartsWithMismatchedETag() async throws {
+        let initialURL = URL(string: "https://example.com/old_file.zip")!
+        let refreshedURL = URL(string: "https://example.com/new_file.zip")!
+        let destURL = tempDirectory.appendingPathComponent("refresh_restart.zip")
+        let totalSize: Int64 = 2000
+
+        let existingRecord = DownloadRecord(
+            id: "dl-refresh-restart",
+            originalURL: initialURL,
+            destinationURL: destURL,
+            totalSize: totalSize,
+            state: .failed(reason: "404 Not Found"),
+            storageMode: .directSeek,
+            eTag: "\"old-tag\"",
+            segments: [
+                SegmentRecord(
+                    id: 0,
+                    startOffset: 0,
+                    endOffset: totalSize - 1,
+                    length: totalSize,
+                    completedBytes: 800,
+                    isCompleted: false
+                )
+            ]
+        )
+        try await persistenceStore.save(existingRecord)
+
+        // Remote server: Probing new URL returns a DIFFERENT ETag
+        MockURLProtocol.setHandler(for: refreshedURL) { _ in
+            let headers = [
+                "Content-Length": "\(totalSize)",
+                "Accept-Ranges": "bytes",
+                "ETag": "\"different-new-tag\""
+            ]
+            let resp = HTTPURLResponse(url: refreshedURL, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: headers)!
+            return (resp, Data())
+        }
+
+        let updated = try await coordinator.refreshDownload(id: "dl-refresh-restart", newURL: refreshedURL)
+
+        // Invariant: Mismatched ETag resets completed bytes to 0 for safety!
+        XCTAssertEqual(updated.resolvedURL, refreshedURL)
+        XCTAssertEqual(updated.completedBytes, 0)
+        XCTAssertEqual(updated.state, .pending)
+    }
 }
 

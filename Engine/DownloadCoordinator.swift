@@ -186,6 +186,9 @@ public enum DownloadCoordinatorError: Error, LocalizedError, Equatable, Sendable
     case cancelled
     case checksumMismatch(expected: String, actual: String)
     case segmentLayoutInvalid(reason: String)
+    case unauthorized(url: URL)
+    case forbidden(url: URL)
+    case linkExpired(url: URL)
     case tokenExpired(url: URL)
     case accessDenied(url: URL, cooldownUntil: Date)
     case rateLimited(url: URL, retryAfter: TimeInterval?)
@@ -210,6 +213,12 @@ public enum DownloadCoordinatorError: Error, LocalizedError, Equatable, Sendable
             return "Checksum mismatch: expected \(expected), computed \(actual)"
         case .segmentLayoutInvalid(let reason):
             return "Invalid segment layout: \(reason)"
+        case .unauthorized(let url):
+            return "Authentication required (HTTP 401) for \(url.host ?? url.absoluteString). Please log in to continue download."
+        case .forbidden(let url):
+            return "Access forbidden (HTTP 403) for \(url.host ?? url.absoluteString). Please refresh the download link."
+        case .linkExpired(let url):
+            return "Download link expired or not found (HTTP 404/410) for \(url.host ?? url.absoluteString). Please refresh the download link."
         case .tokenExpired(let url):
             return "Session or token expired (HTTP 401) for \(url.host ?? url.absoluteString). Please re-login or refresh the download link."
         case .accessDenied(let url, let cooldown):
@@ -302,6 +311,8 @@ private actor ProgressAccumulator {
 /// 8. **Awaitable Shutdown Barrier:** Guarantees all worker tasks and file handles have cleanly stopped upon pause or cancellation.
 public actor DownloadCoordinator {
     public typealias ProgressHandler = @Sendable (CoordinatorProgress) -> Void
+    public typealias BasicAuthChallengeHandler = @Sendable (_ host: String, _ realm: String) async -> (username: String, password: String)?
+    public nonisolated(unsafe) static var basicAuthChallengeHandler: BasicAuthChallengeHandler?
 
     private let session: URLSession
     public let persistenceStore: DownloadPersistenceStore
@@ -553,6 +564,64 @@ public actor DownloadCoordinator {
         try await start(request, progress: progress)
     }
 
+    /// Refreshes the download URL and headers for an existing download (e.g. after a 403/404 expired token).
+    /// If the remote server's validator (ETag / Last-Modified / total size) matches, preserves existing segment progress.
+    /// If validators differ or server does not support ranges, restarts cleanly from byte 0.
+    @discardableResult
+    public func refreshDownload(
+        id: String,
+        newURL: URL,
+        newHeaders: [String: String]? = nil
+    ) async throws -> DownloadRecord {
+        guard var record = try await persistenceStore.fetch(tag: id) else {
+            throw DownloadCoordinatorError.invalidRequest(reason: "Download record not found for ID: \(id)")
+        }
+
+        let probeConfig = ProbeConfiguration(
+            url: newURL,
+            customHeaders: newHeaders ?? record.headers,
+            retryCount: 2,
+            allowsCellularAccess: record.networkPolicy.allowsCellularAccess
+        )
+        let probeResult = try await probe.probe(configuration: probeConfig)
+
+        let validation = record.validateForResume(
+            remoteETag: probeResult.eTag,
+            remoteLastModified: probeResult.lastModified,
+            remoteTotalSize: probeResult.contentLength
+        )
+
+        record.resolvedURL = probeResult.finalURL
+        if let h = newHeaders {
+            for (k, v) in h {
+                record.headers[k] = v
+            }
+        }
+        record.eTag = probeResult.eTag ?? record.eTag
+        record.lastModified = probeResult.lastModified ?? record.lastModified
+
+        if case .valid = validation, probeResult.supportsRange {
+            record.state = .paused
+            try await persistenceStore.save(record)
+        } else {
+            let zeroSegments = record.segments.map { seg in
+                SegmentRecord(
+                    id: seg.id,
+                    startOffset: seg.startOffset,
+                    endOffset: seg.endOffset,
+                    length: seg.length,
+                    completedBytes: 0,
+                    isCompleted: false
+                )
+            }
+            record.segments = zeroSegments
+            record.state = .pending
+            try await persistenceStore.save(record)
+        }
+
+        return record
+    }
+
     // MARK: - Pipeline Execution
 
     private func executeDownload(
@@ -641,6 +710,9 @@ public actor DownloadCoordinator {
                     if case HTTPRangeProbeError.forbidden(let u) = error {
                         let cooldown = Date().addingTimeInterval(300)
                         throw DownloadCoordinatorError.accessDenied(url: u, cooldownUntil: cooldown)
+                    }
+                    if case HTTPRangeProbeError.resourceNotFound(let u) = error {
+                        throw DownloadCoordinatorError.linkExpired(url: u)
                     }
                     if probeAttempt >= request.retryCount {
                         if case HTTPRangeProbeError.rateLimited(let u, let retryAfter) = error {
@@ -1135,6 +1207,9 @@ public actor DownloadCoordinator {
                                 if case SegmentDownloaderError.accessDenied = error {
                                     let cooldown = Date().addingTimeInterval(300)
                                     throw DownloadCoordinatorError.accessDenied(url: request.url, cooldownUntil: cooldown)
+                                }
+                                if case SegmentDownloaderError.linkExpired = error {
+                                    throw DownloadCoordinatorError.linkExpired(url: request.url)
                                 }
                                 if Self.isRangeIgnored(error) {
                                     throw error // Fail-fast to trigger fallback
@@ -2274,6 +2349,41 @@ private final class DownloadResourceRedirectDelegate: NSObject, URLSessionTaskDe
             newRequest: request
         )
         completionHandler(redirected)
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        didReceive challenge: URLAuthenticationChallenge,
+        completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
+    ) {
+        let space = challenge.protectionSpace
+        let host = space.host
+
+        if space.authenticationMethod == NSURLAuthenticationMethodHTTPBasic ||
+           space.authenticationMethod == NSURLAuthenticationMethodDefault ||
+           space.authenticationMethod == NSURLAuthenticationMethodHTTPDigest {
+            if let saved = KeychainManager.shared.getInternetPassword(server: host, path: "/") {
+                completionHandler(.useCredential, URLCredential(user: saved.username, password: saved.password, persistence: .none))
+                return
+            }
+            if let provider = DownloadCoordinator.basicAuthChallengeHandler {
+                Task {
+                    if let cred = await provider(host, space.realm ?? "") {
+                        KeychainManager.shared.storeInternetPassword(
+                            username: cred.username,
+                            password: cred.password,
+                            server: host
+                        )
+                        completionHandler(.useCredential, URLCredential(user: cred.username, password: cred.password, persistence: .none))
+                    } else {
+                        completionHandler(.cancelAuthenticationChallenge, nil)
+                    }
+                }
+                return
+            }
+        }
+        completionHandler(.performDefaultHandling, nil)
     }
 }
 

@@ -64,20 +64,48 @@ public struct DownloadSnapshot: Sendable, Equatable, Identifiable, Codable {
         return false
     }
 
-    public var isTokenExpired: Bool {
+    public var isUnauthorized: Bool {
         if case .failed(let reason) = state {
-            return reason.localizedCaseInsensitiveContains("token expired") ||
+            return reason.localizedCaseInsensitiveContains("unauthorized") ||
+                   reason.localizedCaseInsensitiveContains("token expired") ||
                    reason.localizedCaseInsensitiveContains("401")
         }
         return false
     }
 
-    public var isAccessDenied: Bool {
+    public var isForbidden: Bool {
         if case .failed(let reason) = state {
-            return reason.localizedCaseInsensitiveContains("access denied") ||
+            return reason.localizedCaseInsensitiveContains("forbidden") ||
+                   reason.localizedCaseInsensitiveContains("access denied") ||
                    reason.localizedCaseInsensitiveContains("403")
         }
         return false
+    }
+
+    public var isLinkExpired: Bool {
+        if case .failed(let reason) = state {
+            return reason.localizedCaseInsensitiveContains("link expired") ||
+                   reason.localizedCaseInsensitiveContains("not found") ||
+                   reason.localizedCaseInsensitiveContains("404") ||
+                   reason.localizedCaseInsensitiveContains("410")
+        }
+        return false
+    }
+
+    public var isRateLimited: Bool {
+        if case .failed(let reason) = state {
+            return reason.localizedCaseInsensitiveContains("rate limit") ||
+                   reason.localizedCaseInsensitiveContains("429")
+        }
+        return false
+    }
+
+    public var isTokenExpired: Bool {
+        isUnauthorized
+    }
+
+    public var isAccessDenied: Bool {
+        isForbidden
     }
 
     public var isOutOfDiskSpace: Bool {

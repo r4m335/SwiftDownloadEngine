@@ -48,6 +48,7 @@ public enum SegmentDownloaderError: Error, LocalizedError, Equatable, Sendable {
     case rateLimited(retryAfterSeconds: Double?)
     case tokenExpired
     case accessDenied
+    case linkExpired
     case htmlErrorPageReceived(contentType: String)
     case cancelled
 
@@ -75,6 +76,8 @@ public enum SegmentDownloaderError: Error, LocalizedError, Equatable, Sendable {
             return "Server rejected authorization token or session expired (HTTP 401)"
         case .accessDenied:
             return "Server access denied or forbidden (HTTP 403)"
+        case .linkExpired:
+            return "Download link expired or resource not found (HTTP 404/410)"
         case .htmlErrorPageReceived(let contentType):
             return "Server returned HTML error or login page instead of binary content (\(contentType))"
         case .cancelled:
@@ -227,7 +230,7 @@ public final class SegmentDownloader: Sendable {
             request.setValue(value, forHTTPHeaderField: name)
         }
 
-        request = DownloadRequestEnricher.enrich(request)
+        request = await DownloadRequestEnricher.enrichAsync(request)
 
         let response: URLResponse
         let bytes: URLSession.AsyncBytes
@@ -258,6 +261,10 @@ public final class SegmentDownloader: Sendable {
 
         if httpResponse.statusCode == 403 {
             throw SegmentDownloaderError.accessDenied
+        }
+
+        if httpResponse.statusCode == 404 || httpResponse.statusCode == 410 {
+            throw SegmentDownloaderError.linkExpired
         }
 
         if httpResponse.statusCode == 429 {

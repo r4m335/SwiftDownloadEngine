@@ -142,7 +142,69 @@ public enum DownloadRequestEnricher {
         print("[DownloadRequestEnricher] Snapshot captured: \(cookies.count) cookies, User-Agent: '\(ua)', pageURL: \(webView.url?.absoluteString ?? "nil")")
         return snapshot
     }
+
+    /// Fetches the freshest cookies directly from WKWebsiteDataStore.default().httpCookieStore.getAllCookies()
+    /// and filters them by RFC 6265 rules (domain, path, security, and expiry) for the target URL.
+    @MainActor
+    public static func fetchDynamicCookies(for url: URL) async -> [HTTPCookie] {
+        let allCookies: [HTTPCookie] = await withCheckedContinuation { cont in
+            WKWebsiteDataStore.default().httpCookieStore.getAllCookies { cookies in
+                cont.resume(returning: cookies)
+            }
+        }
+        let matching = allCookies.filter { $0.matches(url: url) }
+        for cookie in matching {
+            HTTPCookieStorage.shared.setCookie(cookie)
+        }
+        if let host = url.host {
+            KeychainManager.shared.storeCookies(matching, domain: host)
+        }
+        return matching
+    }
     #endif
+
+    /// Asynchronously fetches dynamic cookies from the browser data store right before dispatching a network request.
+    /// Falls back to KeychainManager or HTTPCookieStorage.shared if WebKit is unavailable.
+    public static func dynamicCookies(for url: URL) async -> [HTTPCookie] {
+        #if canImport(WebKit)
+        let cookies = await MainActor.run {
+            await fetchDynamicCookies(for: url)
+        }
+        if !cookies.isEmpty {
+            return cookies
+        }
+        #endif
+
+        if let host = url.host {
+            let keychainCookies = KeychainManager.shared.getCookies(domain: host)
+            let matchingKeychain = keychainCookies.filter { $0.matches(url: url) }
+            if !matchingKeychain.isEmpty {
+                return matchingKeychain
+            }
+        }
+
+        if let shared = HTTPCookieStorage.shared.cookies(for: url), !shared.isEmpty {
+            return shared.filter { $0.matches(url: url) }
+        }
+
+        return []
+    }
+
+    /// Asynchronously enriches outbound engine requests with dynamically fetched cookies from WKWebsiteDataStore
+    /// right before a network request is dispatched, preventing failures when tokens rotate mid-download.
+    public static func enrichAsync(_ request: URLRequest, snapshot: BrowserSessionSnapshot? = nil) async -> URLRequest {
+        var req = enrich(request, snapshot: snapshot)
+        guard let url = req.url else { return req }
+
+        let freshCookies = await dynamicCookies(for: url)
+        if !freshCookies.isEmpty {
+            let fields = HTTPCookie.requestHeaderFields(with: freshCookies)
+            if let cookieHeader = fields["Cookie"], !cookieHeader.isEmpty {
+                req.setValue(cookieHeader, forHTTPHeaderField: "Cookie")
+            }
+        }
+        return req
+    }
 
     /// Applies session snapshot to an outbound URLRequest using RFC 6265 cookie matching and authentic browser context headers.
     /// Idempotent. Does NOT overwrite headers already set by the caller.
