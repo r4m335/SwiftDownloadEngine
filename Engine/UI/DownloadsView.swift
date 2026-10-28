@@ -410,9 +410,7 @@ public struct DownloadsView: View {
                     )
                 }
             }
-            #if canImport(QuickLook)
-            .quickLookPreview($quickLookURL)
-            #endif
+            .filePreviewSheet(item: $quickLookURL)
         }
     }
 

@@ -554,9 +554,7 @@ public struct DownloadDetailsView: View {
         .navigationBarTitleDisplayMode(.inline)
         #endif
         .navigationTitle("Details")
-        #if canImport(QuickLook)
-        .quickLookPreview($quickLookURL)
-        #endif
+        .filePreviewSheet(item: $quickLookURL)
         .alert("Remove Download", isPresented: $showingDeleteAlert) {
             Button("Remove Entry Only", role: .none) {
                 Task { @MainActor in

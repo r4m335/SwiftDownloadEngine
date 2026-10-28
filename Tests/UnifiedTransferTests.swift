@@ -235,4 +235,13 @@ final class UnifiedTransferTests: XCTestCase {
         XCTAssertTrue(failedTransfer.matchesFilter(DownloadFilter.all))
         XCTAssertTrue(failedTransfer.matchesFilter(DownloadFilter.failed))
     }
+
+    func testIdentifiableURL() {
+        let sampleURL = URL(fileURLWithPath: "/tmp/test.mp4")
+        let item1 = IdentifiableURL(url: sampleURL)
+        let item2 = IdentifiableURL(url: sampleURL)
+        XCTAssertEqual(item1.id, sampleURL.absoluteString)
+        XCTAssertEqual(item1, item2)
+        XCTAssertEqual(item1.url, sampleURL)
+    }
 }
