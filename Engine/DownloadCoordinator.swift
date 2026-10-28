@@ -588,7 +588,7 @@ public actor DownloadCoordinator {
         let validation = record.validateForResume(
             remoteETag: probeResult.eTag,
             remoteLastModified: probeResult.lastModified,
-            remoteTotalSize: probeResult.contentLength
+            remoteTotalSize: probeResult.totalSize
         )
 
         record.resolvedURL = probeResult.finalURL
