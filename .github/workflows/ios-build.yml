@@ -32,7 +32,7 @@ jobs:
       - name: Run Swift Package Tests (macOS)
         run: |
           set -o pipefail
-          swift test --parallel 2>&1 | tee test_run.log || {
+          perl -e 'alarm 1200; exec @ARGV' swift test 2>&1 | tee test_run.log || {
             echo "::error::Swift test failed. Printing failure details:"
             grep -E "Test Case '.*' failed|error:|failed - " test_run.log | while IFS= read -r line; do
               echo "::error::$line"
