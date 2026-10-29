@@ -1168,8 +1168,25 @@ public actor DownloadCoordinator {
             Task { try? await writer.close() }
         }
 
-        // 4. Progress tracker & limiters
-        let progressAccumulator = ProgressAccumulator(
+        // 4. Adaptive work queue, progress tracker & limiters
+        // Keep the persisted segment count stable, while splitting large
+        // unfinished ranges into transient child work items. A worker that
+        // finishes early can claim the remaining half of a slower parent.
+        let workerCount = max(
+            1,
+            min(
+                segments.count,
+                request.maxConcurrentRequests
+                    ?? (request.configuredThreadCount > 0
+                        ? request.configuredThreadCount
+                        : SegmentAllocator.defaultThreadCount)
+            )
+        )
+        let workQueue = AdaptiveSegmentWorkQueue(
+            segments: segments,
+            completedBytes: initialCompletedMap
+        )
+        let progressAccumulator = AdaptiveSegmentProgressAccumulator(
             segments: segments,
             initialCompletedBytes: initialCompletedMap
         )
@@ -1201,128 +1218,148 @@ public actor DownloadCoordinator {
             maxConcurrentRequests: request.maxConcurrentRequests
         )
 
-        // 6. Structured concurrent execution
+        // 6. Structured concurrent execution with adaptive work stealing
         do {
-            try await withThrowingTaskGroup(of: (Int, Int64).self) { group in
-                for segment in segments {
-                    let alreadyDone = min(segment.length, max(0, initialCompletedMap[segment.id] ?? 0))
-                    if alreadyDone >= segment.length {
-                        continue
-                    }
-
+            try await withThrowingTaskGroup(of: Void.self) { group in
+                for workerID in 0..<workerCount {
                     group.addTask {
-                        var attempt = 0
-                        while true {
-                            try Task.checkCancellation()
-                            try await self.connectivityGate.waitUntilAvailable(
-                                allowsCellular: request.networkPolicy.allowsCellularAccess
-                            )
-                            do {
-                                try await downloader.download(
-                                    url: probeResult.finalURL,
-                                    segment: segment,
-                                    completedBytes: alreadyDone,
-                                    expectedTotalSize: totalSize,
-                                    headers: self.mergeValidatorHeaders(
-                                        original: request.headers,
+                        while let workItem = await workQueue.next(workerID: workerID) {
+                            await progressAccumulator.register(workItem)
+                            var attempt = 0
+                            while true {
+                                try Task.checkCancellation()
+                                try await self.connectivityGate.waitUntilAvailable(
+                                    allowsCellular: request.networkPolicy.allowsCellularAccess
+                                )
+                                do {
+                                    try await downloader.download(
+                                        url: probeResult.finalURL,
+                                        segment: workItem.downloadSegment,
+                                        completedBytes: 0,
+                                        expectedTotalSize: totalSize,
+                                        headers: self.mergeValidatorHeaders(
+                                            original: request.headers,
+                                            eTag: probeResult.eTag,
+                                            lastModified: probeResult.lastModified
+                                        ),
                                         eTag: probeResult.eTag,
-                                        lastModified: probeResult.lastModified
-                                    ),
-                                    eTag: probeResult.eTag,
-                                    networkPolicy: request.networkPolicy,
-                                    progress: { snapshot in
-                                        Task {
-                                            let agg = await progressAccumulator.update(
-                                                segmentID: segment.id,
-                                                completedBytes: snapshot.bytesReceived
-                                            )
-                                            let metrics = speedTracker.snapshot(expectedTotalBytes: totalSize)
-                                            await self.updateProgress(
-                                                downloadID: request.id,
-                                                state: .downloading,
-                                                bytesReceived: agg.bytesReceived,
-                                                totalBytes: totalSize,
-                                                completedSegments: agg.completedSegments,
-                                                totalSegments: segments.count,
-                                                currentSpeed: metrics.currentBytesPerSecond,
-                                                averageSpeed: metrics.averageBytesPerSecond,
-                                                elapsedTime: metrics.elapsedTime,
-                                                eta: metrics.estimatedTimeRemaining,
-                                                handler: handler
-                                            )
-
-                                            let needsCheckpoint = await progressAccumulator.shouldCheckpoint(
-                                                segmentID: segment.id,
-                                                completedBytes: snapshot.bytesReceived
-                                            )
-                                            if needsCheckpoint {
-                                                // Guarantee partial file is safely flushed to disk before committing checkpoint
-                                                try? await writer.synchronize()
-                                                _ = try? await self.persistenceStore.updateSegmentProgress(
-                                                    tag: request.id,
-                                                    segmentID: segment.id,
+                                        networkPolicy: request.networkPolicy,
+                                        progress: { snapshot in
+                                            Task {
+                                                let agg = await progressAccumulator.update(
+                                                    workItemID: workItem.id,
                                                     completedBytes: snapshot.bytesReceived
                                                 )
+                                                let parentBytes = await progressAccumulator.parentCompletedBytes(
+                                                    workItem.parentSegmentID
+                                                )
+                                                let metrics = speedTracker.snapshot(expectedTotalBytes: totalSize)
+                                                await self.updateProgress(
+                                                    downloadID: request.id,
+                                                    state: .downloading,
+                                                    bytesReceived: agg.bytesReceived,
+                                                    totalBytes: totalSize,
+                                                    completedSegments: agg.completedSegments,
+                                                    totalSegments: segments.count,
+                                                    currentSpeed: metrics.currentBytesPerSecond,
+                                                    averageSpeed: metrics.averageBytesPerSecond,
+                                                    elapsedTime: metrics.elapsedTime,
+                                                    eta: metrics.estimatedTimeRemaining,
+                                                    handler: handler
+                                                )
+
+                                                let needsCheckpoint = await progressAccumulator.shouldCheckpoint(
+                                                    segmentID: workItem.parentSegmentID,
+                                                    completedBytes: parentBytes
+                                                )
+                                                if needsCheckpoint {
+                                                    // Guarantee partial file is safely flushed to disk before committing checkpoint
+                                                    try? await writer.synchronize()
+                                                    _ = try? await self.persistenceStore.updateSegmentProgress(
+                                                        tag: request.id,
+                                                        segmentID: workItem.parentSegmentID,
+                                                        completedBytes: parentBytes
+                                                    )
+                                                }
                                             }
                                         }
-                                    }
-                                )
-                                return (segment.id, segment.length)
-                            } catch {
-                                if Task.isCancelled {
-                                    throw CancellationError()
-                                }
-                                if case SegmentDownloaderError.tokenExpired = error {
-                                    throw DownloadCoordinatorError.tokenExpired(url: request.url)
-                                }
-                                if case SegmentDownloaderError.accessDenied = error {
-                                    let cooldown = Date().addingTimeInterval(300)
-                                    throw DownloadCoordinatorError.accessDenied(url: request.url, cooldownUntil: cooldown)
-                                }
-                                if case SegmentDownloaderError.linkExpired = error {
-                                    throw DownloadCoordinatorError.linkExpired(url: request.url)
-                                }
-                                if Self.isRangeIgnored(error) {
-                                    throw error // Fail-fast to trigger fallback
-                                }
-                                guard HTTPRetryPolicy.isRetryable(error) else {
-                                    throw error
-                                }
-                                if HTTPRetryPolicy.shouldWaitForConnectivity(error) {
-                                    try await self.connectivityGate.waitUntilAvailable(
-                                        allowsCellular: request.networkPolicy.allowsCellularAccess
                                     )
-                                    continue
-                                }
-                                if attempt >= request.retryCount {
-                                    if case SegmentDownloaderError.rateLimited(let retryAfter) = error {
-                                        throw DownloadCoordinatorError.rateLimited(url: request.url, retryAfter: retryAfter)
+                                    break
+                                } catch {
+                                    if Task.isCancelled {
+                                        throw CancellationError()
                                     }
-                                    throw error
+                                    if case SegmentDownloaderError.tokenExpired = error {
+                                        throw DownloadCoordinatorError.tokenExpired(url: request.url)
+                                    }
+                                    if case SegmentDownloaderError.accessDenied = error {
+                                        let cooldown = Date().addingTimeInterval(300)
+                                        throw DownloadCoordinatorError.accessDenied(url: request.url, cooldownUntil: cooldown)
+                                    }
+                                    if case SegmentDownloaderError.linkExpired = error {
+                                        throw DownloadCoordinatorError.linkExpired(url: request.url)
+                                    }
+                                    if Self.isRangeIgnored(error) {
+                                        throw error // Fail-fast to trigger fallback
+                                    }
+                                    guard HTTPRetryPolicy.isRetryable(error) else {
+                                        throw error
+                                    }
+                                    if HTTPRetryPolicy.shouldWaitForConnectivity(error) {
+                                        try await self.connectivityGate.waitUntilAvailable(
+                                            allowsCellular: request.networkPolicy.allowsCellularAccess
+                                        )
+                                        continue
+                                    }
+                                    if attempt >= request.retryCount {
+                                        if case SegmentDownloaderError.rateLimited(let retryAfter) = error {
+                                            throw DownloadCoordinatorError.rateLimited(url: request.url, retryAfter: retryAfter)
+                                        }
+                                        throw error
+                                    }
+                                    attempt += 1
+                                    let delaySeconds: Double
+                                    if case SegmentDownloaderError.rateLimited(let retryAfter) = error, let sec = retryAfter {
+                                        delaySeconds = min(60.0, max(1.0, sec))
+                                    } else if case SegmentDownloaderError.rateLimited = error {
+                                        delaySeconds = min(30.0, 1.0 * pow(2.0, Double(attempt)))
+                                    } else {
+                                        delaySeconds = min(15.0, 0.25 * Double(attempt))
+                                    }
+                                    try await Task.sleep(nanoseconds: UInt64(delaySeconds * 1_000_000_000))
                                 }
-                                attempt += 1
-                                let delaySeconds: Double
-                                if case SegmentDownloaderError.rateLimited(let retryAfter) = error, let sec = retryAfter {
-                                    delaySeconds = min(60.0, max(1.0, sec))
-                                } else if case SegmentDownloaderError.rateLimited = error {
-                                    delaySeconds = min(30.0, 1.0 * pow(2.0, Double(attempt)))
-                                } else {
-                                    delaySeconds = min(15.0, 0.25 * Double(attempt))
-                                }
-                                try await Task.sleep(nanoseconds: UInt64(delaySeconds * 1_000_000_000))
                             }
+
+                            let aggregate = await progressAccumulator.complete(workItem)
+                            await workQueue.complete(workerID: workerID, workItemID: workItem.id)
+                            let parentBytes = await progressAccumulator.parentCompletedBytes(workItem.parentSegmentID)
+                            if parentBytes >= (segments.first { $0.id == workItem.parentSegmentID }?.length ?? 0) {
+                                _ = try? await self.persistenceStore.updateSegmentProgress(
+                                    tag: request.id,
+                                    segmentID: workItem.parentSegmentID,
+                                    completedBytes: parentBytes
+                                )
+                            }
+
+                            let metrics = speedTracker.snapshot(expectedTotalBytes: totalSize)
+                            await self.updateProgress(
+                                downloadID: request.id,
+                                state: .downloading,
+                                bytesReceived: aggregate.bytesReceived,
+                                totalBytes: totalSize,
+                                completedSegments: aggregate.completedSegments,
+                                totalSegments: segments.count,
+                                currentSpeed: metrics.currentBytesPerSecond,
+                                averageSpeed: metrics.averageBytesPerSecond,
+                                elapsedTime: metrics.elapsedTime,
+                                eta: metrics.estimatedTimeRemaining,
+                                handler: handler
+                            )
                         }
                     }
                 }
 
-                // Checkpoint segments as they complete
-                while let (finishedSegmentID, finalLength) = try await group.next() {
-                    try await self.persistenceStore.updateSegmentProgress(
-                        tag: request.id,
-                        segmentID: finishedSegmentID,
-                        completedBytes: finalLength
-                    )
-                }
+                try await group.waitForAll()
             }
             if pauseRequested.contains(request.id) || Task.isCancelled {
                 // Ensure writer buffers are flushed to disk before recording checkpoint
