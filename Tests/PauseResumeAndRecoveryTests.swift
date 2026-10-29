@@ -214,11 +214,13 @@ final class PauseResumeAndRecoveryTests: XCTestCase {
     }
 
     func testPauseAndResumeNearlyCompleted() async throws {
-        let size = 800 * 1024 // 800 KB
+        // Keep enough data in flight for the pause request to win the race with
+        // completion even when the test host has a fast loopback connection.
+        let size = 4 * 1024 * 1024 // 4 MiB
         let payload = makePayload(size: size, seed: 0x44)
         let expectedSHA = EngineSHA256.hash(data: payload)
         let path = "/nearly_done.bin"
-        server.register(path: path, data: payload, chunkDelayMs: 6)
+        server.register(path: path, data: payload, chunkDelayMs: 20)
 
         let destURL = tempDirectory.appendingPathComponent("nearly_done.bin")
         let request = DownloadRequest(
@@ -234,10 +236,11 @@ final class PauseResumeAndRecoveryTests: XCTestCase {
             try await coordinator.start(request)
         }
 
-        // Wait until at least 65% completed
+        // Wait until at least 65% completed, but before the transfer reaches
+        // completion. The extra time accommodates slow CI hosts.
         var pausedNearEnd = false
-        for _ in 0..<100 {
-            try await Task.sleep(nanoseconds: 10_000_000)
+        for _ in 0..<250 {
+            try await Task.sleep(nanoseconds: 20_000_000)
             if let prog = await coordinator.currentProgress(for: "nearly-done"),
                prog.fractionCompleted >= 0.65 && prog.fractionCompleted < 0.95 {
                 try await coordinator.pause(id: "nearly-done")

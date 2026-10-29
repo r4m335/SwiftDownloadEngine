@@ -319,9 +319,15 @@ final class ScheduleCoordinatorTests: XCTestCase {
     }
 
     @MainActor
-    func testScheduleTaggingHelpers() async {
+    func testScheduleTaggingHelpers() async throws {
         let coordinator = ScheduleCoordinator(persistenceStore: persistenceStore)
         await coordinator.loadRules()
+
+        // The app's default rule is intentionally disabled. Enable it here so
+        // this test exercises the tagging helper's enabled-rule semantics.
+        var defaultRule = try XCTUnwrap(coordinator.rules.first)
+        defaultRule.isEnabled = true
+        try await coordinator.saveRule(defaultRule)
 
         XCTAssertFalse(coordinator.isScheduled(downloadID: "task-abc"))
 
