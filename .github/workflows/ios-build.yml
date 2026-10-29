@@ -544,6 +544,7 @@ jobs:
             -Xlinker -liconv \
             -Xlinker -framework -Xlinker Security \
             -Xlinker -framework -Xlinker SystemConfiguration \
+            Engine/Configuration/EngineConfiguration.swift \
             Engine/TorrentModels.swift \
             Engine/TorrentPersistenceStore.swift \
             Engine/TorrentQueueScheduler.swift \
