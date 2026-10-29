@@ -1,5 +1,5 @@
 import Foundation
-#if canImport(UserNotifications)
+#if os(iOS) || os(tvOS) || os(watchOS)
 import UserNotifications
 #endif
 
@@ -288,7 +288,7 @@ public final class ScheduleCoordinator: ObservableObject {
     // MARK: - Local Notifications
 
     public func updateNotifications(for rule: ScheduleRule) async {
-        #if canImport(UserNotifications)
+        #if os(iOS) || os(tvOS) || os(watchOS)
         let center = UNUserNotificationCenter.current()
         let identifierPrefix = "schedule-\(rule.id)"
 
@@ -325,7 +325,7 @@ public final class ScheduleCoordinator: ObservableObject {
     }
 
     public func cancelNotifications(for ruleID: String) async {
-        #if canImport(UserNotifications)
+        #if os(iOS) || os(tvOS) || os(watchOS)
         let center = UNUserNotificationCenter.current()
         let identifierPrefix = "schedule-\(ruleID)"
         let pending = await center.pendingNotificationRequests()

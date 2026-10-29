@@ -359,10 +359,33 @@ final class DownloadCoordinatorTests: XCTestCase {
         let testURL = URL(string: "https://example.com/slow.bin")!
         let destURL = tempDirectory.appendingPathComponent("slow.bin")
 
-        MockURLProtocol.setHandler(for: testURL) { _ in
-            let headers = ["Content-Range": "bytes 0-0/1000"]
+        MockURLProtocol.setHandler(for: testURL) { request in
+            // Keep the first task active long enough for the duplicate-start
+            // assertion to observe the coordinator's active-task guard.
+            Thread.sleep(forTimeInterval: 0.2)
+            let range = request.value(forHTTPHeaderField: "Range") ?? ""
+            if range == "bytes=0-" {
+                let headers = ["Content-Range": "bytes 0-0/1000", "Content-Length": "1"]
+                let resp = HTTPURLResponse(url: testURL, statusCode: 206, httpVersion: "HTTP/1.1", headerFields: headers)!
+                return (resp, Data([0x01]))
+            }
+
+            let parts = range.replacingOccurrences(of: "bytes=", with: "").split(separator: "-")
+            guard parts.count == 2,
+                  let start = Int64(parts[0]),
+                  let end = Int64(parts[1]),
+                  end >= start else {
+                let resp = HTTPURLResponse(url: testURL, statusCode: 416, httpVersion: "HTTP/1.1", headerFields: [:])!
+                return (resp, Data())
+            }
+
+            let length = Int(end - start + 1)
+            let headers = [
+                "Content-Range": "bytes \(start)-\(end)/1000",
+                "Content-Length": String(length)
+            ]
             let resp = HTTPURLResponse(url: testURL, statusCode: 206, httpVersion: "HTTP/1.1", headerFields: headers)!
-            return (resp, Data([0x01]))
+            return (resp, Data(repeating: 0x01, count: length))
         }
 
         let request = DownloadRequest(
