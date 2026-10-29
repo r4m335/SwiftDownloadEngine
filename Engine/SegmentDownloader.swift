@@ -96,6 +96,9 @@ public enum SegmentDownloaderError: Error, LocalizedError, Equatable, Sendable {
 /// - Writes incoming chunks directly to the shared `DownloadFileWriter` at the worker's assigned offset.
 /// - Validates both the `Content-Range` response header and the exact downloaded byte count.
 public final class SegmentDownloader: Sendable {
+    private static let writeBufferSize = 512 * 1024
+    private static let maximumWriteDelay: TimeInterval = 1.0
+
     public static let sharedSession: URLSession = ForegroundURLSession.make()
 
     public typealias ProgressHandler = @Sendable (SegmentDownloadSnapshot) -> Void
@@ -297,8 +300,12 @@ public final class SegmentDownloader: Sendable {
             expectedTotalSize: expectedTotalSize
         )
 
-        var currentOffset = startOffset
+        var writeOffset = startOffset
         var receivedThisSession: Int64 = 0
+        var writtenThisSession: Int64 = 0
+        var writeBuffer = Data()
+        writeBuffer.reserveCapacity(Self.writeBufferSize)
+        var lastWriteTime = Date()
 
         do {
             while let chunk = try await chunkStream.next() {
@@ -315,22 +322,36 @@ public final class SegmentDownloader: Sendable {
                     )
                 }
 
-                try await writer.writeDirect(chunk, at: currentOffset)
-                currentOffset += Int64(chunk.count)
+                writeBuffer.append(chunk)
                 receivedThisSession += Int64(chunk.count)
                 speedTracker?.record(bytes: Int64(chunk.count))
 
-                progress?(SegmentDownloadSnapshot(
-                    bytesReceived: completedBytes + receivedThisSession,
-                    expectedBytes: segment.length,
-                    completedSegments: 0,
-                    totalSegments: 1
-                ))
+                let shouldFlush = writeBuffer.count >= Self.writeBufferSize
+                    || Date().timeIntervalSince(lastWriteTime) >= Self.maximumWriteDelay
+                if shouldFlush {
+                    try await writer.writeDirect(writeBuffer, at: writeOffset)
+                    writeOffset += Int64(writeBuffer.count)
+                    writtenThisSession += Int64(writeBuffer.count)
+                    writeBuffer.removeAll(keepingCapacity: true)
+                    lastWriteTime = Date()
+
+                    progress?(SegmentDownloadSnapshot(
+                        bytesReceived: completedBytes + writtenThisSession,
+                        expectedBytes: segment.length,
+                        completedSegments: 0,
+                        totalSegments: 1
+                    ))
+                }
             }
         } catch is CancellationError {
             throw SegmentDownloaderError.cancelled
         } catch let urlError as URLError where urlError.code == .cancelled {
             throw SegmentDownloaderError.cancelled
+        }
+
+        if !writeBuffer.isEmpty {
+            try await writer.writeDirect(writeBuffer, at: writeOffset)
+            writeBuffer.removeAll(keepingCapacity: true)
         }
 
         // Validate exact body length matches expected slice
