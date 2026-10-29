@@ -128,6 +128,10 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
     private var eventTask: Task<Void, Never>? = nil
     private var torrentRefreshTask: Task<Void, Never>? = nil
 
+#if canImport(BackgroundTasks) && os(iOS)
+    private let continuedProcessingCoordinator: ContinuedProcessingTaskCoordinator
+#endif
+
     /// Resolves the default destination downloads directory.
     public static func defaultDownloadsDirectory() -> URL {
         let fileManager = FileManager.default
@@ -155,6 +159,10 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
             engine: engine,
             persistenceStore: engine.persistenceStore
         )
+#if canImport(BackgroundTasks) && os(iOS)
+        self.continuedProcessingCoordinator = ContinuedProcessingTaskCoordinator(engine: engine)
+        self.continuedProcessingCoordinator.registerIfAvailable()
+#endif
 
         var loadedSettings = AppSettings.load(from: userDefaults)
         let legacyConcurrent = userDefaults.integer(forKey: SettingsKeys.maxConcurrentDownloads)
@@ -514,6 +522,11 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
         do {
             let snapshot = try await engine.addDownload(request, priority: .normal, autoStart: autoStart)
             upsertSnapshot(snapshot)
+#if canImport(BackgroundTasks) && os(iOS)
+            if autoStart {
+                continuedProcessingCoordinator.submit(downloadID: snapshot.id)
+            }
+#endif
             return snapshot
         } catch {
             self.errorMessage = error.localizedDescription

@@ -461,6 +461,42 @@ public actor DownloadQueueManager {
         notifyQueueChanged()
     }
 
+    /// Hands a scheduled HTTP download to the background transport. The queue
+    /// item remains durable and is launched through the normal queue worker, but
+    /// its request is converted to background policy before that worker starts.
+    public func handoffToBackground(id: String, earliestBeginDate: Date) async throws {
+        guard var item = items[id] else {
+            throw DownloadQueueError.downloadNotFound(id: id)
+        }
+        guard !item.state.isTerminal else { return }
+
+        if activeTasks[id] != nil {
+            try await pause(id: id)
+            guard let paused = items[id] else { return }
+            item = paused
+        }
+
+        item.request.transportPolicy = .background
+        item.state = .pending
+        items[id] = item
+        await coordinator.setPendingBackgroundEarliestBeginDate(earliestBeginDate, for: id)
+        persistQueue()
+        processQueue()
+        notifyQueueChanged()
+    }
+
+    /// Applies the schedule's network policy to a queued request before its
+    /// next transport task is created.
+    public func setNetworkPolicy(_ policy: DownloadNetworkPolicy, for id: String) throws {
+        guard var item = items[id] else {
+            throw DownloadQueueError.downloadNotFound(id: id)
+        }
+        item.request.networkPolicy = policy
+        items[id] = item
+        persistQueue()
+        notifyQueueChanged()
+    }
+
     /// Resumes an eligible paused or failed download.
     ///
     /// Transitions state to `.pending` and triggers queue scheduling.
@@ -762,7 +798,9 @@ public actor DownloadQueueManager {
                         destinationURL: record.destinationURL,
                         headers: record.headers,
                         configuredThreadCount: max(1, record.segments.count),
-                        storageMode: record.storageMode
+                        storageMode: record.storageMode,
+                        transportPolicy: record.transportPolicy,
+                        networkPolicy: record.networkPolicy
                     )
                     let restoredState: DownloadState
                     switch record.state {

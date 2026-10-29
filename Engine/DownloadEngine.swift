@@ -956,6 +956,32 @@ public actor DownloadEngine {
         await coordinator.setBackgroundEarliestBeginDate(date, for: downloadID)
     }
 
+    /// Moves a scheduled HTTP download to background URLSession transport and
+    /// creates its segment tasks with the requested earliest start date.
+    public func handoffScheduledDownloadToBackground(
+        id: DownloadID,
+        earliestBeginDate: Date,
+        networkPolicy: DownloadNetworkPolicy? = nil
+    ) async throws {
+        if let networkPolicy {
+            try await queueManager.setNetworkPolicy(networkPolicy, for: id)
+            if var record = try? await persistenceStore.fetch(tag: id) {
+                record.networkPolicy = networkPolicy
+                try? await persistenceStore.save(record)
+            }
+        }
+        try await queueManager.handoffToBackground(id: id, earliestBeginDate: earliestBeginDate)
+    }
+
+    /// Updates the durable queue and download record network policy.
+    public func setDownloadNetworkPolicy(_ policy: DownloadNetworkPolicy, for id: DownloadID) async throws {
+        try await queueManager.setNetworkPolicy(policy, for: id)
+        if var record = try? await persistenceStore.fetch(tag: id) {
+            record.networkPolicy = policy
+            try? await persistenceStore.save(record)
+        }
+    }
+
     /// Closes all active event streams upon engine termination.
     public func shutdown() {
         for continuation in subscribers.values {

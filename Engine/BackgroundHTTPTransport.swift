@@ -732,7 +732,8 @@ public final class BackgroundDownloadSessionManager: NSObject, @unchecked Sendab
     public func scheduleSegmentDownload(
         download: DownloadRecord,
         segment: SegmentRecord,
-        customHeaders: [String: String]? = nil
+        customHeaders: [String: String]? = nil,
+        earliestBeginDate: Date? = nil
     ) async throws -> BackgroundDownloadTaskRecord {
         let targetURL = download.resolvedURL ?? download.originalURL
         var request = URLRequest(url: targetURL)
@@ -788,6 +789,12 @@ public final class BackgroundDownloadSessionManager: NSObject, @unchecked Sendab
         }
 
         let task = session.downloadTask(with: request)
+        // This scheduling hint is reliable only when assigned before resume().
+        #if canImport(Darwin)
+        if #available(iOS 11.0, macOS 10.13, *) {
+            task.earliestBeginDate = earliestBeginDate
+        }
+        #endif
         let partURL = partFileURL(downloadID: download.id, segmentID: segment.id)
 
         let taskRecord = BackgroundDownloadTaskRecord(
@@ -829,7 +836,8 @@ public final class BackgroundDownloadSessionManager: NSObject, @unchecked Sendab
         }
     }
 
-    /// Sets earliestBeginDate on background tasks for a download (or all downloads) to support iOS native scheduling.
+    /// Best-effort compatibility method for tasks created by older builds.
+    /// New tasks must receive the date through `scheduleSegmentDownload` before resume().
     public func setEarliestBeginDate(_ date: Date?, for downloadID: String? = nil) async {
         let tasks = await activeSessionTasks()
         if let targetID = downloadID {

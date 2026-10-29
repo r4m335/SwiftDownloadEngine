@@ -212,6 +212,27 @@ final class ScheduleCoordinatorTests: XCTestCase {
     }
 
     @MainActor
+    func testScheduleWindowStopBeforeStartUsesPreviousWeekday() {
+        let coordinator = ScheduleCoordinator(persistenceStore: persistenceStore)
+        let rule = ScheduleRule(
+            isEnabled: true,
+            startTime: DateComponents(hour: 22, minute: 0),
+            stopTime: DateComponents(hour: 6, minute: 0),
+            weekdays: [2] // Monday starts; Tuesday morning is the continuation.
+        )
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+
+        let mondayLate = calendar.date(from: DateComponents(year: 2026, month: 10, day: 26, hour: 23, minute: 0))!
+        let tuesdayMorning = calendar.date(from: DateComponents(year: 2026, month: 10, day: 27, hour: 5, minute: 0))!
+        let tuesdayLate = calendar.date(from: DateComponents(year: 2026, month: 10, day: 27, hour: 23, minute: 0))!
+
+        XCTAssertTrue(coordinator.isDateInScheduleWindow(mondayLate, rule: rule, calendar: calendar))
+        XCTAssertTrue(coordinator.isDateInScheduleWindow(tuesdayMorning, rule: rule, calendar: calendar))
+        XCTAssertFalse(coordinator.isDateInScheduleWindow(tuesdayLate, rule: rule, calendar: calendar))
+    }
+
+    @MainActor
     func testScheduleWindowDisabledRuleReturnsFalse() {
         let coordinator = ScheduleCoordinator(persistenceStore: persistenceStore)
         let rule = ScheduleRule(isEnabled: false, weekdays: Set(1...7))

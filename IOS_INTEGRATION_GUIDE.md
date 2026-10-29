@@ -69,7 +69,7 @@ To ensure proper file management, external app handoff, and network reliability 
 | :--- | :--- | :--- |
 | `UIFileSharingEnabled` | `YES` | Exposes the app's `Documents/Downloads` directory to the native **Files app** and iTunes/Finder file sharing. |
 | `LSSupportsOpeningDocumentsInPlace` | `YES` | Enables third-party apps (e.g. media players, document viewers) to read downloaded files directly in place without making duplicate storage copies. |
-| `UIBackgroundModes` | `fetch`, `processing` | Permits scheduling periodic background queue audits and resuming pending downloads via `BGTaskScheduler` (`BGAppRefreshTask`, `BGProcessingTask`). |
+| `BGTaskSchedulerPermittedIdentifiers` | `com.r4m335.SwiftDownloadEngine.continued-download` | Allows the iOS 26+ `BGContinuedProcessingTask` continuation submitted by an explicit foreground download action. Background HTTP URLSession remains the resilience path on earlier iOS versions. |
 | `NSAppTransportSecurity` | `NSAllowsArbitraryLoads: YES` | Permits downloading files over plain HTTP (e.g. legacy mirrors, local intranet servers, test fixtures) in addition to HTTPS. |
 
 ### Sandbox Directory Locations:
@@ -90,7 +90,7 @@ The top-level coordinator ([SwiftDownloadEngineApp](file:///c:/mini%20project/DM
 ### In-Process Transfers vs. Background Sessions
 * **Transfer Engine Architecture:** The engine coordinates multi-worker concurrent HTTP range chunking using direct-seek disk I/O (`URLSessionDataTask` / `FileHandle`). This achieves high download speeds and multi-connection saturation while the app is active in the foreground or executing within the operating system's background execution window.
 * **App Suspension (`.background`):** When the user leaves the application, `SwiftDownloadEngineApp` immediately triggers `viewModel.refreshSnapshots()`, persisting current byte progress, segment states, and queue status to disk before the OS suspends the app process.
-* **Background Task Capabilities (`UIBackgroundModes`):** The declared `fetch` and `processing` modes permit the app to register with `BGTaskScheduler` for periodic wakeups to check queue progress and initiate downloads when connected to power/Wi-Fi.
+* **Continued processing:** On iOS 26 and later, an explicit foreground HTTP download may submit `BGContinuedProcessingTask` so the fast foreground engine can continue after backgrounding. The task reports progress and hands work back to background URLSession if it expires. Earlier iOS versions use background URLSession directly; no periodic fetch or processing mode is declared.
 * **Important Distinction:** In iOS, in-process network streams are suspended by the kernel once the app process is suspended. True system daemon transfers (continuing indefinitely while the process is suspended) require `URLSessionConfiguration.background(withIdentifier:)` with single-task delegates. Because `SwiftDownloadEngine` uses segmented concurrent chunking for maximum speed, transfers seamlessly pause on OS suspension and reliably resume from their exact recorded byte offsets when foregrounded.
 
 ---

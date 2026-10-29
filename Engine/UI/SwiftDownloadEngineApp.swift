@@ -5,6 +5,116 @@ import SwiftUI
 import UIKit
 #endif
 
+#if canImport(BackgroundTasks) && os(iOS)
+import BackgroundTasks
+
+/// Bridges an explicit foreground download action to iOS 26's continued
+/// processing task. URLSession remains the durable fallback if iOS expires or
+/// cancels this foreground-originated task.
+@MainActor
+public final class ContinuedProcessingTaskCoordinator {
+    private static let taskIdentifier = "com.r4m335.SwiftDownloadEngine.continued-download"
+    private static let pendingIDsKey = "SwiftDownloadEngine.continuedProcessingDownloadIDs"
+    private static var didRegister = false
+    private static var didSubmit = false
+
+    private let engine: DownloadEngine
+    private var monitorTask: Task<Void, Never>?
+
+    public init(engine: DownloadEngine) {
+        self.engine = engine
+    }
+
+    public func registerIfAvailable() {
+        guard #available(iOS 26.0, *) else { return }
+        guard !Self.didRegister else { return }
+        Self.didRegister = true
+        BGTaskScheduler.shared.register(forTaskWithIdentifier: Self.taskIdentifier, using: nil) { [weak self] task in
+            guard let task = task as? BGContinuedProcessingTask else {
+                task.setTaskCompleted(success: false)
+                return
+            }
+            Task { @MainActor [weak self] in
+                self?.handle(task)
+            }
+        }
+    }
+
+    /// Call only in response to an explicit foreground download action.
+    public func submit(downloadID: String) {
+        guard #available(iOS 26.0, *) else { return }
+        var pendingIDs = UserDefaults.standard.stringArray(forKey: Self.pendingIDsKey) ?? []
+        if !pendingIDs.contains(downloadID) {
+            pendingIDs.append(downloadID)
+        }
+        UserDefaults.standard.set(pendingIDs, forKey: Self.pendingIDsKey)
+        guard !Self.didSubmit else { return }
+        Self.didSubmit = true
+
+        let request = BGContinuedProcessingTaskRequest(
+            identifier: Self.taskIdentifier,
+            title: "Downloading",
+            subtitle: "Continuing while the app is in the background"
+        )
+        request.strategy = .queue
+        do {
+            try BGTaskScheduler.shared.submit(request)
+        } catch {
+            // The foreground queue is already running; failure to obtain the
+            // optional iOS 26 continuation must not fail the download itself.
+            print("[ContinuedProcessing] Submission unavailable: \(error.localizedDescription)")
+        }
+    }
+
+    @available(iOS 26.0, *)
+    private func handle(_ task: BGContinuedProcessingTask) {
+        let ids = UserDefaults.standard.stringArray(forKey: Self.pendingIDsKey) ?? []
+        guard !ids.isEmpty else {
+            Self.didSubmit = false
+            task.setTaskCompleted(success: true)
+            return
+        }
+
+        task.progress.totalUnitCount = 1_000
+        task.expirationHandler = { [weak self, weak task] in
+            Task { @MainActor [weak self, weak task] in
+                await self?.handoffAfterExpiration(ids: ids)
+                task?.setTaskCompleted(success: false)
+            }
+        }
+
+        monitorTask?.cancel()
+        monitorTask = Task { @MainActor [weak self, weak task] in
+            guard let self else { return }
+            while !Task.isCancelled {
+                let snapshots = await engine.allSnapshots().filter { ids.contains($0.id) }
+                let fraction = snapshots.isEmpty
+                    ? 1.0
+                    : snapshots.map(\.progressFraction).reduce(0, +) / Double(snapshots.count)
+                task?.progress.completedUnitCount = Int64(fraction * 1_000)
+
+                if snapshots.isEmpty || snapshots.allSatisfy(\.isTerminal) {
+                    UserDefaults.standard.removeObject(forKey: Self.pendingIDsKey)
+                    Self.didSubmit = false
+                    task?.setTaskCompleted(success: snapshots.allSatisfy(\.isCompleted))
+                    return
+                }
+
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+            }
+        }
+    }
+
+    private func handoffAfterExpiration(ids: [String]) async {
+        for id in ids {
+            try? await engine.handoffScheduledDownloadToBackground(id: id, earliestBeginDate: Date())
+        }
+        UserDefaults.standard.removeObject(forKey: Self.pendingIDsKey)
+        Self.didSubmit = false
+    }
+}
+#endif
+
 #if canImport(UIKit) && !os(watchOS)
 public final class AppDelegate: NSObject, UIApplicationDelegate {
     public static var backgroundSessionManager: BackgroundDownloadSessionManager?
@@ -109,6 +219,9 @@ public struct SwiftDownloadEngineApp: App {
 
         let initialSettings = AppSettings.load(from: .standard)
         let engineConfig = initialSettings.makeEngineConfiguration()
+        let foregroundSession = ForegroundURLSession.make(
+            maximumConnectionsPerHost: SegmentAllocator.maxThreadCount
+        )
 
         var engineInstance: DownloadEngine? = nil
         do {
@@ -116,7 +229,7 @@ public struct SwiftDownloadEngineApp: App {
             engineInstance = try DownloadEngine(
                 configuration: engineConfig,
                 storageDirectoryURL: storeDir,
-                session: .shared,
+                session: foregroundSession,
                 backgroundSessionManager: bgManager
             )
         } catch {
@@ -126,7 +239,7 @@ public struct SwiftDownloadEngineApp: App {
             engineInstance = try? DownloadEngine(
                 configuration: engineConfig,
                 storageDirectoryURL: fallbackStore,
-                session: .shared,
+                session: foregroundSession,
                 backgroundSessionManager: nil
             )
         }
@@ -138,7 +251,7 @@ public struct SwiftDownloadEngineApp: App {
             let emergencyStore = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
             try? FileManager.default.createDirectory(at: emergencyStore, withIntermediateDirectories: true)
             let persistence = (try? DownloadPersistenceStore(storageDirectoryURL: emergencyStore)) ?? DownloadPersistenceStore(inMemory: true)
-            let coordinator = (try? DownloadCoordinator(session: .shared, persistenceStore: persistence)) ?? (try! DownloadCoordinator(session: .shared, persistenceStore: DownloadPersistenceStore(inMemory: true)))
+            let coordinator = (try? DownloadCoordinator(session: foregroundSession, persistenceStore: persistence)) ?? (try! DownloadCoordinator(session: foregroundSession, persistenceStore: DownloadPersistenceStore(inMemory: true)))
             let qm = DownloadQueueManager(coordinator: coordinator, persistenceStore: persistence)
             engine = DownloadEngine(configuration: engineConfig, queueManager: qm, coordinator: coordinator, persistenceStore: persistence)
         }

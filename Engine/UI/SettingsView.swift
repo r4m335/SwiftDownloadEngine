@@ -292,7 +292,7 @@ public struct SettingsView: View {
                 // Section 9: Download Scheduler (iOS Native URLSession & Local Notifications)
                 Section(
                     header: Text("Download Scheduler"),
-                    footer: Text(ScheduleCoordinator.torrentBackgroundLimitationMessage)
+                    footer: Text("\(ScheduleCoordinator.scheduledBackgroundBehaviorMessage) \(ScheduleCoordinator.torrentBackgroundLimitationMessage)")
                 ) {
                     Toggle("Enable Scheduler", isOn: $scheduleEnabled)
 

@@ -26,10 +26,9 @@
     <true/>
     <key>LSSupportsOpeningDocumentsInPlace</key>
     <true/>
-    <key>UIBackgroundModes</key>
+    <key>BGTaskSchedulerPermittedIdentifiers</key>
     <array>
-        <string>fetch</string>
-        <string>processing</string>
+        <string>com.r4m335.SwiftDownloadEngine.continued-download</string>
     </array>
     <key>NSAppTransportSecurity</key>
     <dict>

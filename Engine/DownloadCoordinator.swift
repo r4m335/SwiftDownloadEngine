@@ -345,6 +345,7 @@ public actor DownloadCoordinator {
     private var activeTasks: [String: Task<Void, Error>] = [:]
     private var progressByID: [String: CoordinatorProgress] = [:]
     private var pauseRequested: Set<String> = []
+    private var pendingBackgroundEarliestBeginDates: [String: Date] = [:]
     private var backgroundSessionManager: BackgroundDownloadSessionManager?
 
     public init(
@@ -382,6 +383,13 @@ public actor DownloadCoordinator {
     /// Configures earliestBeginDate on background session tasks.
     public func setBackgroundEarliestBeginDate(_ date: Date?, for downloadID: String? = nil) async {
         await backgroundSessionManager?.setEarliestBeginDate(date, for: downloadID)
+    }
+
+    /// Stores a scheduling date for the next background execution of a queue item.
+    /// The date is consumed when that execution creates URLSession tasks, before
+    /// those tasks are resumed.
+    public func setPendingBackgroundEarliestBeginDate(_ date: Date, for downloadID: String) {
+        pendingBackgroundEarliestBeginDates[downloadID] = date
     }
 
     /// Dynamically updates the global bandwidth limit.
@@ -659,6 +667,11 @@ public actor DownloadCoordinator {
         isResumeRequest: Bool = false,
         progress handler: ProgressHandler?
     ) async throws {
+        let backgroundEarliestBeginDate: Date? = {
+            guard request.transportPolicy == .background else { return nil }
+            return pendingBackgroundEarliestBeginDates.removeValue(forKey: request.id)
+        }()
+
         if let requestedByteRange = request.requestedByteRange {
             try await executeRequestedByteRange(
                 request: request,
@@ -903,6 +916,7 @@ public actor DownloadCoordinator {
                         request: executionRequest,
                         probeResult: probeResult,
                         existingRecord: isResume ? record : nil,
+                        earliestBeginDate: backgroundEarliestBeginDate,
                         progress: handler
                     )
                 } else {
@@ -1803,23 +1817,98 @@ public actor DownloadCoordinator {
         case failed(segmentID: Int, reason: String)
     }
 
+    /// Converts a partially written direct-seek record into the part-file
+    /// representation required by background URLSession tasks. This keeps the
+    /// handoff lossless for already checkpointed bytes without changing the
+    /// persisted record schema.
+    private func prepareExistingRecordForBackground(
+        _ record: DownloadRecord?,
+        backgroundManager: BackgroundDownloadSessionManager
+    ) throws -> DownloadRecord? {
+        guard var record, record.storageMode == .directSeek, !record.segments.isEmpty else {
+            return record
+        }
+
+        var updatedSegments: [SegmentRecord] = []
+        for segment in record.segments {
+            let completed = min(max(segment.completedBytes, 0), segment.length)
+            let partURL = backgroundManager.partFileURL(downloadID: record.id, segmentID: segment.id)
+            try? FileManager.default.removeItem(at: partURL)
+
+            var updated = segment
+            updated.completedBytes = 0
+
+            if completed > 0,
+               FileManager.default.fileExists(atPath: record.destinationURL.path) {
+                guard FileManager.default.createFile(atPath: partURL.path, contents: nil) else {
+                    throw CocoaError(.fileWriteUnknown)
+                }
+                let input = try FileHandle(forReadingFrom: record.destinationURL)
+                let output = try FileHandle(forWritingTo: partURL)
+                defer {
+                    try? input.close()
+                    try? output.close()
+                }
+
+                try input.seek(toOffset: UInt64(segment.startOffset))
+                var remaining = completed
+                while remaining > 0 {
+                    let count = Int(min(512 * 1024, remaining))
+                    guard let data = try input.read(upToCount: count), !data.isEmpty else {
+                        break
+                    }
+                    try output.write(contentsOf: data)
+                    remaining -= Int64(data.count)
+                }
+                try output.synchronize()
+                let copied = completed - remaining
+                updated.completedBytes = copied
+            }
+            updatedSegments.append(updated)
+        }
+
+        record.storageMode = .partFiles
+        record.transportPolicy = .background
+        record.state = .paused
+        record.segments = updatedSegments
+        record.updatedAt = Date()
+        return record
+    }
+
     private func runMultiSegmentBackgroundDownload(
         request: DownloadRequest,
         probeResult: HTTPRangeProbeResult,
         existingRecord: DownloadRecord?,
+        earliestBeginDate: Date? = nil,
         progress handler: ProgressHandler?
     ) async throws {
         guard let totalSize = probeResult.totalSize, totalSize > 0 else {
             throw DownloadCoordinatorError.invalidRequest(reason: "Invalid file size for ranged background download")
         }
 
+        guard let bgManager = self.backgroundSessionManager else {
+            print("[DownloadCoordinator] Notice: BackgroundDownloadSessionManager unavailable, falling back to foreground transport.")
+            try await runMultiSegmentDownload(
+                request: request,
+                probeResult: probeResult,
+                existingRecord: existingRecord,
+                progress: handler
+            )
+            return
+        }
+
         // 1. Allocate segments or restore existing boundaries
         let segments: [DownloadSegment]
         var initialCompletedMap: [Int: Int64] = [:]
 
-        if let existingRecord, !existingRecord.segments.isEmpty {
-            segments = existingRecord.segments.map { $0.toDownloadSegment() }
-            for seg in existingRecord.segments {
+        let preparedExistingRecord = try prepareExistingRecordForBackground(
+            existingRecord,
+            backgroundManager: bgManager
+        )
+
+        if let preparedExistingRecord, !preparedExistingRecord.segments.isEmpty {
+            segments = preparedExistingRecord.segments.map { $0.toDownloadSegment() }
+            for seg in preparedExistingRecord.segments {
                 initialCompletedMap[seg.id] = seg.completedBytes
             }
         } else {
@@ -1831,18 +1920,6 @@ public actor DownloadCoordinator {
         }
 
         try Self.validateSegmentLayout(segments, totalSize: totalSize)
-
-        // Ensure background session manager is available
-        guard let bgManager = self.backgroundSessionManager else {
-            print("[DownloadCoordinator] Notice: BackgroundDownloadSessionManager unavailable, falling back to foreground transport.")
-            try await runMultiSegmentDownload(
-                request: request,
-                probeResult: probeResult,
-                existingRecord: existingRecord,
-                progress: handler
-            )
-            return
-        }
 
         // 2. Reconcile existing part files on disk for safe resumption
         var completedSegmentsSet = Set<Int>()
@@ -1881,6 +1958,7 @@ public actor DownloadCoordinator {
             state: .downloading,
             storageMode: .partFiles,
             transportPolicy: .background,
+            networkPolicy: request.networkPolicy,
             eTag: probeResult.eTag,
             lastModified: probeResult.lastModified,
             suggestedFilename: probeResult.suggestedFilename,
@@ -1960,7 +2038,8 @@ public actor DownloadCoordinator {
                     original: request.headers,
                     eTag: probeResult.eTag,
                     lastModified: probeResult.lastModified
-                )
+                ),
+                earliestBeginDate: earliestBeginDate
             )
         }
 
@@ -2041,7 +2120,8 @@ public actor DownloadCoordinator {
                                     original: request.headers,
                                     eTag: probeResult.eTag,
                                     lastModified: probeResult.lastModified
-                                )
+                                ),
+                                earliestBeginDate: earliestBeginDate
                             )
                         }
                     } else {

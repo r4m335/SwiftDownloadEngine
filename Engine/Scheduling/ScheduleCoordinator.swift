@@ -1,4 +1,8 @@
 import Foundation
+
+#if canImport(UIKit)
+import UIKit
+#endif
 #if os(iOS) || os(tvOS) || os(watchOS)
 import UserNotifications
 #endif
@@ -7,23 +11,27 @@ import UserNotifications
 ///
 /// Architecture Guarantees:
 /// 1. Reconciles active vs. paused states on app launch and foreground transitions.
-/// 2. Sets `earliestBeginDate` on background `URLSessionDownloadTask`s when in background.
+/// 2. Creates background `URLSessionDownloadTask`s with `earliestBeginDate` before resume.
 /// 3. Registers local `UNCalendarNotificationTrigger` reminders for user awareness.
 /// 4. Handles overnight windows seamlessly (e.g. 23:00 to 06:00).
 /// 5. Clearly segregates foreground-only BitTorrent transfers from background HTTP transfers.
 @MainActor
 public final class ScheduleCoordinator: ObservableObject {
     public static let torrentBackgroundLimitationMessage = "Torrents can only be downloaded while the app is in the foreground. iOS terminates background sockets. HTTP/HTTPS downloads will run via background scheduling."
+    public static let scheduledBackgroundBehaviorMessage = "When the app goes to the background outside the window, scheduled HTTP downloads are handed to URLSession and requested to start at the next window. iOS start times are approximate; stop times are reminders and are enforced when the app next reconciles."
 
     public let engine: DownloadEngine?
     public let persistenceStore: DownloadPersistenceStore
-    public let calendar: Calendar
+    public private(set) var calendar: Calendar
     public var resumeHandler: ((String) async -> Void)?
     public var pauseHandler: ((String) async -> Void)?
 
     @Published public private(set) var rules: [ScheduleRule] = []
     @Published public private(set) var isReconciling: Bool = false
     @Published public private(set) var lastReconciledAt: Date? = nil
+
+    private var timeChangeObservers: [NSObjectProtocol] = []
+    private let notificationPermissionKey = "SwiftDownloadEngine.scheduleNotificationPermissionRequested"
 
     public init(
         engine: DownloadEngine? = nil,
@@ -37,6 +45,46 @@ public final class ScheduleCoordinator: ObservableObject {
         self.calendar = calendar
         self.resumeHandler = resumeHandler
         self.pauseHandler = pauseHandler
+        registerTimeChangeObservers()
+    }
+
+    deinit {
+        let center = NotificationCenter.default
+        for observer in timeChangeObservers {
+            center.removeObserver(observer)
+        }
+    }
+
+    private func registerTimeChangeObservers() {
+        let center = NotificationCenter.default
+        let names: [Notification.Name] = [Notification.Name.NSSystemTimeZoneDidChange]
+        for name in names {
+            timeChangeObservers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    await self?.handleTimeChange()
+                }
+            })
+        }
+#if canImport(UIKit) && !os(watchOS)
+        timeChangeObservers.append(center.addObserver(
+            forName: UIApplication.significantTimeChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                await self?.handleTimeChange()
+            }
+        })
+#endif
+    }
+
+    private func handleTimeChange() async {
+        calendar = Calendar.current
+        await loadRules()
+        for rule in rules {
+            await updateNotifications(for: rule, requestPermission: false)
+        }
+        await reconcile()
     }
 
     /// Loads persisted schedule rules into memory.
@@ -68,6 +116,7 @@ public final class ScheduleCoordinator: ObservableObject {
 
     /// Persists or updates a schedule rule, updates local notifications, and reconciles state.
     public func saveRule(_ rule: ScheduleRule) async throws {
+        let wasEnabled = rules.first(where: { $0.id == rule.id })?.isEnabled ?? false
         var updated = rule
         updated.updatedAt = Date()
         try await persistenceStore.saveScheduleRule(updated)
@@ -76,7 +125,7 @@ public final class ScheduleCoordinator: ObservableObject {
         } else {
             rules.append(updated)
         }
-        await updateNotifications(for: updated)
+        await updateNotifications(for: updated, requestPermission: updated.isEnabled && !wasEnabled)
         await reconcile()
     }
 
@@ -227,6 +276,12 @@ public final class ScheduleCoordinator: ObservableObject {
                 let state = record?.state ?? (isInsideWindow ? .paused : .downloading)
 
                 if isInsideWindow {
+                    if let engine {
+                        try? await engine.setDownloadNetworkPolicy(
+                            rule.wifiOnly ? .wifiOnly : .anyNetwork,
+                            for: downloadID
+                        )
+                    }
                     // Inside window: Resume/start if paused or pending
                     if state == .paused || state == .pending {
                         if let handler = resumeHandler {
@@ -270,24 +325,42 @@ public final class ScheduleCoordinator: ObservableObject {
     // MARK: - Task 2: Background Preparation (earliestBeginDate & Notifications)
 
     /// Called when the application enters the background.
-    /// Configures `earliestBeginDate` on background download tasks and sets up reminders.
+    /// Hands outside-window HTTP items to background URLSession with a deferred
+    /// start date and sets up calendar reminders.
     public func prepareForBackground(now: Date = Date()) async {
         for rule in rules where rule.isEnabled {
             if !isDateInScheduleWindow(now, rule: rule) {
-                // Calculate next occurrence for the background session tasks
+                // Create background tasks with the date before resume(). For
+                // foreground-policy queue items this is the hybrid handoff.
                 if let nextStart = nextOccurrence(after: now, matching: rule.startTime, weekdays: rule.weekdays) {
                     for downloadID in rule.targetDownloadIDs {
-                        await engine?.setBackgroundEarliestBeginDate(nextStart, for: downloadID)
+                        if let engine,
+                           let snapshot = await engine.snapshot(for: downloadID),
+                           snapshot.transportPolicy != .background || snapshot.state == .pending || snapshot.state == .paused {
+                            do {
+                                try await engine.handoffScheduledDownloadToBackground(
+                                    id: downloadID,
+                                    earliestBeginDate: nextStart,
+                                    networkPolicy: rule.wifiOnly ? .wifiOnly : .anyNetwork
+                                )
+                            } catch {
+                                print("[ScheduleCoordinator] Failed to hand off scheduled download \(downloadID): \(error.localizedDescription)")
+                            }
+                        } else {
+                            // Existing running background tasks cannot be made
+                            // reliably later by mutating them. They already own
+                            // the background URLSession lifecycle.
+                        }
                     }
                 }
             }
-            await updateNotifications(for: rule)
+            await updateNotifications(for: rule, requestPermission: false)
         }
     }
 
     // MARK: - Local Notifications
 
-    public func updateNotifications(for rule: ScheduleRule) async {
+    public func updateNotifications(for rule: ScheduleRule, requestPermission: Bool = false) async {
         #if os(iOS) || os(tvOS) || os(watchOS)
         let center = UNUserNotificationCenter.current()
         let identifierPrefix = "schedule-\(rule.id)"
@@ -299,8 +372,13 @@ public final class ScheduleCoordinator: ObservableObject {
 
         guard rule.isEnabled else { return }
 
-        // Request permission if not already determined
-        _ = try? await center.requestAuthorization(options: [.alert, .sound, .badge])
+        if requestPermission {
+            let defaults = UserDefaults.standard
+            if !defaults.bool(forKey: notificationPermissionKey) {
+                _ = try? await center.requestAuthorization(options: [.alert, .sound, .badge])
+                defaults.set(true, forKey: notificationPermissionKey)
+            }
+        }
 
         let startHour = rule.startTime.hour ?? 2
         let startMinute = rule.startTime.minute ?? 0
@@ -320,6 +398,33 @@ public final class ScheduleCoordinator: ObservableObject {
             let reqID = "\(identifierPrefix)-day\(weekday)"
             let request = UNNotificationRequest(identifier: reqID, content: content, trigger: trigger)
             try? await center.add(request)
+        }
+
+        if let stopTime = rule.stopTime,
+           let stopHour = stopTime.hour,
+           let stopMinute = stopTime.minute {
+            let startMinutes = (rule.startTime.hour ?? 0) * 60 + (rule.startTime.minute ?? 0)
+            let stopMinutes = stopHour * 60 + stopMinute
+            let stopWeekdays: Set<Int> = startMinutes > stopMinutes
+                ? Set(rule.weekdays.map { $0 == 7 ? 1 : $0 + 1 })
+                : rule.weekdays
+
+            for weekday in stopWeekdays {
+                let content = UNMutableNotificationContent()
+                content.title = "Scheduled Downloads Window Ended"
+                content.body = "Background downloads may continue until the app next reconciles the schedule."
+                content.sound = .default
+
+                var matching = DateComponents()
+                matching.hour = stopHour
+                matching.minute = stopMinute
+                matching.weekday = weekday
+
+                let trigger = UNCalendarNotificationTrigger(dateMatching: matching, repeats: true)
+                let reqID = "\(identifierPrefix)-stop-day\(weekday)"
+                let request = UNNotificationRequest(identifier: reqID, content: content, trigger: trigger)
+                try? await center.add(request)
+            }
         }
         #endif
     }
