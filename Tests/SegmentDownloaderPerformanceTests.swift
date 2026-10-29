@@ -41,15 +41,23 @@ final class SegmentDownloaderPerformanceTests: XCTestCase {
         try super.tearDownWithError()
     }
 
-    func testBeforeByteIterationPerformance() {
-        measureBenchmark(mode: .byteIteration)
+    func testBeforeByteIterationPerformance() throws {
+        try requireOptInPerformanceRun()
+        try measureBenchmark(mode: .byteIteration)
     }
 
-    func testAfterDataChunkPerformance() {
-        measureBenchmark(mode: .dataChunks)
+    func testAfterDataChunkPerformance() throws {
+        try requireOptInPerformanceRun()
+        try measureBenchmark(mode: .dataChunks)
     }
 
-    private func measureBenchmark(mode: Mode) {
+    private func requireOptInPerformanceRun() throws {
+        guard ProcessInfo.processInfo.environment["SDE_RUN_PERFORMANCE_TESTS"] == "1" else {
+            throw XCTSkip("Transport benchmarks are opt-in; set SDE_RUN_PERFORMANCE_TESTS=1 to run them.")
+        }
+    }
+
+    private func measureBenchmark(mode: Mode) throws {
         let options = XCTMeasureOptions()
         options.iterationCount = 3
 

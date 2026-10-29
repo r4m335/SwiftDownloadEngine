@@ -128,7 +128,7 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
     private var eventTask: Task<Void, Never>? = nil
     private var torrentRefreshTask: Task<Void, Never>? = nil
 
-#if canImport(BackgroundTasks) && os(iOS)
+#if canImport(BackgroundTasks) && os(iOS) && SDE_ENABLE_BG_CONTINUED_PROCESSING
     private let continuedProcessingCoordinator: ContinuedProcessingTaskCoordinator
 #endif
 
@@ -159,7 +159,7 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
             engine: engine,
             persistenceStore: engine.persistenceStore
         )
-#if canImport(BackgroundTasks) && os(iOS)
+#if canImport(BackgroundTasks) && os(iOS) && SDE_ENABLE_BG_CONTINUED_PROCESSING
         self.continuedProcessingCoordinator = ContinuedProcessingTaskCoordinator(engine: engine)
         self.continuedProcessingCoordinator.registerIfAvailable()
 #endif
@@ -522,7 +522,7 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
         do {
             let snapshot = try await engine.addDownload(request, priority: .normal, autoStart: autoStart)
             upsertSnapshot(snapshot)
-#if canImport(BackgroundTasks) && os(iOS)
+#if canImport(BackgroundTasks) && os(iOS) && SDE_ENABLE_BG_CONTINUED_PROCESSING
             if autoStart {
                 continuedProcessingCoordinator.submit(downloadID: snapshot.id)
             }

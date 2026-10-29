@@ -5,7 +5,9 @@ import SwiftUI
 import UIKit
 #endif
 
-#if canImport(BackgroundTasks) && os(iOS)
+// Xcode 15/16 SDKs can import BackgroundTasks but do not declare the iOS 26
+// continued-processing symbols. Enable this flag only in an Xcode 26+ build.
+#if canImport(BackgroundTasks) && os(iOS) && SDE_ENABLE_BG_CONTINUED_PROCESSING
 import BackgroundTasks
 
 /// Bridges an explicit foreground download action to iOS 26's continued
