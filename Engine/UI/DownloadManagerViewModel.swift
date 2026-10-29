@@ -1226,7 +1226,9 @@ extension DownloadManagerViewModel: BrowserDownloadDelegate {
         do {
             try await scheduleCoordinator.saveRule(rule)
             self.scheduleRules = scheduleCoordinator.rules
-            self.userNotificationMessage = "Schedule updated successfully"
+            self.userNotificationMessage = rule.isEnabled
+                ? "Schedule enabled. Notifications explain when the window starts and ends; iOS may delay background work."
+                : "Schedule updated successfully"
         } catch {
             self.errorMessage = "Failed to save schedule: \(error.localizedDescription)"
         }

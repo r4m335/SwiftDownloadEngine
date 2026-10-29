@@ -29,6 +29,11 @@ public final class ContinuedProcessingTaskCoordinator {
         guard #available(iOS 26.0, *) else { return }
         guard !Self.didRegister else { return }
         Self.didRegister = true
+        registerAvailable()
+    }
+
+    @available(iOS 26.0, *)
+    private func registerAvailable() {
         BGTaskScheduler.shared.register(forTaskWithIdentifier: Self.taskIdentifier, using: nil) { [weak self] task in
             guard let task = task as? BGContinuedProcessingTask else {
                 task.setTaskCompleted(success: false)
@@ -43,6 +48,11 @@ public final class ContinuedProcessingTaskCoordinator {
     /// Call only in response to an explicit foreground download action.
     public func submit(downloadID: String) {
         guard #available(iOS 26.0, *) else { return }
+        submitAvailable(downloadID: downloadID)
+    }
+
+    @available(iOS 26.0, *)
+    private func submitAvailable(downloadID: String) {
         var pendingIDs = UserDefaults.standard.stringArray(forKey: Self.pendingIDsKey) ?? []
         if !pendingIDs.contains(downloadID) {
             pendingIDs.append(downloadID)
