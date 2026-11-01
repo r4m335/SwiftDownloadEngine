@@ -485,6 +485,7 @@ public enum StreamingDownloadOrchestratorError: Error, LocalizedError, Sendable,
     case cancelled
     case hlsReconstructionFailed(HLSVODReconstructionError)
     case dashReconstructionFailed(DASHVODReconstructionError)
+    case hlsSegmentMetadataUnavailable
     case insufficientDiskSpace(required: Int64, available: Int64)
 
     public var errorDescription: String? {
@@ -523,6 +524,8 @@ public enum StreamingDownloadOrchestratorError: Error, LocalizedError, Sendable,
             return error.localizedDescription
         case .dashReconstructionFailed(let error):
             return error.localizedDescription
+        case .hlsSegmentMetadataUnavailable:
+            return "The HLS manifest could not be loaded, so the selected segment files could not be identified."
         case .insufficientDiskSpace(let required, let available):
             return "Insufficient disk space for streaming transfer: required \(required) bytes, but only \(available) bytes are available."
         }
@@ -1644,6 +1647,61 @@ public actor StreamingDownloadOrchestrator {
         }
         proposals.removeValue(forKey: record.id)
         candidatesByTransfer.removeValue(forKey: record.id)
+    }
+
+    /// Deletes selected completed HLS segment artifacts and removes their
+    /// checkpoint orders. The parent output is intentionally untouched.
+    ///
+    /// Segment filenames are derived from the prepared manifest resource
+    /// identity, so a cached proposal is preferred and a fresh manifest load
+    /// is used after relaunch when necessary. Incomplete orders have no
+    /// completed checkpoint/file and are ignored.
+    @discardableResult
+    public func deleteHLSSegments(id: String, orders: Set<Int>) async throws -> Int {
+        guard let persistence = hlsPersistenceStore else { return 0 }
+        guard !orders.isEmpty else { return 0 }
+
+        let parentID = hlsParentID(for: id)
+        guard let record = try await persistence.load(id: parentID) else {
+            throw HLSPersistenceError.recordNotFound(id: parentID)
+        }
+        guard record.state != .completed, record.assemblyState != .completed else {
+            return 0
+        }
+
+        let completedOrders = orders.intersection(record.completedSegmentOrders)
+        guard !completedOrders.isEmpty else { return 0 }
+
+        let proposal: StreamingTransferProposal
+        if let cached = proposals[parentID] ?? proposals[id], cached.manifest.kind == .hls {
+            proposal = cached
+        } else {
+            let candidate = try StreamingManifestCandidate(url: record.manifestURL)
+            let prepared = try await prepare(candidate: candidate)
+            guard prepared.manifest.kind == .hls else {
+                throw StreamingDownloadOrchestratorError.hlsSegmentMetadataUnavailable
+            }
+            proposal = prepared
+        }
+
+        let resourcesByOrder = Dictionary(uniqueKeysWithValues: proposal.resources.map { ($0.identity.order, $0) })
+        let selectedResources = completedOrders.compactMap { resourcesByOrder[$0] }
+        guard selectedResources.count == completedOrders.count else {
+            throw StreamingDownloadOrchestratorError.hlsSegmentMetadataUnavailable
+        }
+
+        let fileManager = FileManager.default
+        for resource in selectedResources {
+            let segmentURL = record.segmentDirectoryURL
+                .appendingPathComponent("\(resource.identity.value).part", isDirectory: false)
+            if fileManager.fileExists(atPath: segmentURL.path) {
+                try? fileManager.removeItem(at: segmentURL)
+            }
+            try? await downloadEngine?.persistenceStore.delete(tag: resource.identity.value)
+        }
+
+        _ = try await persistence.removeSegments(id: parentID, orders: completedOrders)
+        return completedOrders.count
     }
 
     private func cleanupCompletedHLSArtifacts(

@@ -215,6 +215,23 @@ public actor HLSPersistenceStore {
         return record
     }
 
+    /// Removes completed segment orders from the durable checkpoint.
+    ///
+    /// The caller is responsible for removing the corresponding segment files
+    /// before invoking this method. Keeping this mutation in the persistence
+    /// actor makes bulk segment deletion use the same atomic record write as
+    /// normal completion checkpoints.
+    @discardableResult
+    public func removeSegments(id: String, orders: Set<Int>) throws -> HLSTransferRecord {
+        guard var record = try load(id: id) else {
+            throw HLSPersistenceError.recordNotFound(id: id)
+        }
+        record.completedSegmentOrders.subtract(orders)
+        record.updatedAt = Date()
+        try save(record)
+        return record
+    }
+
     // MARK: - Private Helpers
 
     private func recordFileURL(id: String) -> URL {

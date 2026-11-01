@@ -149,6 +149,25 @@ final class HLSLifecycleTests: XCTestCase {
         XCTAssertEqual(loaded.completedSegmentOrders, [0, 1, 2, 5, 9])
     }
 
+    func testHLSPersistenceStoreRemovesSelectedSegments() async throws {
+        let store = HLSPersistenceStore(inMemory: true)
+        let record = HLSTransferRecord(
+            id: "remove-segments",
+            manifestURL: URL(string: "https://example.com/remove.m3u8")!,
+            outputFilename: "remove.mp4",
+            outputDestinationURL: URL(fileURLWithPath: "/tmp/remove.mp4"),
+            segmentDirectoryURL: URL(fileURLWithPath: "/tmp/remove-segments"),
+            totalSegments: 6,
+            completedSegmentOrders: [0, 1, 2, 4]
+        )
+        try await store.save(record)
+
+        let updated = try await store.removeSegments(id: record.id, orders: [1, 4, 5])
+
+        XCTAssertEqual(updated.completedSegmentOrders, [0, 2])
+        XCTAssertEqual(try await store.load(id: record.id)?.completedSegmentOrders, [0, 2])
+    }
+
     func testHLSPersistenceStoreUpdateState() async throws {
         let store = HLSPersistenceStore(inMemory: true)
 

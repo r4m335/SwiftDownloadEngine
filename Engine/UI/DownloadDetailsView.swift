@@ -29,6 +29,11 @@ public struct DownloadDetailsView: View {
     @State private var newRefreshURL: String = ""
     @State private var isRefreshing: Bool = false
     @State private var refreshStatusMessage: String? = nil
+    @State private var hlsRecord: HLSTransferRecord? = nil
+    @State private var isLoadingHLSSegments = false
+    @State private var isSelectingHLSSegments = false
+    @State private var selectedHLSSegmentOrders: Set<Int> = []
+    @State private var showingDeleteHLSSegmentsAlert = false
 
     public init(viewModel: DownloadManagerViewModel, transfer: UnifiedTransfer) {
         self.viewModel = viewModel
@@ -506,6 +511,10 @@ public struct DownloadDetailsView: View {
                 }
             }
 
+            if transfer.type == .hls {
+                hlsSegmentsSection
+            }
+
             // Integrity & Checksums
             if let snap = snapshot {
                 Section(header: Text("Integrity Verification")) {
@@ -601,6 +610,9 @@ public struct DownloadDetailsView: View {
         .navigationBarTitleDisplayMode(.inline)
         #endif
         .navigationTitle("Details")
+        .task(id: transfer.id) {
+            await loadHLSTransferRecord(for: transfer.id)
+        }
         .filePreviewSheet(item: $quickLookURL)
         .alert("Remove Download", isPresented: $showingDeleteAlert) {
             Button("Remove Entry Only", role: .none) {
@@ -618,6 +630,14 @@ public struct DownloadDetailsView: View {
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("Do you want to keep or delete the downloaded file from disk?")
+        }
+        .alert("Delete Selected HLS Segments?", isPresented: $showingDeleteHLSSegmentsAlert) {
+            Button("Delete", role: .destructive) {
+                deleteSelectedHLSSegments()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Completed selected segments will be removed from disk and downloaded again when this transfer resumes.")
         }
         .sheet(isPresented: $showingRefreshSheet) {
             #if canImport(SwiftUI)
@@ -681,6 +701,168 @@ public struct DownloadDetailsView: View {
                 }
             }
             #endif
+        }
+    }
+
+    // MARK: - HLS Segment Details
+
+    @ViewBuilder
+    private var hlsSegmentsSection: some View {
+        Section {
+            if isLoadingHLSSegments {
+                HStack(spacing: 8) {
+                    ProgressView()
+                    Text("Loading HLS segments...")
+                        .foregroundColor(.secondary)
+                }
+            } else if let record = hlsRecord {
+                if isSelectingHLSSegments {
+                    hlsSegmentSelectionToolbar(record: record)
+                }
+
+                ForEach(0..<max(0, record.totalSegments), id: \.self) { order in
+                    hlsSegmentRow(
+                        order: order,
+                        isCompleted: record.completedSegmentOrders.contains(order),
+                        isSelected: selectedHLSSegmentOrders.contains(order)
+                    )
+                }
+            } else {
+                Text("HLS segment checkpoints are unavailable for this transfer.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+        } header: {
+            HStack {
+                Text("HLS Segments")
+                Spacer()
+                if let record = hlsRecord {
+                    Text("\(record.completedSegmentCount)/\(record.totalSegments)")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+            }
+        } footer: {
+            Text("Long-press a segment to select it. Deleting a completed segment removes its checkpoint so it will be downloaded again when the transfer resumes.")
+                .font(.caption)
+        }
+    }
+
+    @ViewBuilder
+    private func hlsSegmentSelectionToolbar(record: HLSTransferRecord) -> some View {
+        HStack {
+            Button("Cancel") {
+                exitHLSSegmentSelectionMode()
+            }
+            .buttonStyle(.borderless)
+
+            Spacer()
+
+            Text("\(selectedHLSSegmentOrders.count) selected")
+                .font(.subheadline.weight(.medium))
+
+            let all = Set(0..<max(0, record.totalSegments))
+            Button(!all.isEmpty && selectedHLSSegmentOrders == all ? "Deselect All" : "Select All") {
+                withAnimation {
+                    selectedHLSSegmentOrders = selectedHLSSegmentOrders == all ? [] : all
+                }
+            }
+            .buttonStyle(.borderless)
+
+            Button(role: .destructive) {
+                showingDeleteHLSSegmentsAlert = true
+            } label: {
+                Label("Delete", systemImage: "trash")
+            }
+            .buttonStyle(.borderless)
+            .disabled(selectedHLSSegmentOrders.isEmpty)
+        }
+    }
+
+    @ViewBuilder
+    private func hlsSegmentRow(order: Int, isCompleted: Bool, isSelected: Bool) -> some View {
+        let row = HStack(spacing: 12) {
+            Image(systemName: isCompleted ? "checkmark.circle.fill" : "circle.dashed")
+                .foregroundColor(isCompleted ? .green : .secondary)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Segment \(order + 1)")
+                    .font(.subheadline)
+                Text(isCompleted ? "Downloaded" : "Pending")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+            Spacer()
+            if isSelectingHLSSegments {
+                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                    .foregroundColor(isSelected ? .blue : .secondary)
+            }
+        }
+        .contentShape(Rectangle())
+        .listRowBackground(isSelected ? Color.blue.opacity(0.08) : Color.clear)
+
+        if isSelectingHLSSegments {
+            Button {
+                toggleHLSSegmentSelection(order: order)
+            } label: {
+                row
+            }
+            .buttonStyle(.plain)
+        } else {
+            row
+                .onLongPressGesture {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        isSelectingHLSSegments = true
+                        selectedHLSSegmentOrders = [order]
+                    }
+                    #if canImport(UIKit)
+                    UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                    #endif
+                }
+        }
+    }
+
+    private func loadHLSTransferRecord(for id: String) async {
+        guard currentTransfer?.type == .hls else { return }
+        isLoadingHLSSegments = true
+        let record = await viewModel.hlsTransferRecord(for: id)
+        guard !Task.isCancelled else { return }
+        hlsRecord = record
+        selectedHLSSegmentOrders = selectedHLSSegmentOrders.filter { order in
+            guard let record else { return false }
+            return order >= 0 && order < record.totalSegments
+        }
+        isLoadingHLSSegments = false
+    }
+
+    private func toggleHLSSegmentSelection(order: Int) {
+        withAnimation(.easeInOut(duration: 0.1)) {
+            if selectedHLSSegmentOrders.contains(order) {
+                selectedHLSSegmentOrders.remove(order)
+            } else {
+                selectedHLSSegmentOrders.insert(order)
+            }
+        }
+    }
+
+    private func exitHLSSegmentSelectionMode() {
+        isSelectingHLSSegments = false
+        selectedHLSSegmentOrders.removeAll()
+    }
+
+    private func deleteSelectedHLSSegments() {
+        guard !selectedHLSSegmentOrders.isEmpty else { return }
+        let orders = selectedHLSSegmentOrders
+        Task { @MainActor in
+            do {
+                let deleted = try await viewModel.deleteHLSSegments(id: transferID, orders: orders)
+                if deleted > 0 {
+                    viewModel.showNotification("Deleted \(deleted) HLS segment\(deleted == 1 ? "" : "s").")
+                }
+                hlsRecord = await viewModel.hlsTransferRecord(for: transferID)
+                exitHLSSegmentSelectionMode()
+            } catch {
+                viewModel.showNotification("Could not delete HLS segments: \(error.localizedDescription)")
+            }
         }
     }
 
