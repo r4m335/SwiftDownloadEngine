@@ -353,10 +353,11 @@ final class HLSLifecycleTests: XCTestCase {
             proposal, approved: true, destinationDirectory: dest, outputURL: outputURL
         )
 
-        let record = try await persistence.load(id: proposal.transferID)
-        XCTAssertNotNil(record, "HLS transfer record should be persisted at start of executeAndAssembleHLS")
-        XCTAssertEqual(record?.id, proposal.transferID)
-        XCTAssertEqual(record?.totalSegments, proposal.resources.count)
+        let records = try await persistence.loadAll()
+        let record = try XCTUnwrap(records.first, "HLS transfer record should be persisted at start of executeAndAssembleHLS")
+        XCTAssertNotEqual(record.id, proposal.transferID, "Each streaming run should have a fresh parent ID")
+        XCTAssertTrue(record.id.hasPrefix("stream-run-"))
+        XCTAssertEqual(record.totalSegments, proposal.resources.count)
     }
 
     // MARK: - Recovery: restoreHLSTransfers Re-registers Parent Entry

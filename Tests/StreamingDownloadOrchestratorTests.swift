@@ -192,25 +192,33 @@ final class StreamingDownloadOrchestratorTests: XCTestCase {
             .appendingPathComponent("hls-execution-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
-        let engine = try DownloadEngine(storageDirectoryURL: directory)
         let orchestrator = StreamingDownloadOrchestrator(
             manifestLoader: RecordingManifestLoader(
                 data: Data(playlist.utf8),
                 finalURL: url,
                 mimeType: "application/vnd.apple.mpegurl"
             ),
-            segmentExecutor: WritingSegmentExecutor(),
-            downloadEngine: engine
+            segmentExecutor: WritingSegmentExecutor()
         )
         let candidate = try StreamingManifestCandidate(url: url)
         let proposal = try await orchestrator.prepare(candidate: candidate)
-        let output = directory.appendingPathComponent("assembled.ts")
-
-        let result = try await orchestrator.executeAndAssembleHLS(
+        let transfer = try await orchestrator.execute(
             proposal,
             approved: true,
-            destinationDirectory: directory,
-            outputURL: output
+            destinationDirectory: directory
+        )
+        guard case .hls(let transferPlan) = proposal.manifest else {
+            XCTFail("Expected HLS transfer plan")
+            return
+        }
+        let completed = zip(transferPlan.allResources, transfer.localFiles).map {
+            HLSCompletedResource(resource: $0.0, fileURL: $0.1)
+        }
+        let output = directory.appendingPathComponent("assembled.ts")
+        let result = try HLSVODReconstructor.assemble(
+            transferPlan: transferPlan,
+            completedResources: completed,
+            destinationURL: output
         )
 
         XCTAssertEqual(result.container, .mpegTS)
