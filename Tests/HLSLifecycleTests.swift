@@ -324,6 +324,56 @@ final class HLSLifecycleTests: XCTestCase {
         _ = record // No assertion; store was accessed without throwing.
     }
 
+    func testExecuteSkipsPersistedCompletedHLSSegments() async throws {
+        let manifestURL = URL(string: "https://video.example/resume.m3u8")!
+        let loader = StubManifestLoader(data: Data(minimalPlaylist.utf8), finalURL: manifestURL)
+        let executor = CountingWritingSegmentExecutorStub()
+        let persistence = HLSPersistenceStore(inMemory: true)
+        let orchestrator = StreamingDownloadOrchestrator(
+            manifestLoader: loader,
+            segmentExecutor: executor,
+            hlsPersistenceStore: persistence
+        )
+        let proposal = try await orchestrator.prepare(
+            candidate: StreamingManifestCandidate(url: manifestURL)
+        )
+        let destinationDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("hls-resume-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: destinationDirectory) }
+
+        let firstResource = try XCTUnwrap(proposal.resources.first)
+        let firstFile = destinationDirectory.appendingPathComponent(
+            "\(firstResource.identity.value).part",
+            isDirectory: false
+        )
+        try FileManager.default.createDirectory(
+            at: destinationDirectory,
+            withIntermediateDirectories: true
+        )
+        try Data([0x47, 0x11]).write(to: firstFile)
+        try await persistence.save(HLSTransferRecord(
+            id: proposal.transferID,
+            manifestURL: manifestURL,
+            outputFilename: "resume.mp4",
+            outputDestinationURL: destinationDirectory.appendingPathComponent("resume.mp4"),
+            segmentDirectoryURL: destinationDirectory,
+            totalSegments: proposal.resources.count,
+            completedSegmentOrders: [firstResource.identity.order]
+        ))
+
+        let result = try await orchestrator.execute(
+            proposal,
+            approved: true,
+            destinationDirectory: destinationDirectory
+        )
+
+        let executedOrders = await executor.executedOrders()
+        XCTAssertEqual(Set(executedOrders), Set([1, 2]))
+        XCTAssertEqual(executedOrders.count, 2)
+        XCTAssertEqual(result.completedSegments.map(\.order), [0, 1, 2])
+        XCTAssertEqual(result.localFiles.first, firstFile)
+    }
+
     // MARK: - Orchestrator: HLS Record Created Before Download in executeAndAssembleHLS
 
     func testExecuteAndAssembleHLSCreatesHLSRecord() async throws {
@@ -578,6 +628,29 @@ private actor WritingSegmentExecutorStub: StreamingSegmentExecutor {
         packet.append(Data(repeating: 0x00, count: 187))
         try packet.write(to: request.destinationURL)
         progress?(1.0)
+    }
+
+    func cancel(transferID: String) async {}
+}
+
+private actor CountingWritingSegmentExecutorStub: StreamingSegmentExecutor {
+    private var orders: [Int] = []
+
+    func execute(
+        _ request: StreamingSegmentTransferRequest,
+        progress: (@Sendable (Double) -> Void)?
+    ) async throws {
+        orders.append(request.identity.order)
+        try FileManager.default.createDirectory(
+            at: request.destinationURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try Data([0x47, UInt8(request.identity.order)]).write(to: request.destinationURL)
+        progress?(1)
+    }
+
+    func executedOrders() -> [Int] {
+        orders
     }
 
     func cancel(transferID: String) async {}

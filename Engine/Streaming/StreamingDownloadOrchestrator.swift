@@ -1296,15 +1296,54 @@ public actor StreamingDownloadOrchestrator {
         var lastSpeedCheckBytes: Int64 = 0
         var currentBytesPerSecond: Double = 0.0
 
+        // Rehydrate the durable HLS checkpoint before creating workers. A
+        // completed order is reusable only when its file still exists in the
+        // same segment directory (and, for ranged resources, has the expected
+        // length). This keeps a stale checkpoint from being treated as a
+        // completed segment while avoiding any segment task for valid work.
+        var persistedCompletedOrders: Set<Int> = []
+        if proposal.manifest.kind == .hls,
+           let persistence = hlsPersistenceStore,
+           let record = try? await persistence.load(id: parentID),
+           record.segmentDirectoryURL.standardizedFileURL.path == destinationDirectory.standardizedFileURL.path {
+            persistedCompletedOrders = record.completedSegmentOrders
+        }
+
+        var pendingIndices: [Int] = []
+        for index in proposal.resources.indices {
+            let resource = proposal.resources[index]
+            let destinationURL = destinationDirectory.appendingPathComponent(
+                "\(resource.identity.value).part",
+                isDirectory: false
+            )
+
+            guard persistedCompletedOrders.contains(resource.identity.order),
+                  FileManager.default.fileExists(atPath: destinationURL.path) else {
+                pendingIndices.append(index)
+                continue
+            }
+
+            let fileSize = (try? FileManager.default.attributesOfItem(atPath: destinationURL.path)[.size] as? NSNumber)?.int64Value ?? 0
+            if let byteRange = resource.byteRange, fileSize != byteRange.length {
+                pendingIndices.append(index)
+                continue
+            }
+
+            completedIdentities[index] = resource.identity
+            localFiles[index] = destinationURL
+            completedCount += 1
+            actualDownloadedBytes += fileSize
+        }
+
         do {
             try await withThrowingTaskGroup(of: DownloadedSegmentResult.self) { group in
-                var nextIndex = 0
+                var nextPendingPosition = 0
 
                 // Launch initial concurrency pool up to maxConcurrency
-                while nextIndex < totalSegments && nextIndex < maxConcurrency {
-                    let indexToDownload = nextIndex
+                while nextPendingPosition < pendingIndices.count && nextPendingPosition < maxConcurrency {
+                    let indexToDownload = pendingIndices[nextPendingPosition]
                     let resource = proposal.resources[indexToDownload]
-                    nextIndex += 1
+                    nextPendingPosition += 1
 
                     group.addTask {
                         try await self.downloadSegment(
@@ -1373,10 +1412,10 @@ public actor StreamingDownloadOrchestrator {
                     }
 
                     // Replenish worker pool with next segment
-                    if nextIndex < totalSegments {
-                        let indexToDownload = nextIndex
+                    if nextPendingPosition < pendingIndices.count {
+                        let indexToDownload = pendingIndices[nextPendingPosition]
                         let resource = proposal.resources[indexToDownload]
-                        nextIndex += 1
+                        nextPendingPosition += 1
 
                         group.addTask {
                             try await self.downloadSegment(
@@ -1447,15 +1486,19 @@ public actor StreamingDownloadOrchestrator {
         if let persistence = hlsPersistenceStore,
            proposal.manifest.kind == .hls,
            let record = try? await persistence.load(id: hlsParentID(for: proposal)),
+           record.segmentDirectoryURL.standardizedFileURL.path == destinationDirectory.standardizedFileURL.path,
            record.completedSegmentOrders.contains(resource.identity.order),
            FileManager.default.fileExists(atPath: destinationURL.path) {
             let size = (try? FileManager.default.attributesOfItem(atPath: destinationURL.path)[.size] as? NSNumber)?.int64Value ?? 0
-            return DownloadedSegmentResult(
-                index: index,
-                identity: resource.identity,
-                destinationURL: destinationURL,
-                downloadedBytes: size
-            )
+            let hasExpectedLength = resource.byteRange.map { $0.length == size } ?? true
+            if hasExpectedLength {
+                return DownloadedSegmentResult(
+                    index: index,
+                    identity: resource.identity,
+                    destinationURL: destinationURL,
+                    downloadedBytes: size
+                )
+            }
         }
 
         if let range = resource.byteRange,
