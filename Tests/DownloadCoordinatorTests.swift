@@ -72,7 +72,7 @@ final class DownloadCoordinatorTests: XCTestCase {
                   let bounds = rangeHeader
                     .replacingOccurrences(of: "bytes=", with: "")
                     .split(separator: "-")
-                    .map({ Int($0) }),
+                    .compactMap({ Int($0) }),
                   bounds.count == 2,
                   let start = bounds[0],
                   let end = bounds[1],
