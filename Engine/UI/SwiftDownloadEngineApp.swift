@@ -286,10 +286,14 @@ public struct SwiftDownloadEngineApp: App {
             downloadsDirectory: downloadsDir,
             userDefaults: .standard
         )
+        let hlsPersistenceStore = try? HLSPersistenceStore(
+            storageDirectoryURL: engine.persistenceStore.storageDirectoryURL
+        )
         let orchestrator = StreamingDownloadOrchestrator(
             configuration: engineConfig,
             downloadCoordinator: engine.coordinator,
-            downloadEngine: engine
+            downloadEngine: engine,
+            hlsPersistenceStore: hlsPersistenceStore
         )
         StreamingDownloadOrchestrator.shared = orchestrator
         Task { await engine.setStreamingOrchestrator(orchestrator) }
@@ -298,7 +302,14 @@ public struct SwiftDownloadEngineApp: App {
 
     /// Primary designated initializer allowing custom view model injection (e.g., testing or preview).
     public init(viewModel: DownloadManagerViewModel) {
-        let orchestrator = StreamingDownloadOrchestrator(downloadCoordinator: viewModel.engine.coordinator, downloadEngine: viewModel.engine)
+        let hlsPersistenceStore = try? HLSPersistenceStore(
+            storageDirectoryURL: viewModel.engine.persistenceStore.storageDirectoryURL
+        )
+        let orchestrator = StreamingDownloadOrchestrator(
+            downloadCoordinator: viewModel.engine.coordinator,
+            downloadEngine: viewModel.engine,
+            hlsPersistenceStore: hlsPersistenceStore
+        )
         StreamingDownloadOrchestrator.shared = orchestrator
         Task { await viewModel.engine.setStreamingOrchestrator(orchestrator) }
         _viewModel = StateObject(wrappedValue: viewModel)
@@ -312,7 +323,14 @@ public struct SwiftDownloadEngineApp: App {
             downloadsDirectory: downloadsDirectory,
             userDefaults: .standard
         )
-        let orchestrator = StreamingDownloadOrchestrator(downloadCoordinator: engine.coordinator, downloadEngine: engine)
+        let hlsPersistenceStore = try? HLSPersistenceStore(
+            storageDirectoryURL: engine.persistenceStore.storageDirectoryURL
+        )
+        let orchestrator = StreamingDownloadOrchestrator(
+            downloadCoordinator: engine.coordinator,
+            downloadEngine: engine,
+            hlsPersistenceStore: hlsPersistenceStore
+        )
         StreamingDownloadOrchestrator.shared = orchestrator
         Task { await engine.setStreamingOrchestrator(orchestrator) }
         _viewModel = StateObject(wrappedValue: vm)
@@ -336,6 +354,9 @@ public struct SwiftDownloadEngineApp: App {
                         _ = try? await viewModel.engine.reconcileBackgroundTransfers()
                         await viewModel.refreshSnapshots()
                         await viewModel.refreshTorrentSnapshots()
+                    }
+                    if let orchestrator = StreamingDownloadOrchestrator.shared {
+                        await orchestrator.restoreHLSTransfers(resumeInterrupted: true)
                     }
                     await viewModel.reconcileSchedule()
                 }

@@ -188,6 +188,9 @@ public typealias DownloadError = DownloadQueueError
 /// - Terminal Invariants: Completed and explicitly cancelled downloads are never auto-restarted.
 /// - Reusable Engine: Delegates segment allocation, HTTP range workers, disk I/O, and cryptographic hashing to `DownloadCoordinator`.
 public actor DownloadQueueManager {
+    private static func isInternalStreamingSegmentID(_ id: String) -> Bool {
+        id.hasPrefix("stream-segment-")
+    }
     public let coordinator: DownloadCoordinator
     public let persistenceStore: DownloadPersistenceStore
     public let queueStoreURL: URL
@@ -745,7 +748,7 @@ public actor DownloadQueueManager {
                     self.maxConcurrentDownloads = manifest.maxConcurrentDownloads
                 }
                 self.sequenceCounter = max(self.sequenceCounter, manifest.sequenceCounter)
-                for item in manifest.items {
+                for item in manifest.items where !Self.isInternalStreamingSegmentID(item.id) {
                     if activeTasks[item.id] == nil {
                         self.items[item.id] = item
                     }
@@ -758,6 +761,11 @@ public actor DownloadQueueManager {
         // 2. Reconcile with persistence store records (source of truth for disk data & segments)
         if let storedRecords = try? await persistenceStore.fetchAll() {
             for rawRecord in storedRecords {
+                // Streaming segment requests have their own durable parent
+                // record. They must never become user-visible queue items.
+                if Self.isInternalStreamingSegmentID(rawRecord.id) {
+                    continue
+                }
                 // Reconcile saved checkpoint with physical partial file on disk
                 let record = DownloadCoordinator.reconcilePartialFile(
                     destinationURL: rawRecord.destinationURL,

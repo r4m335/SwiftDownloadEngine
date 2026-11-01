@@ -738,6 +738,9 @@ public actor DownloadEngine {
     ///   - id: Identifier of the download to remove.
     ///   - deleteFile: If false (default), the partially or fully downloaded file is preserved on disk.
     public func removeDownload(id: DownloadID, deleteFile: Bool = false) async throws {
+        if let orchestrator = streamingOrchestrator, await orchestrator.isManaging(id: id) {
+            await orchestrator.removePersistedTransfer(id: id, deleteOutputFile: deleteFile)
+        }
         try await queueManager.removeFromQueue(id: id, deleteDestinationFile: deleteFile)
     }
 
