@@ -1,4 +1,5 @@
 import Foundation
+import Foundation
 import XCTest
 @testable import DM_Reverse_engineering
 
@@ -213,6 +214,33 @@ final class HLSLifecycleTests: XCTestCase {
         XCTAssertEqual(loaded.assemblyState, .completed)
     }
 
+    func testHLSPersistenceStoreKeepsLastValidCheckpointWhenWriteFails() async throws {
+        let store = HLSPersistenceStore(inMemory: true)
+        let record = HLSTransferRecord(
+            id: "checkpoint-rollback",
+            manifestURL: URL(string: "https://example.com/rollback.m3u8")!,
+            outputFilename: "v.mp4",
+            outputDestinationURL: URL(fileURLWithPath: "/tmp/v.mp4"),
+            segmentDirectoryURL: URL(fileURLWithPath: "/tmp/segs/rollback"),
+            totalSegments: 2
+        )
+        try await store.save(record)
+
+        let directory = await store.storageDirectoryURL
+        try FileManager.default.removeItem(at: directory)
+        XCTAssertTrue(FileManager.default.createFile(atPath: directory.path, contents: Data()))
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        do {
+            _ = try await store.markSegmentCompleted(id: record.id, order: 0)
+            XCTFail("The checkpoint write should fail")
+        } catch {
+            // Expected: the storage path is intentionally a file.
+        }
+        let loaded = try await store.load(id: record.id)
+        XCTAssertEqual(loaded?.completedSegmentOrders, [])
+    }
+
     func testHLSPersistenceStoreDelete() async throws {
         let store = HLSPersistenceStore(inMemory: true)
 
@@ -372,6 +400,287 @@ final class HLSLifecycleTests: XCTestCase {
         XCTAssertEqual(executedOrders.count, 2)
         XCTAssertEqual(result.completedSegments.map(\.order), [0, 1, 2])
         XCTAssertEqual(result.localFiles.first, firstFile)
+    }
+
+    func testCancelDuringHLSSegmentDownloadKeepsParentCancelled() async throws {
+        let manifestURL = URL(string: "https://video.example/cancel.m3u8")!
+        let loader = StubManifestLoader(data: Data(minimalPlaylist.utf8), finalURL: manifestURL)
+        let executor = BlockingSegmentExecutorStub()
+        let persistence = HLSPersistenceStore(inMemory: true)
+        let engine = makeFakeEngine()
+        let orchestrator = StreamingDownloadOrchestrator(
+            manifestLoader: loader,
+            segmentExecutor: executor,
+            downloadEngine: engine,
+            hlsPersistenceStore: persistence
+        )
+        let proposal = try await orchestrator.prepare(
+            candidate: StreamingManifestCandidate(url: manifestURL)
+        )
+        let parentID = "stream-cancel-segments"
+        let destination = FileManager.default.temporaryDirectory
+            .appendingPathComponent(parentID, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: destination) }
+
+        let task = Task {
+            try await orchestrator.executeAndAssembleHLS(
+                proposal,
+                approved: true,
+                destinationDirectory: destination,
+                outputURL: destination.appendingPathComponent("out.ts"),
+                runID: parentID
+            )
+        }
+        while !(await executor.started) {
+            try await Task.sleep(nanoseconds: 1_000_000)
+        }
+
+        await orchestrator.cancel(transferID: parentID)
+
+        do {
+            _ = try await task.value
+            XCTFail("Cancellation should stop the HLS transfer")
+        } catch let error as StreamingDownloadOrchestratorError {
+            XCTAssertEqual(error, .cancelled)
+        }
+        let stored = try await persistence.load(id: parentID)
+        let record = try XCTUnwrap(stored)
+        XCTAssertEqual(record.state, .cancelled)
+        if let state = (await engine.snapshot(for: parentID))?.state,
+           case .failed = state {
+            XCTFail("Cancellation must not mark the DownloadEngine entry as failed")
+        }
+    }
+
+    func testCancellationAtAssemblyBoundaryKeepsParentCancelled() async throws {
+        let manifestURL = URL(string: "https://video.example/cancel-assembly.m3u8")!
+        let persistence = HLSPersistenceStore(inMemory: true)
+        let engine = makeFakeEngine()
+        let orchestrator = StreamingDownloadOrchestrator(
+            manifestLoader: StubManifestLoader(data: Data(minimalPlaylist.utf8), finalURL: manifestURL),
+            segmentExecutor: WritingSegmentExecutorStub(),
+            downloadEngine: engine,
+            hlsPersistenceStore: persistence
+        )
+        let proposal = try await orchestrator.prepare(
+            candidate: StreamingManifestCandidate(url: manifestURL)
+        )
+        let parentID = "stream-cancel-assembly"
+        let destination = FileManager.default.temporaryDirectory
+            .appendingPathComponent(parentID, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: destination) }
+
+        let cancellation = CancellationBox()
+        let task = Task {
+            try await orchestrator.executeAndAssembleHLS(
+                proposal,
+                approved: true,
+                destinationDirectory: destination,
+                outputURL: destination.appendingPathComponent("out.ts"),
+                progress: { progress in
+                    if progress.completedSegments == progress.totalSegments {
+                        cancellation.cancel()
+                    }
+                },
+                runID: parentID
+            )
+        }
+        cancellation.set { task.cancel() }
+
+        do {
+            _ = try await task.value
+            XCTFail("Cancellation at the assembly boundary should stop the transfer")
+        } catch let error as StreamingDownloadOrchestratorError {
+            XCTAssertEqual(error, .cancelled)
+        }
+        let stored = try await persistence.load(id: parentID)
+        let record = try XCTUnwrap(stored)
+        XCTAssertEqual(record.state, .cancelled)
+    }
+
+    func testGenericHLSSegmentErrorMarksParentFailed() async throws {
+        let manifestURL = URL(string: "https://video.example/failure.m3u8")!
+        let loader = StubManifestLoader(data: Data(minimalPlaylist.utf8), finalURL: manifestURL)
+        let persistence = HLSPersistenceStore(inMemory: true)
+        let engine = makeFakeEngine()
+        let orchestrator = StreamingDownloadOrchestrator(
+            manifestLoader: loader,
+            segmentExecutor: FailingSegmentExecutorStub(),
+            downloadEngine: engine,
+            hlsPersistenceStore: persistence
+        )
+        let proposal = try await orchestrator.prepare(
+            candidate: StreamingManifestCandidate(url: manifestURL)
+        )
+        let parentID = "stream-failed-segment"
+        let destination = FileManager.default.temporaryDirectory
+            .appendingPathComponent(parentID, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: destination) }
+
+        do {
+            _ = try await orchestrator.executeAndAssembleHLS(
+                proposal,
+                approved: true,
+                destinationDirectory: destination,
+                outputURL: destination.appendingPathComponent("out.ts"),
+                runID: parentID
+            )
+            XCTFail("The segment failure should be surfaced")
+        } catch let error as StreamingDownloadOrchestratorError {
+            guard case .segmentTransferFailed(let order) = error else {
+                return XCTFail("Expected segmentTransferFailed, got \(error)")
+            }
+            XCTAssertTrue((0..<3).contains(order))
+        }
+        let stored = try await persistence.load(id: parentID)
+        let record = try XCTUnwrap(stored)
+        XCTAssertEqual(record.state, .failed)
+    }
+
+    func testHLSRegistrationPersistenceFailureIsReported() async throws {
+        let manifestURL = URL(string: "https://video.example/registration.m3u8")!
+        let persistence = HLSPersistenceStore(inMemory: true)
+        let directory = await persistence.storageDirectoryURL
+        try FileManager.default.removeItem(at: directory)
+        XCTAssertTrue(FileManager.default.createFile(atPath: directory.path, contents: Data()))
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let orchestrator = StreamingDownloadOrchestrator(
+            manifestLoader: StubManifestLoader(data: Data(minimalPlaylist.utf8), finalURL: manifestURL),
+            segmentExecutor: WritingSegmentExecutorStub(),
+            downloadEngine: makeFakeEngine(),
+            hlsPersistenceStore: persistence
+        )
+        let proposal = try await orchestrator.prepare(
+            candidate: StreamingManifestCandidate(url: manifestURL)
+        )
+
+        do {
+            _ = try await orchestrator.executeAndAssembleHLS(
+                proposal,
+                approved: true,
+                destinationDirectory: directory.appendingPathComponent("segments"),
+                outputURL: directory.appendingPathComponent("out.ts"),
+                runID: "stream-registration-persistence-failure"
+            )
+            XCTFail("The persistence failure should be reported")
+        } catch let error as StreamingDownloadOrchestratorError {
+            guard case .persistenceFailed = error else {
+                return XCTFail("Expected persistenceFailed, got \(error)")
+            }
+        }
+    }
+
+    func testHLSCheckpointFailureIsSurfacedWithoutFalseResumeState() async throws {
+        let manifestURL = URL(string: "https://video.example/checkpoint-failure.m3u8")!
+        let persistence = HLSPersistenceStore(inMemory: true)
+        let loader = StubManifestLoader(data: Data(minimalPlaylist.utf8), finalURL: manifestURL)
+        let orchestrator = StreamingDownloadOrchestrator(
+            manifestLoader: loader,
+            segmentExecutor: WritingSegmentExecutorStub(),
+            hlsPersistenceStore: persistence
+        )
+        let proposal = try await orchestrator.prepare(
+            candidate: StreamingManifestCandidate(url: manifestURL)
+        )
+        let destination = FileManager.default.temporaryDirectory
+            .appendingPathComponent("checkpoint-failure-(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: destination) }
+        try await persistence.save(HLSTransferRecord(
+            id: proposal.transferID,
+            manifestURL: manifestURL,
+            outputFilename: "out.mp4",
+            outputDestinationURL: destination.appendingPathComponent("out.mp4"),
+            segmentDirectoryURL: destination,
+            totalSegments: proposal.resources.count
+        ))
+
+        let directory = await persistence.storageDirectoryURL
+        try FileManager.default.removeItem(at: directory)
+        XCTAssertTrue(FileManager.default.createFile(atPath: directory.path, contents: Data()))
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        do {
+            _ = try await orchestrator.execute(
+                proposal,
+                approved: true,
+                destinationDirectory: destination
+            )
+            XCTFail("The checkpoint failure should be surfaced")
+        } catch let error as StreamingDownloadOrchestratorError {
+            guard case .persistenceFailed = error else {
+                return XCTFail("Expected persistenceFailed, got (error)")
+            }
+        }
+        let stored = try await persistence.load(id: proposal.transferID)
+        let record = try XCTUnwrap(stored)
+        XCTAssertTrue(record.completedSegmentOrders.isEmpty)
+    }
+
+    func testHLSPauseAndResumePersistStateTransitions() async throws {
+        let store = HLSPersistenceStore(inMemory: true)
+        let parentID = "stream-pause-resume"
+        try await store.save(HLSTransferRecord(
+            id: parentID,
+            manifestURL: URL(string: "https://video.example/pause.m3u8")!,
+            outputFilename: "pause.mp4",
+            outputDestinationURL: URL(fileURLWithPath: "/tmp/pause.mp4"),
+            segmentDirectoryURL: URL(fileURLWithPath: "/tmp/pause-segments"),
+            totalSegments: 1
+        ))
+        let orchestrator = StreamingDownloadOrchestrator(
+            segmentExecutor: WritingSegmentExecutorStub(),
+            hlsPersistenceStore: store
+        )
+
+        await orchestrator.pause(transferID: parentID)
+        let paused = try await store.load(id: parentID)
+        XCTAssertEqual(paused?.state, .paused)
+        await orchestrator.resume(transferID: parentID)
+        let resumed = try await store.load(id: parentID)
+        XCTAssertEqual(resumed?.state, .downloading)
+    }
+
+    func testRestoredHLSTransferCancellationUpdatesStateAndPurgesChildRecord() async throws {
+        let store = HLSPersistenceStore(inMemory: true)
+        let engine = makeFakeEngine()
+        let parentID = "stream-restored-cancel"
+        let segmentDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(parentID, isDirectory: true)
+        let parent = HLSTransferRecord(
+            id: parentID,
+            manifestURL: URL(string: "https://video.example/restored.m3u8")!,
+            outputFilename: "restored.mp4",
+            outputDestinationURL: segmentDirectory.appendingPathComponent("restored.mp4"),
+            segmentDirectoryURL: segmentDirectory,
+            totalSegments: 2,
+            state: .paused
+        )
+        try await store.save(parent)
+        let childID = "stream-segment-restored-cancel"
+        try await engine.persistenceStore.save(DownloadRecord(
+            id: childID,
+            originalURL: URL(string: "https://video.example/segment.ts")!,
+            destinationURL: segmentDirectory.appendingPathComponent("0.part"),
+            totalSize: 1,
+            state: .paused,
+            suggestedFilename: "segment.ts",
+            segments: [SegmentRecord(id: 0, startOffset: 0, endOffset: 0, length: 1)]
+        ))
+
+        let orchestrator = StreamingDownloadOrchestrator(
+            manifestLoader: StubManifestLoader(data: Data(), finalURL: parent.manifestURL),
+            segmentExecutor: WritingSegmentExecutorStub(),
+            downloadEngine: engine,
+            hlsPersistenceStore: store
+        )
+        await orchestrator.restoreHLSTransfers(resumeInterrupted: false)
+        await orchestrator.cancel(transferID: parentID)
+
+        let restored = try await store.load(id: parentID)
+        XCTAssertEqual(restored?.state, .cancelled)
+        let child = try await engine.persistenceStore.fetch(tag: childID)
+        XCTAssertNil(child)
     }
 
     // MARK: - Orchestrator: HLS Record Created Before Download in executeAndAssembleHLS
@@ -654,4 +963,61 @@ private actor CountingWritingSegmentExecutorStub: StreamingSegmentExecutor {
     }
 
     func cancel(transferID: String) async {}
+}
+
+private actor BlockingSegmentExecutorStub: StreamingSegmentExecutor {
+    private(set) var started = false
+    private var cancelled = false
+
+    func execute(
+        _ request: StreamingSegmentTransferRequest,
+        progress: (@Sendable (Double) -> Void)?
+    ) async throws {
+        started = true
+        while !cancelled {
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+        throw CancellationError()
+    }
+
+    func cancel(transferID: String) async {
+        cancelled = true
+    }
+}
+
+private actor FailingSegmentExecutorStub: StreamingSegmentExecutor {
+    enum Failure: Error { case unavailable }
+
+    func execute(
+        _ request: StreamingSegmentTransferRequest,
+        progress: (@Sendable (Double) -> Void)?
+    ) async throws {
+        throw Failure.unavailable
+    }
+
+    func cancel(transferID: String) async {}
+}
+
+private final class CancellationBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var action: (@Sendable () -> Void)?
+    private var requested = false
+
+    func set(_ action: @escaping @Sendable () -> Void) {
+        lock.lock()
+        self.action = action
+        let shouldCancel = requested
+        lock.unlock()
+        if shouldCancel {
+            action()
+        }
+    }
+
+    func cancel() {
+        lock.lock()
+        requested = true
+        let action = self.action
+        lock.unlock()
+        action?()
+    }
 }

@@ -100,8 +100,11 @@ public actor HLSPersistenceStore {
 
     /// Persists or updates an HLS transfer record atomically.
     public func save(_ record: HLSTransferRecord) throws {
-        cache[record.id] = record
+        // Write first. If the disk write fails, retain the last known-good
+        // cached checkpoint instead of making reads claim that the failed
+        // update was durable.
         try writeToDisk(record)
+        cache[record.id] = record
     }
 
     /// Returns the record for `id`, or `nil` if it does not exist.
