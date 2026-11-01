@@ -421,6 +421,37 @@ final class HLSLifecycleTests: XCTestCase {
         XCTAssertNil(restored)
     }
 
+    func testRestoreHLSTransfersPurgesPersistedStreamingSegmentRecords() async throws {
+        let store = HLSPersistenceStore(inMemory: true)
+        let engine = makeFakeEngine()
+        let segmentID = "stream-segment-orphaned"
+        let destination = FileManager.default.temporaryDirectory
+            .appendingPathComponent(".assembly_temp_\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("\(segmentID).part")
+        let record = DownloadRecord(
+            id: segmentID,
+            originalURL: URL(string: "https://video.example/segment.ts")!,
+            destinationURL: destination,
+            totalSize: 12,
+            state: .paused,
+            suggestedFilename: "segment.ts",
+            segments: [SegmentRecord(id: 0, startOffset: 0, endOffset: 11, length: 12)]
+        )
+        try await engine.persistenceStore.save(record)
+
+        let orchestrator = StreamingDownloadOrchestrator(
+            manifestLoader: StubManifestLoader(data: Data(), finalURL: URL(string: "https://video.example/index.m3u8")!),
+            segmentExecutor: WritingSegmentExecutorStub(),
+            downloadEngine: engine,
+            hlsPersistenceStore: store
+        )
+
+        await orchestrator.restoreHLSTransfers()
+
+        let purged = try await engine.persistenceStore.fetch(tag: segmentID)
+        XCTAssertNil(purged)
+    }
+
     func testRestoreHLSTransfersSkipsCompletedRecords() async throws {
         let store = HLSPersistenceStore(inMemory: true)
         let manifestURL = URL(string: "https://video.example/done.m3u8")!

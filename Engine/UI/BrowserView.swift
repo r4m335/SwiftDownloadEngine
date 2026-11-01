@@ -166,27 +166,14 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         self.downloadDelegate = downloadDelegate
         self.magnetDelegate = magnetDelegate
         self.onDownloadInitiated = onDownloadInitiated
-        let orchestrator: StreamingDownloadOrchestrator
-        if let streamingOrchestrator {
-            orchestrator = streamingOrchestrator
-        } else if let vm = downloadDelegate as? DownloadManagerViewModel {
-            orchestrator = StreamingDownloadOrchestrator(
-                downloadCoordinator: vm.engine.coordinator,
-                downloadEngine: vm.engine
-            )
-        } else if let shared = StreamingDownloadOrchestrator.shared {
-            orchestrator = shared
-        } else {
-            orchestrator = StreamingDownloadOrchestrator.createDefault()
-        }
-        if let vm = downloadDelegate as? DownloadManagerViewModel {
+        let orchestrator = streamingOrchestrator ?? StreamingDownloadOrchestrator.shared
+        if let orchestrator, let vm = downloadDelegate as? DownloadManagerViewModel {
             Task {
                 await vm.engine.setStreamingOrchestrator(orchestrator)
                 await orchestrator.setDownloadEngine(vm.engine)
             }
         }
         self.streamingOrchestrator = orchestrator
-        StreamingDownloadOrchestrator.shared = orchestrator
         self.streamingDestinationDirectoryURL = streamingDestinationDirectoryURL ??
             FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first?.appendingPathComponent("Downloads", isDirectory: true) ??
             FileManager.default.temporaryDirectory.appendingPathComponent("LIDDownloads", isDirectory: true)
@@ -1014,7 +1001,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
             blobCaptureErrorMessage = errorMsg
             return
         }
-        guard let orchestrator = streamingOrchestrator ?? StreamingDownloadOrchestrator.shared else {
+        guard let orchestrator = streamingOrchestrator else {
             let errorMsg = "Streaming downloads are unavailable: StreamingDownloadOrchestrator is nil."
             print("[HLS Pipeline] \(errorMsg)")
             streamingErrorMessage = errorMsg
@@ -1071,7 +1058,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
 
     public func executeStreamingProposal() {
         guard let proposal = streamingProposal,
-              let orchestrator = streamingOrchestrator ?? StreamingDownloadOrchestrator.shared,
+              let orchestrator = streamingOrchestrator,
               !isExecutingStreaming else { return }
 
         isExecutingStreaming = true
@@ -2047,10 +2034,7 @@ public struct BrowserView: View {
             downloadDelegate: viewModel,
             magnetDelegate: viewModel,
             onDownloadInitiated: onDownloadInitiated,
-            streamingOrchestrator: StreamingDownloadOrchestrator(
-                downloadCoordinator: viewModel.engine.coordinator,
-                downloadEngine: viewModel.engine
-            ),
+            streamingOrchestrator: StreamingDownloadOrchestrator.shared,
             streamingDestinationDirectoryURL: viewModel.downloadsDirectoryURL
         ))
     }

@@ -7,10 +7,21 @@ public struct DownloadManagerAppView: View {
     @State private var selectedTab = 0
 
     public init(engine: DownloadEngine, downloadsDirectory: URL? = nil) {
-        _viewModel = StateObject(wrappedValue: DownloadManagerViewModel(
+        let vm = DownloadManagerViewModel(
             engine: engine,
             downloadsDirectory: downloadsDirectory
-        ))
+        )
+        let hlsPersistenceStore = try? HLSPersistenceStore(
+            storageDirectoryURL: engine.persistenceStore.storageDirectoryURL
+        )
+        let orchestrator = StreamingDownloadOrchestrator(
+            downloadCoordinator: engine.coordinator,
+            downloadEngine: engine,
+            hlsPersistenceStore: hlsPersistenceStore
+        )
+        StreamingDownloadOrchestrator.shared = orchestrator
+        Task { await engine.setStreamingOrchestrator(orchestrator) }
+        _viewModel = StateObject(wrappedValue: vm)
     }
 
     public init(viewModel: DownloadManagerViewModel) {

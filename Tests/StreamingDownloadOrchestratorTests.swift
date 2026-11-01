@@ -188,19 +188,22 @@ final class StreamingDownloadOrchestratorTests: XCTestCase {
         segment.ts
         #EXT-X-ENDLIST
         """
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("hls-execution-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let engine = try DownloadEngine(storageDirectoryURL: directory)
         let orchestrator = StreamingDownloadOrchestrator(
             manifestLoader: RecordingManifestLoader(
                 data: Data(playlist.utf8),
                 finalURL: url,
                 mimeType: "application/vnd.apple.mpegurl"
             ),
-            segmentExecutor: WritingSegmentExecutor()
+            segmentExecutor: WritingSegmentExecutor(),
+            downloadEngine: engine
         )
         let candidate = try StreamingManifestCandidate(url: url)
         let proposal = try await orchestrator.prepare(candidate: candidate)
-        let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("hls-execution-\(UUID().uuidString)", isDirectory: true)
-        defer { try? FileManager.default.removeItem(at: directory) }
         let output = directory.appendingPathComponent("assembled.ts")
 
         let result = try await orchestrator.executeAndAssembleHLS(
@@ -465,7 +468,8 @@ final class StreamingDownloadOrchestratorTests: XCTestCase {
 
     @MainActor
     func testStreamingDownloadOrchestrator_SharedInstanceIsInitializedByDefault() {
-        XCTAssertNotNil(StreamingDownloadOrchestrator.shared)
+        StreamingDownloadOrchestrator.shared = nil
+        XCTAssertNil(StreamingDownloadOrchestrator.shared)
     }
 
     func testStreamingDownloadOrchestrator_RecursiveVariantResolution() async throws {
@@ -535,12 +539,14 @@ final class StreamingDownloadOrchestratorTests: XCTestCase {
             mediaURL: StreamingManifestResponse(data: mediaData, finalURL: mediaURL, mimeType: "application/vnd.apple.mpegurl")
         ])
         let executor = WritingSegmentExecutor()
+        let dest = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let engine = try DownloadEngine(storageDirectoryURL: dest)
         let orchestrator = StreamingDownloadOrchestrator(
             manifestLoader: loader,
-            segmentExecutor: executor
+            segmentExecutor: executor,
+            downloadEngine: engine
         )
 
-        let dest = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let out = dest.appendingPathComponent("stream_output.mp4")
         defer { try? FileManager.default.removeItem(at: dest) }
 

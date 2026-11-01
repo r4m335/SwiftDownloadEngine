@@ -481,6 +481,7 @@ public enum StreamingDownloadOrchestratorError: Error, LocalizedError, Sendable,
     case noTransferResources
     case userDeclined
     case transferAlreadyRunning
+    case streamingRegistrationFailed(String)
     case segmentTransferFailed(order: Int)
     case cancelled
     case hlsReconstructionFailed(HLSVODReconstructionError)
@@ -516,6 +517,8 @@ public enum StreamingDownloadOrchestratorError: Error, LocalizedError, Sendable,
             return "The streaming transfer was not approved."
         case .transferAlreadyRunning:
             return "This streaming transfer is already running."
+        case .streamingRegistrationFailed(let message):
+            return "The streaming download could not be added to Downloads: \(message)"
         case .segmentTransferFailed(let order):
             return "Streaming segment \(order) could not be downloaded."
         case .cancelled:
@@ -540,9 +543,10 @@ public actor StreamingDownloadOrchestrator {
         StreamingDownloadOrchestrator(segmentExecutor: URLSessionStreamingSegmentExecutor())
     }
 
-    @MainActor public static var shared: StreamingDownloadOrchestrator? = {
-        StreamingDownloadOrchestrator.createDefault()
-    }()
+    /// The application composition root must install the configured instance.
+    /// There is intentionally no default here: a standalone orchestrator has
+    /// no DownloadEngine and would make a stream invisible to Downloads.
+    @MainActor public static var shared: StreamingDownloadOrchestrator?
 
     private let manifestLoader: any StreamingManifestLoader
     private let segmentExecutor: any StreamingSegmentExecutor
@@ -611,7 +615,11 @@ public actor StreamingDownloadOrchestrator {
         }
         pausedTransfers.remove(transferID)
         await segmentExecutor.cancel(transferID: hlsParentID(for: transferID))
-        try? await hlsPersistenceStore?.updateState(id: hlsParentID(for: transferID), state: .cancelled)
+        let parentID = hlsParentID(for: transferID)
+        try? await hlsPersistenceStore?.updateState(id: parentID, state: .cancelled)
+        if let proposal = proposals[parentID] {
+            await cleanupHLSChildRecords(proposal: proposal)
+        }
         PipelineLogger.shared.log("[HLS Pipeline] Cancelled transfer: \(transferID)")
     }
 
@@ -687,6 +695,45 @@ public actor StreamingDownloadOrchestrator {
         self.hlsPersistenceStore = store
     }
 
+    private func purgeInternalStreamingSegmentRecords(in directory: URL? = nil) async {
+        guard let engine = downloadEngine,
+              let records = try? await engine.persistenceStore.fetchAll() else { return }
+        let directoryPath = directory?.standardizedFileURL.path
+        for record in records where record.id.hasPrefix("stream-segment-") {
+            if let directoryPath,
+               !record.destinationURL.standardizedFileURL.path.hasPrefix(directoryPath + "/") {
+                continue
+            }
+            try? await engine.persistenceStore.delete(tag: record.id)
+        }
+    }
+
+    private func purgeOrphanAssemblyDirectories(records: [HLSTransferRecord]) async {
+        let fileManager = FileManager.default
+        let activeDirectories = Set(
+            records
+                .filter { $0.state == .downloading || $0.state == .paused }
+                .map { $0.segmentDirectoryURL.standardizedFileURL.path }
+        )
+        let parentDirectories = Set(records.map {
+            $0.segmentDirectoryURL.deletingLastPathComponent().standardizedFileURL
+        })
+
+        for parent in parentDirectories {
+            guard let children = try? fileManager.contentsOfDirectory(
+                at: parent,
+                includingPropertiesForKeys: [.isDirectoryKey],
+                options: []
+            ) else { continue }
+            for child in children where child.lastPathComponent.hasPrefix(".assembly_temp_") {
+                let path = child.standardizedFileURL.path
+                guard !activeDirectories.contains(path) else { continue }
+                try? fileManager.removeItem(at: child)
+                PipelineLogger.shared.log("[HLS Recovery] Removed orphaned assembly directory: \(path)")
+            }
+        }
+    }
+
     // MARK: - HLS Startup Recovery
 
     /// Restores durable HLS transfer records into the `DownloadEngine` after an app restart.
@@ -712,6 +759,12 @@ public actor StreamingDownloadOrchestrator {
             PipelineLogger.shared.log("[HLS Recovery] Failed to load HLS records: \(error.localizedDescription)")
             return
         }
+
+        // Segment requests are implementation details. The parent HLS job
+        // checkpoint is sufficient to resume them, so never restore child
+        // DownloadRecord entries into the durable download store.
+        await purgeInternalStreamingSegmentRecords()
+        await purgeOrphanAssemblyDirectories(records: records)
 
         PipelineLogger.shared.log("[HLS Recovery] Found \(records.count) persisted HLS record(s).")
 
@@ -788,7 +841,8 @@ public actor StreamingDownloadOrchestrator {
                 proposal,
                 approved: true,
                 destinationDirectory: record.segmentDirectoryURL,
-                outputURL: record.outputDestinationURL
+                outputURL: record.outputDestinationURL,
+                runID: record.id
             )
         } catch {
             PipelineLogger.shared.log("[HLS Recovery] Could not resume \(record.id): \(error.localizedDescription)")
@@ -1476,23 +1530,43 @@ public actor StreamingDownloadOrchestrator {
         approved: Bool,
         destinationDirectory: URL,
         outputURL: URL,
-        progress: (@Sendable (StreamingTransferProgress) -> Void)? = nil
+        progress: (@Sendable (StreamingTransferProgress) -> Void)? = nil,
+        runID: String? = nil
     ) async throws -> MediaAssemblyOutput {
-        guard case .hls(let transferPlan) = proposal.manifest else {
+        guard case .hls = proposal.manifest else {
+            throw StreamingDownloadOrchestratorError.unsupportedManifest(.dash)
+        }
+        let parentID = runID ?? "stream-run-\(UUID().uuidString.lowercased())"
+        let runProposal = proposalForRun(proposal, transferID: parentID)
+        guard case .hls(let transferPlan) = runProposal.manifest else {
             throw StreamingDownloadOrchestratorError.unsupportedManifest(.dash)
         }
         let finalOutputURL = (outputURL.pathExtension.lowercased() == "ts" && NSClassFromString("XCTestCase") == nil)
             ? outputURL.deletingPathExtension().appendingPathExtension("mp4")
             : outputURL
         let originalSourceURL = candidatesByTransfer[proposal.transferID]?.url ?? transferPlan.manifestURL
-        let parentID = hlsParentID(for: proposal)
+        if let candidate = candidatesByTransfer[proposal.transferID] {
+            candidatesByTransfer[parentID] = candidate
+        }
+        proposals[parentID] = runProposal
         registeredTransferIDs[originalSourceURL.absoluteString] = parentID
         registeredTransferIDs[transferPlan.manifestURL.absoluteString] = parentID
         registeredTransferIDs[proposal.transferID] = parentID
 
-        if let engine = self.downloadEngine {
-            let estimated = proposal.estimatedTransferBytes ?? (Int64(proposal.resources.count) * 1_000_000)
-            _ = try? await engine.registerStreamingDownload(
+        guard let engine = self.downloadEngine else {
+            let message = "No DownloadEngine is configured by the application composition root."
+            PipelineLogger.shared.log("[HLS Pipeline] Failed to register parent stream \(parentID): \(message)")
+            proposals.removeValue(forKey: parentID)
+            candidatesByTransfer.removeValue(forKey: parentID)
+            registeredTransferIDs = registeredTransferIDs.filter {
+                $0.key != parentID && $0.value != parentID
+            }
+            throw StreamingDownloadOrchestratorError.streamingRegistrationFailed(message)
+        }
+
+        let estimated = runProposal.estimatedTransferBytes ?? (Int64(runProposal.resources.count) * 1_000_000)
+        do {
+            _ = try await engine.registerStreamingDownload(
                 id: parentID,
                 manifestURL: originalSourceURL,
                 destinationURL: finalOutputURL,
@@ -1500,9 +1574,17 @@ public actor StreamingDownloadOrchestrator {
                 totalBytes: estimated,
                 mimeType: "video/mp4"
             )
-            await engine.queueManager.resumeStreaming(id: parentID)
-            PipelineLogger.shared.log("[HLS Pipeline] Active stream registered with DownloadEngine: \(parentID)")
+        } catch {
+            PipelineLogger.shared.log("[HLS Pipeline] Failed to register parent stream \(parentID): \(error.localizedDescription)")
+            proposals.removeValue(forKey: parentID)
+            candidatesByTransfer.removeValue(forKey: parentID)
+            registeredTransferIDs = registeredTransferIDs.filter {
+                $0.key != parentID && $0.value != parentID
+            }
+            throw StreamingDownloadOrchestratorError.streamingRegistrationFailed(error.localizedDescription)
         }
+        await engine.queueManager.resumeStreaming(id: parentID)
+        PipelineLogger.shared.log("[HLS Pipeline] Active stream registered with DownloadEngine: \(parentID)")
 
         // Persist the parent HLS transfer record so it survives app restarts.
         if let persistence = hlsPersistenceStore {
@@ -1518,7 +1600,7 @@ public actor StreamingDownloadOrchestrator {
                 outputFilename: finalOutputURL.lastPathComponent,
                 outputDestinationURL: finalOutputURL,
                 segmentDirectoryURL: destinationDirectory,
-                totalSegments: proposal.resources.count,
+                totalSegments: runProposal.resources.count,
                 completedSegmentOrders: previousRecord?.completedSegmentOrders ?? [],
                 state: .downloading,
                 assemblyState: .notStarted,
@@ -1529,13 +1611,23 @@ public actor StreamingDownloadOrchestrator {
             PipelineLogger.shared.log("[HLS Pipeline] HLS transfer record persisted: \(parentID)")
         }
 
-        let result = try await execute(
-            proposal,
-            approved: approved,
-            destinationDirectory: destinationDirectory,
-            progress: progress
-        )
-        try Task.checkCancellation()
+        let result: StreamingTransferResult
+        do {
+            result = try await execute(
+                runProposal,
+                approved: approved,
+                destinationDirectory: destinationDirectory,
+                progress: progress
+            )
+            try Task.checkCancellation()
+        } catch {
+            if let engine = self.downloadEngine {
+                await engine.failStreamingDownload(id: parentID, reason: error.localizedDescription)
+            }
+            try? await hlsPersistenceStore?.updateState(id: parentID, state: .failed)
+            await cleanupHLSChildRecords(proposal: runProposal)
+            throw error
+        }
         let allPlanned = transferPlan.allResources
         let completed = zip(allPlanned, result.localFiles).map {
             HLSCompletedResource(resource: $0.0, fileURL: $0.1)
@@ -1583,7 +1675,7 @@ public actor StreamingDownloadOrchestrator {
             // remove the child records and raw artifacts after a successful
             // assembly. Failure paths intentionally preserve both.
             await cleanupCompletedHLSArtifacts(
-                proposal: proposal,
+                proposal: runProposal,
                 segmentDirectory: destinationDirectory,
                 outputURL: assemblyOutput.destinationURL
             )
@@ -1591,7 +1683,7 @@ public actor StreamingDownloadOrchestrator {
             if let subtitleURL = transferPlan.subtitleURL {
                 await downloadAndSaveSubtitle(
                     from: subtitleURL,
-                    candidate: candidatesByTransfer[proposal.transferID],
+                    candidate: candidatesByTransfer[runProposal.transferID],
                     finalOutputURL: assemblyOutput.destinationURL
                 )
             }
@@ -1609,12 +1701,14 @@ public actor StreamingDownloadOrchestrator {
             // Preserve segments for recovery; mark assembly as failed.
             try? await hlsPersistenceStore?.updateAssemblyState(id: parentID, assemblyState: .failed)
             try? await hlsPersistenceStore?.updateState(id: parentID, state: .failed)
+            await cleanupHLSChildRecords(proposal: runProposal)
             throw StreamingDownloadOrchestratorError.hlsReconstructionFailed(error)
         } catch {
             if let engine = self.downloadEngine {
                 await engine.failStreamingDownload(id: parentID, reason: error.localizedDescription)
             }
             try? await hlsPersistenceStore?.updateState(id: parentID, state: .failed)
+            await cleanupHLSChildRecords(proposal: runProposal)
             throw error
         }
     }
@@ -1636,6 +1730,7 @@ public actor StreamingDownloadOrchestrator {
 
         cancelledTransfers.insert(record.id)
         await segmentExecutor.cancel(transferID: record.id)
+        await purgeInternalStreamingSegmentRecords(in: record.segmentDirectoryURL)
         try? FileManager.default.removeItem(at: record.segmentDirectoryURL)
         if deleteOutputFile {
             try? FileManager.default.removeItem(at: record.outputDestinationURL)
@@ -1704,16 +1799,46 @@ public actor StreamingDownloadOrchestrator {
         return completedOrders.count
     }
 
+    private func proposalForRun(
+        _ proposal: StreamingTransferProposal,
+        transferID: String
+    ) -> StreamingTransferProposal {
+        let resources = proposal.resources.map { resource in
+            StreamingTransferResource(
+                identity: identity(
+                    transferID: transferID,
+                    order: resource.identity.order,
+                    url: resource.url,
+                    range: resource.byteRange
+                ),
+                url: resource.url,
+                byteRange: resource.byteRange
+            )
+        }
+        return StreamingTransferProposal(
+            transferID: transferID,
+            manifestID: proposal.manifestID,
+            manifest: proposal.manifest,
+            resources: resources,
+            estimatedTransferBytes: proposal.estimatedTransferBytes
+        )
+    }
+
+    /// Removes implementation-detail child records while retaining the HLS
+    /// parent job record and its completed-order checkpoint.
+    private func cleanupHLSChildRecords(proposal: StreamingTransferProposal) async {
+        guard let engine = downloadEngine else { return }
+        for resource in proposal.resources {
+            try? await engine.persistenceStore.delete(tag: resource.identity.value)
+        }
+    }
+
     private func cleanupCompletedHLSArtifacts(
         proposal: StreamingTransferProposal,
         segmentDirectory: URL,
         outputURL: URL
     ) async {
-        if let engine = downloadEngine {
-            for resource in proposal.resources {
-                try? await engine.persistenceStore.delete(tag: resource.identity.value)
-            }
-        }
+        await cleanupHLSChildRecords(proposal: proposal)
 
         let fileManager = FileManager.default
         guard let children = try? fileManager.contentsOfDirectory(
