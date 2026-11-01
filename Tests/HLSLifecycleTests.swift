@@ -124,7 +124,8 @@ final class HLSLifecycleTests: XCTestCase {
             try await store.markSegmentCompleted(id: "seg-test", order: order)
         }
 
-        let loaded = try XCTUnwrap(try await store.load(id: "seg-test"))
+        let stored = try await store.load(id: "seg-test")
+        let loaded = try XCTUnwrap(stored)
         XCTAssertEqual(loaded.completedSegmentOrders, [0, 1, 2, 3, 4])
         XCTAssertTrue(loaded.allSegmentsDownloaded)
     }
@@ -143,7 +144,8 @@ final class HLSLifecycleTests: XCTestCase {
         try await store.save(record)
 
         try await store.markSegmentsCompleted(id: "batch-test", orders: [0, 1, 2, 5, 9])
-        let loaded = try XCTUnwrap(try await store.load(id: "batch-test"))
+        let stored = try await store.load(id: "batch-test")
+        let loaded = try XCTUnwrap(stored)
         XCTAssertEqual(loaded.completedSegmentOrders, [0, 1, 2, 5, 9])
     }
 
@@ -161,7 +163,8 @@ final class HLSLifecycleTests: XCTestCase {
         try await store.save(record)
         try await store.updateState(id: "state-test", state: .paused)
 
-        let loaded = try XCTUnwrap(try await store.load(id: "state-test"))
+        let stored = try await store.load(id: "state-test")
+        let loaded = try XCTUnwrap(stored)
         XCTAssertEqual(loaded.state, .paused)
     }
 
@@ -180,11 +183,13 @@ final class HLSLifecycleTests: XCTestCase {
         try await store.save(record)
 
         try await store.updateAssemblyState(id: "asm-test", assemblyState: .inProgress)
-        var loaded = try XCTUnwrap(try await store.load(id: "asm-test"))
+        let stored = try await store.load(id: "asm-test")
+        var loaded = try XCTUnwrap(stored)
         XCTAssertEqual(loaded.assemblyState, .inProgress)
 
         try await store.updateAssemblyState(id: "asm-test", assemblyState: .completed)
-        loaded = try XCTUnwrap(try await store.load(id: "asm-test"))
+        let updated = try await store.load(id: "asm-test")
+        loaded = try XCTUnwrap(updated)
         XCTAssertEqual(loaded.assemblyState, .completed)
     }
 
@@ -242,7 +247,8 @@ final class HLSLifecycleTests: XCTestCase {
         try await store.markSegmentCompleted(id: "idem-test", order: 0)
         try await store.markSegmentCompleted(id: "idem-test", order: 0)
 
-        let loaded = try XCTUnwrap(try await store.load(id: "idem-test"))
+        let stored = try await store.load(id: "idem-test")
+        let loaded = try XCTUnwrap(stored)
         XCTAssertEqual(loaded.completedSegmentOrders.count, 1)
     }
 
@@ -258,9 +264,11 @@ final class HLSLifecycleTests: XCTestCase {
         )
 
         try await store.save(record)
-        let loaded = try XCTUnwrap(try await store.load(id: record.id))
+        let stored = try await store.load(id: record.id)
+        let loaded = try XCTUnwrap(stored)
         XCTAssertEqual(loaded.id, record.id)
-        XCTAssertEqual(try await store.loadAll().count, 1)
+        let all = try await store.loadAll()
+        XCTAssertEqual(all.count, 1)
     }
 
     // MARK: - Orchestrator Integration: Persistence Written During Download
@@ -373,7 +381,7 @@ final class HLSLifecycleTests: XCTestCase {
 
     func testQueueRestoreDoesNotExposeStreamingSegments() async throws {
         let persistence = DownloadPersistenceStore(inMemory: true)
-        let coordinator = DownloadCoordinator(persistenceStore: persistence)
+        let coordinator = try! DownloadCoordinator(persistenceStore: persistence)
         let queue = DownloadQueueManager(coordinator: coordinator, persistenceStore: persistence)
         let segmentID = "stream-segment-internal"
         let destination = FileManager.default.temporaryDirectory.appendingPathComponent("\(segmentID).part")
@@ -474,7 +482,7 @@ final class HLSLifecycleTests: XCTestCase {
     /// Creates a real `DownloadEngine` backed by in-memory stores.
     private func makeFakeEngine() -> DownloadEngine {
         let persistence = DownloadPersistenceStore(inMemory: true)
-        let coordinator = DownloadCoordinator(persistenceStore: persistence)
+        let coordinator = try! DownloadCoordinator(persistenceStore: persistence)
         let queueManager = DownloadQueueManager(coordinator: coordinator, persistenceStore: persistence)
         return DownloadEngine(queueManager: queueManager, coordinator: coordinator, persistenceStore: persistence)
     }
