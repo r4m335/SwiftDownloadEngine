@@ -68,17 +68,31 @@ final class DownloadCoordinatorTests: XCTestCase {
                 return (response, Data(payload.prefix(1)))
             }
 
-            guard let rangeHeader,
-                  let bounds = rangeHeader
-                    .replacingOccurrences(of: "bytes=", with: "")
-                    .split(separator: "-")
-                    .compactMap({ Int($0) }),
-                  bounds.count == 2,
-                  let start = bounds[0],
-                  let end = bounds[1],
-                  start >= 0,
-                  end >= start,
-                  end < payload.count else {
+            guard let rangeHeader else {
+                let response = HTTPURLResponse(
+                    url: url,
+                    statusCode: 416,
+                    httpVersion: "HTTP/1.1",
+                    headerFields: [:]
+                )!
+                return (response, Data())
+            }
+            let bounds = rangeHeader
+                .replacingOccurrences(of: "bytes=", with: "")
+                .split(separator: "-")
+                .compactMap({ Int($0) })
+            guard bounds.count == 2 else {
+                let response = HTTPURLResponse(
+                    url: url,
+                    statusCode: 416,
+                    httpVersion: "HTTP/1.1",
+                    headerFields: [:]
+                )!
+                return (response, Data())
+            }
+            let start = bounds[0]
+            let end = bounds[1]
+            guard start >= 0, end >= start, end < payload.count else {
                 let response = HTTPURLResponse(
                     url: url,
                     statusCode: 416,
