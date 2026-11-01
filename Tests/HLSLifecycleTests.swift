@@ -163,9 +163,10 @@ final class HLSLifecycleTests: XCTestCase {
         try await store.save(record)
 
         let updated = try await store.removeSegments(id: record.id, orders: [1, 4, 5])
+        let persisted = try await store.load(id: record.id)
 
         XCTAssertEqual(updated.completedSegmentOrders, [0, 2])
-        XCTAssertEqual(try await store.load(id: record.id)?.completedSegmentOrders, [0, 2])
+        XCTAssertEqual(persisted?.completedSegmentOrders, [0, 2])
     }
 
     func testHLSPersistenceStoreUpdateState() async throws {
