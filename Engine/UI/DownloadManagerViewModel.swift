@@ -910,7 +910,7 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
 
     /// Loads the durable HLS parent record used by the segment details UI.
     public func hlsTransferRecord(for id: String) async -> HLSTransferRecord? {
-        guard let orchestrator = engine.streamingOrchestrator,
+        guard let orchestrator = await engine.streamingOrchestrator,
               let store = await orchestrator.hlsPersistenceStore else {
             return nil
         }
@@ -921,7 +921,7 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
     /// transfer snapshot so progress immediately reflects the new checkpoint.
     @discardableResult
     public func deleteHLSSegments(id: String, orders: Set<Int>) async throws -> Int {
-        guard let orchestrator = engine.streamingOrchestrator else { return 0 }
+        guard let orchestrator = await engine.streamingOrchestrator else { return 0 }
         let deleted = try await orchestrator.deleteHLSSegments(id: id, orders: orders)
         await refreshSnapshots()
         return deleted
