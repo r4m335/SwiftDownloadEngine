@@ -188,6 +188,44 @@ final class BackgroundHTTPTransportTests: XCTestCase {
         XCTAssertEqual(updatedRecord.segments[0].completedBytes, 1200)
     }
 
+    func testScheduleSegmentAppliesEarliestBeginDateBeforeResume() async throws {
+        #if canImport(Darwin)
+        let manager = try BackgroundDownloadSessionManager(
+            storageDirectoryURL: storageDirectoryURL,
+            persistenceStore: persistenceStore
+        )
+        let sourceURL = URL(string: "https://example.com/scheduled.bin")!
+        let destinationURL = storageDirectoryURL.appendingPathComponent("scheduled.bin")
+        let segment = SegmentRecord(id: 0, startOffset: 0, endOffset: 99, length: 100)
+        let download = DownloadRecord(
+            id: "scheduled-background",
+            originalURL: sourceURL,
+            destinationURL: destinationURL,
+            totalSize: 100,
+            state: .pending,
+            storageMode: .partFiles,
+            transportPolicy: .background,
+            segments: [segment]
+        )
+        let scheduledDate = Date().addingTimeInterval(60)
+
+        let taskRecord = try await manager.scheduleSegmentDownload(
+            download: download,
+            segment: segment,
+            earliestBeginDate: scheduledDate
+        )
+        let tasks = await manager.activeSessionTasks()
+        let task = try XCTUnwrap(tasks.first { $0.taskIdentifier == taskRecord.taskIdentifier })
+
+        if #available(iOS 11.0, macOS 10.13, *) {
+            XCTAssertEqual(task.earliestBeginDate, scheduledDate)
+        }
+        await manager.cancelTasks(for: download.id)
+        #else
+        throw XCTSkip("URLSession earliestBeginDate is unavailable on this platform")
+        #endif
+    }
+
     func testResumedSegmentProgressAccounting() async throws {
         // Setup download with a partially completed segment (bytes 5000-9999, 1500 already completed)
         let segment = SegmentRecord(id: 1, startOffset: 5000, endOffset: 9999, length: 5000, completedBytes: 1500)

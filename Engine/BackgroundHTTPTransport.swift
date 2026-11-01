@@ -986,7 +986,9 @@ public final class BackgroundDownloadSessionManager: NSObject, @unchecked Sendab
         return tasks.first { $0.taskIdentifier == id }
     }
 
-    private func activeSessionTasks() async -> [URLSessionTask] {
+    // Internal for regression tests that verify task scheduling metadata before
+    // the system-managed task is allowed to begin.
+    internal func activeSessionTasks() async -> [URLSessionTask] {
         await withCheckedContinuation { continuation in
             session.getAllTasks { tasks in
                 continuation.resume(returning: tasks)

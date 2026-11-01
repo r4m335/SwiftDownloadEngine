@@ -921,12 +921,14 @@ public actor DownloadCoordinator {
                     )
                 } else {
                     // Ranged background download unsupported (server ignores range or indeterminate length)
-                    // Fall back cleanly to foreground single-stream transport as per Milestone 6B Requirement 4
+                    // Fall back cleanly to foreground single-stream transport as per Milestone 6B Requirement 4.
+                    // The foreground fallback must still honor a queued schedule.
                     print("[DownloadCoordinator] Server does not support byte ranges for \(BrowserURLResolver.sanitizeURLForLogging(request.url)); falling back to foreground single-stream transport.")
                     try await runSingleStreamDownload(
                         request: executionRequest,
                         probeResult: probeResult,
-                        progress: handler
+                        progress: handler,
+                        earliestBeginDate: backgroundEarliestBeginDate
                     )
                 }
             } else {
@@ -1537,8 +1539,11 @@ public actor DownloadCoordinator {
     private func runSingleStreamDownload(
         request: DownloadRequest,
         probeResult: HTTPRangeProbeResult,
-        progress handler: ProgressHandler?
+        progress handler: ProgressHandler?,
+        earliestBeginDate: Date? = nil
     ) async throws {
+        try await waitUntilScheduledStart(earliestBeginDate)
+
         let destinationURL = request.destinationURL
         let parentDir = destinationURL.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: parentDir, withIntermediateDirectories: true)
@@ -1809,6 +1814,22 @@ public actor DownloadCoordinator {
         }
     }
 
+    /// Delays a foreground fallback until its scheduled start without blocking
+    /// the actor. Task cancellation interrupts `Task.sleep`, so cancelling a
+    /// queued download cannot create a file or issue a foreground request.
+    private func waitUntilScheduledStart(_ date: Date?) async throws {
+        guard let date else { return }
+
+        while true {
+            try Task.checkCancellation()
+            let remaining = date.timeIntervalSinceNow
+            guard remaining > 0 else { return }
+
+            let sleepSeconds = min(remaining, 60.0)
+            try await Task.sleep(nanoseconds: UInt64(sleepSeconds * 1_000_000_000))
+        }
+    }
+
     // MARK: - Multi-Segment Background Download
 
     private enum BackgroundEvent: Sendable {
@@ -1918,6 +1939,7 @@ public actor DownloadCoordinator {
 
         guard let bgManager = self.backgroundSessionManager else {
             print("[DownloadCoordinator] Notice: BackgroundDownloadSessionManager unavailable, falling back to foreground transport.")
+            try await waitUntilScheduledStart(earliestBeginDate)
             try await runMultiSegmentDownload(
                 request: request,
                 probeResult: probeResult,

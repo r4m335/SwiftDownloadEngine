@@ -36,6 +36,73 @@ final class DownloadCoordinatorTests: XCTestCase {
         try await super.tearDown()
     }
 
+    private func installNoRangeHandler(for url: URL, payload: Data) {
+        MockURLProtocol.setHandler(for: url) { _ in
+            let response = HTTPURLResponse(
+                url: url,
+                statusCode: 200,
+                httpVersion: "HTTP/1.1",
+                headerFields: [
+                    "Content-Length": String(payload.count),
+                    "Content-Type": "application/octet-stream"
+                ]
+            )!
+            return (response, payload)
+        }
+    }
+
+    private func installRangeHandler(for url: URL, payload: Data) {
+        MockURLProtocol.setHandler(for: url) { request in
+            let rangeHeader = request.value(forHTTPHeaderField: "Range")
+            if rangeHeader == "bytes=0-" {
+                let response = HTTPURLResponse(
+                    url: url,
+                    statusCode: 206,
+                    httpVersion: "HTTP/1.1",
+                    headerFields: [
+                        "Content-Range": "bytes 0-0/\(payload.count)",
+                        "Content-Length": "1",
+                        "ETag": "\"scheduled-range\""
+                    ]
+                )!
+                return (response, Data(payload.prefix(1)))
+            }
+
+            guard let rangeHeader,
+                  let bounds = rangeHeader
+                    .replacingOccurrences(of: "bytes=", with: "")
+                    .split(separator: "-")
+                    .map({ Int($0) }),
+                  bounds.count == 2,
+                  let start = bounds[0],
+                  let end = bounds[1],
+                  start >= 0,
+                  end >= start,
+                  end < payload.count else {
+                let response = HTTPURLResponse(
+                    url: url,
+                    statusCode: 416,
+                    httpVersion: "HTTP/1.1",
+                    headerFields: [:]
+                )!
+                return (response, Data())
+            }
+
+            let body = payload.subdata(in: start..<(end + 1))
+            let response = HTTPURLResponse(
+                url: url,
+                statusCode: 206,
+                httpVersion: "HTTP/1.1",
+                headerFields: [
+                    "Content-Range": "bytes \(start)-\(end)/\(payload.count)",
+                    "Content-Length": String(body.count),
+                    "ETag": "\"scheduled-range\""
+                ]
+            )!
+            return (response, body)
+        }
+    }
+
     // MARK: - 1. End-to-End Multi-Segment Download
 
     func testSuccessfulConcurrentMultiSegmentDownload() async throws {
@@ -206,6 +273,123 @@ final class DownloadCoordinatorTests: XCTestCase {
 
         let record = try await persistenceStore.fetch(tag: "dl-stream")
         XCTAssertEqual(record?.state, .completed)
+    }
+
+    func testBackgroundUnsupportedRangeFallbackWaitsForEarliestBeginDate() async throws {
+        let testURL = URL(string: "https://example.com/scheduled-no-range.bin")!
+        let destURL = tempDirectory.appendingPathComponent("scheduled-no-range.bin")
+        let payload = Data(repeating: 0x21, count: 500)
+        installNoRangeHandler(for: testURL, payload: payload)
+
+        let request = DownloadRequest(
+            id: "scheduled-no-range",
+            url: testURL,
+            destinationURL: destURL,
+            transportPolicy: .background
+        )
+        let scheduledDate = Date().addingTimeInterval(0.5)
+        await coordinator.setPendingBackgroundEarliestBeginDate(scheduledDate, for: request.id)
+
+        let startTask = Task { try await coordinator.start(request) }
+        try await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: destURL.path))
+
+        try await startTask.value
+        XCTAssertEqual(try Data(contentsOf: destURL), payload)
+    }
+
+    func testBackgroundFallbackWithoutManagerWaitsForEarliestBeginDate() async throws {
+        let testURL = URL(string: "https://example.com/scheduled-no-manager.bin")!
+        let destURL = tempDirectory.appendingPathComponent("scheduled-no-manager.bin")
+        let payload = Data((0..<500).map { UInt8($0 % 251) })
+        installRangeHandler(for: testURL, payload: payload)
+
+        let request = DownloadRequest(
+            id: "scheduled-no-manager",
+            url: testURL,
+            destinationURL: destURL,
+            configuredThreadCount: 1,
+            transportPolicy: .background
+        )
+        let scheduledDate = Date().addingTimeInterval(0.5)
+        await coordinator.setPendingBackgroundEarliestBeginDate(scheduledDate, for: request.id)
+
+        let startTask = Task { try await coordinator.start(request) }
+        try await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: destURL.path))
+
+        try await startTask.value
+        XCTAssertEqual(try Data(contentsOf: destURL), payload)
+    }
+
+    func testScheduledFallbackCancellationPreventsForegroundRequest() async throws {
+        let testURL = URL(string: "https://example.com/cancel-scheduled.bin")!
+        let destURL = tempDirectory.appendingPathComponent("cancel-scheduled.bin")
+        installNoRangeHandler(for: testURL, payload: Data(repeating: 0x42, count: 500))
+
+        let request = DownloadRequest(
+            id: "cancel-scheduled",
+            url: testURL,
+            destinationURL: destURL,
+            transportPolicy: .background
+        )
+        await coordinator.setPendingBackgroundEarliestBeginDate(
+            Date().addingTimeInterval(2),
+            for: request.id
+        )
+
+        let startTask = Task { () -> Bool in
+            do {
+                try await coordinator.start(request)
+                return false
+            } catch {
+                return true
+            }
+        }
+        try await Task.sleep(nanoseconds: 100_000_000)
+        try await coordinator.cancel(id: request.id, deleteDestinationFile: true)
+
+        let wasCancelled = await startTask.value
+        XCTAssertTrue(wasCancelled)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: destURL.path))
+    }
+
+    func testBackgroundFallbackWithoutScheduleStartsImmediately() async throws {
+        let testURL = URL(string: "https://example.com/immediate-background-fallback.bin")!
+        let destURL = tempDirectory.appendingPathComponent("immediate-background-fallback.bin")
+        let payload = Data(repeating: 0x53, count: 500)
+        installNoRangeHandler(for: testURL, payload: payload)
+
+        let request = DownloadRequest(
+            id: "immediate-background-fallback",
+            url: testURL,
+            destinationURL: destURL,
+            transportPolicy: .background
+        )
+
+        try await coordinator.start(request)
+        XCTAssertEqual(try Data(contentsOf: destURL), payload)
+    }
+
+    func testBackgroundFallbackWithPassedScheduleStartsImmediately() async throws {
+        let testURL = URL(string: "https://example.com/passed-background-fallback.bin")!
+        let destURL = tempDirectory.appendingPathComponent("passed-background-fallback.bin")
+        let payload = Data(repeating: 0x64, count: 500)
+        installNoRangeHandler(for: testURL, payload: payload)
+
+        let request = DownloadRequest(
+            id: "passed-background-fallback",
+            url: testURL,
+            destinationURL: destURL,
+            transportPolicy: .background
+        )
+        await coordinator.setPendingBackgroundEarliestBeginDate(
+            Date().addingTimeInterval(-1),
+            for: request.id
+        )
+
+        try await coordinator.start(request)
+        XCTAssertEqual(try Data(contentsOf: destURL), payload)
     }
 
     // MARK: - 4. Pause, Shutdown Barrier & Resume
