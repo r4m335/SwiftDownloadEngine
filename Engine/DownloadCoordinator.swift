@@ -1814,7 +1814,37 @@ public actor DownloadCoordinator {
     private enum BackgroundEvent: Sendable {
         case progress(segmentID: Int, completedBytes: Int64, totalBytes: Int64)
         case completed(segmentID: Int, partURL: URL)
-        case failed(segmentID: Int, reason: String)
+        case failed(segmentID: Int, failure: BackgroundFailure)
+    }
+
+    private struct BackgroundFailure: Sendable {
+        let reason: String
+        let retryable: Bool
+        let statusCode: Int?
+    }
+
+    private nonisolated static func classifyBackgroundFailure(_ error: Error) -> BackgroundFailure {
+        BackgroundFailure(
+            reason: error.localizedDescription,
+            retryable: HTTPRetryPolicy.isRetryableBackground(error),
+            statusCode: HTTPRetryPolicy.backgroundHTTPStatusCode(error)
+        )
+    }
+
+    private nonisolated static func terminalBackgroundError(
+        request: DownloadRequest,
+        failure: BackgroundFailure
+    ) -> DownloadCoordinatorError {
+        switch failure.statusCode {
+        case 401:
+            return .unauthorized(url: request.url)
+        case 403:
+            return .forbidden(url: request.url)
+        case 404, 410:
+            return .linkExpired(url: request.url)
+        default:
+            return .unexpectedSingleStreamError(reason: failure.reason)
+        }
     }
 
     /// Converts a partially written direct-seek record into the part-file
@@ -2013,7 +2043,12 @@ public actor DownloadCoordinator {
                 eventContinuation.yield(.completed(segmentID: segID, partURL: url))
             },
             onFailed: { segID, err in
-                eventContinuation.yield(.failed(segmentID: segID, reason: err.localizedDescription))
+                eventContinuation.yield(
+                    .failed(
+                        segmentID: segID,
+                        failure: Self.classifyBackgroundFailure(err)
+                    )
+                )
             }
         )
         defer {
@@ -2105,7 +2140,14 @@ public actor DownloadCoordinator {
                         handler: handler
                     )
 
-                case .failed(let segID, let reason):
+                case .failed(let segID, let failure):
+                    guard failure.retryable else {
+                        throw Self.terminalBackgroundError(
+                            request: request,
+                            failure: failure
+                        )
+                    }
+
                     let attempt = retryAttempts[segID, default: 0]
                     if attempt < request.retryCount && !pauseRequested.contains(request.id) && !Task.isCancelled {
                         retryAttempts[segID] = attempt + 1
@@ -2125,7 +2167,10 @@ public actor DownloadCoordinator {
                             )
                         }
                     } else {
-                        throw DownloadCoordinatorError.retryLimitExceeded(id: request.id, underlyingError: reason)
+                        throw DownloadCoordinatorError.retryLimitExceeded(
+                            id: request.id,
+                            underlyingError: failure.reason
+                        )
                     }
                 }
 

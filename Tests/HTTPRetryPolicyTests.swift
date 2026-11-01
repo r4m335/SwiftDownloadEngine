@@ -23,4 +23,43 @@ final class HTTPRetryPolicyTests: XCTestCase {
         ))
         XCTAssertFalse(HTTPRetryPolicy.isRetryable(HTTPRangeProbeError.resourceNotFound(URL(string: "https://example.com/file")!)))
     }
+
+    func testBackgroundRetryPolicyOnlyRetriesTransientFailures() {
+        XCTAssertTrue(HTTPRetryPolicy.isRetryableBackground(
+            BackgroundTransportError.unexpectedStatus(expected: 206, actual: 429)
+        ))
+        XCTAssertTrue(HTTPRetryPolicy.isRetryableBackground(
+            BackgroundTransportError.unexpectedStatus(expected: 206, actual: 503)
+        ))
+        XCTAssertTrue(HTTPRetryPolicy.isRetryableBackground(
+            BackgroundTransportError.bodyLengthMismatch(expected: 100, actual: 40)
+        ))
+
+        XCTAssertFalse(HTTPRetryPolicy.isRetryableBackground(
+            BackgroundTransportError.unexpectedStatus(expected: 206, actual: 401)
+        ))
+        XCTAssertFalse(HTTPRetryPolicy.isRetryableBackground(
+            BackgroundTransportError.unexpectedStatus(expected: 206, actual: 403)
+        ))
+        XCTAssertFalse(HTTPRetryPolicy.isRetryableBackground(
+            BackgroundTransportError.unexpectedStatus(expected: 206, actual: 404)
+        ))
+        XCTAssertFalse(HTTPRetryPolicy.isRetryableBackground(
+            BackgroundTransportError.unexpectedStatus(expected: 206, actual: 410)
+        ))
+    }
+
+    func testBackgroundRetryPolicyExtractsHTTPStatus() {
+        XCTAssertEqual(
+            HTTPRetryPolicy.backgroundHTTPStatusCode(
+                BackgroundTransportError.unexpectedStatus(expected: 206, actual: 403)
+            ),
+            403
+        )
+        XCTAssertNil(
+            HTTPRetryPolicy.backgroundHTTPStatusCode(
+                BackgroundTransportError.bodyLengthMismatch(expected: 10, actual: 5)
+            )
+        )
+    }
 }

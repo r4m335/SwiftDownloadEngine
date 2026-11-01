@@ -54,6 +54,36 @@ enum HTTPRetryPolicy {
         return false
     }
 
+    /// Background URLSession reports a smaller, transport-specific error
+    /// vocabulary than the foreground segment downloader. Keep the same
+    /// retry boundary: only 429, 5xx, short bodies, and transient transport
+    /// failures may be scheduled again.
+    static func isRetryableBackground(_ error: Error) -> Bool {
+        if let backgroundError = error as? BackgroundTransportError {
+            switch backgroundError {
+            case .unexpectedStatus(_, let actual):
+                return actual == 429 || (500...599).contains(actual)
+            case .bodyLengthMismatch:
+                return true
+            case .invalidHTTPResponse, .invalidContentRange, .contentRangeMismatch,
+                 .totalSizeMismatch, .contentRangeWildcardTotalRejected,
+                 .htmlErrorPageReceived, .taskNotFound, .temporaryFileMissing,
+                 .fileRelocationFailed, .corruptedMappingStore, .cancelled:
+                return false
+            }
+        }
+
+        return isRetryable(error)
+    }
+
+    static func backgroundHTTPStatusCode(_ error: Error) -> Int? {
+        guard let backgroundError = error as? BackgroundTransportError,
+              case .unexpectedStatus(_, let actual) = backgroundError else {
+            return nil
+        }
+        return actual
+    }
+
     static func shouldWaitForConnectivity(_ error: Error) -> Bool {
         guard let urlError = error as? URLError else {
             if let probeError = error as? HTTPRangeProbeError,
