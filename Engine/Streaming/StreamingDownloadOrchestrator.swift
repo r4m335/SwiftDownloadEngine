@@ -1390,7 +1390,7 @@ public actor StreamingDownloadOrchestrator {
         if let persistence = hlsPersistenceStore,
            proposal.manifest.kind == .hls,
            let record = try? await persistence.load(id: hlsParentID(for: proposal)),
-           record?.completedSegmentOrders.contains(resource.identity.order) == true,
+           record.completedSegmentOrders.contains(resource.identity.order),
            FileManager.default.fileExists(atPath: destinationURL.path) {
             let size = (try? FileManager.default.attributesOfItem(atPath: destinationURL.path)[.size] as? NSNumber)?.int64Value ?? 0
             return DownloadedSegmentResult(
