@@ -277,6 +277,22 @@ final class HLSLifecycleTests: XCTestCase {
         XCTAssertEqual(all.count, 3)
     }
 
+    func testHLSPersistenceStoreLoadAllPropagatesDirectoryEnumerationError() async throws {
+        let store = HLSPersistenceStore(inMemory: true)
+        let directory = await store.storageDirectoryURL
+        try? FileManager.default.removeItem(at: directory)
+        FileManager.default.createFile(atPath: directory.path, contents: Data())
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        do {
+            _ = try await store.loadAll()
+            XCTFail("loadAll should throw when directory enumeration fails")
+        } catch {
+            // Expected: enumeration error thrown, not silently swallowed
+            XCTAssertTrue(error is CocoaError || (error as NSError).domain == NSCocoaErrorDomain)
+        }
+    }
+
     func testHLSPersistenceStoreIdempotentMarkSegment() async throws {
         let store = HLSPersistenceStore(inMemory: true)
         let record = HLSTransferRecord(

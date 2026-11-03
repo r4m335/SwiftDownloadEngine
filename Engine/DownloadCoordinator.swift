@@ -1552,6 +1552,7 @@ public actor DownloadCoordinator {
                                     )
                                     break
                                 } catch {
+                                    await progressAccumulator.discard(workItemID: workItem.id)
                                     if Task.isCancelled {
                                         throw CancellationError()
                                     }
@@ -1823,8 +1824,13 @@ public actor DownloadCoordinator {
 
         // File Preallocation: Preallocate disk space to catch disk-full / quota errors at byte 0
         if let total = probeResult.totalSize, total > 0 {
-            try? fileHandle.truncate(atOffset: UInt64(total))
-            try? fileHandle.seek(toOffset: 0)
+            do {
+                try fileHandle.truncate(atOffset: UInt64(total))
+                try fileHandle.seek(toOffset: 0)
+            } catch {
+                let nsErr = error as NSError
+                PipelineLogger.shared.log("[DownloadCoordinator] Disk preallocation warning for \(stagingURL.path) (size \(total) bytes): \(nsErr.localizedDescription). Proceeding with streaming writes.")
+            }
         }
 
         var urlRequest = URLRequest(url: probeResult.finalURL)
@@ -2048,12 +2054,29 @@ public actor DownloadCoordinator {
                 do {
                     _ = try FileManager.default.replaceItemAt(destinationURL, withItemAt: stagingURL, backupItemName: nil, options: .withoutDeletingBackupItem)
                 } catch {
-                    _ = try? FileManager.default.removeItem(at: destinationURL)
-                    try FileManager.default.moveItem(at: stagingURL, to: destinationURL)
+                    // Non-destructive fallback: preserve existing destination if move fails
+                    let backupURL = destinationURL.deletingLastPathComponent()
+                        .appendingPathComponent(".backup-\(UUID().uuidString)-\(destinationURL.lastPathComponent)")
+                    try FileManager.default.moveItem(at: destinationURL, to: backupURL)
+                    do {
+                        try FileManager.default.moveItem(at: stagingURL, to: destinationURL)
+                        _ = try? FileManager.default.removeItem(at: backupURL)
+                    } catch {
+                        _ = try? FileManager.default.moveItem(at: backupURL, to: destinationURL)
+                        throw error
+                    }
                 }
                 #else
-                _ = try? FileManager.default.removeItem(at: destinationURL)
-                try FileManager.default.moveItem(at: stagingURL, to: destinationURL)
+                let backupURL = destinationURL.deletingLastPathComponent()
+                    .appendingPathComponent(".backup-\(UUID().uuidString)-\(destinationURL.lastPathComponent)")
+                try FileManager.default.moveItem(at: destinationURL, to: backupURL)
+                do {
+                    try FileManager.default.moveItem(at: stagingURL, to: destinationURL)
+                    _ = try? FileManager.default.removeItem(at: backupURL)
+                } catch {
+                    _ = try? FileManager.default.moveItem(at: backupURL, to: destinationURL)
+                    throw error
+                }
                 #endif
             } else {
                 try FileManager.default.moveItem(at: stagingURL, to: destinationURL)

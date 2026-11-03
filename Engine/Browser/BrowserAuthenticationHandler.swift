@@ -113,12 +113,7 @@ public final class BrowserAuthenticationHandler: @unchecked Sendable {
                 return
             }
 
-            let isProxySpace: Bool
-            #if canImport(FoundationNetworking)
-            isProxySpace = space.isProxy()
-            #else
-            isProxySpace = space.isProxy
-            #endif
+            let isProxySpace: Bool = space.isProxy()
 
             self.keychain.storeInternetPassword(
                 username: username,

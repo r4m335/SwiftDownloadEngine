@@ -155,6 +155,18 @@ actor AdaptiveSegmentProgressAccumulator {
         return snapshot()
     }
 
+    /// Discards a failed or cancelled work item, removing its partial progress contribution.
+    @discardableResult
+    func discard(workItemID: Int) -> Snapshot {
+        guard let parentID = parentByWorkItem.removeValue(forKey: workItemID) else {
+            return snapshot()
+        }
+        workLengths.removeValue(forKey: workItemID)
+        workCompleted.removeValue(forKey: workItemID)
+        recalculate(parentID: parentID)
+        return snapshot()
+    }
+
     func parentCompletedBytes(_ parentID: Int) -> Int64 {
         completedByID[parentID] ?? 0
     }

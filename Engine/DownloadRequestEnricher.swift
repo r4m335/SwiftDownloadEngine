@@ -330,11 +330,15 @@ public enum DownloadRequestEnricher {
         return enriched
     }
 
-    /// Writes back any rotated cookies from HTTP response headers (e.g. Set-Cookie) into HTTPCookieStorage.shared.
+    /// Writes back any rotated cookies from HTTP response headers (e.g. Set-Cookie) into HTTPCookieStorage.shared and Keychain.
     public static func recordResponseCookies(headers: [String: String], for url: URL) {
         let cookies = HTTPCookie.cookies(withResponseHeaderFields: headers, for: url)
+        guard !cookies.isEmpty else { return }
         for cookie in cookies {
             HTTPCookieStorage.shared.setCookie(cookie)
+        }
+        if let host = url.host {
+            KeychainManager.shared.storeCookies(cookies, domain: host)
         }
     }
 }

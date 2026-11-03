@@ -127,6 +127,16 @@ public actor HLSPersistenceStore {
 
     /// Returns all persisted HLS transfer records, sorted newest-first.
     public func loadAll() throws -> [HLSTransferRecord] {
+        var isDir: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: storageDirectoryURL.path, isDirectory: &isDir) else {
+            return []
+        }
+        guard isDir.boolValue else {
+            let error = CocoaError(.fileReadCorruptFile)
+            PipelineLogger.shared.log("[HLSPersistenceStore] Critical: Storage directory path is not a directory: \(storageDirectoryURL.path)")
+            throw error
+        }
+
         let fileURLs: [URL]
         do {
             fileURLs = try FileManager.default.contentsOfDirectory(
@@ -135,7 +145,9 @@ public actor HLSPersistenceStore {
                 options: .skipsHiddenFiles
             ).filter { $0.pathExtension == "json" }
         } catch {
-            return Array(cache.values).sorted { $0.createdAt > $1.createdAt }
+            let nsErr = error as NSError
+            PipelineLogger.shared.log("[HLSPersistenceStore] Critical: Failed to enumerate transfer records directory at \(storageDirectoryURL.path): \(nsErr.localizedDescription) (Domain: \(nsErr.domain), Code: \(nsErr.code))")
+            throw error
         }
 
         var results: [HLSTransferRecord] = []

@@ -100,6 +100,10 @@ public actor SharedRequestBudget {
 
         if canGrantImmediately(downloadID: downloadID, maxPerDownload: maxPerDownload, host: normalizedHost) {
             grant(downloadID: downloadID, host: normalizedHost)
+            if Task.isCancelled {
+                release(downloadID: downloadID, host: normalizedHost)
+                throw CancellationError()
+            }
             return
         }
 
@@ -119,6 +123,12 @@ public actor SharedRequestBudget {
             Task {
                 await self.cancelWaiter(waiterID)
             }
+        }
+
+        // Handle race where cancellation occurred right as the waiter was resumed in drainWaiters()
+        if Task.isCancelled {
+            release(downloadID: downloadID, host: normalizedHost)
+            throw CancellationError()
         }
     }
 

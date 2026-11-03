@@ -74,8 +74,9 @@ public actor TorrentQueueScheduler {
             isExplicitlyPaused: isExplicitlyPaused
         )
 
-        records[key] = record
+        // Transactional: Persist to disk before committing to memory
         try await persistenceStore.saveRecord(record)
+        records[key] = record
 
         // Evaluate admission
         _ = await pumpQueue()
@@ -94,8 +95,8 @@ public actor TorrentQueueScheduler {
         record.isExplicitlyPaused = true
         record.state = .paused
         record.updatedAt = Date()
-        records[key] = record
         try await persistenceStore.saveRecord(record)
+        records[key] = record
 
         // Vacated active slot may now promote another queued torrent
         let changes = await pumpQueue()
@@ -115,8 +116,8 @@ public actor TorrentQueueScheduler {
 
         // Place in .queued; pumpQueue() will promote immediately if under concurrency limit
         record.state = .queued
-        records[key] = record
         try await persistenceStore.saveRecord(record)
+        records[key] = record
 
         let changes = await pumpQueue()
         return changes
@@ -129,8 +130,9 @@ public actor TorrentQueueScheduler {
             throw TorrentEngineError.torrentNotFound
         }
 
-        records.removeValue(forKey: key)
+        // Transactional: Delete persistent record before committing removal from in-memory records
         try await persistenceStore.deleteRecord(infoHash: key)
+        records.removeValue(forKey: key)
 
         let changes = await pumpQueue()
         return changes
@@ -147,8 +149,8 @@ public actor TorrentQueueScheduler {
 
         record.priority = priority
         record.updatedAt = Date()
-        records[key] = record
         try await persistenceStore.saveRecord(record)
+        records[key] = record
 
         return await pumpQueue()
     }
@@ -171,8 +173,8 @@ public actor TorrentQueueScheduler {
         }
         record.filePriorities = priorities
         record.updatedAt = Date()
-        records[key] = record
         try await persistenceStore.saveRecord(record)
+        records[key] = record
     }
 
     /// Updates and persists the seeding policy preference for a torrent.
@@ -183,8 +185,8 @@ public actor TorrentQueueScheduler {
         }
         record.seedingPreference = preference
         record.updatedAt = Date()
-        records[key] = record
         try await persistenceStore.saveRecord(record)
+        records[key] = record
     }
 
     /// Evaluates whether an active seeding torrent has fulfilled its configured ratio or duration limit.
@@ -240,13 +242,13 @@ public actor TorrentQueueScheduler {
         records[key] = record
 
         if persistToDisk {
-            try? await persistenceStore.saveRecord(record)
+            try await persistenceStore.saveRecord(record)
         }
 
         // If transfer transitioned out of active downloading (e.g. finished or error), pump queue
         var changes: (promoted: [String], demoted: [String]) = ([], [])
         if oldState.isActive && !record.state.isActive {
-            try? await persistenceStore.saveRecord(record)
+            try await persistenceStore.saveRecord(record)
             changes = await pumpQueue()
         }
         return changes

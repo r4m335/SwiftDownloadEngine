@@ -212,12 +212,29 @@ public actor TorrentPersistenceStore {
             do {
                 _ = try fileManager.replaceItemAt(destinationURL, withItemAt: tempURL, backupItemName: nil, options: .withoutDeletingBackupItem)
             } catch {
-                _ = try? fileManager.removeItem(at: destinationURL)
-                try fileManager.moveItem(at: tempURL, to: destinationURL)
+                // Non-destructive fallback: preserve existing destination if move fails
+                let backupURL = destinationURL.deletingLastPathComponent()
+                    .appendingPathComponent(".backup-\(UUID().uuidString)-\(destinationURL.lastPathComponent)")
+                try fileManager.moveItem(at: destinationURL, to: backupURL)
+                do {
+                    try fileManager.moveItem(at: tempURL, to: destinationURL)
+                    _ = try? fileManager.removeItem(at: backupURL)
+                } catch {
+                    _ = try? fileManager.moveItem(at: backupURL, to: destinationURL)
+                    throw error
+                }
             }
             #else
-            _ = try? fileManager.removeItem(at: destinationURL)
-            try fileManager.moveItem(at: tempURL, to: destinationURL)
+            let backupURL = destinationURL.deletingLastPathComponent()
+                .appendingPathComponent(".backup-\(UUID().uuidString)-\(destinationURL.lastPathComponent)")
+            try fileManager.moveItem(at: destinationURL, to: backupURL)
+            do {
+                try fileManager.moveItem(at: tempURL, to: destinationURL)
+                _ = try? fileManager.removeItem(at: backupURL)
+            } catch {
+                _ = try? fileManager.moveItem(at: backupURL, to: destinationURL)
+                throw error
+            }
             #endif
         } else {
             try fileManager.moveItem(at: tempURL, to: destinationURL)

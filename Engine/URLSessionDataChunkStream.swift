@@ -40,28 +40,32 @@ final class URLSessionDataChunkStream: NSObject, URLSessionDataDelegate, @unchec
 
     deinit {}
 
+    private func withLock<T>(_ body: () -> T) -> T {
+        lock.lock()
+        defer { lock.unlock() }
+        return body()
+    }
+
     func start() async throws -> HTTPURLResponse {
         guard let delegateSession else {
             throw URLError(.cancelled)
         }
         let dataTask = delegateSession.dataTask(with: request)
-        lock.lock()
-        task = dataTask
-        lock.unlock()
+        withLock { task = dataTask }
         dataTask.resume()
 
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<HTTPURLResponse, Error>) in
-                var result: Result<HTTPURLResponse, Error>?
-                lock.lock()
-                if let response {
-                    result = .success(response)
-                } else if let responseError {
-                    result = .failure(responseError)
-                } else {
-                    responseContinuation = continuation
+                let result: Result<HTTPURLResponse, Error>? = self.withLock {
+                    if let response = self.response {
+                        return .success(response)
+                    } else if let responseError = self.responseError {
+                        return .failure(responseError)
+                    } else {
+                        self.responseContinuation = continuation
+                        return nil
+                    }
                 }
-                lock.unlock()
 
                 if let result {
                     continuation.resume(with: result)
@@ -77,26 +81,25 @@ final class URLSessionDataChunkStream: NSObject, URLSessionDataDelegate, @unchec
 
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Data?, Error>) in
-                var result: Result<Data?, Error>?
                 var taskToResume: URLSessionDataTask?
-
-                lock.lock()
-                if !bufferedChunks.isEmpty {
-                    let chunk = bufferedChunks.removeFirst()
-                    bufferedBytes -= chunk.count
-                    if suspendedForBackpressure && bufferedBytes <= Self.lowWaterMark {
-                        suspendedForBackpressure = false
-                        taskToResume = task
+                let result: Result<Data?, Error>? = self.withLock {
+                    if !self.bufferedChunks.isEmpty {
+                        let chunk = self.bufferedChunks.removeFirst()
+                        self.bufferedBytes -= chunk.count
+                        if self.suspendedForBackpressure && self.bufferedBytes <= Self.lowWaterMark {
+                            self.suspendedForBackpressure = false
+                            taskToResume = self.task
+                        }
+                        return .success(chunk)
+                    } else if let terminalError = self.terminalError {
+                        return .failure(terminalError)
+                    } else if self.finished {
+                        return .success(nil)
+                    } else {
+                        self.nextContinuation = continuation
+                        return nil
                     }
-                    result = .success(chunk)
-                } else if let terminalError {
-                    result = .failure(terminalError)
-                } else if finished {
-                    result = .success(nil)
-                } else {
-                    nextContinuation = continuation
                 }
-                lock.unlock()
 
                 taskToResume?.resume()
                 if let result {
@@ -113,22 +116,23 @@ final class URLSessionDataChunkStream: NSObject, URLSessionDataDelegate, @unchec
         var nextToFail: CheckedContinuation<Data?, Error>?
         let cancellation = URLError(.cancelled)
         var shouldCancelTask = false
+        var dataTask: URLSessionDataTask?
 
-        lock.lock()
-        if !finished {
-            shouldCancelTask = true
-            finished = true
-            bufferedChunks.removeAll(keepingCapacity: false)
-            bufferedBytes = 0
-            responseError = cancellation
-            terminalError = cancellation
-            responseToFail = responseContinuation
-            nextToFail = nextContinuation
-            responseContinuation = nil
-            nextContinuation = nil
+        withLock {
+            if !finished {
+                shouldCancelTask = true
+                finished = true
+                bufferedChunks.removeAll(keepingCapacity: false)
+                bufferedBytes = 0
+                responseError = cancellation
+                terminalError = cancellation
+                responseToFail = responseContinuation
+                nextToFail = nextContinuation
+                responseContinuation = nil
+                nextContinuation = nil
+            }
+            dataTask = task
         }
-        let dataTask = task
-        lock.unlock()
 
         if shouldCancelTask {
             dataTask?.cancel()
@@ -154,15 +158,15 @@ final class URLSessionDataChunkStream: NSObject, URLSessionDataDelegate, @unchec
 
         var responseToResume: CheckedContinuation<HTTPURLResponse, Error>?
         var shouldCancel = false
-        lock.lock()
-        if finished {
-            shouldCancel = true
-        } else {
-            self.response = httpResponse
-            responseToResume = responseContinuation
-            responseContinuation = nil
+        withLock {
+            if finished {
+                shouldCancel = true
+            } else {
+                self.response = httpResponse
+                responseToResume = responseContinuation
+                responseContinuation = nil
+            }
         }
-        lock.unlock()
 
         if shouldCancel {
             completionHandler(.cancel)
@@ -177,25 +181,23 @@ final class URLSessionDataChunkStream: NSObject, URLSessionDataDelegate, @unchec
 
         var continuation: CheckedContinuation<Data?, Error>?
         var taskToSuspend: URLSessionDataTask?
-        lock.lock()
-        guard !finished else {
-            lock.unlock()
-            return
-        }
-
-        if let nextContinuation {
-            continuation = nextContinuation
-            self.nextContinuation = nil
-        } else {
-            bufferedChunks.append(data)
-            bufferedBytes += data.count
-            if bufferedBytes >= Self.highWaterMark && !suspendedForBackpressure {
-                suspendedForBackpressure = true
-                taskToSuspend = task
+        let shouldProcess: Bool = withLock {
+            guard !finished else { return false }
+            if let next = nextContinuation {
+                continuation = next
+                self.nextContinuation = nil
+            } else {
+                bufferedChunks.append(data)
+                bufferedBytes += data.count
+                if bufferedBytes >= Self.highWaterMark && !suspendedForBackpressure {
+                    suspendedForBackpressure = true
+                    taskToSuspend = task
+                }
             }
+            return true
         }
-        lock.unlock()
 
+        guard shouldProcess else { return }
         taskToSuspend?.suspend()
         continuation?.resume(returning: data)
     }
@@ -203,29 +205,22 @@ final class URLSessionDataChunkStream: NSObject, URLSessionDataDelegate, @unchec
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
         var responseToFail: CheckedContinuation<HTTPURLResponse, Error>?
         var nextToResume: CheckedContinuation<Data?, Error>?
-        lock.lock()
-        guard !finished else {
-            lock.unlock()
-            return
-        }
-
-        finished = true
-        if response == nil {
-            let responseFailure = error ?? URLError(.badServerResponse)
-            responseError = responseFailure
-            responseToFail = responseContinuation
-            responseContinuation = nil
-        }
-        if let error {
+        let shouldProcess: Bool = withLock {
+            guard !finished else { return false }
+            finished = true
+            if response == nil {
+                let responseFailure = error ?? URLError(.badServerResponse)
+                responseError = responseFailure
+                responseToFail = responseContinuation
+                responseContinuation = nil
+            }
             terminalError = error
             nextToResume = nextContinuation
             nextContinuation = nil
-        } else {
-            nextToResume = nextContinuation
-            nextContinuation = nil
+            return true
         }
-        lock.unlock()
 
+        guard shouldProcess else { return }
         session.invalidateAndCancel()
         responseToFail?.resume(throwing: error ?? URLError(.badServerResponse))
         if let error {
@@ -239,21 +234,20 @@ final class URLSessionDataChunkStream: NSObject, URLSessionDataDelegate, @unchec
         var responseToFail: CheckedContinuation<HTTPURLResponse, Error>?
         var nextToResume: CheckedContinuation<Data?, Error>?
         var taskToCancel: URLSessionDataTask?
-        lock.lock()
-        guard !finished else {
-            lock.unlock()
-            return
+        let shouldProcess: Bool = withLock {
+            guard !finished else { return false }
+            finished = true
+            responseError = error
+            terminalError = error
+            responseToFail = responseContinuation
+            responseContinuation = nil
+            nextToResume = nextContinuation
+            nextContinuation = nil
+            taskToCancel = task
+            return true
         }
-        finished = true
-        responseError = error
-        terminalError = error
-        responseToFail = responseContinuation
-        responseContinuation = nil
-        nextToResume = nextContinuation
-        nextContinuation = nil
-        taskToCancel = task
-        lock.unlock()
 
+        guard shouldProcess else { return }
         taskToCancel?.cancel()
         delegateSession?.invalidateAndCancel()
         responseToFail?.resume(throwing: error)

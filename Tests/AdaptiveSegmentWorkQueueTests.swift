@@ -74,4 +74,46 @@ final class AdaptiveSegmentWorkQueueTests: XCTestCase {
         XCTAssertEqual(completedParentBytes, 2_000)
         XCTAssertEqual(finalSnapshot.completedSegments, 1)
     }
+
+    func testProgressAccumulatorDiscardsFailedWorkerProgressAndMaintainsMonotonicity() async {
+        let segment = DownloadSegment(id: 1, startOffset: 0, endOffset: 999, length: 1_000)
+        let accumulator = AdaptiveSegmentProgressAccumulator(
+            segments: [segment],
+            initialCompletedBytes: [1: 0]
+        )
+        let workItem = AdaptiveSegmentWorkItem(
+            id: 200,
+            parentSegmentID: 1,
+            startOffset: 0,
+            endOffset: 999,
+            splitDepth: 0
+        )
+
+        await accumulator.register(workItem)
+        // Worker reports 60% progress (600 bytes)
+        let snap1 = await accumulator.update(workItemID: workItem.id, completedBytes: 600)
+        XCTAssertEqual(snap1.bytesReceived, 600)
+
+        // Worker fails -> partial progress discarded
+        let snapDiscarded = await accumulator.discard(workItemID: workItem.id)
+        XCTAssertEqual(snapDiscarded.bytesReceived, 0)
+        let discardedBytes = await accumulator.parentCompletedBytes(1)
+        XCTAssertEqual(discardedBytes, 0)
+
+        // Reassigned worker executes and completes successfully
+        let replacementWorkItem = AdaptiveSegmentWorkItem(
+            id: 201,
+            parentSegmentID: 1,
+            startOffset: 0,
+            endOffset: 999,
+            splitDepth: 0
+        )
+        await accumulator.register(replacementWorkItem)
+        _ = await accumulator.complete(replacementWorkItem)
+        let finalSnap = await accumulator.snapshot()
+        XCTAssertEqual(finalSnap.bytesReceived, 1_000)
+        XCTAssertEqual(finalSnap.completedSegments, 1)
+        let finalBytes = await accumulator.parentCompletedBytes(1)
+        XCTAssertEqual(finalBytes, 1_000)
+    }
 }

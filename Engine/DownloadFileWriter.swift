@@ -289,23 +289,38 @@ public actor DownloadFileWriter {
         }
 
         // Atomically replace destination only after the merged file has been fully validated
-        #if canImport(Darwin)
         if fileManager.fileExists(atPath: destinationURL.path) {
+            #if canImport(Darwin)
             do {
                 _ = try fileManager.replaceItemAt(destinationURL, withItemAt: stagingURL, backupItemName: nil, options: [])
             } catch {
-                _ = try? fileManager.removeItem(at: destinationURL)
-                try fileManager.moveItem(at: stagingURL, to: destinationURL)
+                // Non-destructive fallback: preserve existing destination if move fails
+                let backupURL = destinationURL.deletingLastPathComponent()
+                    .appendingPathComponent(".backup-\(UUID().uuidString)-\(destinationURL.lastPathComponent)")
+                try fileManager.moveItem(at: destinationURL, to: backupURL)
+                do {
+                    try fileManager.moveItem(at: stagingURL, to: destinationURL)
+                    _ = try? fileManager.removeItem(at: backupURL)
+                } catch {
+                    _ = try? fileManager.moveItem(at: backupURL, to: destinationURL)
+                    throw error
+                }
             }
+            #else
+            let backupURL = destinationURL.deletingLastPathComponent()
+                .appendingPathComponent(".backup-\(UUID().uuidString)-\(destinationURL.lastPathComponent)")
+            try fileManager.moveItem(at: destinationURL, to: backupURL)
+            do {
+                try fileManager.moveItem(at: stagingURL, to: destinationURL)
+                _ = try? fileManager.removeItem(at: backupURL)
+            } catch {
+                _ = try? fileManager.moveItem(at: backupURL, to: destinationURL)
+                throw error
+            }
+            #endif
         } else {
             try fileManager.moveItem(at: stagingURL, to: destinationURL)
         }
-        #else
-        if fileManager.fileExists(atPath: destinationURL.path) {
-            _ = try? fileManager.removeItem(at: destinationURL)
-        }
-        try fileManager.moveItem(at: stagingURL, to: destinationURL)
-        #endif
     }
 
     public func synchronize() throws {

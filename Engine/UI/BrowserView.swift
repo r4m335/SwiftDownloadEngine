@@ -3503,32 +3503,7 @@ public final class BrowserWebViewCoordinator: NSObject, WKNavigationDelegate, WK
         }
     }
 
-    @available(iOS 15.0, macOS 12.0, *)
-    public func webView(
-        _ webView: WKWebView,
-        requestDeviceOrientationAndMotionPermissionFor origin: WKSecurityOrigin,
-        initiatedByFrame frame: WKFrameInfo,
-        decisionHandler: @escaping (WKPermissionDecision) -> Void
-    ) {
-        BrowserDiagnosticLogger.shared.log(
-            category: .policy,
-            message: "Requesting device motion permission for origin \(origin.host)",
-            url: frame.request.url,
-            tabID: tabID
-        )
 
-        BrowserPermissionCoordinator.shared.decidePermission(
-            type: .deviceMotion,
-            originHost: origin.host,
-            frameURL: frame.request.url
-        ) { decision in
-            switch decision {
-            case .grant: decisionHandler(.grant)
-            case .deny: decisionHandler(.deny)
-            case .prompt: decisionHandler(.prompt)
-            }
-        }
-    }
 
     public func webView(
         _ webView: WKWebView,
