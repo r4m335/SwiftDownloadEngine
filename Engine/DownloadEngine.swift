@@ -233,10 +233,11 @@ public actor DownloadEngine {
     public init(
         configuration: EngineConfiguration,
         storageDirectoryURL: URL? = nil,
-        session: URLSession = .shared,
+        session: URLSession? = nil,
         backgroundSessionManager: BackgroundDownloadSessionManager? = nil
     ) throws {
         self.configuration = configuration
+        let effectiveSession = session ?? ForegroundURLSession.make()
         let persistence = try DownloadPersistenceStore(storageDirectoryURL: storageDirectoryURL)
         let budget = SharedRequestBudget(maxGlobalRequests: configuration.maxGlobalRequests)
         let limiter = BandwidthLimiter(bytesPerSecond: configuration.globalBandwidthLimitBytesPerSecond)
@@ -245,7 +246,7 @@ public actor DownloadEngine {
             persistenceStore: persistence
         ))
         let coord = try DownloadCoordinator(
-            session: session,
+            session: effectiveSession,
             persistenceStore: persistence,
             requestBudget: budget,
             globalBandwidthLimiter: limiter,
@@ -271,7 +272,7 @@ public actor DownloadEngine {
         maxConcurrentDownloads: Int = 3,
         maxGlobalRequests: Int = 12,
         globalBandwidthLimit: Int64? = nil,
-        session: URLSession = .shared,
+        session: URLSession? = nil,
         backgroundSessionManager: BackgroundDownloadSessionManager? = nil
     ) throws {
         let config = EngineConfiguration(
@@ -279,10 +280,11 @@ public actor DownloadEngine {
             maxGlobalRequests: maxGlobalRequests,
             globalBandwidthLimitBytesPerSecond: globalBandwidthLimit
         )
+        let effectiveSession = session ?? ForegroundURLSession.make()
         try self.init(
             configuration: config,
             storageDirectoryURL: storageDirectoryURL,
-            session: session,
+            session: effectiveSession,
             backgroundSessionManager: backgroundSessionManager
         )
     }
@@ -676,7 +678,7 @@ public actor DownloadEngine {
     public func pauseDownload(id: DownloadID) async throws {
         await attachListeners()
         if let orchestrator = streamingOrchestrator, await orchestrator.isManaging(id: id) {
-            await orchestrator.pause(transferID: id)
+            try await orchestrator.pause(transferID: id)
             await queueManager.pauseStreaming(id: id)
             if var record = try? await persistenceStore.fetch(tag: id) {
                 record.state = .paused
@@ -698,7 +700,7 @@ public actor DownloadEngine {
         await attachListeners()
         terminalEventsEmitted.remove(id)
         if let orchestrator = streamingOrchestrator, await orchestrator.isManaging(id: id) {
-            await orchestrator.resume(transferID: id)
+            try await orchestrator.resume(transferID: id)
             await queueManager.resumeStreaming(id: id)
             if var record = try? await persistenceStore.fetch(tag: id) {
                 record.state = .downloading
@@ -738,7 +740,7 @@ public actor DownloadEngine {
     ///   - id: Identifier of the download to remove.
     ///   - deleteFile: If false (default), the partially or fully downloaded file is preserved on disk.
     public func removeDownload(id: DownloadID, deleteFile: Bool = false) async throws {
-        if let orchestrator = streamingOrchestrator, await orchestrator.isManaging(id: id) {
+        if let orchestrator = streamingOrchestrator {
             await orchestrator.removePersistedTransfer(id: id, deleteOutputFile: deleteFile)
         }
         try await queueManager.removeFromQueue(id: id, deleteDestinationFile: deleteFile)

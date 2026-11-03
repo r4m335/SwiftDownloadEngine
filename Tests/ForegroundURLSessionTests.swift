@@ -16,6 +16,8 @@ final class ForegroundURLSessionTests: XCTestCase {
         XCTAssertEqual(configuration.httpCookieAcceptPolicy, .never)
         XCTAssertEqual(configuration.timeoutIntervalForRequest, 30.0)
         XCTAssertEqual(configuration.timeoutIntervalForResource, 300.0)
+        #if canImport(Darwin)
         XCTAssertTrue(configuration.waitsForConnectivity)
+        #endif
     }
 }

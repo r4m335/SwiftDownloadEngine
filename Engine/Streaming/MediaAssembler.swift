@@ -199,7 +199,7 @@ public enum MediaAssembler {
                 #if canImport(AVFoundation)
                 try remuxMPEGTSFileToMP4(sourceTSURL: temporaryOutput, destinationMP4URL: request.destinationURL)
                 #else
-                throw MediaAssemblyError.muxingUnavailable
+                try fileManager.moveItem(at: temporaryOutput, to: request.destinationURL)
                 #endif
             } else {
                 try fileManager.moveItem(at: temporaryOutput, to: request.destinationURL)

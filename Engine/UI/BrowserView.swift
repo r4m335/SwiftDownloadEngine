@@ -1064,7 +1064,9 @@ public final class BrowserViewModel: NSObject, ObservableObject {
               !isExecutingStreaming else { return }
 
         isExecutingStreaming = true
+        isShowingStreamingConfirmation = false
         streamingErrorMessage = nil
+        onDownloadInitiated?()
         let destination = streamingDestinationDirectoryURL
         let progressSink: @Sendable (StreamingTransferProgress) -> Void = { [weak self] progress in
             Task { @MainActor [weak self] in
@@ -1095,9 +1097,6 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                     .appendingPathComponent(".assembly_temp_\(UUID().uuidString)", isDirectory: true)
                 try FileManager.default.createDirectory(at: tempAssemblyDir, withIntermediateDirectories: true)
                 try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
-                defer {
-                    try? FileManager.default.removeItem(at: tempAssemblyDir)
-                }
 
                 switch proposal.manifest {
                 case .hls(let transferPlan):
@@ -1129,9 +1128,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
 
                 guard let self else { return }
                 self.isExecutingStreaming = false
-                self.isShowingStreamingConfirmation = false
                 self.downloadSuccessNotification = completionMessage
-                self.onDownloadInitiated?()
             } catch is CancellationError {
                 self?.isExecutingStreaming = false
             } catch {

@@ -667,10 +667,7 @@ public actor DownloadCoordinator {
         isResumeRequest: Bool = false,
         progress handler: ProgressHandler?
     ) async throws {
-        let backgroundEarliestBeginDate: Date? = {
-            guard request.transportPolicy == .background else { return nil }
-            return pendingBackgroundEarliestBeginDates.removeValue(forKey: request.id)
-        }()
+        let backgroundEarliestBeginDate: Date? = pendingBackgroundEarliestBeginDates.removeValue(forKey: request.id)
 
         if let requestedByteRange = request.requestedByteRange {
             try await executeRequestedByteRange(
@@ -938,7 +935,8 @@ public actor DownloadCoordinator {
                             request: executionRequest,
                             probeResult: probeResult,
                             existingRecord: isResume ? record : nil,
-                            progress: handler
+                            progress: handler,
+                            earliestBeginDate: backgroundEarliestBeginDate
                         )
                     } catch {
                         if Self.isRangeIgnored(error) {
@@ -957,7 +955,8 @@ public actor DownloadCoordinator {
                             try await runSingleStreamFallback(
                                 request: executionRequest,
                                 probeResult: probeResult,
-                                progress: handler
+                                progress: handler,
+                                earliestBeginDate: backgroundEarliestBeginDate
                             )
                         } else {
                             throw error
@@ -968,7 +967,8 @@ public actor DownloadCoordinator {
                     try await runSingleStreamDownload(
                         request: executionRequest,
                         probeResult: probeResult,
-                        progress: handler
+                        progress: handler,
+                        earliestBeginDate: backgroundEarliestBeginDate
                     )
                 }
             }
@@ -1128,8 +1128,10 @@ public actor DownloadCoordinator {
         request: DownloadRequest,
         probeResult: HTTPRangeProbeResult,
         existingRecord: DownloadRecord?,
-        progress handler: ProgressHandler?
+        progress handler: ProgressHandler?,
+        earliestBeginDate: Date? = nil
     ) async throws {
+        try await waitUntilScheduledStart(earliestBeginDate)
         guard let totalSize = probeResult.totalSize, totalSize > 0 else {
             throw DownloadCoordinatorError.invalidRequest(reason: "Invalid file size for ranged download")
         }
@@ -1519,7 +1521,8 @@ public actor DownloadCoordinator {
     private func runSingleStreamFallback(
         request: DownloadRequest,
         probeResult: HTTPRangeProbeResult,
-        progress handler: ProgressHandler?
+        progress handler: ProgressHandler?,
+        earliestBeginDate: Date? = nil
     ) async throws {
         // Discard partially written destination file to prevent overlapping corrupted slices
         let manager = FileManager.default
@@ -1530,7 +1533,8 @@ public actor DownloadCoordinator {
         try await runSingleStreamDownload(
             request: request,
             probeResult: probeResult,
-            progress: handler
+            progress: handler,
+            earliestBeginDate: earliestBeginDate
         )
     }
 
@@ -1845,10 +1849,23 @@ public actor DownloadCoordinator {
     }
 
     private nonisolated static func classifyBackgroundFailure(_ error: Error) -> BackgroundFailure {
-        BackgroundFailure(
+        let status = HTTPRetryPolicy.backgroundHTTPStatusCode(error)
+        let retryable: Bool
+        if let status {
+            if status == 429 || (500...599).contains(status) {
+                retryable = true
+            } else if (400...499).contains(status) {
+                retryable = false
+            } else {
+                retryable = HTTPRetryPolicy.isRetryableBackground(error)
+            }
+        } else {
+            retryable = HTTPRetryPolicy.isRetryableBackground(error)
+        }
+        return BackgroundFailure(
             reason: error.localizedDescription,
-            retryable: HTTPRetryPolicy.isRetryableBackground(error),
-            statusCode: HTTPRetryPolicy.backgroundHTTPStatusCode(error)
+            retryable: retryable,
+            statusCode: status
         )
     }
 
@@ -2163,6 +2180,23 @@ public actor DownloadCoordinator {
                     )
 
                 case .failed(let segID, let failure):
+                    if let code = failure.statusCode {
+                        switch code {
+                        case 401:
+                            throw DownloadCoordinatorError.unauthorized(url: request.url)
+                        case 403:
+                            throw DownloadCoordinatorError.forbidden(url: request.url)
+                        case 404, 410:
+                            throw DownloadCoordinatorError.linkExpired(url: request.url)
+                        case 429, 500...599:
+                            break // eligible for retry
+                        default:
+                            if (400...499).contains(code) {
+                                throw Self.terminalBackgroundError(request: request, failure: failure)
+                            }
+                        }
+                    }
+
                     guard failure.retryable else {
                         throw Self.terminalBackgroundError(
                             request: request,
@@ -2173,7 +2207,8 @@ public actor DownloadCoordinator {
                     let attempt = retryAttempts[segID, default: 0]
                     if attempt < request.retryCount && !pauseRequested.contains(request.id) && !Task.isCancelled {
                         retryAttempts[segID] = attempt + 1
-                        let delaySeconds = min(15.0, 0.5 * pow(2.0, Double(attempt)))
+                        let baseDelay = (failure.statusCode == 429) ? 2.0 : 0.5
+                        let delaySeconds = min(30.0, baseDelay * pow(2.0, Double(attempt)))
                         try await Task.sleep(nanoseconds: UInt64(delaySeconds * 1_000_000_000))
                         if let seg = segments.first(where: { $0.id == segID }) {
                             let segRec = SegmentRecord(segment: seg, completedBytes: 0)

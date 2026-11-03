@@ -220,11 +220,15 @@ public enum HLSVODReconstructor {
         }
 
         let effectiveDestination: URL
+        #if canImport(AVFoundation)
         if destinationURL.pathExtension.lowercased() == "ts" && NSClassFromString("XCTestCase") == nil {
             effectiveDestination = destinationURL.deletingPathExtension().appendingPathExtension("mp4")
         } else {
             effectiveDestination = destinationURL
         }
+        #else
+        effectiveDestination = destinationURL
+        #endif
 
         let effectiveTempDir = temporaryDirectoryURL ?? effectiveDestination.deletingLastPathComponent().appendingPathComponent(
             ".media-assembly",
@@ -336,10 +340,12 @@ public enum HLSVODReconstructor {
         )
         do {
             let output = try MediaAssembler.assemble(reconstructionPlan.assemblyRequest)
+            #if canImport(AVFoundation)
             if output.destinationURL.pathExtension.lowercased() == "ts" && NSClassFromString("XCTestCase") == nil {
                 PipelineLogger.shared.log("[HLS Reconstruction] Output has .ts extension, expected .mp4: \(output.destinationURL.path)")
                 throw HLSVODReconstructionError.assemblyFailed(.muxingFailed)
             }
+            #endif
             return output
         } catch let error as MediaAssemblyError {
             throw HLSVODReconstructionError.assemblyFailed(error)

@@ -23,7 +23,9 @@ enum ForegroundURLSession {
         configuration.httpCookieAcceptPolicy = .never
         configuration.timeoutIntervalForRequest = 30.0
         configuration.timeoutIntervalForResource = 300.0
+        #if canImport(Darwin)
         configuration.waitsForConnectivity = true
+        #endif
         return URLSession(configuration: configuration)
     }
 }

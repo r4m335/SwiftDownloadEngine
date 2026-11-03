@@ -417,8 +417,8 @@ public actor DownloadPersistenceStore {
 
     /// Persists or updates a download record atomically.
     public func save(_ record: DownloadRecord) throws {
-        cache[record.id] = record
         try writeRecordToDisk(record)
+        cache[record.id] = record
     }
 
     /// Atomically updates a single segment's completed byte count.
@@ -458,8 +458,8 @@ public actor DownloadPersistenceStore {
             record.state = .completed
         }
 
-        cache[record.id] = record
         try writeRecordToDisk(record)
+        cache[record.id] = record
         return record
     }
 
@@ -471,8 +471,8 @@ public actor DownloadPersistenceStore {
         }
 
         record.transition(to: state)
-        cache[record.id] = record
         try writeRecordToDisk(record)
+        cache[record.id] = record
         return record
     }
 
@@ -484,8 +484,8 @@ public actor DownloadPersistenceStore {
         }
         record.networkPolicy = policy
         record.updatedAt = Date()
-        cache[record.id] = record
         try writeRecordToDisk(record)
+        cache[record.id] = record
         return record
     }
 
@@ -587,8 +587,19 @@ public actor DownloadPersistenceStore {
 
     // MARK: - Private Helpers
 
+    public static func sanitizeFilename(_ tag: String) -> String {
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_."))
+        if tag.unicodeScalars.allSatisfy({ allowed.contains($0) }) && !tag.contains("..") {
+            return tag
+        }
+        let digest = EngineSHA256.hash(data: Data(tag.utf8))
+        let prefix = tag.prefix(20).unicodeScalars.filter { allowed.contains($0) }
+        return "\(String(prefix))_\(digest.prefix(16))"
+    }
+
     private func recordFileURL(tag: String) -> URL {
-        storageDirectoryURL.appendingPathComponent("\(tag).json")
+        let filename = Self.sanitizeFilename(tag)
+        return storageDirectoryURL.appendingPathComponent("\(filename).json")
     }
 
     private func writeRecordToDisk(_ record: DownloadRecord) throws {

@@ -59,6 +59,15 @@ enum HTTPRetryPolicy {
     /// retry boundary: only 429, 5xx, short bodies, and transient transport
     /// failures may be scheduled again.
     static func isRetryableBackground(_ error: Error) -> Bool {
+        if let status = backgroundHTTPStatusCode(error) {
+            if status == 429 || (500...599).contains(status) {
+                return true
+            }
+            if (400...499).contains(status) {
+                return false
+            }
+        }
+
         if let backgroundError = error as? BackgroundTransportError {
             switch backgroundError {
             case .unexpectedStatus(_, let actual):
@@ -77,11 +86,23 @@ enum HTTPRetryPolicy {
     }
 
     static func backgroundHTTPStatusCode(_ error: Error) -> Int? {
-        guard let backgroundError = error as? BackgroundTransportError,
-              case .unexpectedStatus(_, let actual) = backgroundError else {
-            return nil
+        if let backgroundError = error as? BackgroundTransportError,
+           case .unexpectedStatus(_, let actual) = backgroundError {
+            return actual
         }
-        return actual
+        let nsError = error as NSError
+        #if canImport(Darwin)
+        if let response = nsError.userInfo[NSURLErrorFailingURLResponseErrorKey] as? HTTPURLResponse {
+            return response.statusCode
+        }
+        #endif
+        if let status = nsError.userInfo["HTTPStatus"] as? Int {
+            return status
+        }
+        if let status = nsError.userInfo["statusCode"] as? Int {
+            return status
+        }
+        return nil
     }
 
     static func shouldWaitForConnectivity(_ error: Error) -> Bool {

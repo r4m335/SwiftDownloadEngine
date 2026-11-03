@@ -1200,14 +1200,21 @@ extension BackgroundDownloadSessionManager: URLSessionDownloadDelegate {
     ) {
         let taskID = task.taskIdentifier
         let sessID = self.sessionIdentifier
-        guard let error = error else { return }
+        guard let rawError = error else { return }
+
+        let finalError: Error
+        if let httpResponse = task.response as? HTTPURLResponse, httpResponse.statusCode >= 400 {
+            finalError = BackgroundTransportError.unexpectedStatus(expected: 206, actual: httpResponse.statusCode)
+        } else {
+            finalError = rawError
+        }
 
         trackDelegateTaskStarted()
         Task { [self] in
             defer { self.trackDelegateTaskFinished() }
             if let rec = await self.mappingStore.record(sessionIdentifier: sessID, taskIdentifier: taskID) {
-                try? await self.mappingStore.markFailed(sessionIdentifier: sessID, taskIdentifier: taskID, error: error.localizedDescription)
-                self.notifyFailed(downloadID: rec.downloadID, segmentID: rec.segmentID, error: error)
+                try? await self.mappingStore.markFailed(sessionIdentifier: sessID, taskIdentifier: taskID, error: finalError.localizedDescription)
+                self.notifyFailed(downloadID: rec.downloadID, segmentID: rec.segmentID, error: finalError)
             }
         }
     }

@@ -38,9 +38,7 @@ final class URLSessionDataChunkStream: NSObject, URLSessionDataDelegate, @unchec
         )
     }
 
-    deinit {
-        delegateSession?.invalidateAndCancel()
-    }
+    deinit {}
 
     func start() async throws -> HTTPURLResponse {
         guard let delegateSession else {
@@ -228,6 +226,7 @@ final class URLSessionDataChunkStream: NSObject, URLSessionDataDelegate, @unchec
         }
         lock.unlock()
 
+        session.invalidateAndCancel()
         responseToFail?.resume(throwing: error ?? URLError(.badServerResponse))
         if let error {
             nextToResume?.resume(throwing: error)
@@ -238,6 +237,8 @@ final class URLSessionDataChunkStream: NSObject, URLSessionDataDelegate, @unchec
 
     private func fail(_ error: Error) {
         var responseToFail: CheckedContinuation<HTTPURLResponse, Error>?
+        var nextToResume: CheckedContinuation<Data?, Error>?
+        var taskToCancel: URLSessionDataTask?
         lock.lock()
         guard !finished else {
             lock.unlock()
@@ -248,7 +249,14 @@ final class URLSessionDataChunkStream: NSObject, URLSessionDataDelegate, @unchec
         terminalError = error
         responseToFail = responseContinuation
         responseContinuation = nil
+        nextToResume = nextContinuation
+        nextContinuation = nil
+        taskToCancel = task
         lock.unlock()
+
+        taskToCancel?.cancel()
+        delegateSession?.invalidateAndCancel()
         responseToFail?.resume(throwing: error)
+        nextToResume?.resume(throwing: error)
     }
 }

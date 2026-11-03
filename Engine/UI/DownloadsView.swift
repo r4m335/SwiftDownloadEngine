@@ -113,6 +113,14 @@ public struct DownloadsView: View {
     @State private var detectedClipboardURL: URL? = nil
     @State private var showClipboardBanner: Bool = false
 
+    // MARK: Multi-Select State
+    /// Whether the list is currently in multi-select mode (activated by long-press).
+    @State private var isSelectingMultiple: Bool = false
+    /// IDs of currently selected transfers.
+    @State private var selectedIDs: Set<String> = []
+    /// Controls the bulk-delete confirmation alert.
+    @State private var showBulkDeleteAlert: Bool = false
+
     private var trailingToolbarPlacement: ToolbarItemPlacement {
         #if os(iOS)
         return .navigationBarTrailing
@@ -261,60 +269,108 @@ public struct DownloadsView: View {
                 } else {
                     List {
                         ForEach(viewModel.filteredTransfers) { transfer in
-                            NavigationLink(
-                                destination: DownloadDetailsView(viewModel: viewModel, transfer: transfer)
-                            ) {
-                                UnifiedTransferRowView(
-                                    viewModel: viewModel,
-                                    transfer: transfer,
-                                    onOpen: { openTransferFile(transfer) },
-                                    onSaveToFiles: { saveTransferToFiles(transfer) },
-                                    onShare: { shareTransferFile(transfer) },
-                                    onCopyLink: { copyTransferLink(transfer) },
-                                    onShowDetails: { showTransferDetails(transfer) },
-                                    onPause: { pauseTransfer(transfer) },
-                                    onResume: { resumeTransfer(transfer) },
-                                    onRemoveQueue: { removeTransferFromQueue(transfer) },
-                                    onDeleteFile: { promptDeleteTransferFile(transfer) }
-                                )
-                            }
-                            .contextMenu {
-                                UnifiedTransferMenuContent(
-                                    transfer: transfer,
-                                    isScheduled: viewModel.isScheduled(transferID: transfer.id),
-                                    onOpen: { openTransferFile(transfer) },
-                                    onSaveToFiles: { saveTransferToFiles(transfer) },
-                                    onShare: { shareTransferFile(transfer) },
-                                    onCopyLink: { copyTransferLink(transfer) },
-                                    onShowDetails: { showTransferDetails(transfer) },
-                                    onPause: { pauseTransfer(transfer) },
-                                    onResume: { resumeTransfer(transfer) },
-                                    onToggleSchedule: { toggleTransferSchedule(transfer) },
-                                    onRemoveQueue: { removeTransferFromQueue(transfer) },
-                                    onDeleteFile: { promptDeleteTransferFile(transfer) }
-                                )
-                            }
-                            .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                                Button(role: .destructive) {
-                                    removeTransferFromQueue(transfer)
+                            if isSelectingMultiple {
+                                // MARK: Selection Mode Row
+                                Button {
+                                    toggleSelection(for: transfer.id)
                                 } label: {
-                                    Label("Remove", systemImage: "trash")
-                                }
+                                    HStack(spacing: 12) {
+                                        Image(systemName: selectedIDs.contains(transfer.id)
+                                              ? "checkmark.circle.fill"
+                                              : "circle")
+                                            .font(.title3)
+                                            .foregroundColor(selectedIDs.contains(transfer.id) ? .blue : .secondary)
+                                            .animation(.easeInOut(duration: 0.15), value: selectedIDs.contains(transfer.id))
 
-                                if transfer.canResume {
-                                    Button {
-                                        resumeTransfer(transfer)
-                                    } label: {
-                                        Label("Resume", systemImage: "play.fill")
+                                        UnifiedTransferRowView(
+                                            viewModel: viewModel,
+                                            transfer: transfer,
+                                            onOpen: {},
+                                            onSaveToFiles: {},
+                                            onShare: {},
+                                            onCopyLink: {},
+                                            onShowDetails: {},
+                                            onPause: {},
+                                            onResume: {},
+                                            onRemoveQueue: {},
+                                            onDeleteFile: {}
+                                        )
+                                        .allowsHitTesting(false)
                                     }
-                                    .tint(.green)
-                                } else if transfer.canPause {
-                                    Button {
-                                        pauseTransfer(transfer)
+                                }
+                                .buttonStyle(.plain)
+                                .listRowBackground(
+                                    selectedIDs.contains(transfer.id)
+                                        ? Color.blue.opacity(0.08)
+                                        : Color.clear
+                                )
+                            } else {
+                                // MARK: Normal Mode Row
+                                NavigationLink(
+                                    destination: DownloadDetailsView(viewModel: viewModel, transfer: transfer)
+                                ) {
+                                    UnifiedTransferRowView(
+                                        viewModel: viewModel,
+                                        transfer: transfer,
+                                        onOpen: { openTransferFile(transfer) },
+                                        onSaveToFiles: { saveTransferToFiles(transfer) },
+                                        onShare: { shareTransferFile(transfer) },
+                                        onCopyLink: { copyTransferLink(transfer) },
+                                        onShowDetails: { showTransferDetails(transfer) },
+                                        onPause: { pauseTransfer(transfer) },
+                                        onResume: { resumeTransfer(transfer) },
+                                        onRemoveQueue: { removeTransferFromQueue(transfer) },
+                                        onDeleteFile: { promptDeleteTransferFile(transfer) }
+                                    )
+                                }
+                                .contextMenu {
+                                    UnifiedTransferMenuContent(
+                                        transfer: transfer,
+                                        isScheduled: viewModel.isScheduled(transferID: transfer.id),
+                                        onOpen: { openTransferFile(transfer) },
+                                        onSaveToFiles: { saveTransferToFiles(transfer) },
+                                        onShare: { shareTransferFile(transfer) },
+                                        onCopyLink: { copyTransferLink(transfer) },
+                                        onShowDetails: { showTransferDetails(transfer) },
+                                        onPause: { pauseTransfer(transfer) },
+                                        onResume: { resumeTransfer(transfer) },
+                                        onToggleSchedule: { toggleTransferSchedule(transfer) },
+                                        onRemoveQueue: { removeTransferFromQueue(transfer) },
+                                        onDeleteFile: { promptDeleteTransferFile(transfer) }
+                                    )
+                                }
+                                .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                                    Button(role: .destructive) {
+                                        removeTransferFromQueue(transfer)
                                     } label: {
-                                        Label("Pause", systemImage: "pause.fill")
+                                        Label("Remove", systemImage: "trash")
                                     }
-                                    .tint(.orange)
+
+                                    if transfer.canResume {
+                                        Button {
+                                            resumeTransfer(transfer)
+                                        } label: {
+                                            Label("Resume", systemImage: "play.fill")
+                                        }
+                                        .tint(.green)
+                                    } else if transfer.canPause {
+                                        Button {
+                                            pauseTransfer(transfer)
+                                        } label: {
+                                            Label("Pause", systemImage: "pause.fill")
+                                        }
+                                        .tint(.orange)
+                                    }
+                                }
+                                // Long-press activates multi-select and selects this item.
+                                .onLongPressGesture {
+                                    withAnimation(.easeInOut(duration: 0.2)) {
+                                        isSelectingMultiple = true
+                                        selectedIDs = [transfer.id]
+                                    }
+                                    #if canImport(UIKit)
+                                    UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                                    #endif
                                 }
                             }
                         }
@@ -324,49 +380,125 @@ public struct DownloadsView: View {
                         await viewModel.refreshSnapshots()
                         await viewModel.refreshTorrentSnapshots()
                     }
+                    // Exit selection mode when leaving the view entirely
+                    .onChange(of: viewModel.filteredTransfers.count) { _ in
+                        // If all selected items were removed, exit selection mode automatically
+                        let remaining = selectedIDs.filter { id in
+                            viewModel.filteredTransfers.contains(where: { $0.id == id })
+                        }
+                        if remaining.isEmpty && isSelectingMultiple {
+                            withAnimation { exitSelectionMode() }
+                        } else {
+                            selectedIDs = Set(remaining)
+                        }
+                    }
                 }
             }
-            .navigationTitle("Downloads")
+            .navigationTitle(isSelectingMultiple
+                ? (selectedIDs.isEmpty ? "Select Items" : "\(selectedIDs.count) Selected")
+                : "Downloads")
             .searchable(text: $viewModel.filterText, prompt: "Search downloads...")
             .toolbar {
-                ToolbarItemGroup(placement: trailingToolbarPlacement) {
-                    Menu {
-                        Button {
-                            Task { @MainActor in await viewModel.pauseAll() }
-                        } label: {
-                            Label("Pause All", systemImage: "pause.circle")
+                // MARK: Selection Mode Toolbar
+                if isSelectingMultiple {
+                    ToolbarItem(placement: trailingToolbarPlacement) {
+                        Button("Cancel") {
+                            withAnimation(.easeInOut(duration: 0.2)) {
+                                exitSelectionMode()
+                            }
                         }
-
-                        Button {
-                            Task { @MainActor in await viewModel.resumeAll() }
-                        } label: {
-                            Label("Resume All", systemImage: "play.circle")
-                        }
-
-                        Divider()
-
-                        Button {
-                            activeSheet = .diagnostics
-                        } label: {
-                            Label("Pipeline Diagnostics", systemImage: "doc.text.magnifyingglass")
-                        }
-
-                        Divider()
-
-                        Button(role: .destructive) {
-                            Task { @MainActor in await viewModel.cancelAll(deleteFiles: false) }
-                        } label: {
-                            Label("Cancel All", systemImage: "stop.circle")
-                        }
-                    } label: {
-                        Image(systemName: "ellipsis.circle")
                     }
+                    #if os(iOS)
+                    ToolbarItemGroup(placement: .bottomBar) {
+                        // Select All / Deselect All
+                        Button {
+                            let all = Set(viewModel.filteredTransfers.map(\.id))
+                            withAnimation {
+                                if selectedIDs == all {
+                                    selectedIDs.removeAll()
+                                } else {
+                                    selectedIDs = all
+                                }
+                            }
+                        } label: {
+                            let allSelected = selectedIDs == Set(viewModel.filteredTransfers.map(\.id))
+                            Text(allSelected ? "Deselect All" : "Select All")
+                        }
 
-                    Button {
-                        activeSheet = .addDownload
-                    } label: {
-                        Image(systemName: "plus.circle.fill")
-                            .font(.title3)
+                        Spacer()
+
+                        // Delete selected
+                        Button(role: .destructive) {
+                            if !selectedIDs.isEmpty {
+                                showBulkDeleteAlert = true
+                            }
+                        } label: {
+                            Label("Delete", systemImage: "trash")
+                                .foregroundColor(selectedIDs.isEmpty ? .secondary : .red)
+                        }
+                        .disabled(selectedIDs.isEmpty)
+                    }
+                    #else
+                    // macOS: show Select All and Delete in the leading toolbar area
+                    ToolbarItemGroup(placement: .navigationBarLeading) {
+                        Button {
+                            let all = Set(viewModel.filteredTransfers.map(\.id))
+                            withAnimation {
+                                selectedIDs = (selectedIDs == all) ? [] : all
+                            }
+                        } label: {
+                            Text(selectedIDs == Set(viewModel.filteredTransfers.map(\.id))
+                                 ? "Deselect All" : "Select All")
+                        }
+                        Button(role: .destructive) {
+                            if !selectedIDs.isEmpty { showBulkDeleteAlert = true }
+                        } label: {
+                            Label("Delete", systemImage: "trash")
+                        }
+                        .disabled(selectedIDs.isEmpty)
+                    }
+                    #endif
+                } else {
+                    // MARK: Normal Mode Toolbar
+                    ToolbarItemGroup(placement: trailingToolbarPlacement) {
+                        Menu {
+                            Button {
+                                Task { @MainActor in await viewModel.pauseAll() }
+                            } label: {
+                                Label("Pause All", systemImage: "pause.circle")
+                            }
+
+                            Button {
+                                Task { @MainActor in await viewModel.resumeAll() }
+                            } label: {
+                                Label("Resume All", systemImage: "play.circle")
+                            }
+
+                            Divider()
+
+                            Button {
+                                activeSheet = .diagnostics
+                            } label: {
+                                Label("Pipeline Diagnostics", systemImage: "doc.text.magnifyingglass")
+                            }
+
+                            Divider()
+
+                            Button(role: .destructive) {
+                                Task { @MainActor in await viewModel.cancelAll(deleteFiles: false) }
+                            } label: {
+                                Label("Cancel All", systemImage: "stop.circle")
+                            }
+                        } label: {
+                            Image(systemName: "ellipsis.circle")
+                        }
+
+                        Button {
+                            activeSheet = .addDownload
+                        } label: {
+                            Image(systemName: "plus.circle.fill")
+                                .font(.title3)
+                        }
                     }
                 }
             }
@@ -467,6 +599,59 @@ public struct DownloadsView: View {
             .onAppear {
                 checkClipboardForURL()
             }
+            // MARK: Bulk Delete Confirmation Alert
+            .alert("Delete \(selectedIDs.count) Item\(selectedIDs.count == 1 ? "" : "s")?",
+                   isPresented: $showBulkDeleteAlert) {
+                Button("Remove from Queue", role: .none) {
+                    deleteSelectedTransfers(deleteFiles: false)
+                }
+                Button("Delete Files from Disk", role: .destructive) {
+                    deleteSelectedTransfers(deleteFiles: true)
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("Remove \(selectedIDs.count) selected item\(selectedIDs.count == 1 ? "" : "s") from the queue. Choose whether to also delete the downloaded files from disk.")
+            }
+        }
+    }
+
+    // MARK: - Multi-Select Helpers
+
+    private func toggleSelection(for id: String) {
+        withAnimation(.easeInOut(duration: 0.1)) {
+            if selectedIDs.contains(id) {
+                selectedIDs.remove(id)
+            } else {
+                selectedIDs.insert(id)
+            }
+        }
+    }
+
+    private func exitSelectionMode() {
+        isSelectingMultiple = false
+        selectedIDs.removeAll()
+    }
+
+    private func deleteSelectedTransfers(deleteFiles: Bool) {
+        let ids = selectedIDs
+        Task { @MainActor in
+            var deletedCount = 0
+            for id in ids {
+                do {
+                    try await viewModel.removeTransfer(id: id, deleteFiles: deleteFiles)
+                    deletedCount += 1
+                } catch {
+                    // Skip failed deletions so deletedCount accurately reflects successful removals
+                }
+            }
+            if deletedCount > 0 {
+                let noun = deletedCount == 1 ? "item" : "items"
+                let action = deleteFiles ? "deleted" : "removed"
+                viewModel.showNotification("\(deletedCount) \(noun) \(action).")
+            }
+        }
+        withAnimation(.easeInOut(duration: 0.2)) {
+            exitSelectionMode()
         }
     }
 

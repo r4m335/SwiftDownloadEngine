@@ -2,6 +2,7 @@ import Foundation
 import XCTest
 @testable import DM_Reverse_engineering
 
+#if canImport(Darwin)
 #if canImport(FoundationNetworking)
 import FoundationNetworking
 #endif
@@ -172,3 +173,4 @@ final class SegmentDownloaderPerformanceTests: XCTestCase {
         return BenchmarkResult(elapsed: elapsed, bytesWritten: bytesWritten)
     }
 }
+#endif

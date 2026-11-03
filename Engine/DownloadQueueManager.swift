@@ -189,7 +189,7 @@ public typealias DownloadError = DownloadQueueError
 /// - Reusable Engine: Delegates segment allocation, HTTP range workers, disk I/O, and cryptographic hashing to `DownloadCoordinator`.
 public actor DownloadQueueManager {
     private static func isInternalStreamingSegmentID(_ id: String) -> Bool {
-        id.hasPrefix("stream-segment-")
+        id.hasPrefix("stream-segment-") || id.hasPrefix("seg-")
     }
     public let coordinator: DownloadCoordinator
     public let persistenceStore: DownloadPersistenceStore

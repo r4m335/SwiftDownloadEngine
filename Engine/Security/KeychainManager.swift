@@ -222,13 +222,20 @@ public final class KeychainManager: @unchecked Sendable {
     @discardableResult
     public func storeCookies(_ cookies: [HTTPCookie], domain: String, downloadId: String? = nil) -> Bool {
         guard !cookies.isEmpty else { return false }
-        let cookieProperties = cookies.compactMap { $0.properties }
+        let cookieProperties: [[String: Any]] = cookies.compactMap { cookie in
+            guard let properties = cookie.properties else { return nil }
+            var dict: [String: Any] = [:]
+            for (k, v) in properties {
+                dict[k.rawValue] = v
+            }
+            return dict
+        }
         guard let data = try? PropertyListSerialization.data(fromPropertyList: cookieProperties, format: .binary, options: 0) else {
             return false
         }
 
         let normalizedDomain = domain.lowercased()
-        var success = storeGenericSecret(key: "cookies", account: normalizedDomain, data: data)
+        let success = storeGenericSecret(key: "cookies", account: normalizedDomain, data: data)
 
         if let dlId = downloadId {
             _ = storeGenericSecret(key: "cookies:\(normalizedDomain)", account: "download:\(dlId)", data: data)
@@ -240,10 +247,16 @@ public final class KeychainManager: @unchecked Sendable {
     public func getCookies(domain: String) -> [HTTPCookie] {
         let normalizedDomain = domain.lowercased()
         guard let data = getGenericSecret(key: "cookies", account: normalizedDomain),
-              let rawList = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [[HTTPCookiePropertyKey: Any]] else {
+              let rawList = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [[String: Any]] else {
             return []
         }
-        return rawList.compactMap { HTTPCookie(properties: $0) }
+        return rawList.compactMap { dict in
+            var props: [HTTPCookiePropertyKey: Any] = [:]
+            for (k, v) in dict {
+                props[HTTPCookiePropertyKey(k)] = v
+            }
+            return HTTPCookie(properties: props)
+        }
     }
 
     /// Purges all sensitive credentials, cookies, and tokens associated with a download ID.

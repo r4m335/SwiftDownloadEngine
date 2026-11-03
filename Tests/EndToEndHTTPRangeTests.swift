@@ -11,6 +11,7 @@ final class EndToEndHTTPRangeTests: XCTestCase {
     private var server: LocalHTTPRangeServer!
     private var tempDirectory: URL!
     private var persistenceStore: DownloadPersistenceStore!
+    private var session: URLSession!
     private var coordinator: DownloadCoordinator!
 
     override func setUp() async throws {
@@ -24,13 +25,16 @@ final class EndToEndHTTPRangeTests: XCTestCase {
 
         let storeURL = tempDirectory.appendingPathComponent("Store", isDirectory: true)
         persistenceStore = try DownloadPersistenceStore(storageDirectoryURL: storeURL)
-        coordinator = try DownloadCoordinator(session: .shared, persistenceStore: persistenceStore)
+        session = ForegroundURLSession.make()
+        coordinator = try DownloadCoordinator(session: session, persistenceStore: persistenceStore)
     }
 
     override func tearDown() async throws {
         server?.stop()
         server = nil
         coordinator = nil
+        session?.invalidateAndCancel()
+        session = nil
         persistenceStore = nil
         if let tempDirectory {
             try? FileManager.default.removeItem(at: tempDirectory)

@@ -1,5 +1,4 @@
 import Foundation
-import Foundation
 import XCTest
 @testable import DM_Reverse_engineering
 
@@ -336,7 +335,6 @@ final class HLSLifecycleTests: XCTestCase {
         let candidate = try StreamingManifestCandidate(url: manifestURL)
         let proposal = try await orchestrator.prepare(candidate: candidate)
         let dest = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
-        let outputURL = dest.appendingPathComponent("output.mp4")
         try FileManager.default.createDirectory(at: dest, withIntermediateDirectories: true)
 
         // We call executeAndAssembleHLS but assembly will fail since we write
@@ -633,10 +631,10 @@ final class HLSLifecycleTests: XCTestCase {
             hlsPersistenceStore: store
         )
 
-        await orchestrator.pause(transferID: parentID)
+        try await orchestrator.pause(transferID: parentID)
         let paused = try await store.load(id: parentID)
         XCTAssertEqual(paused?.state, .paused)
-        await orchestrator.resume(transferID: parentID)
+        try await orchestrator.resume(transferID: parentID)
         let resumed = try await store.load(id: parentID)
         XCTAssertEqual(resumed?.state, .downloading)
     }

@@ -1008,7 +1008,8 @@ public final class BrowserMediaDiscoveryBridge: NSObject, @unchecked Sendable {
     public func accept(
         payload: Any,
         pageURL: URL,
-        frameURL: URL? = nil
+        frameURL: URL? = nil,
+        isMainFrame: Bool? = nil
     ) throws -> BrowserMediaDiscoveryObservation? {
         guard JSONSerialization.isValidJSONObject(payload),
               let data = try? JSONSerialization.data(withJSONObject: payload),
@@ -1353,11 +1354,22 @@ public final class BrowserMediaDiscoveryBridge: NSObject, @unchecked Sendable {
             return
         }
 
+        let frame = message.frameInfo
+        let securityOrigin = frame.securityOrigin
+        let frameURL: URL?
+        if !securityOrigin.host.isEmpty {
+            let portSuffix = securityOrigin.port != 0 ? ":\(securityOrigin.port)" : ""
+            frameURL = URL(string: "\(securityOrigin.protocol)://\(securityOrigin.host)\(portSuffix)")
+        } else {
+            frameURL = frame.request.url
+        }
+
         do {
             let observation = try accept(
                 payload: message.body,
                 pageURL: pageURL,
-                frameURL: message.frameInfo.request.url
+                frameURL: frameURL ?? pageURL,
+                isMainFrame: frame.isMainFrame
             )
             if let observation {
                 observationHandler?(observation)
