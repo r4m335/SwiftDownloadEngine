@@ -198,41 +198,20 @@ public actor DownloadFileWriter {
 
         try closePartHandles()
 
-        if FileManager.default.fileExists(atPath: destinationURL.path) {
-            try FileManager.default.removeItem(at: destinationURL)
-        }
-        guard FileManager.default.createFile(atPath: destinationURL.path, contents: nil) else {
-            throw CocoaError(.fileWriteUnknown)
-        }
-
-        let output = try FileHandle(forWritingTo: destinationURL)
-        defer { try? output.close() }
-
-        var mergedBytes: Int64 = 0
         for id in orderedSegmentIDs {
             let partURL = partFileURL(segmentID: id)
             guard FileManager.default.fileExists(atPath: partURL.path) else {
                 throw DownloadFileWriterError.missingPartFile(segmentID: id)
             }
-
-            let input = try FileHandle(forReadingFrom: partURL)
-            defer { try? input.close() }
-
-            while true {
-                let data = try input.read(upToCount: bufferSize) ?? Data()
-                if data.isEmpty { break }
-                try output.write(contentsOf: data)
-                mergedBytes += Int64(data.count)
-            }
         }
 
-        try output.synchronize()
-        if let expectedMergedSize, mergedBytes != expectedMergedSize {
-            throw DownloadFileWriterError.mergeLengthMismatch(
-                expected: expectedMergedSize,
-                actual: mergedBytes
-            )
-        }
+        let partURLs = orderedSegmentIDs.map { partFileURL(segmentID: $0) }
+        try Self.mergeFiles(
+            partURLs: partURLs,
+            destinationURL: destinationURL,
+            expectedMergedSize: expectedMergedSize,
+            bufferSize: bufferSize
+        )
     }
 
     /// Merges an arbitrary list of part file URLs sequentially into destinationURL.

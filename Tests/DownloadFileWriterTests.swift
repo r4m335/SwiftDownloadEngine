@@ -144,4 +144,35 @@ final class DownloadFileWriterTests: XCTestCase {
         let restoredData = try Data(contentsOf: destination)
         XCTAssertEqual(restoredData, originalData, "Failed merge must not delete or corrupt existing completed destination")
     }
+
+    func testFailedMergePartFilesPreservesExistingDestinationFile() async throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let destination = root.appendingPathComponent("existing_complete_part.bin")
+        let originalData = Data([0x11, 0x22, 0x33, 0x44])
+        try originalData.write(to: destination)
+
+        let writer = try DownloadFileWriter(
+            destinationURL: destination,
+            totalSize: 4,
+            mode: .partFiles,
+            temporaryDirectoryURL: root.appendingPathComponent(".tmp", isDirectory: true)
+        )
+
+        try await writer.appendPart(Data([1, 2]), segmentID: 0)
+
+        // Failing merge with length mismatch
+        do {
+            try await writer.mergePartFiles(orderedSegmentIDs: [0], expectedMergedSize: 10)
+            XCTFail("Expected mergeLengthMismatch error")
+        } catch {
+            // Error expected
+        }
+
+        // Destination must remain intact with original data
+        XCTAssertTrue(FileManager.default.fileExists(atPath: destination.path))
+        let restoredData = try Data(contentsOf: destination)
+        XCTAssertEqual(restoredData, originalData, "Failed mergePartFiles must not destroy existing destination")
+        try await writer.close()
+    }
 }

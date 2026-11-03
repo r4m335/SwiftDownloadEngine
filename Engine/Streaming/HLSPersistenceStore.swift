@@ -172,11 +172,11 @@ public actor HLSPersistenceStore {
 
     /// Removes the record for `id` from memory and disk.
     public func delete(id: String) throws {
-        cache.removeValue(forKey: id)
         let fileURL = recordFileURL(id: id)
         if FileManager.default.fileExists(atPath: fileURL.path) {
             try FileManager.default.removeItem(at: fileURL)
         }
+        cache.removeValue(forKey: id)
     }
 
     // MARK: - Targeted Mutation Helpers

@@ -1033,10 +1033,10 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                 if let wv = self.webView {
                     sessionSnapshot = await DownloadRequestEnricher.snapshot(from: wv)
                 } else {
-                    sessionSnapshot = DownloadRequestEnricher.sharedSessionSnapshot.snapshot
+                    sessionSnapshot = nil
                 }
                 #else
-                let sessionSnapshot = DownloadRequestEnricher.sharedSessionSnapshot.snapshot
+                let sessionSnapshot: BrowserSessionSnapshot? = nil
                 #endif
                 print("[HLS Pipeline] Setting active BrowserViewModel as urlResolver on orchestrator...")
                 await orchestrator.setURLResolver(self)

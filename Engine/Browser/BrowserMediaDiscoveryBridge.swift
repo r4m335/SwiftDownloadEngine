@@ -593,6 +593,7 @@ public final class BrowserMediaDiscoveryBridge: NSObject, @unchecked Sendable {
                 return Promise.resolve(null);
             }
             try {
+                var cl = headerContentLength(response.headers);
                 var clone = response.clone();
                 if (clone.body && typeof clone.body.getReader === "function") {
                     var reader = clone.body.getReader();
@@ -602,24 +603,33 @@ public final class BrowserMediaDiscoveryBridge: NSObject, @unchecked Sendable {
                     function readNextChunk() {
                         return reader.read().then(function(result) {
                             if (!result || result.done) {
-                                return accumulated.length > 0 ? accumulated.slice(0, MAX_INSPECTION_BYTES) : null;
+                                return accumulated.length > 0 ? accumulated : null;
                             }
                             var chunk = result.value;
                             if (chunk && chunk.byteLength > 0) {
-                                bytesRead += chunk.byteLength;
-                                accumulated += decoder.decode(chunk, { stream: bytesRead < MAX_INSPECTION_BYTES });
-                                if (bytesRead >= MAX_INSPECTION_BYTES || accumulated.length >= MAX_INSPECTION_BYTES) {
+                                var remaining = MAX_INSPECTION_BYTES - bytesRead;
+                                if (remaining <= 0) {
                                     try { reader.cancel().catch(function() {}); } catch (_) {}
-                                    return accumulated.slice(0, MAX_INSPECTION_BYTES);
+                                    return accumulated;
+                                }
+                                var slice = chunk.byteLength > remaining ? chunk.subarray(0, remaining) : chunk;
+                                bytesRead += slice.byteLength;
+                                accumulated += decoder.decode(slice, { stream: bytesRead < MAX_INSPECTION_BYTES });
+                                if (bytesRead >= MAX_INSPECTION_BYTES) {
+                                    try { reader.cancel().catch(function() {}); } catch (_) {}
+                                    return accumulated;
                                 }
                             }
                             return readNextChunk();
                         }).catch(function() {
                             try { reader.cancel().catch(function() {}); } catch (_) {}
-                            return accumulated.length > 0 ? accumulated.slice(0, MAX_INSPECTION_BYTES) : null;
+                            return accumulated.length > 0 ? accumulated : null;
                         });
                     }
                     return readNextChunk();
+                }
+                if (cl !== null && cl > MAX_INSPECTION_BYTES) {
+                    return Promise.resolve(null);
                 }
                 if (typeof clone.text === "function") {
                     return clone.text().then(function(text) {

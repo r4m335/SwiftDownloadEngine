@@ -27,7 +27,7 @@ public struct StreamingManifestCandidate: Sendable, Equatable {
         }
         self.url = url
         self.mimeType = mimeType
-        let snapshot = browserSessionSnapshot ?? DownloadRequestEnricher.sharedSessionSnapshot.snapshot
+        let snapshot = browserSessionSnapshot
         self.browserSessionSnapshot = snapshot
         if let browserRequestContext {
             self.browserRequestContext = browserRequestContext
@@ -55,7 +55,7 @@ public struct StreamingManifestCandidate: Sendable, Equatable {
             url: resource.url,
             mimeType: resource.mimeType,
             browserRequestContext: resource.requestContext,
-            browserSessionSnapshot: browserSessionSnapshot ?? DownloadRequestEnricher.sharedSessionSnapshot.snapshot,
+            browserSessionSnapshot: browserSessionSnapshot,
             hlsVariantPreferences: HLSVariantSelectionPreferences(),
             cachedManifestText: resource.manifestText
         )
@@ -128,7 +128,7 @@ public final class URLSessionStreamingManifestLoader: StreamingManifestLoader, @
             }
         }
         let effectiveSnapshot: BrowserSessionSnapshot?
-        if let s = candidate.browserSessionSnapshot ?? DownloadRequestEnricher.sharedSessionSnapshot.snapshot {
+        if let s = candidate.browserSessionSnapshot {
             effectiveSnapshot = s
         } else if let ctx = candidate.browserRequestContext {
             let httpCookies = ctx.cookies.compactMap { $0.toHTTPCookie() }
@@ -520,10 +520,39 @@ public final class URLSessionStreamingSegmentExecutor: StreamingSegmentExecutor,
             throw StreamingDownloadOrchestratorError.segmentTransferFailed(order: request.identity.order)
         }
 
-        try? FileManager.default.removeItem(at: request.destinationURL)
         let parentDir = request.destinationURL.deletingLastPathComponent()
-        try DownloadManagerViewModel.ensureDirectoryExistsAndWritable(parentDir)
-        try FileManager.default.moveItem(at: tempURL, to: request.destinationURL)
+        let fileManager = FileManager.default
+        try DownloadManagerViewModel.ensureDirectoryExistsAndWritable(parentDir, fileManager: fileManager)
+
+        if fileManager.fileExists(atPath: request.destinationURL.path) {
+            #if canImport(Darwin)
+            do {
+                _ = try fileManager.replaceItemAt(request.destinationURL, withItemAt: tempURL, backupItemName: nil, options: [])
+            } catch {
+                let backupURL = parentDir.appendingPathComponent(".backup-\(UUID().uuidString)-\(request.destinationURL.lastPathComponent)")
+                try fileManager.moveItem(at: request.destinationURL, to: backupURL)
+                do {
+                    try fileManager.moveItem(at: tempURL, to: request.destinationURL)
+                    _ = try? fileManager.removeItem(at: backupURL)
+                } catch {
+                    _ = try? fileManager.moveItem(at: backupURL, to: request.destinationURL)
+                    throw error
+                }
+            }
+            #else
+            let backupURL = parentDir.appendingPathComponent(".backup-\(UUID().uuidString)-\(request.destinationURL.lastPathComponent)")
+            try fileManager.moveItem(at: request.destinationURL, to: backupURL)
+            do {
+                try fileManager.moveItem(at: tempURL, to: request.destinationURL)
+                _ = try? fileManager.removeItem(at: backupURL)
+            } catch {
+                _ = try? fileManager.moveItem(at: backupURL, to: request.destinationURL)
+                throw error
+            }
+            #endif
+        } else {
+            try fileManager.moveItem(at: tempURL, to: request.destinationURL)
+        }
         progress?(1.0)
     }
 
@@ -2725,8 +2754,8 @@ public actor StreamingDownloadOrchestrator {
             var request = URLRequest(url: subtitleURL)
             request.httpMethod = "GET"
             request.timeoutInterval = 30
-            let effectiveSnapshot = candidate?.browserSessionSnapshot ?? DownloadRequestEnricher.sharedSessionSnapshot.snapshot
-            request = DownloadRequestEnricher.enrich(request, snapshot: effectiveSnapshot)
+            let effectiveSnapshot = candidate?.browserSessionSnapshot
+            request = DownloadRequestEnricher.enrich(request, snapshot: effectiveSnapshot, context: candidate?.browserRequestContext)
             if request.value(forHTTPHeaderField: "User-Agent") == nil,
                let ua = candidate?.browserRequestContext?.userAgent, !ua.isEmpty {
                 request.setValue(ua, forHTTPHeaderField: "User-Agent")
