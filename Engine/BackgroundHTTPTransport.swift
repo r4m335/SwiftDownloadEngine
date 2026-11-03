@@ -476,20 +476,45 @@ public enum BackgroundDownloadFileHandler {
             throw BackgroundTransportError.bodyLengthMismatch(expected: expected, actual: fileSize)
         }
 
-        // Safely commit staging to destinationURL atomically
-        #if canImport(Darwin)
+        // Safely commit staging to destinationURL atomically using non-destructive backup swap
         if fileManager.fileExists(atPath: destinationURL.path) {
+            #if canImport(Darwin)
             do {
                 _ = try fileManager.replaceItemAt(destinationURL, withItemAt: stagingURL, backupItemName: nil, options: [])
             } catch {
-                _ = try? fileManager.removeItem(at: destinationURL)
+                let backupURL = parentDir.appendingPathComponent(".backup-\(UUID().uuidString)-\(destinationURL.lastPathComponent)")
+                do {
+                    try fileManager.moveItem(at: destinationURL, to: backupURL)
+                } catch {
+                    try? fileManager.removeItem(at: stagingURL)
+                    throw BackgroundTransportError.fileRelocationFailed(underlyingError: "Failed to backup existing destination: \(error.localizedDescription)")
+                }
                 do {
                     try fileManager.moveItem(at: stagingURL, to: destinationURL)
+                    _ = try? fileManager.removeItem(at: backupURL)
                 } catch {
+                    _ = try? fileManager.moveItem(at: backupURL, to: destinationURL)
                     try? fileManager.removeItem(at: stagingURL)
                     throw BackgroundTransportError.fileRelocationFailed(underlyingError: error.localizedDescription)
                 }
             }
+            #else
+            let backupURL = parentDir.appendingPathComponent(".backup-\(UUID().uuidString)-\(destinationURL.lastPathComponent)")
+            do {
+                try fileManager.moveItem(at: destinationURL, to: backupURL)
+            } catch {
+                try? fileManager.removeItem(at: stagingURL)
+                throw BackgroundTransportError.fileRelocationFailed(underlyingError: "Failed to backup existing destination: \(error.localizedDescription)")
+            }
+            do {
+                try fileManager.moveItem(at: stagingURL, to: destinationURL)
+                _ = try? fileManager.removeItem(at: backupURL)
+            } catch {
+                _ = try? fileManager.moveItem(at: backupURL, to: destinationURL)
+                try? fileManager.removeItem(at: stagingURL)
+                throw BackgroundTransportError.fileRelocationFailed(underlyingError: error.localizedDescription)
+            }
+            #endif
         } else {
             do {
                 try fileManager.moveItem(at: stagingURL, to: destinationURL)
@@ -498,19 +523,6 @@ public enum BackgroundDownloadFileHandler {
                 throw BackgroundTransportError.fileRelocationFailed(underlyingError: error.localizedDescription)
             }
         }
-        #else
-        // On Linux / corelibs-foundation, replaceItemAt is buggy/unsupported.
-        // Commit verified staged file to destination:
-        if fileManager.fileExists(atPath: destinationURL.path) {
-            _ = try? fileManager.removeItem(at: destinationURL)
-        }
-        do {
-            try fileManager.moveItem(at: stagingURL, to: destinationURL)
-        } catch {
-            try? fileManager.removeItem(at: stagingURL)
-            throw BackgroundTransportError.fileRelocationFailed(underlyingError: error.localizedDescription)
-        }
-        #endif
 
         return fileSize
     }
