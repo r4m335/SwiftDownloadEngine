@@ -1606,13 +1606,12 @@ public actor DownloadCoordinator {
                             let aggregate = await progressAccumulator.complete(workItem)
                             await workQueue.complete(workerID: workerID, workItemID: workItem.id)
                             let parentBytes = await progressAccumulator.parentCompletedBytes(workItem.parentSegmentID)
-                            if parentBytes >= (segments.first { $0.id == workItem.parentSegmentID }?.length ?? 0) {
-                                _ = try? await self.persistenceStore.updateSegmentProgress(
-                                    tag: request.id,
-                                    segmentID: workItem.parentSegmentID,
-                                    completedBytes: parentBytes
-                                )
-                            }
+                            try? await writer.synchronize()
+                            _ = try? await self.persistenceStore.updateSegmentProgress(
+                                tag: request.id,
+                                segmentID: workItem.parentSegmentID,
+                                completedBytes: parentBytes
+                            )
 
                             let metrics = speedTracker.snapshot(expectedTotalBytes: totalSize)
                             await self.updateProgress(

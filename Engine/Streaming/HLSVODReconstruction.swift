@@ -97,8 +97,7 @@ public enum HLSVODReconstructionPlanner {
                 PipelineLogger.shared.log("[HLS Reconstruction] Missing or unreadable segment file at index \(index): \(completed.fileURL.path)")
                 throw HLSVODReconstructionError.invalidResourceFile
             }
-            guard let attributes = try? FileManager.default.attributesOfItem(atPath: completed.fileURL.path),
-                  let size = (attributes[.size] as? NSNumber)?.int64Value,
+            guard let size = FileManager.default.fileSize(atPath: completed.fileURL.path),
                   size > 0 else {
                 PipelineLogger.shared.log("[HLS Reconstruction] Zero byte segment file at index \(index): \(completed.fileURL.path)")
                 throw HLSVODReconstructionError.invalidResourceFile
@@ -202,8 +201,7 @@ public enum HLSVODReconstructionPlanner {
     }
 
     private static func fileSize(_ url: URL) -> Int64? {
-        guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path) else { return nil }
-        return (attributes[.size] as? NSNumber)?.int64Value
+        FileManager.default.fileSize(atPath: url.path)
     }
 }
 

@@ -175,8 +175,7 @@ public enum FileTypeDetector {
     /// - Returns: The detected type. Never throws.
     public static func detect(at url: URL) -> DetectedFileType {
         guard url.isFileURL else { return .unreadable }
-        guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
-              let fileSize = (attributes[.size] as? NSNumber)?.int64Value else {
+        guard let fileSize = FileManager.default.fileSize(atPath: url.path) else {
             return .unreadable
         }
         guard fileSize > 0 else { return .empty }

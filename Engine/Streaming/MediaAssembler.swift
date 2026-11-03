@@ -642,8 +642,7 @@ public enum MediaAssembler {
         expectedKinds: [MediaAssemblyTrackKind],
         writerError: Error?
     ) throws {
-        guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
-              let size = (attributes[.size] as? NSNumber)?.int64Value,
+        guard let size = FileManager.default.fileSize(atPath: url.path),
               size > 0 else {
             let reason = writerError?.localizedDescription ?? "Muxed output file is empty or missing"
             PipelineLogger.shared.log("[MediaAssembler] validateMuxedOutput failed: \(reason)")
@@ -975,8 +974,7 @@ public enum MediaAssembler {
     ) throws {
         let fileManager = FileManager.default
         guard fileManager.fileExists(atPath: segment.fileURL.path),
-              let attributes = try? fileManager.attributesOfItem(atPath: segment.fileURL.path),
-              let actualSize = (attributes[.size] as? NSNumber)?.int64Value,
+              let actualSize = fileManager.fileSize(atPath: segment.fileURL.path),
               actualSize > 0 else {
             throw MediaAssemblyError.invalidSegmentSize(kind, order: segment.order)
         }
@@ -1022,19 +1020,23 @@ public enum MediaAssembler {
     }
 
     private static func validateMPEGTSFile(_ url: URL) -> Bool {
-        guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
-              let size = (attributes[.size] as? NSNumber)?.int64Value,
+        guard let size = FileManager.default.fileSize(atPath: url.path),
               size > 0,
               size % 188 == 0,
               let handle = FileHandle(forReadingAtPath: url.path) else {
             return false
         }
         defer { handle.closeFile() }
-        var remaining = size
-        while remaining > 0 {
-            let packet = handle.readData(ofLength: 188)
-            guard packet.count == 188, packet.first == 0x47 else { return false }
-            remaining -= 188
+        let packetsPerBuffer = 256
+        let bufferSize = 188 * packetsPerBuffer
+        while true {
+            let chunk = handle.readData(ofLength: bufferSize)
+            if chunk.isEmpty { break }
+            guard chunk.count % 188 == 0 else { return false }
+            let packetCount = chunk.count / 188
+            for i in 0..<packetCount {
+                guard chunk[i * 188] == 0x47 else { return false }
+            }
         }
         return true
     }
@@ -1043,13 +1045,14 @@ public enum MediaAssembler {
         _ url: URL,
         requiredBoxes: Set<String>
     ) -> Bool {
-        guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
-              let fileSize = (attributes[.size] as? NSNumber)?.uint64Value,
-              fileSize > 0,
+        guard let fileSizeInt = FileManager.default.fileSize(atPath: url.path),
+              fileSizeInt > 0,
               let handle = FileHandle(forReadingAtPath: url.path) else {
             return false
         }
         defer { handle.closeFile() }
+
+        let fileSize = UInt64(fileSizeInt)
 
         var offset: UInt64 = 0
         var boxes = Set<String>()

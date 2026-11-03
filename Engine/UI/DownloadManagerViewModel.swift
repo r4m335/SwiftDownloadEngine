@@ -1333,7 +1333,7 @@ extension DownloadManagerViewModel: BrowserDownloadDelegate {
             throw BrowserDownloadDelegateError.completedFileImportUnavailable
         }
         if let expectedSize {
-            let actualSize = (try? FileManager.default.attributesOfItem(atPath: fileURL.path)[.size] as? NSNumber)?.int64Value
+            let actualSize = FileManager.default.fileSize(atPath: fileURL.path)
             guard actualSize == expectedSize else {
                 throw BrowserDownloadDelegateError.completedFileImportUnavailable
             }

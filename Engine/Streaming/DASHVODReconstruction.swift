@@ -76,8 +76,7 @@ public enum DASHVODReconstructionPlanner {
             }
             guard completed.fileURL.isFileURL,
                   FileManager.default.fileExists(atPath: completed.fileURL.path),
-                  let attributes = try? FileManager.default.attributesOfItem(atPath: completed.fileURL.path),
-                  let size = (attributes[.size] as? NSNumber)?.int64Value,
+                  let size = FileManager.default.fileSize(atPath: completed.fileURL.path),
                   size > 0 else {
                 throw DASHVODReconstructionError.invalidResourceFile
             }
@@ -182,8 +181,7 @@ public enum DASHVODReconstructionPlanner {
     }
 
     private static func fileSize(_ url: URL) -> Int64? {
-        guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path) else { return nil }
-        return (attributes[.size] as? NSNumber)?.int64Value
+        FileManager.default.fileSize(atPath: url.path)
     }
 }
 

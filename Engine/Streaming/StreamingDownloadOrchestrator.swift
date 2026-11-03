@@ -1740,7 +1740,7 @@ public actor StreamingDownloadOrchestrator {
                 continue
             }
 
-            let fileSize = (try? FileManager.default.attributesOfItem(atPath: destinationURL.path)[.size] as? NSNumber)?.int64Value ?? 0
+            let fileSize = FileManager.default.fileSize(atPath: destinationURL.path) ?? 0
             if let byteRange = resource.byteRange, fileSize != byteRange.length {
                 pendingIndices.append(index)
                 continue
@@ -1958,7 +1958,7 @@ public actor StreamingDownloadOrchestrator {
            record.segmentDirectoryURL.standardizedFileURL.path == destinationDirectory.standardizedFileURL.path,
            record.completedSegmentOrders.contains(resource.identity.order),
            FileManager.default.fileExists(atPath: destinationURL.path) {
-            let size = (try? FileManager.default.attributesOfItem(atPath: destinationURL.path)[.size] as? NSNumber)?.int64Value ?? 0
+            let size = FileManager.default.fileSize(atPath: destinationURL.path) ?? 0
             let hasExpectedLength = resource.byteRange.map { $0.length == size } ?? true
             if size > 0 && hasExpectedLength {
                 return DownloadedSegmentResult(
@@ -1972,15 +1972,14 @@ public actor StreamingDownloadOrchestrator {
 
         if let range = resource.byteRange,
            FileManager.default.fileExists(atPath: destinationURL.path),
-           let attributes = try? FileManager.default.attributesOfItem(atPath: destinationURL.path),
-           let size = attributes[.size] as? NSNumber,
-           size.int64Value > 0,
-           size.int64Value == range.length {
+           let size = FileManager.default.fileSize(atPath: destinationURL.path),
+           size > 0,
+           size == range.length {
             return DownloadedSegmentResult(
                 index: index,
                 identity: resource.identity,
                 destinationURL: destinationURL,
-                downloadedBytes: size.int64Value
+                downloadedBytes: size
             )
         }
 
