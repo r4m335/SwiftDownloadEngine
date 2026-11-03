@@ -261,7 +261,7 @@ public enum HLSTransferPlanner {
 
     private static func validatedByteRange(_ range: HLSByteRange?) throws -> HLSByteRange? {
         guard let range else { return nil }
-        guard range.length > 0, range.offset == nil || range.offset! >= 0 else {
+        guard range.length > 0, (range.offset ?? 0) >= 0 else {
             throw HLSVODTransferPlanError.invalidByteRange
         }
         return range

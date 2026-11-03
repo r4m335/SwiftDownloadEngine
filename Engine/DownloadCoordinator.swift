@@ -731,7 +731,7 @@ public actor DownloadCoordinator {
 
         // Retrieve existing confirmed bytes and total size if resuming or re-probing
         let initialCompleted = existingRecord?.completedBytes ?? 0
-        let initialTotal = (existingRecord?.totalSize != nil && existingRecord!.totalSize > 0) ? existingRecord?.totalSize : nil
+        let initialTotal = (existingRecord?.totalSize ?? 0) > 0 ? existingRecord?.totalSize : nil
         let initialFinishedSegments = existingRecord?.segments.filter { $0.isCompleted }.count ?? 0
         let initialTotalSegments = existingRecord?.segments.count ?? 0
 
@@ -2783,7 +2783,7 @@ public actor DownloadCoordinator {
         guard segments[0].startOffset == 0 else {
             throw DownloadCoordinatorError.segmentLayoutInvalid(reason: "First segment does not start at byte 0")
         }
-        guard segments.last!.endOffset == totalSize - 1 else {
+        guard let lastSegment = segments.last, lastSegment.endOffset == totalSize - 1 else {
             throw DownloadCoordinatorError.segmentLayoutInvalid(reason: "Last segment does not end at totalSize - 1")
         }
         for i in 1..<segments.count {

@@ -117,7 +117,7 @@ public enum HLSVODReconstructionPlanner {
         }
 
         let videoCompleted = Array(completedResources.prefix(transferPlan.resources.count))
-        let audioCompleted = transferPlan.audioPlan != nil ? Array(completedResources.suffix(transferPlan.audioPlan!.count)) : []
+        let audioCompleted = transferPlan.audioPlan.map { Array(completedResources.suffix($0.count)) } ?? []
 
         let videoInit = videoCompleted.filter { $0.resource.kind == .initializationMap }
         let audioInit = audioCompleted.filter { $0.resource.kind == .initializationMap }

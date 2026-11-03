@@ -183,7 +183,7 @@ public struct DiagnosticLogView: View {
                     configRow(title: "Max Retry Attempts", value: "\(configuration.maxRetryAttempts)")
                     configRow(title: "Duplicate Naming Rule", value: configuration.duplicateNamingRule.rawValue)
                     configRow(title: "Cellular Usage", value: configuration.allowCellular ? "Allowed" : "Wi-Fi Only")
-                    configRow(title: "Global Speed Limit", value: configuration.globalBandwidthLimitBytesPerSecond != nil ? "\(configuration.globalBandwidthLimitBytesPerSecond! / 1024) KB/s" : "Unlimited")
+                    configRow(title: "Global Speed Limit", value: configuration.globalBandwidthLimitBytesPerSecond.map { "\($0 / 1024) KB/s" } ?? "Unlimited")
                     configRow(title: "Max Concurrent Torrents", value: "\(configuration.maxConcurrentTorrents)")
                     configRow(title: "Default Torrent Priority", value: "\(configuration.defaultTorrentPriority)")
                     configRow(title: "Default Seeding Behavior", value: "\(configuration.defaultSeedingPreference.mode.rawValue)")

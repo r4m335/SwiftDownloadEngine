@@ -1449,7 +1449,7 @@ public struct DownloadRowView: View {
 
             // Metrics: Size, Progress %, Speed, ETA
             HStack {
-                Text("\(UIFormatters.formatBytes(download.completedBytes)) / \(download.totalBytes != nil ? UIFormatters.formatBytes(download.totalBytes!) : "Unknown")")
+                Text("\(UIFormatters.formatBytes(download.completedBytes)) / \(download.totalBytes.map(UIFormatters.formatBytes) ?? "Unknown")")
                     .font(.caption)
                     .foregroundColor(.secondary)
 

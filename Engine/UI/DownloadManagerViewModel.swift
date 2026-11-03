@@ -698,7 +698,7 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
         }
 
         let destURL = FileConflictResolver.uniqueDestinationURL(desiredFilename: resolvedFilename, directory: downloadsDirectoryURL)
-        let sanitizedLimit: Int64? = (speedLimitBytesPerSecond != nil && speedLimitBytesPerSecond! > 0) ? speedLimitBytesPerSecond : nil
+        let sanitizedLimit: Int64? = speedLimitBytesPerSecond.flatMap { $0 > 0 ? $0 : nil }
         let request = DownloadRequest(
             url: url,
             destinationURL: destURL,

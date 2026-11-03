@@ -382,6 +382,26 @@ final class DownloadPersistenceTests: XCTestCase {
 
         let emptyClean = FileConflictResolver.sanitizeFilename("   ")
         XCTAssertEqual(emptyClean, "download")
+
+        // Directory traversal and dot-only sequences should resolve safely to fallback
+        XCTAssertEqual(FileConflictResolver.sanitizeFilename("."), "download")
+        XCTAssertEqual(FileConflictResolver.sanitizeFilename(".."), "download")
+        XCTAssertEqual(FileConflictResolver.sanitizeFilename("..."), "download")
+        XCTAssertEqual(FileConflictResolver.sanitizeFilename("  ...  "), "download")
+    }
+
+    func testFileConflictResolverPreventsDirectoryTraversal() throws {
+        let testDir = FileManager.default.temporaryDirectory.appendingPathComponent("TraversalTest_\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: testDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: testDir) }
+
+        let resolvedDotDot = FileConflictResolver.uniqueDestinationURL(desiredFilename: "..", directory: testDir)
+        XCTAssertEqual(resolvedDotDot.deletingLastPathComponent().standardizedFileURL, testDir.standardizedFileURL)
+        XCTAssertEqual(resolvedDotDot.lastPathComponent, "download")
+
+        let resolvedDot = FileConflictResolver.uniqueDestinationURL(desiredFilename: ".", directory: testDir)
+        XCTAssertEqual(resolvedDot.deletingLastPathComponent().standardizedFileURL, testDir.standardizedFileURL)
+        XCTAssertEqual(resolvedDot.lastPathComponent, "download")
     }
 
     func testFileConflictResolverNumberedDuplicates() throws {

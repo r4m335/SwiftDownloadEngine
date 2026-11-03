@@ -480,10 +480,11 @@ public enum MediaAssembler {
 
                             // 4. Select the sample with earliest Presentation Timestamp (PTS)
                             guard let nextCtx = activeContexts.min(by: { a, b in
-                                let timeA = CMSampleBufferGetPresentationTimeStamp(a.nextSample!)
-                                let timeB = CMSampleBufferGetPresentationTimeStamp(b.nextSample!)
+                                guard let sampleA = a.nextSample, let sampleB = b.nextSample else { return false }
+                                let timeA = CMSampleBufferGetPresentationTimeStamp(sampleA)
+                                let timeB = CMSampleBufferGetPresentationTimeStamp(sampleB)
                                 return CMTimeCompare(timeA, timeB) < 0
-                            }) else {
+                            }), let sampleToAppend = nextCtx.nextSample else {
                                 break
                             }
 
@@ -493,7 +494,6 @@ public enum MediaAssembler {
                             }
 
                             // 6. Start the session at the timestamp of the first appended sample
-                            let sampleToAppend = nextCtx.nextSample!
                             let pts = CMSampleBufferGetPresentationTimeStamp(sampleToAppend)
                             if !sessionStarted {
                                 writer.startSession(atSourceTime: pts)

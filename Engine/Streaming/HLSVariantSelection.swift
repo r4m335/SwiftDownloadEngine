@@ -69,7 +69,7 @@ public enum HLSVariantSelector {
             throw HLSVariantSelectionError.noVariantMatchesPreferences
         }
 
-        return matching.sorted { lhs, rhs in
+        let sorted = matching.sorted { lhs, rhs in
             let lhsBandwidth = lhs.averageBandwidth ?? lhs.bandwidth
             let rhsBandwidth = rhs.averageBandwidth ?? rhs.bandwidth
             if lhsBandwidth != rhsBandwidth { return lhsBandwidth > rhsBandwidth }
@@ -77,7 +77,11 @@ public enum HLSVariantSelector {
             let rhsPixels = (rhs.resolution?.width ?? 0) * (rhs.resolution?.height ?? 0)
             if lhsPixels != rhsPixels { return lhsPixels > rhsPixels }
             return lhs.uri.absoluteString < rhs.uri.absoluteString
-        }.first!
+        }
+        guard let selected = sorted.first else {
+            throw HLSVariantSelectionError.noVariantMatchesPreferences
+        }
+        return selected
     }
 
     public static func validateAudioLayout(

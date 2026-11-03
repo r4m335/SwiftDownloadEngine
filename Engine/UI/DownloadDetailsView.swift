@@ -452,7 +452,7 @@ public struct DownloadDetailsView: View {
                             .font(.subheadline)
                             .foregroundColor(.secondary)
                         Spacer()
-                        Text("\(UIFormatters.formatBytes(transfer.completedBytes)) of \(transfer.totalBytes != nil ? UIFormatters.formatBytes(transfer.totalBytes!) : "Unknown")")
+                        Text("\(UIFormatters.formatBytes(transfer.completedBytes)) of \(transfer.totalBytes.map(UIFormatters.formatBytes) ?? "Unknown")")
                             .font(.subheadline)
                             .foregroundColor(.secondary)
                     }

@@ -735,12 +735,16 @@ public actor DownloadPersistenceStore {
 
 /// Manages filename sanitization and non-destructive duplicate resolution (e.g. "video (1).mp4").
 public enum FileConflictResolver {
-    /// Sanitizes filename by stripping illegal characters (/, \, :, *, ?, ", <, >, |).
+    /// Sanitizes filename by stripping illegal characters (/, \, :, *, ?, ", <, >, |), control characters,
+    /// and preventing dot-only directory traversal sequences (e.g. ".", "..").
     public static func sanitizeFilename(_ name: String) -> String {
         let illegalCharacters = CharacterSet(charactersIn: "/\\:*?\"<>|")
+            .union(.controlCharacters)
+            .union(.newlines)
         var sanitized = name.components(separatedBy: illegalCharacters).joined(separator: "_")
         sanitized = sanitized.trimmingCharacters(in: .whitespacesAndNewlines)
-        if sanitized.isEmpty {
+        let nonDotChars = sanitized.trimmingCharacters(in: CharacterSet(charactersIn: ".").union(.whitespacesAndNewlines))
+        if sanitized.isEmpty || nonDotChars.isEmpty || sanitized == "." || sanitized == ".." {
             sanitized = "download"
         }
         return sanitized

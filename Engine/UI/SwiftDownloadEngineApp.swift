@@ -267,7 +267,15 @@ public struct SwiftDownloadEngineApp: App {
             let emergencyStore = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
             try? FileManager.default.createDirectory(at: emergencyStore, withIntermediateDirectories: true)
             let persistence = (try? DownloadPersistenceStore(storageDirectoryURL: emergencyStore)) ?? DownloadPersistenceStore(inMemory: true)
-            let coordinator = (try? DownloadCoordinator(session: foregroundSession, persistenceStore: persistence)) ?? (try! DownloadCoordinator(session: foregroundSession, persistenceStore: DownloadPersistenceStore(inMemory: true)))
+            let fallbackStore = DownloadPersistenceStore(inMemory: true)
+            let coordinator: DownloadCoordinator
+            if let primary = try? DownloadCoordinator(session: foregroundSession, persistenceStore: persistence) {
+                coordinator = primary
+            } else if let fallback = try? DownloadCoordinator(session: foregroundSession, persistenceStore: fallbackStore) {
+                coordinator = fallback
+            } else {
+                fatalError("Critical: Failed to initialize emergency DownloadCoordinator")
+            }
             let qm = DownloadQueueManager(coordinator: coordinator, persistenceStore: persistence)
             engine = DownloadEngine(configuration: engineConfig, queueManager: qm, coordinator: coordinator, persistenceStore: persistence)
         }
