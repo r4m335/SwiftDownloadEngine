@@ -111,13 +111,10 @@ public actor BandwidthLimiter {
         }
 
         if maxDelay > 0 && !maxDelay.isNaN && !maxDelay.isInfinite {
-            let nanosDouble = maxDelay * 1_000_000_000
-            let nanos: UInt64
-            if nanosDouble >= Double(UInt64.max) {
-                nanos = UInt64.max
-            } else {
-                nanos = UInt64(nanosDouble)
-            }
+            // Clamp delay to a realistic upper bound (e.g., 24 hours) to prevent OS timer overflow / EINVAL
+            let maxThrottlingDelaySeconds: TimeInterval = 86_400
+            let effectiveDelay = min(maxDelay, maxThrottlingDelaySeconds)
+            let nanos = UInt64(effectiveDelay * 1_000_000_000)
             try await Task.sleep(nanoseconds: nanos)
         }
     }

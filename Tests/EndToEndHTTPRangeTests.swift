@@ -348,4 +348,59 @@ final class EndToEndHTTPRangeTests: XCTestCase {
         }
         XCTAssertEqual(expectedCursor, Int64(size))
     }
+
+    // MARK: - 8. RFC 7233 If-Range Validator Server Response Verification
+
+    func testIfRangeValidatorServerResponses() async throws {
+        let size = 1024
+        let payload = makePayload(size: size, seed: 0x99)
+        let path = "/if_range_test.bin"
+        let strongETag = "\"strong-etag-12345\""
+        let lastMod = "Wed, 21 Oct 2026 07:28:00 GMT"
+
+        server.register(
+            path: path,
+            data: payload,
+            eTag: strongETag,
+            lastModified: lastMod
+        )
+
+        let targetURL = server.url(for: path)
+
+        // 1. Matching strong ETag → 206 Partial Content
+        var req1 = URLRequest(url: targetURL)
+        req1.setValue("bytes=0-99", forHTTPHeaderField: "Range")
+        req1.setValue(strongETag, forHTTPHeaderField: "If-Range")
+        let (data1, resp1) = try await session.data(for: req1)
+        let http1 = try XCTUnwrap(resp1 as? HTTPURLResponse)
+        XCTAssertEqual(http1.statusCode, 206, "Matching strong ETag must return 206 Partial Content")
+        XCTAssertEqual(data1.count, 100)
+
+        // 2. Matching Last-Modified → 206 Partial Content
+        var req2 = URLRequest(url: targetURL)
+        req2.setValue("bytes=0-99", forHTTPHeaderField: "Range")
+        req2.setValue(lastMod, forHTTPHeaderField: "If-Range")
+        let (data2, resp2) = try await session.data(for: req2)
+        let http2 = try XCTUnwrap(resp2 as? HTTPURLResponse)
+        XCTAssertEqual(http2.statusCode, 206, "Matching Last-Modified must return 206 Partial Content")
+        XCTAssertEqual(data2.count, 100)
+
+        // 3. Weak ETag → 200 OK (RFC 7233 Section 3.2 disallows weak validators for Range)
+        var req3 = URLRequest(url: targetURL)
+        req3.setValue("bytes=0-99", forHTTPHeaderField: "Range")
+        req3.setValue("W/\"strong-etag-12345\"", forHTTPHeaderField: "If-Range")
+        let (data3, resp3) = try await session.data(for: req3)
+        let http3 = try XCTUnwrap(resp3 as? HTTPURLResponse)
+        XCTAssertEqual(http3.statusCode, 200, "Weak ETag in If-Range must degrade to full 200 OK")
+        XCTAssertEqual(data3.count, size)
+
+        // 4. Mismatched validator → 200 OK
+        var req4 = URLRequest(url: targetURL)
+        req4.setValue("bytes=0-99", forHTTPHeaderField: "Range")
+        req4.setValue("\"mismatched-etag\"", forHTTPHeaderField: "If-Range")
+        let (data4, resp4) = try await session.data(for: req4)
+        let http4 = try XCTUnwrap(resp4 as? HTTPURLResponse)
+        XCTAssertEqual(http4.statusCode, 200, "Mismatched validator must degrade to full 200 OK")
+        XCTAssertEqual(data4.count, size)
+    }
 }

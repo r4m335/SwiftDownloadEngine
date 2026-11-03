@@ -960,34 +960,46 @@ public final class BackgroundDownloadSessionManager: NSObject, @unchecked Sendab
                         // Corrupted or oversized part file: purge corrupted file safely
                         try? FileManager.default.removeItem(at: r.destinationPartURL)
                         if let persistence = self.persistenceStore {
-                            _ = try? await persistence.updateSegmentProgress(
-                                tag: r.downloadID,
-                                segmentID: r.segmentID,
-                                completedBytes: 0,
-                                allowDecrease: true
-                            )
+                            do {
+                                _ = try await persistence.updateSegmentProgress(
+                                    tag: r.downloadID,
+                                    segmentID: r.segmentID,
+                                    completedBytes: 0,
+                                    allowDecrease: true
+                                )
+                            } catch {
+                                print("[BackgroundDownloadSessionManager] Warning: failed to reset corrupted segment in persistence: \(error)")
+                            }
                         }
                     } else {
                         // Partial file is smaller than segmentLength (even if size == r.expectedBytes).
                         // Must remain incomplete! Reconcile persistence with validated on-disk size.
                         if let persistence = self.persistenceStore {
-                            _ = try? await persistence.updateSegmentProgress(
-                                tag: r.downloadID,
-                                segmentID: r.segmentID,
-                                completedBytes: max(0, size),
-                                allowDecrease: true
-                            )
+                            do {
+                                _ = try await persistence.updateSegmentProgress(
+                                    tag: r.downloadID,
+                                    segmentID: r.segmentID,
+                                    completedBytes: max(0, size),
+                                    allowDecrease: true
+                                )
+                            } catch {
+                                print("[BackgroundDownloadSessionManager] Warning: failed to reconcile partial segment progress: \(error)")
+                            }
                         }
                     }
                 } else {
                     // Part file is missing on disk: reset persistence segment completed bytes
                     if let persistence = self.persistenceStore {
-                        _ = try? await persistence.updateSegmentProgress(
-                            tag: r.downloadID,
-                            segmentID: r.segmentID,
-                            completedBytes: 0,
-                            allowDecrease: true
-                        )
+                        do {
+                            _ = try await persistence.updateSegmentProgress(
+                                tag: r.downloadID,
+                                segmentID: r.segmentID,
+                                completedBytes: 0,
+                                allowDecrease: true
+                            )
+                        } catch {
+                            print("[BackgroundDownloadSessionManager] Warning: failed to reset missing segment progress: \(error)")
+                        }
                     }
                 }
 

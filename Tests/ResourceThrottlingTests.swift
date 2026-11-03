@@ -401,6 +401,35 @@ final class ResourceThrottlingTests: XCTestCase {
         XCTAssertNil(sanitizedDynamicRate, "Non-positive rate limit in setRateLimit must be sanitized to nil")
     }
 
+    func testExtremelyLargeDelayClampedWithoutOverflowCrash() async throws {
+        // Limiter with tiny rate (1 byte/sec)
+        let limiter = BandwidthLimiter(bytesPerSecond: 1, burstCapacity: 1)
+        // Reserve an astronomical amount of bytes (e.g. Int64.max / 4) to trigger deficit > UInt64.max nanoseconds
+        let astronomicalBytes = Int64.max / 4
+        let delay = await limiter.reserve(bytes: astronomicalBytes)
+        XCTAssertGreaterThan(delay, 1_000_000_000, "Delay must be extremely large")
+
+        // Calling throttle must not crash with an integer overflow trap
+        let throttleTask = Task {
+            try await BandwidthLimiter.throttle(bytes: astronomicalBytes, global: limiter, perDownload: nil)
+        }
+
+        // Give the task a moment to enter sleep with clamped UInt64.max
+        try await Task.sleep(nanoseconds: 20_000_000)
+        XCTAssertFalse(throttleTask.isCancelled)
+
+        // Cancel the task to release sleep
+        throttleTask.cancel()
+        do {
+            try await throttleTask.value
+            XCTFail("Throttling task must throw CancellationError upon cancellation")
+        } catch is CancellationError {
+            // Expected
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+    }
+
     // MARK: - 12. Pause and Resume Work While Throttled
 
     func testPauseAndResumeWhileThrottled() async throws {

@@ -74,14 +74,14 @@ class HTTPRangeRequestHandler(BaseHTTPRequestHandler):
             matches = (if_range == etag) or (last_modified and if_range == last_modified)
             if is_weak or not matches:
                 # Validator mismatch or weak validator (RFC 7233 Section 3.2): return full 200
-            self.send_response(200)
-            self.send_header("Content-Length", str(total_size))
-            self.send_header("Accept-Ranges", "bytes")
-            self.send_header("ETag", etag)
-            self.send_header("Content-Type", mime)
-            self.end_headers()
-            self.wfile.write(data)
-            return
+                self.send_response(200)
+                self.send_header("Content-Length", str(total_size))
+                self.send_header("Accept-Ranges", "bytes")
+                self.send_header("ETag", etag)
+                self.send_header("Content-Type", mime)
+                self.end_headers()
+                self.wfile.write(data)
+                return
 
         # Empty file edge case
         if total_size == 0:
