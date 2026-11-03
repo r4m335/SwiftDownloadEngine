@@ -135,7 +135,8 @@ public struct DownloadsView: View {
 
     public var body: some View {
         NavigationView {
-            VStack(spacing: 0) {
+            applyDownloadsToolbar(
+                VStack(spacing: 0) {
                 // Programmatic Navigation Link for "Show Details"
                 NavigationLink(
                     destination: Group {
@@ -398,110 +399,7 @@ public struct DownloadsView: View {
                 ? (selectedIDs.isEmpty ? "Select Items" : "\(selectedIDs.count) Selected")
                 : "Downloads")
             .searchable(text: $viewModel.filterText, prompt: "Search downloads...")
-            .toolbar {
-                // MARK: Selection Mode Toolbar
-                if isSelectingMultiple {
-                    ToolbarItem(placement: trailingToolbarPlacement) {
-                        Button("Cancel") {
-                            withAnimation(.easeInOut(duration: 0.2)) {
-                                exitSelectionMode()
-                            }
-                        }
-                    }
-                    #if os(iOS)
-                    ToolbarItemGroup(placement: .bottomBar) {
-                        // Select All / Deselect All
-                        Button {
-                            let all = Set(viewModel.filteredTransfers.map(\.id))
-                            withAnimation {
-                                if selectedIDs == all {
-                                    selectedIDs.removeAll()
-                                } else {
-                                    selectedIDs = all
-                                }
-                            }
-                        } label: {
-                            let allSelected = selectedIDs == Set(viewModel.filteredTransfers.map(\.id))
-                            Text(allSelected ? "Deselect All" : "Select All")
-                        }
-
-                        Spacer()
-
-                        // Delete selected
-                        Button(role: .destructive) {
-                            if !selectedIDs.isEmpty {
-                                showBulkDeleteAlert = true
-                            }
-                        } label: {
-                            Label("Delete", systemImage: "trash")
-                                .foregroundColor(selectedIDs.isEmpty ? .secondary : .red)
-                        }
-                        .disabled(selectedIDs.isEmpty)
-                    }
-                    #else
-                    // macOS: show Select All and Delete in the leading toolbar area
-                    ToolbarItemGroup(placement: .navigationBarLeading) {
-                        Button {
-                            let all = Set(viewModel.filteredTransfers.map(\.id))
-                            withAnimation {
-                                selectedIDs = (selectedIDs == all) ? [] : all
-                            }
-                        } label: {
-                            Text(selectedIDs == Set(viewModel.filteredTransfers.map(\.id))
-                                 ? "Deselect All" : "Select All")
-                        }
-                        Button(role: .destructive) {
-                            if !selectedIDs.isEmpty { showBulkDeleteAlert = true }
-                        } label: {
-                            Label("Delete", systemImage: "trash")
-                        }
-                        .disabled(selectedIDs.isEmpty)
-                    }
-                    #endif
-                } else {
-                    // MARK: Normal Mode Toolbar
-                    ToolbarItemGroup(placement: trailingToolbarPlacement) {
-                        Menu {
-                            Button {
-                                Task { @MainActor in await viewModel.pauseAll() }
-                            } label: {
-                                Label("Pause All", systemImage: "pause.circle")
-                            }
-
-                            Button {
-                                Task { @MainActor in await viewModel.resumeAll() }
-                            } label: {
-                                Label("Resume All", systemImage: "play.circle")
-                            }
-
-                            Divider()
-
-                            Button {
-                                activeSheet = .diagnostics
-                            } label: {
-                                Label("Pipeline Diagnostics", systemImage: "doc.text.magnifyingglass")
-                            }
-
-                            Divider()
-
-                            Button(role: .destructive) {
-                                Task { @MainActor in await viewModel.cancelAll(deleteFiles: false) }
-                            } label: {
-                                Label("Cancel All", systemImage: "stop.circle")
-                            }
-                        } label: {
-                            Image(systemName: "ellipsis.circle")
-                        }
-
-                        Button {
-                            activeSheet = .addDownload
-                        } label: {
-                            Image(systemName: "plus.circle.fill")
-                                .font(.title3)
-                        }
-                    }
-                }
-            }
+            )
             .sheet(item: $activeSheet) { sheet in
                 switch sheet {
                 case .addDownload:
@@ -612,6 +510,147 @@ public struct DownloadsView: View {
             } message: {
                 Text("Remove \(selectedIDs.count) selected item\(selectedIDs.count == 1 ? "" : "s") from the queue. Choose whether to also delete the downloaded files from disk.")
             }
+        }
+    }
+
+    // MARK: - Toolbar Construction (macOS 12 / iOS 15 Compatibility)
+
+    @ViewBuilder
+    private func applyDownloadsToolbar<Content: View>(_ content: Content) -> some View {
+        if isSelectingMultiple {
+            #if os(iOS)
+            content.toolbar {
+                ToolbarItem(placement: trailingToolbarPlacement) {
+                    cancelToolbarButton
+                }
+                ToolbarItemGroup(placement: .bottomBar) {
+                    iOSSelectionBottomBar
+                }
+            }
+            #else
+            content.toolbar {
+                ToolbarItem(placement: trailingToolbarPlacement) {
+                    cancelToolbarButton
+                }
+                ToolbarItemGroup(placement: .navigation) {
+                    macOSSelectionLeadingBar
+                }
+            }
+            #endif
+        } else {
+            content.toolbar {
+                ToolbarItemGroup(placement: trailingToolbarPlacement) {
+                    normalToolbarContent
+                }
+            }
+        }
+    }
+
+    private var cancelToolbarButton: some View {
+        Button("Cancel") {
+            withAnimation(.easeInOut(duration: 0.2)) {
+                exitSelectionMode()
+            }
+        }
+    }
+
+    #if os(iOS)
+    @ViewBuilder
+    private var iOSSelectionBottomBar: some View {
+        // Select All / Deselect All
+        Button {
+            let all = Set(viewModel.filteredTransfers.map(\.id))
+            withAnimation {
+                if selectedIDs == all {
+                    selectedIDs.removeAll()
+                } else {
+                    selectedIDs = all
+                }
+            }
+        } label: {
+            let allSelected = !viewModel.filteredTransfers.isEmpty && selectedIDs == Set(viewModel.filteredTransfers.map(\.id))
+            Text(allSelected ? "Deselect All" : "Select All")
+        }
+
+        Spacer()
+
+        // Delete selected
+        Button(role: .destructive) {
+            if !selectedIDs.isEmpty {
+                showBulkDeleteAlert = true
+            }
+        } label: {
+            Label("Delete", systemImage: "trash")
+                .foregroundColor(selectedIDs.isEmpty ? .secondary : .red)
+        }
+        .disabled(selectedIDs.isEmpty)
+    }
+    #endif
+
+    #if !os(iOS)
+    @ViewBuilder
+    private var macOSSelectionLeadingBar: some View {
+        // macOS: show Select All and Delete in the leading navigation area
+        Button {
+            let all = Set(viewModel.filteredTransfers.map(\.id))
+            withAnimation {
+                selectedIDs = (selectedIDs == all) ? [] : all
+            }
+        } label: {
+            let allSelected = !viewModel.filteredTransfers.isEmpty && selectedIDs == Set(viewModel.filteredTransfers.map(\.id))
+            Text(allSelected ? "Deselect All" : "Select All")
+        }
+
+        Button(role: .destructive) {
+            if !selectedIDs.isEmpty {
+                showBulkDeleteAlert = true
+            }
+        } label: {
+            Label("Delete", systemImage: "trash")
+        }
+        .disabled(selectedIDs.isEmpty)
+    }
+    #endif
+
+    @ViewBuilder
+    private var normalToolbarContent: some View {
+        Menu {
+            Button {
+                Task { @MainActor in await viewModel.pauseAll() }
+            } label: {
+                Label("Pause All", systemImage: "pause.circle")
+            }
+
+            Button {
+                Task { @MainActor in await viewModel.resumeAll() }
+            } label: {
+                Label("Resume All", systemImage: "play.circle")
+            }
+
+            Divider()
+
+            Button {
+                activeSheet = .diagnostics
+            } label: {
+                Label("Pipeline Diagnostics", systemImage: "doc.text.magnifyingglass")
+            }
+
+            Divider()
+
+            Button(role: .destructive) {
+                Task { @MainActor in await viewModel.cancelAll(deleteFiles: false) }
+            } label: {
+                Label("Cancel All", systemImage: "stop.circle")
+            }
+        } label: {
+            Image(systemName: "ellipsis.circle")
+        }
+
+        Button {
+            activeSheet = .addDownload
+        } label: {
+            Image(systemName: "plus.circle.fill")
+                .font(.title3)
         }
     }
 

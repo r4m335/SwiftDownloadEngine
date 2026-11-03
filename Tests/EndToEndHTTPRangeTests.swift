@@ -39,6 +39,7 @@ final class EndToEndHTTPRangeTests: XCTestCase {
         if let tempDirectory {
             try? FileManager.default.removeItem(at: tempDirectory)
         }
+        try await Task.sleep(nanoseconds: 50_000_000)
         try await super.tearDown()
     }
 
