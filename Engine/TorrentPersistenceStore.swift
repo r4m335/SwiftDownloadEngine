@@ -80,30 +80,32 @@ public actor TorrentPersistenceStore {
             throw TorrentEngineError.unsupportedSchemaVersion(record.schemaVersion)
         }
         let key = record.infoHash.lowercased()
-        var updatedRecords = cachedManifest.records
-        if let idx = updatedRecords.firstIndex(where: { $0.infoHash.lowercased() == key }) {
-            updatedRecords[idx] = record
+        var updated = cachedManifest
+        if let idx = updated.records.firstIndex(where: { $0.infoHash.lowercased() == key }) {
+            updated.records[idx] = record
         } else {
-            updatedRecords.append(record)
+            updated.records.append(record)
         }
-        cachedManifest.records = updatedRecords
-        try writeDataAtomically(try encoder.encode(cachedManifest), to: manifestFileURL)
+        try writeDataAtomically(try encoder.encode(updated), to: manifestFileURL)
+        cachedManifest = updated
     }
 
     /// Saves or updates multiple torrent records in a single atomic disk write.
     public func saveRecords(_ records: [TorrentRecord]) throws {
+        var updated = cachedManifest
         for record in records {
             guard record.schemaVersion <= TorrentRecord.currentSchemaVersion else {
                 throw TorrentEngineError.unsupportedSchemaVersion(record.schemaVersion)
             }
             let key = record.infoHash.lowercased()
-            if let idx = cachedManifest.records.firstIndex(where: { $0.infoHash.lowercased() == key }) {
-                cachedManifest.records[idx] = record
+            if let idx = updated.records.firstIndex(where: { $0.infoHash.lowercased() == key }) {
+                updated.records[idx] = record
             } else {
-                cachedManifest.records.append(record)
+                updated.records.append(record)
             }
         }
-        try writeDataAtomically(try encoder.encode(cachedManifest), to: manifestFileURL)
+        try writeDataAtomically(try encoder.encode(updated), to: manifestFileURL)
+        cachedManifest = updated
     }
 
     /// Returns the persisted record for an info-hash, if present.
@@ -120,8 +122,10 @@ public actor TorrentPersistenceStore {
     /// Removes a torrent record and its associated fast-resume file from disk.
     public func deleteRecord(infoHash: String) throws {
         let key = infoHash.lowercased()
-        cachedManifest.records.removeAll(where: { $0.infoHash.lowercased() == key })
-        try writeDataAtomically(try encoder.encode(cachedManifest), to: manifestFileURL)
+        var updated = cachedManifest
+        updated.records.removeAll(where: { $0.infoHash.lowercased() == key })
+        try writeDataAtomically(try encoder.encode(updated), to: manifestFileURL)
+        cachedManifest = updated
         try? deleteResumeData(for: key)
     }
 

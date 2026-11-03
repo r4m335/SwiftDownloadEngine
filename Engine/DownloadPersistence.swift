@@ -580,17 +580,16 @@ public actor DownloadPersistenceStore {
 
     /// Deletes a download record from memory and disk.
     public func delete(tag: String) throws {
-        cache.removeValue(forKey: tag)
-        KeychainManager.shared.deleteCredentials(forDownloadId: tag)
         let fileURL = recordFileURL(tag: tag)
         if FileManager.default.fileExists(atPath: fileURL.path) {
             try FileManager.default.removeItem(at: fileURL)
         }
+        cache.removeValue(forKey: tag)
+        KeychainManager.shared.deleteCredentials(forDownloadId: tag)
     }
 
     /// Deletes all persisted download records.
     public func deleteAll() throws {
-        cache.removeAll()
         let fileURLs = try FileManager.default.contentsOfDirectory(
             at: storageDirectoryURL,
             includingPropertiesForKeys: nil
@@ -599,6 +598,7 @@ public actor DownloadPersistenceStore {
         for fileURL in fileURLs {
             try FileManager.default.removeItem(at: fileURL)
         }
+        cache.removeAll()
     }
 
     /// Exports a record as raw JSON data.
@@ -723,11 +723,11 @@ public actor DownloadPersistenceStore {
 
     /// Deletes a schedule rule by ID.
     public func deleteScheduleRule(id: String) throws {
-        scheduleRulesCache.removeValue(forKey: id)
         let fileURL = scheduleRuleFileURL(id: id)
         if FileManager.default.fileExists(atPath: fileURL.path) {
             try FileManager.default.removeItem(at: fileURL)
         }
+        scheduleRulesCache.removeValue(forKey: id)
     }
 }
 

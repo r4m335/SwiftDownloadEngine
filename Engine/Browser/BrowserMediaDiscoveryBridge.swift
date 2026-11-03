@@ -594,6 +594,9 @@ public final class BrowserMediaDiscoveryBridge: NSObject, @unchecked Sendable {
             }
             try {
                 var cl = headerContentLength(response.headers);
+                if (cl !== null && cl > MAX_INSPECTION_BYTES) {
+                    return Promise.resolve(null);
+                }
                 var clone = response.clone();
                 if (clone.body && typeof clone.body.getReader === "function") {
                     var reader = clone.body.getReader();
@@ -628,14 +631,10 @@ public final class BrowserMediaDiscoveryBridge: NSObject, @unchecked Sendable {
                     }
                     return readNextChunk();
                 }
-                if (cl !== null && cl > MAX_INSPECTION_BYTES) {
-                    return Promise.resolve(null);
-                }
-                if (typeof clone.text === "function") {
-                    return clone.text().then(function(text) {
-                        return text ? String(text).slice(0, MAX_INSPECTION_BYTES) : null;
-                    }).catch(function() { return null; });
-                }
+                // Unbounded clone.text() fallback is intentionally omitted:
+                // If stream reader is unavailable or body cannot be streamed,
+                // do NOT buffer the body in memory to prevent exhaustion on large or chunked streams.
+                return Promise.resolve(null);
             } catch (_) {}
             return Promise.resolve(null);
         }
@@ -1365,22 +1364,24 @@ public final class BrowserMediaDiscoveryBridge: NSObject, @unchecked Sendable {
                     const { done, value } = await reader.read();
                     if (done) break;
                     if (value && value.byteLength > 0) {
-                        bytesRead += value.byteLength;
-                        if (bytesRead > limit) {
+                        const remaining = limit - bytesRead;
+                        if (remaining <= 0) {
                             try { await reader.cancel(); } catch (_) {}
                             return { error: 'Manifest exceeds size limit of ' + limit + ' bytes' };
                         }
-                        textResult += decoder.decode(value, { stream: true });
+                        const slice = value.byteLength > remaining ? value.subarray(0, remaining) : value;
+                        bytesRead += slice.byteLength;
+                        textResult += decoder.decode(slice, { stream: bytesRead < limit });
+                        if (bytesRead >= limit) {
+                            try { await reader.cancel(); } catch (_) {}
+                            return { error: 'Manifest exceeds size limit of ' + limit + ' bytes' };
+                        }
                     }
                 }
                 textResult += decoder.decode();
                 return { text: textResult };
             } else {
-                const text = await response.text();
-                if (text && text.length > limit) {
-                    return { error: 'Manifest exceeds size limit of ' + limit + ' bytes' };
-                }
-                return { text: text };
+                return { error: 'ReadableStream reader not available to safely bound manifest download' };
             }
         } catch (e) {
             const errMsg = (e && e.name ? (e.name + ': ' + (e.message || '')) : String(e));
