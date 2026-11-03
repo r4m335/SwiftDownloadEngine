@@ -370,23 +370,30 @@ public enum MediaIntegrityValidator {
         }
         defer { handle.closeFile() }
 
+        let packetsPerBuffer = 256
+        let bufferSize = 188 * packetsPerBuffer
         var packetIndex: Int64 = 0
+
         while true {
-            let packet = handle.readData(ofLength: 188)
-            if packet.isEmpty { break }
-            guard packet.count == 188 else {
+            let chunk = handle.readData(ofLength: bufferSize)
+            if chunk.isEmpty { break }
+            guard chunk.count % 188 == 0 else {
                 return .integrityFailure(
                     detectedType: .mpegTS,
-                    reason: "Packet \(packetIndex) has \(packet.count) bytes (expected 188)."
+                    reason: "Incomplete MPEG-TS chunk read (\(chunk.count) bytes)."
                 )
             }
-            guard packet[0] == 0x47 else {
-                return .integrityFailure(
-                    detectedType: .mpegTS,
-                    reason: "Packet \(packetIndex) has an invalid sync byte (0x\(String(packet[0], radix: 16, uppercase: true)))."
-                )
+            let packetCount = chunk.count / 188
+            for i in 0..<packetCount {
+                let offset = i * 188
+                guard chunk[offset] == 0x47 else {
+                    return .integrityFailure(
+                        detectedType: .mpegTS,
+                        reason: "Packet \(packetIndex + Int64(i)) has an invalid sync byte (0x\(String(chunk[offset], radix: 16, uppercase: true)))."
+                    )
+                }
             }
-            packetIndex += 1
+            packetIndex += Int64(packetCount)
         }
         return .validated(detectedType: .mpegTS)
     }
