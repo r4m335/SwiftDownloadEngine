@@ -420,7 +420,9 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         )
         if tabID == activeTabID {
             let nsError = error as NSError
-            if !(nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled) {
+            let isCancelled = (nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled)
+            let isPluginHandledLoad = (nsError.domain == "WebKitErrorDomain" && (nsError.code == 204 || nsError.code == 102))
+            if !isCancelled && !isPluginHandledLoad {
                 errorMessage = error.localizedDescription
             }
         }
@@ -1427,7 +1429,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         if targetTabID == activeTabID { publishMediaCandidates() }
     }
 
-    private func ingestMediaResources(
+    fileprivate func ingestMediaResources(
         _ resources: [WebpageResource],
         tabID: UUID?
     ) {
@@ -1440,7 +1442,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         if targetTabID == activeTabID { publishMediaCandidates() }
     }
 
-    private func ingestMediaResource(
+    fileprivate func ingestMediaResource(
         _ resource: WebpageResource,
         tabID: UUID?
     ) {
@@ -3301,6 +3303,10 @@ public final class BrowserWebViewCoordinator: NSObject, WKNavigationDelegate, WK
         if nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled {
             return
         }
+        // Ignore WebKit plugin handoff (204) and frame load interrupted by policy (102)
+        if nsError.domain == "WebKitErrorDomain" && (nsError.code == 204 || nsError.code == 102) {
+            return
+        }
         DispatchQueue.main.async { [weak self] in
             guard let self = self, let vm = self.viewModel else { return }
             vm.isLoading = false
@@ -3611,6 +3617,23 @@ public final class BrowserWebViewCoordinator: NSObject, WKNavigationDelegate, WK
             mimeType: contentType,
             canShowMIMEType: navigationResponse.canShowMIMEType
         )
+
+        let isHLS = url.pathExtension.lowercased() == "m3u8" ||
+            contentType?.lowercased().contains("application/vnd.apple.mpegurl") == true ||
+            contentType?.lowercased().contains("application/x-mpegurl") == true
+        if isHLS {
+            let resource = WebpageResource(
+                url: url,
+                title: url.lastPathComponent,
+                suggestedFilename: url.lastPathComponent,
+                resourceType: .video,
+                mimeType: contentType ?? "application/vnd.apple.mpegurl"
+            )
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self else { return }
+                self.viewModel?.ingestMediaResource(resource, tabID: self.tabID)
+            }
+        }
 
         if classification.isDownload {
             if #available(iOS 14.5, macOS 11.3, *) {

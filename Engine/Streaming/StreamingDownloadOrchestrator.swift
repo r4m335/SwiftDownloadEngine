@@ -375,10 +375,32 @@ public final class DownloadCoordinatorSegmentExecutor: StreamingSegmentExecutor,
         self.retryCount = max(0, retryCount)
     }
 
+    private func registerActiveRequest(transferID: String, requestID: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        activeRequestIDs[transferID, default: []].insert(requestID)
+    }
+
+    private func unregisterActiveRequest(transferID: String, requestID: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        activeRequestIDs[transferID]?.remove(requestID)
+        if activeRequestIDs[transferID]?.isEmpty == true {
+            activeRequestIDs.removeValue(forKey: transferID)
+        }
+    }
+
+    private func getActiveRequestIDs(for transferID: String) -> Set<String> {
+        lock.lock()
+        defer { lock.unlock() }
+        return activeRequestIDs[transferID] ?? []
+    }
+
     public func execute(
         _ request: StreamingSegmentTransferRequest,
         progress: (@Sendable (Double) -> Void)? = nil
     ) async throws {
+        PipelineLogger.shared.log("[DownloadCoordinatorSegmentExecutor] Starting segment \(request.identity.order) (\(request.identity.value)) -> \(request.destinationURL.lastPathComponent)")
         let downloadRequest = DownloadRequest(
             id: request.identity.value,
             url: request.url,
@@ -393,27 +415,33 @@ public final class DownloadCoordinatorSegmentExecutor: StreamingSegmentExecutor,
                 DownloadByteRange(start: $0.start, end: $0.end)
             }
         )
-        lock.lock()
-        activeRequestIDs[request.identity.transferID, default: []].insert(request.identity.value)
-        lock.unlock()
+        registerActiveRequest(transferID: request.identity.transferID, requestID: request.identity.value)
         defer {
-            lock.lock()
-            activeRequestIDs[request.identity.transferID]?.remove(request.identity.value)
-            if activeRequestIDs[request.identity.transferID]?.isEmpty == true {
-                activeRequestIDs.removeValue(forKey: request.identity.transferID)
-            }
-            lock.unlock()
+            unregisterActiveRequest(transferID: request.identity.transferID, requestID: request.identity.value)
         }
 
-        try await coordinator.start(downloadRequest) { snapshot in
-            progress?(snapshot.fractionCompleted)
+        do {
+            try await coordinator.start(downloadRequest) { snapshot in
+                progress?(snapshot.fractionCompleted)
+            }
+            guard FileManager.default.fileExists(atPath: request.destinationURL.path) else {
+                PipelineLogger.shared.log("[DownloadCoordinatorSegmentExecutor] Missing output file for segment \(request.identity.order) at \(request.destinationURL.path)")
+                throw StreamingDownloadOrchestratorError.segmentTransferFailed(order: request.identity.order)
+            }
+            let fileSize = (try? FileManager.default.attributesOfItem(atPath: request.destinationURL.path)[.size] as? Int64) ?? 0
+            guard fileSize > 0 else {
+                PipelineLogger.shared.log("[DownloadCoordinatorSegmentExecutor] Empty output file (0 bytes) for segment \(request.identity.order)")
+                throw StreamingDownloadOrchestratorError.segmentTransferFailed(order: request.identity.order)
+            }
+            PipelineLogger.shared.log("[DownloadCoordinatorSegmentExecutor] Completed segment \(request.identity.order) (\(fileSize) bytes)")
+        } catch {
+            PipelineLogger.shared.log("[DownloadCoordinatorSegmentExecutor] Failed segment \(request.identity.order): \(error)")
+            throw error
         }
     }
 
     public func cancel(transferID: String) async {
-        lock.lock()
-        let ids = activeRequestIDs[transferID] ?? []
-        lock.unlock()
+        let ids = getActiveRequestIDs(for: transferID)
         for id in ids {
             try? await coordinator.cancel(id: id, deleteDestinationFile: false)
         }
@@ -430,6 +458,27 @@ public final class URLSessionStreamingSegmentExecutor: StreamingSegmentExecutor,
 
     public init(session: URLSession? = nil) {
         self.session = session ?? Self.sharedSession
+    }
+
+    private func registerActiveTask(transferID: String, task: URLSessionDownloadTask) {
+        lock.lock()
+        defer { lock.unlock() }
+        activeTasks[transferID, default: []].insert(task)
+    }
+
+    private func unregisterActiveTask(transferID: String, task: URLSessionDownloadTask) {
+        lock.lock()
+        defer { lock.unlock() }
+        activeTasks[transferID]?.remove(task)
+        if activeTasks[transferID]?.isEmpty == true {
+            activeTasks.removeValue(forKey: transferID)
+        }
+    }
+
+    private func takeActiveTasks(for transferID: String) -> Set<URLSessionDownloadTask> {
+        lock.lock()
+        defer { lock.unlock() }
+        return activeTasks.removeValue(forKey: transferID) ?? []
     }
 
     public func execute(
@@ -458,9 +507,7 @@ public final class URLSessionStreamingSegmentExecutor: StreamingSegmentExecutor,
     }
 
     public func cancel(transferID: String) async {
-        lock.lock()
-        let tasks = activeTasks.removeValue(forKey: transferID) ?? []
-        lock.unlock()
+        let tasks = takeActiveTasks(for: transferID)
         for task in tasks {
             task.cancel()
         }
@@ -1658,6 +1705,42 @@ public actor StreamingDownloadOrchestrator {
         let downloadedBytes: Int64
     }
 
+    private func shouldAttemptTokenRefresh(for error: Error) -> Bool {
+        if error is CancellationError {
+            return false
+        }
+        if let orchError = error as? StreamingDownloadOrchestratorError, orchError == .cancelled {
+            return false
+        }
+        if error is CocoaError {
+            return false
+        }
+        let nsError = error as NSError
+        if nsError.domain == NSCocoaErrorDomain || nsError.domain == NSPOSIXErrorDomain {
+            return false
+        }
+        if let coordError = error as? DownloadCoordinatorError {
+            switch coordError {
+            case .tokenExpired, .accessDenied, .linkExpired:
+                return true
+            default:
+                return false
+            }
+        }
+        if let segError = error as? SegmentDownloaderError {
+            switch segError {
+            case .tokenExpired, .accessDenied, .linkExpired:
+                return true
+            default:
+                return false
+            }
+        }
+        if let underlying = nsError.userInfo[NSUnderlyingErrorKey] as? Error {
+            return shouldAttemptTokenRefresh(for: underlying)
+        }
+        return false
+    }
+
     private func downloadSegment(
         resource: StreamingTransferResource,
         index: Int,
@@ -1723,23 +1806,37 @@ public actor StreamingDownloadOrchestrator {
             try await segmentExecutor.execute(request, progress: nil)
         } catch is CancellationError {
             throw StreamingDownloadOrchestratorError.cancelled
+        } catch let err as StreamingDownloadOrchestratorError where err == .cancelled {
+            throw err
         } catch {
+            guard shouldAttemptTokenRefresh(for: error) else {
+                PipelineLogger.shared.log("\(pipelineTag) Segment \(resource.identity.order) failed with non-refreshable error: \(error.localizedDescription)")
+                throw StreamingDownloadOrchestratorError.segmentTransferFailed(order: resource.identity.order)
+            }
             // Retry once with refreshed manifest tokens in case the session expired during pause
-            PipelineLogger.shared.log("\(pipelineTag) Segment \(resource.identity.order) failed: \(error.localizedDescription). Attempting token refresh...")
-            if let candidate = candidatesByTransfer[proposal.transferID],
-               let freshProposal = try? await prepare(candidate: candidate),
-               let freshResource = freshProposal.resources.first(where: { $0.identity.order == resource.identity.order }) {
-                PipelineLogger.shared.log("\(pipelineTag) Successfully refreshed manifest. Retrying segment \(resource.identity.order)...")
-                let freshRequest = StreamingSegmentTransferRequest(
-                    identity: freshResource.identity,
-                    url: freshResource.url,
-                    headers: requestHeaders(for: freshResource, manifest: freshProposal.manifest),
-                    byteRange: freshResource.byteRange,
-                    destinationURL: destinationURL
+            PipelineLogger.shared.log("\(pipelineTag) Segment \(resource.identity.order) encountered authorization/expiration error: \(error.localizedDescription). Attempting token refresh...")
+            if let candidate = candidatesByTransfer[proposal.transferID] {
+                let candidateMIME = candidate.mimeType ?? ""
+                let metadataFingerprint = EngineSHA256.hash(
+                    data: Data((candidate.url.absoluteString + "|" + candidateMIME).utf8)
                 )
-                do {
-                    try await segmentExecutor.execute(freshRequest, progress: nil)
-                } catch {
+                proposals.removeValue(forKey: metadataFingerprint)
+                if let freshProposal = try? await prepare(candidate: candidate),
+                   let freshResource = freshProposal.resources.first(where: { $0.identity.order == resource.identity.order }) {
+                    PipelineLogger.shared.log("\(pipelineTag) Successfully refreshed manifest. Retrying segment \(resource.identity.order)...")
+                    let freshRequest = StreamingSegmentTransferRequest(
+                        identity: freshResource.identity,
+                        url: freshResource.url,
+                        headers: requestHeaders(for: freshResource, manifest: freshProposal.manifest),
+                        byteRange: freshResource.byteRange,
+                        destinationURL: destinationURL
+                    )
+                    do {
+                        try await segmentExecutor.execute(freshRequest, progress: nil)
+                    } catch {
+                        throw StreamingDownloadOrchestratorError.segmentTransferFailed(order: resource.identity.order)
+                    }
+                } else {
                     throw StreamingDownloadOrchestratorError.segmentTransferFailed(order: resource.identity.order)
                 }
             } else {
@@ -1747,7 +1844,20 @@ public actor StreamingDownloadOrchestrator {
             }
         }
 
+        guard FileManager.default.fileExists(atPath: destinationURL.path) else {
+            PipelineLogger.shared.log("\(pipelineTag) Segment \(resource.identity.order) destination file missing at \(destinationURL.path)")
+            throw StreamingDownloadOrchestratorError.segmentTransferFailed(order: resource.identity.order)
+        }
         let segSize = (try? FileManager.default.attributesOfItem(atPath: destinationURL.path)[.size] as? Int64) ?? 0
+        guard segSize > 0 else {
+            PipelineLogger.shared.log("\(pipelineTag) Segment \(resource.identity.order) destination file is empty (0 bytes) at \(destinationURL.path)")
+            throw StreamingDownloadOrchestratorError.segmentTransferFailed(order: resource.identity.order)
+        }
+        if let expectedLength = resource.byteRange?.length, segSize != expectedLength {
+            PipelineLogger.shared.log("\(pipelineTag) Segment \(resource.identity.order) size mismatch: expected \(expectedLength), got \(segSize)")
+            throw StreamingDownloadOrchestratorError.segmentTransferFailed(order: resource.identity.order)
+        }
+
         return DownloadedSegmentResult(
             index: index,
             identity: resource.identity,

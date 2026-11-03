@@ -1116,6 +1116,172 @@ final class StreamingDownloadOrchestratorTests: XCTestCase {
         let logs = PipelineLogger.shared.formattedLogText()
         XCTAssertTrue(logs.contains("Cached manifest text not recognized as valid manifest") || logs.contains("Cached manifest text failed to parse"))
     }
+
+    func testFilesystemErrorDoesNotTriggerManifestTokenRefresh() async throws {
+        let manifestURL = URL(string: "https://video.example/fs-error.m3u8")!
+        let playlist = """
+        #EXTM3U
+        #EXT-X-PLAYLIST-TYPE:VOD
+        #EXTINF:2,
+        segment1.ts
+        #EXT-X-ENDLIST
+        """
+        let loader = RecordingManifestLoader(data: Data(playlist.utf8), finalURL: manifestURL, mimeType: "application/vnd.apple.mpegurl")
+        let fsError = NSError(domain: NSCocoaErrorDomain, code: NSFileNoSuchFileError, userInfo: [NSLocalizedDescriptionKey: "The file doesn't exist."])
+        let executor = FaultInjectingSegmentExecutor(failureCount: 1, errorToThrow: fsError)
+        let orchestrator = StreamingDownloadOrchestrator(manifestLoader: loader, segmentExecutor: executor)
+
+        let candidate = try StreamingManifestCandidate(url: manifestURL)
+        let proposal = try await orchestrator.prepare(candidate: candidate)
+        let destination = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+
+        do {
+            _ = try await orchestrator.execute(proposal, approved: true, destinationDirectory: destination)
+            XCTFail("Expected orchestrator.execute to fail on filesystem error")
+        } catch {
+            guard case StreamingDownloadOrchestratorError.segmentTransferFailed(let order) = error else {
+                XCTFail("Unexpected error: \(error)")
+                return
+            }
+            XCTAssertEqual(order, 0)
+        }
+
+        let count = await loader.loadCount
+        XCTAssertEqual(count, 1)
+        let calls = await executor.executeCalls
+        XCTAssertEqual(calls, 1)
+    }
+
+    func testExpiredTokenErrorTriggersManifestRefresh() async throws {
+        let manifestURL = URL(string: "https://video.example/token-refresh.m3u8")!
+        let playlist = """
+        #EXTM3U
+        #EXT-X-PLAYLIST-TYPE:VOD
+        #EXTINF:2,
+        segment1.ts
+        #EXT-X-ENDLIST
+        """
+        let loader = RecordingManifestLoader(data: Data(playlist.utf8), finalURL: manifestURL, mimeType: "application/vnd.apple.mpegurl")
+        let tokenError = DownloadCoordinatorError.tokenExpired(url: URL(string: "https://video.example/segment1.ts")!)
+        let executor = FaultInjectingSegmentExecutor(failureCount: 1, errorToThrow: tokenError)
+        let orchestrator = StreamingDownloadOrchestrator(manifestLoader: loader, segmentExecutor: executor)
+
+        let candidate = try StreamingManifestCandidate(url: manifestURL)
+        let proposal = try await orchestrator.prepare(candidate: candidate)
+        let destination = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+
+        let result = try await orchestrator.execute(proposal, approved: true, destinationDirectory: destination)
+        XCTAssertEqual(result.completedSegments.count, 1)
+
+        let count = await loader.loadCount
+        XCTAssertEqual(count, 2)
+        let calls = await executor.executeCalls
+        XCTAssertEqual(calls, 2)
+    }
+
+    func testZeroByteSegmentFileThrowsSegmentTransferFailed() async throws {
+        let manifestURL = URL(string: "https://video.example/zero-byte.m3u8")!
+        let playlist = """
+        #EXTM3U
+        #EXT-X-PLAYLIST-TYPE:VOD
+        #EXTINF:2,
+        segment1.ts
+        #EXT-X-ENDLIST
+        """
+        let loader = RecordingManifestLoader(data: Data(playlist.utf8), finalURL: manifestURL, mimeType: "application/vnd.apple.mpegurl")
+        let executor = EmptyFileSegmentExecutor()
+        let orchestrator = StreamingDownloadOrchestrator(manifestLoader: loader, segmentExecutor: executor)
+
+        let candidate = try StreamingManifestCandidate(url: manifestURL)
+        let proposal = try await orchestrator.prepare(candidate: candidate)
+        let destination = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+
+        do {
+            _ = try await orchestrator.execute(proposal, approved: true, destinationDirectory: destination)
+            XCTFail("Expected orchestrator.execute to fail on zero-byte segment output")
+        } catch {
+            guard case StreamingDownloadOrchestratorError.segmentTransferFailed(let order) = error else {
+                XCTFail("Unexpected error: \(error)")
+                return
+            }
+            XCTAssertEqual(order, 0)
+        }
+    }
+
+    func testConcurrentSegmentDownloadsProduceValidPartFiles() async throws {
+        let manifestURL = URL(string: "https://video.example/concurrent.m3u8")!
+        let playlist = """
+        #EXTM3U
+        #EXT-X-PLAYLIST-TYPE:VOD
+        #EXTINF:2,
+        seg0.ts
+        #EXTINF:2,
+        seg1.ts
+        #EXTINF:2,
+        seg2.ts
+        #EXTINF:2,
+        seg3.ts
+        #EXT-X-ENDLIST
+        """
+        let loader = RecordingManifestLoader(data: Data(playlist.utf8), finalURL: manifestURL, mimeType: "application/vnd.apple.mpegurl")
+        let executor = RecordingSegmentExecutor()
+        let orchestrator = StreamingDownloadOrchestrator(manifestLoader: loader, segmentExecutor: executor)
+
+        let candidate = try StreamingManifestCandidate(url: manifestURL)
+        let proposal = try await orchestrator.prepare(candidate: candidate)
+        let destination = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+
+        let result = try await orchestrator.execute(proposal, approved: true, destinationDirectory: destination)
+        XCTAssertEqual(result.completedSegments.count, 4)
+        XCTAssertEqual(result.localFiles.count, 4)
+
+        for fileURL in result.localFiles {
+            XCTAssertTrue(FileManager.default.fileExists(atPath: fileURL.path))
+            let size = (try? FileManager.default.attributesOfItem(atPath: fileURL.path)[.size] as? Int64) ?? 0
+            XCTAssertGreaterThan(size, 0)
+        }
+    }
+}
+
+private actor FaultInjectingSegmentExecutor: StreamingSegmentExecutor {
+    private var failureCount: Int
+    private let errorToThrow: Error
+    private(set) var executeCalls = 0
+
+    init(failureCount: Int, errorToThrow: Error) {
+        self.failureCount = failureCount
+        self.errorToThrow = errorToThrow
+    }
+
+    func execute(
+        _ request: StreamingSegmentTransferRequest,
+        progress: (@Sendable (Double) -> Void)?
+    ) async throws {
+        executeCalls += 1
+        if failureCount > 0 {
+            failureCount -= 1
+            throw errorToThrow
+        }
+        let payload = Data(repeating: 0x47, count: 188)
+        try? FileManager.default.createDirectory(at: request.destinationURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try payload.write(to: request.destinationURL)
+        progress?(1.0)
+    }
+
+    func cancel(transferID: String) async {}
+}
+
+private actor EmptyFileSegmentExecutor: StreamingSegmentExecutor {
+    func execute(
+        _ request: StreamingSegmentTransferRequest,
+        progress: (@Sendable (Double) -> Void)?
+    ) async throws {
+        try? FileManager.default.createDirectory(at: request.destinationURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data().write(to: request.destinationURL)
+        progress?(1.0)
+    }
+
+    func cancel(transferID: String) async {}
 }
 
 private actor RecordingManifestLoader: StreamingManifestLoader {
@@ -1148,6 +1314,10 @@ private actor RecordingSegmentExecutor: StreamingSegmentExecutor {
         progress: (@Sendable (Double) -> Void)?
     ) async throws {
         requests.append(request)
+        let count = request.byteRange.map { Int($0.length) } ?? 188
+        let payload = Data(repeating: 0x47, count: count)
+        try? FileManager.default.createDirectory(at: request.destinationURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try? payload.write(to: request.destinationURL)
         progress?(1)
     }
 
