@@ -192,18 +192,52 @@ public enum MediaAssembler {
         }
 
         do {
-            if fileManager.fileExists(atPath: request.destinationURL.path) {
-                try fileManager.removeItem(at: request.destinationURL)
-            }
+            let parentDir = request.destinationURL.deletingLastPathComponent()
+            try DownloadManagerViewModel.ensureDirectoryExistsAndWritable(parentDir, fileManager: fileManager)
+
+            let stagingPublishedURL: URL
+            var needsRemuxCleanup = false
             if request.container == .mpegTS && request.destinationURL.pathExtension.lowercased() == "mp4" {
                 #if canImport(AVFoundation)
-                try remuxMPEGTSFileToMP4(sourceTSURL: temporaryOutput, destinationMP4URL: request.destinationURL)
+                let remuxStaging = parentDir.appendingPathComponent(".remux-\(UUID().uuidString).mp4")
+                try remuxMPEGTSFileToMP4(sourceTSURL: temporaryOutput, destinationMP4URL: remuxStaging)
+                stagingPublishedURL = remuxStaging
+                needsRemuxCleanup = true
                 #else
-                try fileManager.moveItem(at: temporaryOutput, to: request.destinationURL)
+                stagingPublishedURL = temporaryOutput
                 #endif
             } else {
-                try fileManager.moveItem(at: temporaryOutput, to: request.destinationURL)
+                stagingPublishedURL = temporaryOutput
             }
+            defer {
+                if needsRemuxCleanup {
+                    try? fileManager.removeItem(at: stagingPublishedURL)
+                }
+            }
+
+            let stagingAttrs = try fileManager.attributesOfItem(atPath: stagingPublishedURL.path)
+            guard let stagingBytes = (stagingAttrs[.size] as? NSNumber)?.int64Value, stagingBytes > 0 else {
+                throw MediaAssemblyError.fileOperationFailed
+            }
+
+            #if canImport(Darwin)
+            if fileManager.fileExists(atPath: request.destinationURL.path) {
+                do {
+                    _ = try fileManager.replaceItemAt(request.destinationURL, withItemAt: stagingPublishedURL, backupItemName: nil, options: [])
+                } catch {
+                    _ = try? fileManager.removeItem(at: request.destinationURL)
+                    try fileManager.moveItem(at: stagingPublishedURL, to: request.destinationURL)
+                }
+            } else {
+                try fileManager.moveItem(at: stagingPublishedURL, to: request.destinationURL)
+            }
+            #else
+            if fileManager.fileExists(atPath: request.destinationURL.path) {
+                _ = try? fileManager.removeItem(at: request.destinationURL)
+            }
+            try fileManager.moveItem(at: stagingPublishedURL, to: request.destinationURL)
+            #endif
+
             let attributes = try fileManager.attributesOfItem(atPath: request.destinationURL.path)
             guard let byteCount = (attributes[.size] as? NSNumber)?.int64Value, byteCount > 0 else {
                 throw MediaAssemblyError.fileOperationFailed
@@ -548,10 +582,27 @@ public enum MediaAssembler {
         }
 
         do {
+            let parentDir = request.destinationURL.deletingLastPathComponent()
+            try DownloadManagerViewModel.ensureDirectoryExistsAndWritable(parentDir, fileManager: fileManager)
+
+            #if canImport(Darwin)
             if fileManager.fileExists(atPath: request.destinationURL.path) {
-                try fileManager.removeItem(at: request.destinationURL)
+                do {
+                    _ = try fileManager.replaceItemAt(request.destinationURL, withItemAt: temporaryOutput, backupItemName: nil, options: [])
+                } catch {
+                    _ = try? fileManager.removeItem(at: request.destinationURL)
+                    try fileManager.moveItem(at: temporaryOutput, to: request.destinationURL)
+                }
+            } else {
+                try fileManager.moveItem(at: temporaryOutput, to: request.destinationURL)
+            }
+            #else
+            if fileManager.fileExists(atPath: request.destinationURL.path) {
+                _ = try? fileManager.removeItem(at: request.destinationURL)
             }
             try fileManager.moveItem(at: temporaryOutput, to: request.destinationURL)
+            #endif
+
             let attributes = try fileManager.attributesOfItem(atPath: request.destinationURL.path)
             guard let byteCount = (attributes[.size] as? NSNumber)?.int64Value, byteCount > 0 else {
                 throw MediaAssemblyError.fileOperationFailed

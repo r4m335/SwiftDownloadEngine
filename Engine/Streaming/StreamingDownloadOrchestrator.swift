@@ -1869,7 +1869,7 @@ public actor StreamingDownloadOrchestrator {
            FileManager.default.fileExists(atPath: destinationURL.path) {
             let size = (try? FileManager.default.attributesOfItem(atPath: destinationURL.path)[.size] as? NSNumber)?.int64Value ?? 0
             let hasExpectedLength = resource.byteRange.map { $0.length == size } ?? true
-            if hasExpectedLength {
+            if size > 0 && hasExpectedLength {
                 return DownloadedSegmentResult(
                     index: index,
                     identity: resource.identity,
@@ -1883,6 +1883,7 @@ public actor StreamingDownloadOrchestrator {
            FileManager.default.fileExists(atPath: destinationURL.path),
            let attributes = try? FileManager.default.attributesOfItem(atPath: destinationURL.path),
            let size = attributes[.size] as? NSNumber,
+           size.int64Value > 0,
            size.int64Value == range.length {
             return DownloadedSegmentResult(
                 index: index,

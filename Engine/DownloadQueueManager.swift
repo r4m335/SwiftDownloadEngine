@@ -690,7 +690,12 @@ public actor DownloadQueueManager {
                 try? FileManager.default.removeItem(at: item.request.destinationURL)
             }
         }
-        try? await persistenceStore.delete(tag: id)
+        do {
+            try await persistenceStore.delete(tag: id)
+        } catch {
+            PipelineLogger.shared.log("[DownloadQueueManager] Error deleting item \(id) from persistenceStore: \(error.localizedDescription)")
+            throw error
+        }
 
         items.removeValue(forKey: id)
         progressHandlers.removeValue(forKey: id)
@@ -982,8 +987,12 @@ public actor DownloadQueueManager {
 
     private func persistQueue() {
         let parentDir = queueStoreURL.deletingLastPathComponent()
-        if !FileManager.default.fileExists(atPath: parentDir.path) {
-            try? FileManager.default.createDirectory(at: parentDir, withIntermediateDirectories: true)
+        do {
+            try DownloadManagerViewModel.ensureDirectoryExistsAndWritable(parentDir)
+        } catch {
+            let nsErr = error as NSError
+            PipelineLogger.shared.log("[DownloadQueueManager] Failed to create queue directory \(parentDir.path): \(nsErr.domain) code \(nsErr.code) - \(nsErr.localizedDescription)")
+            return
         }
 
         let manifest = QueueManifest(
@@ -995,7 +1004,8 @@ public actor DownloadQueueManager {
             let data = try encoder.encode(manifest)
             try data.write(to: queueStoreURL, options: .atomic)
         } catch {
-            // Durable atomic write fallback
+            let nsErr = error as NSError
+            PipelineLogger.shared.log("[DownloadQueueManager] Failed to write queue manifest to \(queueStoreURL.path): \(nsErr.domain) code \(nsErr.code) - \(nsErr.localizedDescription)")
         }
     }
 

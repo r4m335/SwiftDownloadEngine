@@ -290,9 +290,17 @@ public struct SwiftDownloadEngineApp: App {
             downloadsDirectory: downloadsDir,
             userDefaults: .standard
         )
-        let hlsPersistenceStore = try? HLSPersistenceStore(
-            storageDirectoryURL: engine.persistenceStore.storageDirectoryURL
-        )
+        let hlsPersistenceStore: HLSPersistenceStore?
+        do {
+            hlsPersistenceStore = try HLSPersistenceStore(
+                storageDirectoryURL: engine.persistenceStore.storageDirectoryURL
+            )
+            PipelineLogger.shared.log("[SwiftDownloadEngineApp] HLSPersistenceStore initialized at \(engine.persistenceStore.storageDirectoryURL.path)")
+        } catch {
+            let nsErr = error as NSError
+            PipelineLogger.shared.log("[SwiftDownloadEngineApp] Critical: HLSPersistenceStore initialization failed at \(engine.persistenceStore.storageDirectoryURL.path): Domain=\(nsErr.domain), Code=\(nsErr.code), Description=\(nsErr.localizedDescription)")
+            hlsPersistenceStore = nil
+        }
         let orchestrator = StreamingDownloadOrchestrator(
             configuration: engineConfig,
             downloadCoordinator: engine.coordinator,
@@ -306,9 +314,17 @@ public struct SwiftDownloadEngineApp: App {
 
     /// Primary designated initializer allowing custom view model injection (e.g., testing or preview).
     public init(viewModel: DownloadManagerViewModel) {
-        let hlsPersistenceStore = try? HLSPersistenceStore(
-            storageDirectoryURL: viewModel.engine.persistenceStore.storageDirectoryURL
-        )
+        let hlsPersistenceStore: HLSPersistenceStore?
+        do {
+            hlsPersistenceStore = try HLSPersistenceStore(
+                storageDirectoryURL: viewModel.engine.persistenceStore.storageDirectoryURL
+            )
+            PipelineLogger.shared.log("[SwiftDownloadEngineApp] HLSPersistenceStore initialized at \(viewModel.engine.persistenceStore.storageDirectoryURL.path)")
+        } catch {
+            let nsErr = error as NSError
+            PipelineLogger.shared.log("[SwiftDownloadEngineApp] Critical: HLSPersistenceStore initialization failed at \(viewModel.engine.persistenceStore.storageDirectoryURL.path): Domain=\(nsErr.domain), Code=\(nsErr.code), Description=\(nsErr.localizedDescription)")
+            hlsPersistenceStore = nil
+        }
         let orchestrator = StreamingDownloadOrchestrator(
             downloadCoordinator: viewModel.engine.coordinator,
             downloadEngine: viewModel.engine,

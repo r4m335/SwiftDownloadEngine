@@ -234,7 +234,12 @@ public enum HLSVODReconstructor {
             ".media-assembly",
             isDirectory: true
         )
-        try? FileManager.default.createDirectory(at: effectiveTempDir, withIntermediateDirectories: true)
+        do {
+            try DownloadManagerViewModel.ensureDirectoryExistsAndWritable(effectiveTempDir)
+        } catch {
+            PipelineLogger.shared.log("[HLS Reconstruction] Failed to create assembly temp directory at \(effectiveTempDir.path): \(error.localizedDescription)")
+            throw HLSVODReconstructionError.assemblyFailed(MediaAssemblyError.fileOperationFailed)
+        }
 
         let resolvedPlan: HLSVODTransferPlan
         let resolvedCompleted: [HLSCompletedResource]

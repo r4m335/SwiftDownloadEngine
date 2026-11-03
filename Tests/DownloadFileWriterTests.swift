@@ -119,4 +119,29 @@ final class DownloadFileWriterTests: XCTestCase {
             )
         )
     }
+
+    func testFailedMergePreservesExistingDestinationFile() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let destination = root.appendingPathComponent("existing_complete.bin")
+        let originalData = Data([0xAA, 0xBB, 0xCC, 0xDD])
+        try originalData.write(to: destination)
+
+        let part1 = root.appendingPathComponent("part1.tmp")
+        try Data([1, 2, 3]).write(to: part1)
+
+        // Merge with expected size 10 (which fails because part1 only has 3 bytes)
+        XCTAssertThrowsError(
+            try DownloadFileWriter.mergeFiles(
+                partURLs: [part1],
+                destinationURL: destination,
+                expectedMergedSize: 10
+            )
+        )
+
+        // Existing destination MUST still be intact and uncorrupted!
+        XCTAssertTrue(FileManager.default.fileExists(atPath: destination.path))
+        let restoredData = try Data(contentsOf: destination)
+        XCTAssertEqual(restoredData, originalData, "Failed merge must not delete or corrupt existing completed destination")
+    }
 }
