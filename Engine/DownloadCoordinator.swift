@@ -1685,12 +1685,29 @@ public actor DownloadCoordinator {
             }
         } catch let error {
             if pauseRequested.contains(request.id) || Task.isCancelled {
-                try? await writer.synchronize()
-                let completedMap = await progressAccumulator.getCompletedBytes()
-                for (segID, bytes) in completedMap {
-                    _ = try? await persistenceStore.updateSegmentProgress(tag: request.id, segmentID: segID, completedBytes: bytes)
+                var syncSucceeded = false
+                do {
+                    try await writer.synchronize()
+                    syncSucceeded = true
+                } catch {
+                    PipelineLogger.shared.log("[DownloadCoordinator] Writer synchronize failed on pause for \(request.id): \(error.localizedDescription). Segment checkpoints will not be advanced to uncommitted in-memory offsets.")
                 }
-                _ = try? await persistenceStore.updateState(tag: request.id, state: .paused)
+
+                if syncSucceeded {
+                    let completedMap = await progressAccumulator.getCompletedBytes()
+                    for (segID, bytes) in completedMap {
+                        do {
+                            _ = try await persistenceStore.updateSegmentProgress(tag: request.id, segmentID: segID, completedBytes: bytes)
+                        } catch {
+                            PipelineLogger.shared.log("[DownloadCoordinator] Failed to persist segment \(segID) progress on pause for \(request.id): \(error.localizedDescription)")
+                        }
+                    }
+                }
+                do {
+                    _ = try await persistenceStore.updateState(tag: request.id, state: .paused)
+                } catch {
+                    PipelineLogger.shared.log("[DownloadCoordinator] Failed to persist paused state for \(request.id): \(error.localizedDescription)")
+                }
                 let snap = await progressAccumulator.snapshot()
                 let metrics = speedTracker.snapshot(expectedTotalBytes: totalSize)
                 updateProgress(
@@ -1709,12 +1726,29 @@ public actor DownloadCoordinator {
                 throw CancellationError()
             }
             if !Self.isRangeIgnored(error) {
-                try? await writer.synchronize()
-                let completedMap = await progressAccumulator.getCompletedBytes()
-                for (segID, bytes) in completedMap {
-                    _ = try? await persistenceStore.updateSegmentProgress(tag: request.id, segmentID: segID, completedBytes: bytes)
+                var syncSucceeded = false
+                do {
+                    try await writer.synchronize()
+                    syncSucceeded = true
+                } catch {
+                    PipelineLogger.shared.log("[DownloadCoordinator] Writer synchronize failed on error for \(request.id): \(error.localizedDescription). Segment checkpoints will not be advanced.")
                 }
-                _ = try? await persistenceStore.updateState(tag: request.id, state: .failed(reason: error.localizedDescription))
+
+                if syncSucceeded {
+                    let completedMap = await progressAccumulator.getCompletedBytes()
+                    for (segID, bytes) in completedMap {
+                        do {
+                            _ = try await persistenceStore.updateSegmentProgress(tag: request.id, segmentID: segID, completedBytes: bytes)
+                        } catch {
+                            PipelineLogger.shared.log("[DownloadCoordinator] Failed to persist segment \(segID) progress on error for \(request.id): \(error.localizedDescription)")
+                        }
+                    }
+                }
+                do {
+                    _ = try await persistenceStore.updateState(tag: request.id, state: .failed(reason: error.localizedDescription))
+                } catch {
+                    PipelineLogger.shared.log("[DownloadCoordinator] Failed to persist failed state for \(request.id): \(error.localizedDescription)")
+                }
                 let snap = await progressAccumulator.snapshot()
                 let metrics = speedTracker.snapshot(expectedTotalBytes: totalSize)
                 updateProgress(
@@ -1986,8 +2020,7 @@ public actor DownloadCoordinator {
 
                         if totalWritten - lastFlushedSingleStreamBytes >= 256 * 1024 ||
                             Date().timeIntervalSince(lastFlushedSingleStreamTime) >= 1.0 {
-                            lastFlushedSingleStreamBytes = totalWritten
-                            lastFlushedSingleStreamTime = Date()
+                            var flushedSuccessfully = false
                             do {
                                 try fileHandle.synchronize()
                                 _ = try await persistenceStore.updateSegmentProgress(
@@ -1995,8 +2028,13 @@ public actor DownloadCoordinator {
                                     segmentID: 0,
                                     completedBytes: totalWritten
                                 )
+                                flushedSuccessfully = true
                             } catch {
                                 PipelineLogger.shared.log("[DownloadCoordinator] Single stream intermediate checkpoint failed for \(request.id): \(error.localizedDescription)")
+                            }
+                            if flushedSuccessfully {
+                                lastFlushedSingleStreamBytes = totalWritten
+                                lastFlushedSingleStreamTime = Date()
                             }
                         }
                     }
@@ -2054,6 +2092,24 @@ public actor DownloadCoordinator {
                         handler: handler
                     )
                     throw CancellationError()
+                }
+                var singleStreamSyncSucceeded = false
+                do {
+                    try fileHandle.synchronize()
+                    singleStreamSyncSucceeded = true
+                } catch {
+                    PipelineLogger.shared.log("[DownloadCoordinator] Single stream synchronize failed on error for \(request.id): \(error.localizedDescription)")
+                }
+                if singleStreamSyncSucceeded {
+                    do {
+                        _ = try await persistenceStore.updateSegmentProgress(
+                            tag: request.id,
+                            segmentID: 0,
+                            completedBytes: totalWritten
+                        )
+                    } catch {
+                        PipelineLogger.shared.log("[DownloadCoordinator] Single stream progress persistence failed on error for \(request.id): \(error.localizedDescription)")
+                    }
                 }
                 do {
                     _ = try await persistenceStore.updateState(tag: request.id, state: .failed(reason: error.localizedDescription))
@@ -2610,9 +2666,17 @@ public actor DownloadCoordinator {
             await bgManager.cancelTasks(for: request.id)
             let completedMap = await progressAccumulator.getCompletedBytes()
             for (segID, bytes) in completedMap {
-                _ = try? await persistenceStore.updateSegmentProgress(tag: request.id, segmentID: segID, completedBytes: bytes)
+                do {
+                    _ = try await persistenceStore.updateSegmentProgress(tag: request.id, segmentID: segID, completedBytes: bytes)
+                } catch {
+                    PipelineLogger.shared.log("[DownloadCoordinator] Failed to persist background segment \(segID) progress on pause for \(request.id): \(error.localizedDescription)")
+                }
             }
-            _ = try? await persistenceStore.updateState(tag: request.id, state: .paused)
+            do {
+                _ = try await persistenceStore.updateState(tag: request.id, state: .paused)
+            } catch {
+                PipelineLogger.shared.log("[DownloadCoordinator] Failed to persist background paused state for \(request.id): \(error.localizedDescription)")
+            }
             let snap = await progressAccumulator.snapshot()
             let metrics = speedTracker.snapshot(expectedTotalBytes: totalSize)
             updateProgress(
@@ -2633,9 +2697,17 @@ public actor DownloadCoordinator {
             await bgManager.cancelTasks(for: request.id)
             let completedMap = await progressAccumulator.getCompletedBytes()
             for (segID, bytes) in completedMap {
-                _ = try? await persistenceStore.updateSegmentProgress(tag: request.id, segmentID: segID, completedBytes: bytes)
+                do {
+                    _ = try await persistenceStore.updateSegmentProgress(tag: request.id, segmentID: segID, completedBytes: bytes)
+                } catch {
+                    PipelineLogger.shared.log("[DownloadCoordinator] Failed to persist background segment \(segID) progress on error for \(request.id): \(error.localizedDescription)")
+                }
             }
-            _ = try? await persistenceStore.updateState(tag: request.id, state: .failed(reason: error.localizedDescription))
+            do {
+                _ = try await persistenceStore.updateState(tag: request.id, state: .failed(reason: error.localizedDescription))
+            } catch {
+                PipelineLogger.shared.log("[DownloadCoordinator] Failed to persist background failed state for \(request.id): \(error.localizedDescription)")
+            }
             let snap = await progressAccumulator.snapshot()
             let metrics = speedTracker.snapshot(expectedTotalBytes: totalSize)
             updateProgress(

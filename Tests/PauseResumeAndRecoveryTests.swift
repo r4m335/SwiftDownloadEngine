@@ -929,4 +929,51 @@ final class PauseResumeAndRecoveryTests: XCTestCase {
         XCTAssertEqual(finalData.count, size)
         XCTAssertEqual(EngineSHA256.hash(data: finalData), expectedSHA)
     }
+
+    func testPauseAndResumeMultiSegmentWithIntermediateCheckpoints() async throws {
+        let size = 2 * 1024 * 1024 // 2 MiB
+        let payload = makePayload(size: size, seed: 0x55)
+        let expectedSHA = EngineSHA256.hash(data: payload)
+        let path = "/pause_checkpoint.bin"
+        server.register(path: path, data: payload, chunkDelayMs: 5)
+
+        let destURL = tempDirectory.appendingPathComponent("pause_checkpoint.bin")
+        let request = DownloadRequest(
+            id: "pause-checkpoint",
+            url: server.url(for: path),
+            destinationURL: destURL,
+            configuredThreadCount: 2,
+            reserveDiskBytes: 1024,
+            expectedSHA256: expectedSHA
+        )
+
+        let downloadTask = Task {
+            try await coordinator.start(request)
+        }
+
+        var paused = false
+        for _ in 0..<50 {
+            try await Task.sleep(nanoseconds: 20_000_000)
+            if let prog = await coordinator.currentProgress(for: "pause-checkpoint"), prog.bytesReceived > 100_000 {
+                try await coordinator.pause(id: "pause-checkpoint")
+                paused = true
+                break
+            }
+        }
+        XCTAssertTrue(paused, "Failed to initiate pause during active download")
+
+        _ = try? await downloadTask.value
+
+        let record = try await persistenceStore.fetch(tag: "pause-checkpoint")
+        XCTAssertNotNil(record)
+        XCTAssertEqual(record?.state, .paused)
+
+        // Resume and complete
+        try await coordinator.resume(request)
+
+        let writtenData = try Data(contentsOf: destURL)
+        XCTAssertEqual(writtenData.count, size)
+        XCTAssertEqual(writtenData, payload)
+        XCTAssertEqual(EngineSHA256.hash(data: writtenData), expectedSHA)
+    }
 }
