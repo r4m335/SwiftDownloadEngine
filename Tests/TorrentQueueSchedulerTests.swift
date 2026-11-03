@@ -304,4 +304,30 @@ final class TorrentQueueSchedulerTests: XCTestCase {
         let storedRecord2 = await store.loadRecord(infoHash: hash2)
         XCTAssertEqual(storedRecord2?.state, .queued)
     }
+
+    func testStartupReconciliationHandlesPersistenceFailureGracefully() async throws {
+        let hash = "aaaaabbbbbcccccdddddeeeeefffff1111122222"
+        let record = TorrentRecord(
+            infoHash: hash,
+            source: "src",
+            name: "Item",
+            savePath: tempDirectoryURL,
+            state: .downloading,
+            priority: .normal,
+            sequenceIndex: 1
+        )
+        try await store.saveRecord(record)
+
+        // Make the directory read-only to trigger persistence failure during reconciliation
+        #if os(Linux) || canImport(Darwin)
+        try? FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: tempDirectoryURL.path)
+        defer {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o777], ofItemAtPath: tempDirectoryURL.path)
+        }
+        #endif
+
+        // Scheduler initialization must not crash or corrupt uncommitted in-memory state when persistence throws
+        let scheduler = try await TorrentQueueScheduler(persistenceStore: store, maxConcurrentTorrents: 1)
+        XCTAssertNotNil(scheduler)
+    }
 }

@@ -281,9 +281,13 @@ public actor TorrentQueueScheduler {
             if var r = records[demotedKey] {
                 r.state = .queued
                 r.updatedAt = Date()
-                records[demotedKey] = r
-                try? await persistenceStore.saveRecord(r)
-                demoted.append(demotedKey)
+                do {
+                    try await persistenceStore.saveRecord(r)
+                    records[demotedKey] = r
+                    demoted.append(demotedKey)
+                } catch {
+                    PipelineLogger.shared.log("[TorrentQueueScheduler] Failed to persist demoted queued state for \(demotedKey): \(error.localizedDescription)")
+                }
             }
         }
 
@@ -310,9 +314,13 @@ public actor TorrentQueueScheduler {
                 var updated = r
                 updated.state = .downloading
                 updated.updatedAt = Date()
-                records[key] = updated
-                try? await persistenceStore.saveRecord(updated)
-                promoted.append(key)
+                do {
+                    try await persistenceStore.saveRecord(updated)
+                    records[key] = updated
+                    promoted.append(key)
+                } catch {
+                    PipelineLogger.shared.log("[TorrentQueueScheduler] Failed to persist promoted state for \(key): \(error.localizedDescription)")
+                }
             }
         }
 
@@ -369,14 +377,23 @@ public actor TorrentQueueScheduler {
             if r.isExplicitlyPaused {
                 if r.state != .paused {
                     r.state = .paused
-                    records[key] = r
-                    try? await persistenceStore.saveRecord(r)
+                    r.updatedAt = Date()
+                    do {
+                        try await persistenceStore.saveRecord(r)
+                        records[key] = r
+                    } catch {
+                        PipelineLogger.shared.log("[TorrentQueueScheduler] Failed to persist reconciled paused state for \(key): \(error.localizedDescription)")
+                    }
                 }
             } else if r.state.isActive {
                 r.state = .queued
                 r.updatedAt = Date()
-                records[key] = r
-                try? await persistenceStore.saveRecord(r)
+                do {
+                    try await persistenceStore.saveRecord(r)
+                    records[key] = r
+                } catch {
+                    PipelineLogger.shared.log("[TorrentQueueScheduler] Failed to persist reconciled queued state for \(key): \(error.localizedDescription)")
+                }
             }
         }
         return await pumpQueue()
