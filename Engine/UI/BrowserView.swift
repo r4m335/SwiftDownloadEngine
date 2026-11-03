@@ -1040,9 +1040,41 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                 #endif
                 print("[HLS Pipeline] Setting active BrowserViewModel as urlResolver on orchestrator...")
                 await orchestrator.setURLResolver(self)
+                var effectiveResource = resource
+                if effectiveResource.manifestText == nil || effectiveResource.manifestText?.isEmpty == true {
+                    if let cachedText = self.discoveredResources.first(where: { $0.url == resource.url })?.manifestText, !cachedText.isEmpty {
+                        effectiveResource = WebpageResource(
+                            id: effectiveResource.id,
+                            url: effectiveResource.url,
+                            title: effectiveResource.title,
+                            suggestedFilename: effectiveResource.suggestedFilename,
+                            resourceType: effectiveResource.resourceType,
+                            mimeType: effectiveResource.mimeType,
+                            estimatedSize: effectiveResource.estimatedSize,
+                            isSupported: effectiveResource.isSupported,
+                            unsupportedReason: effectiveResource.unsupportedReason,
+                            requestContext: effectiveResource.requestContext,
+                            manifestText: cachedText
+                        )
+                    } else if let cachedText = self.mediaCandidates.first(where: { $0.url == resource.url })?.cachedManifestText, !cachedText.isEmpty {
+                        effectiveResource = WebpageResource(
+                            id: effectiveResource.id,
+                            url: effectiveResource.url,
+                            title: effectiveResource.title,
+                            suggestedFilename: effectiveResource.suggestedFilename,
+                            resourceType: effectiveResource.resourceType,
+                            mimeType: effectiveResource.mimeType,
+                            estimatedSize: effectiveResource.estimatedSize,
+                            isSupported: effectiveResource.isSupported,
+                            unsupportedReason: effectiveResource.unsupportedReason,
+                            requestContext: effectiveResource.requestContext,
+                            manifestText: cachedText
+                        )
+                    }
+                }
                 print("[HLS Pipeline] Creating StreamingManifestCandidate and preparing proposal with orchestrator...")
                 let candidate = try StreamingManifestCandidate(
-                    resource: resource,
+                    resource: effectiveResource,
                     browserSessionSnapshot: sessionSnapshot
                 )
                 let proposal = try await orchestrator.prepare(candidate: candidate)
@@ -1306,6 +1338,12 @@ public final class BrowserViewModel: NSObject, ObservableObject {
             resourceURL = discoveredURL
         }
 
+        if let prefix = observation.manifestPrefix, !prefix.isEmpty {
+            Task { [weak self] in
+                await self?.streamingOrchestrator?.recordCachedManifest(text: prefix, for: resourceURL)
+            }
+        }
+
         let rawCandidate = WebpageRawResourceCandidate(
             rawURL: resourceURL.absoluteString,
             tag: observation.tag ?? (observation.isManifestSignal ? "video" : nil),
@@ -1336,10 +1374,32 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                 manifestText: observation.manifestPrefix
             )]
         }
-        guard var resource = resources.first,
-              !discoveredResources.contains(where: {
-                  $0.url.absoluteString.lowercased() == resource.url.absoluteString.lowercased()
-              }) else {
+        guard var resource = resources.first else { return }
+
+        if let existingIndex = discoveredResources.firstIndex(where: {
+            $0.url.absoluteString.lowercased() == resource.url.absoluteString.lowercased()
+        }) {
+            if let prefix = observation.manifestPrefix, !prefix.isEmpty {
+                let existing = discoveredResources[existingIndex]
+                if existing.manifestText == nil || existing.manifestText?.isEmpty == true {
+                    let updated = WebpageResource(
+                        id: existing.id,
+                        url: existing.url,
+                        title: existing.title,
+                        suggestedFilename: existing.suggestedFilename,
+                        resourceType: existing.resourceType,
+                        mimeType: existing.mimeType ?? observation.declaredType,
+                        estimatedSize: existing.estimatedSize ?? observation.contentLength,
+                        isSupported: existing.isSupported,
+                        unsupportedReason: existing.unsupportedReason,
+                        requestContext: existing.requestContext,
+                        manifestText: prefix
+                    )
+                    discoveredResources[existingIndex] = updated
+                    PipelineLogger.shared.log("[BrowserView] Attached captured manifestText (\(prefix.count) chars) to existing discovered resource: \(existing.url.absoluteString)")
+                    ingestMediaResource(updated, tabID: tabID ?? activeTabID)
+                }
+            }
             return
         }
 

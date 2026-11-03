@@ -190,8 +190,12 @@ public enum DownloadRequestEnricher {
 
     /// Asynchronously enriches outbound engine requests with dynamically fetched cookies from WKWebsiteDataStore
     /// right before a network request is dispatched, preventing failures when tokens rotate mid-download.
-    public static func enrichAsync(_ request: URLRequest, snapshot: BrowserSessionSnapshot? = nil) async -> URLRequest {
-        var req = enrich(request, snapshot: snapshot)
+    public static func enrichAsync(
+        _ request: URLRequest,
+        snapshot: BrowserSessionSnapshot? = nil,
+        context: BrowserRequestContext? = nil
+    ) async -> URLRequest {
+        var req = enrich(request, snapshot: snapshot, context: context)
         guard let url = req.url else { return req }
 
         let freshCookies = await dynamicCookies(for: url)
@@ -206,7 +210,11 @@ public enum DownloadRequestEnricher {
 
     /// Applies session snapshot to an outbound URLRequest using RFC 6265 cookie matching and authentic browser context headers.
     /// Idempotent. Does NOT overwrite headers already set by the caller.
-    public static func enrich(_ request: URLRequest, snapshot: BrowserSessionSnapshot? = nil) -> URLRequest {
+    public static func enrich(
+        _ request: URLRequest,
+        snapshot: BrowserSessionSnapshot? = nil,
+        context: BrowserRequestContext? = nil
+    ) -> URLRequest {
         var req = request
         guard let url = req.url, let host = url.host else { return req }
 
@@ -247,6 +255,28 @@ public enum DownloadRequestEnricher {
                 let matching = s.allCookies.filter { $0.matches(url: url) }
                 if !matching.isEmpty {
                     let fields = HTTPCookie.requestHeaderFields(with: matching)
+                    if let cookieValue = fields["Cookie"] {
+                        req.setValue(cookieValue, forHTTPHeaderField: "Cookie")
+                    }
+                }
+            }
+        }
+
+        if let ctx = context {
+            if req.value(forHTTPHeaderField: "User-Agent") == nil, let ua = ctx.userAgent, !ua.isEmpty {
+                req.setValue(ua, forHTTPHeaderField: "User-Agent")
+            }
+            if req.value(forHTTPHeaderField: "Origin") == nil, let origin = ctx.origin {
+                req.setValue(origin, forHTTPHeaderField: "Origin")
+            }
+            if req.value(forHTTPHeaderField: "Referer") == nil, let ref = ctx.referer ?? ctx.pageURL?.absoluteString {
+                req.setValue(ref, forHTTPHeaderField: "Referer")
+            }
+            if req.value(forHTTPHeaderField: "Cookie") == nil {
+                let matching = ctx.cookies.filter { $0.matches(url: url) }
+                if !matching.isEmpty {
+                    let httpCookies = matching.compactMap { $0.toHTTPCookie() }
+                    let fields = HTTPCookie.requestHeaderFields(with: httpCookies)
                     if let cookieValue = fields["Cookie"] {
                         req.setValue(cookieValue, forHTTPHeaderField: "Cookie")
                     }

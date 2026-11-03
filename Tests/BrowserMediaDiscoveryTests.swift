@@ -419,6 +419,110 @@ final class BrowserMediaDiscoveryTests: XCTestCase {
         #endif
     }
 
+    func testObservationWithManifestPrefixPassesEvenIfURLSeenEarlierWithoutPrefix() throws {
+        let bridge = BrowserMediaDiscoveryBridge()
+        let targetURL = "https://video.example/live/playlist.m3u8"
+
+        // 1. First observation without manifest prefix (e.g. DOM or PerformanceObserver)
+        let firstPayload: [String: Any] = [
+            "rawURL": targetURL,
+            "source": "domMutation",
+            "tag": "video"
+        ]
+        let firstObservation = try XCTUnwrap(
+            bridge.accept(payload: firstPayload, pageURL: pageURL, frameURL: pageURL)
+        )
+        XCTAssertNil(firstObservation.manifestPrefix)
+
+        // 2. Second observation for same URL WITH manifest prefix (e.g. from player fetch/XHR hook)
+        let secondPayload: [String: Any] = [
+            "rawURL": targetURL,
+            "source": "fetch",
+            "declaredType": "application/vnd.apple.mpegurl",
+            "manifestPrefix": "#EXTM3U\n#EXT-X-VERSION:3\n#EXTINF:4,\nsegment1.ts"
+        ]
+        let secondObservation = try XCTUnwrap(
+            bridge.accept(payload: secondPayload, pageURL: pageURL, frameURL: pageURL)
+        )
+        XCTAssertEqual(secondObservation.url?.absoluteString, targetURL)
+        XCTAssertNotNil(secondObservation.manifestPrefix)
+        XCTAssertTrue(secondObservation.manifestPrefix!.contains("#EXTM3U"))
+
+        // 3. Third observation with identical prefix should be deduplicated
+        let duplicateObservation = try bridge.accept(payload: secondPayload, pageURL: pageURL, frameURL: pageURL)
+        XCTAssertNil(duplicateObservation)
+    }
+
+    func testCandidateCatalogMergePreservesCachedManifestText() {
+        var catalog = BrowserMediaCandidateCatalog()
+        let manifestURL = URL(string: "https://video.example/stream.m3u8")!
+        let manifestText = "#EXTM3U\n#EXT-X-TARGETDURATION:6\n#EXTINF:6,\nsegment.ts"
+
+        let candidateA = BrowserMediaCandidate(
+            id: "cand-1",
+            url: manifestURL,
+            rawURL: manifestURL.absoluteString,
+            kind: .hlsManifest,
+            suggestedFilename: "stream.m3u8",
+            availability: .requiresPlanning,
+            cachedManifestText: manifestText
+        )
+        let mergedFirst = catalog.merge(candidateA)
+        XCTAssertEqual(mergedFirst.cachedManifestText, manifestText)
+
+        // Merge an update without cachedManifestText; the existing text should be preserved!
+        let candidateB = BrowserMediaCandidate(
+            id: "cand-1",
+            url: manifestURL,
+            rawURL: manifestURL.absoluteString,
+            kind: .hlsManifest,
+            suggestedFilename: "stream.m3u8",
+            availability: .requiresPlanning,
+            cachedManifestText: nil
+        )
+        let mergedSecond = catalog.merge(candidateB)
+        XCTAssertEqual(mergedSecond.cachedManifestText, manifestText)
+        XCTAssertEqual(catalog.candidates.first?.cachedManifestText, manifestText)
+    }
+
+    func testBrowserRequestContextComputesOriginAndHeaders() {
+        let manifestURL = URL(string: "https://cdn.example.com:8443/hls/master.m3u8?token=123")!
+        let pageURL = URL(string: "https://mysite.example:443/watch?v=xyz#frag")!
+
+        let context = BrowserRequestContext(
+            url: manifestURL,
+            pageURL: pageURL,
+            userAgent: "Mozilla/5.0 TestBrowser",
+            cookies: []
+        )
+
+        XCTAssertEqual(context.origin, "https://mysite.example:443")
+        XCTAssertEqual(context.referer, "https://mysite.example:443/watch?v=xyz")
+
+        let effective = context.effectiveHeaders(for: manifestURL)
+        XCTAssertEqual(effective["Origin"], "https://mysite.example:443")
+        XCTAssertEqual(effective["Referer"], "https://mysite.example:443/watch?v=xyz")
+        XCTAssertEqual(effective["User-Agent"], "Mozilla/5.0 TestBrowser")
+    }
+
+    func testDownloadRequestEnricherAttachesOriginAndRefererFromContext() {
+        let reqURL = URL(string: "https://cdn.example.com/segment0.ts")!
+        var request = URLRequest(url: reqURL)
+        request.httpMethod = "GET"
+
+        let context = BrowserRequestContext(
+            url: reqURL,
+            pageURL: URL(string: "https://mysite.example/watch")!,
+            userAgent: "CustomEnricherUA",
+            cookies: []
+        )
+
+        let enriched = DownloadRequestEnricher.enrich(request, context: context)
+        XCTAssertEqual(enriched.value(forHTTPHeaderField: "Origin"), "https://mysite.example")
+        XCTAssertEqual(enriched.value(forHTTPHeaderField: "Referer"), "https://mysite.example/watch")
+        XCTAssertEqual(enriched.value(forHTTPHeaderField: "User-Agent"), "CustomEnricherUA")
+    }
+
     #if canImport(WebKit)
     func testFetchManifestTextThrowsOnUnreachableURL() async {
         let bridge = BrowserMediaDiscoveryBridge()

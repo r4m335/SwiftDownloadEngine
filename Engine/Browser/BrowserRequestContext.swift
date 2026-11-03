@@ -195,6 +195,15 @@ public struct BrowserRequestContext: Sendable, Codable, Hashable {
         return components.url?.absoluteString
     }
 
+    /// Computes the valid `Origin` header value for CORS/CDN verification.
+    public var origin: String? {
+        guard let page = pageURL ?? Optional(url), let scheme = page.scheme, let host = page.host else { return nil }
+        if let port = page.port {
+            return "\(scheme)://\(host):\(port)"
+        }
+        return "\(scheme)://\(host)"
+    }
+
     /// Assembles the final, sanitized header dictionary for the target URL.
     ///
     /// Filters cookies to only those matching the target URL origin, appends Referer and User-Agent,
@@ -229,6 +238,11 @@ public struct BrowserRequestContext: Sendable, Codable, Hashable {
         // 2. Referer
         if let ref = self.referer {
             headers["Referer"] = ref
+        }
+
+        // 2b. Origin
+        if let orig = self.origin {
+            headers["Origin"] = orig
         }
 
         // 3. User-Agent
@@ -276,6 +290,8 @@ public struct BrowserHeaderFilter {
         "if-modified-since",
         "if-unmodified-since",
         "authorization",
+        "origin",
+        "referer",
         "x-api-key",
         "x-auth-token",
         "x-session-token",

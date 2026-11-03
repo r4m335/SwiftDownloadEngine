@@ -553,6 +553,7 @@ public struct BrowserMediaCandidateCatalog: Sendable, Equatable {
             var newCandidate = candidate
             if (newCandidate.kind == .mediaSource || newCandidate.blobKind == .mediaSource), newCandidate.associatedManifestURL == nil {
                 if let manifestURL = values.values.first(where: { $0.kind == .hlsManifest || $0.kind == .dashManifest })?.url {
+                    let manifestCachedText = newCandidate.cachedManifestText ?? values.values.first(where: { $0.url == manifestURL })?.cachedManifestText
                     newCandidate = BrowserMediaCandidate(
                         id: newCandidate.id,
                         url: newCandidate.url,
@@ -569,6 +570,7 @@ public struct BrowserMediaCandidateCatalog: Sendable, Equatable {
                         requestContext: newCandidate.requestContext,
                         associatedManifestID: newCandidate.associatedManifestID,
                         associatedManifestURL: manifestURL,
+                        cachedManifestText: manifestCachedText,
                         lastObserved: newCandidate.lastObserved
                     )
                 }
@@ -595,6 +597,7 @@ public struct BrowserMediaCandidateCatalog: Sendable, Equatable {
                         requestContext: val.requestContext,
                         associatedManifestID: val.associatedManifestID,
                         associatedManifestURL: manifestURL,
+                        cachedManifestText: val.cachedManifestText ?? newCandidate.cachedManifestText,
                         lastObserved: val.lastObserved
                     )
                 }
@@ -639,6 +642,7 @@ public struct BrowserMediaCandidateCatalog: Sendable, Equatable {
             requestContext: existing.requestContext ?? candidate.requestContext,
             associatedManifestID: existing.associatedManifestID ?? candidate.associatedManifestID,
             associatedManifestURL: associatedManifestURL,
+            cachedManifestText: candidate.cachedManifestText ?? existing.cachedManifestText,
             lastObserved: max(existing.lastObserved, candidate.lastObserved)
         )
         values[candidate.id] = merged
@@ -661,6 +665,7 @@ public struct BrowserMediaCandidateCatalog: Sendable, Equatable {
                     requestContext: val.requestContext,
                     associatedManifestID: val.associatedManifestID,
                     associatedManifestURL: manifestURL,
+                    cachedManifestText: val.cachedManifestText ?? merged.cachedManifestText,
                     lastObserved: val.lastObserved
                 )
             }

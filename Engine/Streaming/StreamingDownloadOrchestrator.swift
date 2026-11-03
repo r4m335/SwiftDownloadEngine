@@ -27,8 +27,22 @@ public struct StreamingManifestCandidate: Sendable, Equatable {
         }
         self.url = url
         self.mimeType = mimeType
-        self.browserRequestContext = browserRequestContext
-        self.browserSessionSnapshot = browserSessionSnapshot ?? DownloadRequestEnricher.sharedSessionSnapshot.snapshot
+        let snapshot = browserSessionSnapshot ?? DownloadRequestEnricher.sharedSessionSnapshot.snapshot
+        self.browserSessionSnapshot = snapshot
+        if let browserRequestContext {
+            self.browserRequestContext = browserRequestContext
+        } else if let snapshot, snapshot.pageURL != nil {
+            let cookies = snapshot.allCookies.compactMap { BrowserCookie(from: $0) }
+            self.browserRequestContext = BrowserRequestContext(
+                url: url,
+                pageURL: snapshot.pageURL,
+                userAgent: snapshot.userAgent.isEmpty ? nil : snapshot.userAgent,
+                cookies: cookies,
+                source: .webpageResource
+            )
+        } else {
+            self.browserRequestContext = nil
+        }
         self.hlsVariantPreferences = hlsVariantPreferences
         self.cachedManifestText = cachedManifestText
     }
@@ -612,6 +626,14 @@ public actor StreamingDownloadOrchestrator {
     private var cancelledTransfers: Set<String> = []
     private var registeredTransferIDs: [String: String] = [:]
     private var candidatesByTransfer: [String: StreamingManifestCandidate] = [:]
+    private var cachedManifestTextsByURL: [String: String] = [:]
+
+    public func recordCachedManifest(text: String, for url: URL) {
+        let normalized = text.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: "\u{FEFF}", with: "")
+        guard !normalized.isEmpty else { return }
+        cachedManifestTextsByURL[url.absoluteString] = normalized
+        cachedManifestTextsByURL[url.absoluteString.lowercased()] = normalized
+    }
 
     /// HLS uses the proposal transfer ID as its durable parent ID. Proposal
     /// IDs are deterministic digests and therefore safe for queue and metadata
@@ -1040,6 +1062,29 @@ public actor StreamingDownloadOrchestrator {
         candidate: StreamingManifestCandidate,
         headers: [String: String]
     ) async throws -> StreamingManifestResponse {
+        if let cached = cachedManifestTextsByURL[candidate.url.absoluteString] ?? cachedManifestTextsByURL[candidate.url.absoluteString.lowercased()],
+           !cached.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            let normalized = cached.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: "\u{FEFF}", with: "")
+            let data = Data(normalized.utf8)
+            if data.count <= parsingLimits.maxBytes && !Self.isHTMLResponse(data) {
+                let classification = StreamingManifestClassifier.classify(
+                    url: candidate.url,
+                    mimeType: candidate.mimeType,
+                    content: data,
+                    limits: parsingLimits
+                )
+                if classification.isManifest {
+                    PipelineLogger.shared.log("[HLS Pipeline] Step 1: Using cached manifest text from hook for \(candidate.url.absoluteString) (\(normalized.count) chars). Bypassing network fetch.")
+                    return StreamingManifestResponse(
+                        data: data,
+                        finalURL: candidate.url,
+                        mimeType: candidate.mimeType,
+                        statusCode: 200
+                    )
+                }
+            }
+        }
+
         do {
             let response = try await manifestLoader.load(
                 candidate: candidate,
@@ -1119,8 +1164,10 @@ public actor StreamingDownloadOrchestrator {
         var parsedManifest: StreamingTransferManifest?
         var manifestData: Data?
 
-        if let cachedText = candidate.cachedManifestText, !cachedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            let cachedData = Data(cachedText.utf8)
+        let rawCachedText = candidate.cachedManifestText ?? cachedManifestTextsByURL[candidate.url.absoluteString] ?? cachedManifestTextsByURL[candidate.url.absoluteString.lowercased()]
+        if let rawCachedText, !rawCachedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            let normalizedText = rawCachedText.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: "\u{FEFF}", with: "")
+            let cachedData = Data(normalizedText.utf8)
             if cachedData.count <= parsingLimits.maxBytes && !Self.isHTMLResponse(cachedData) {
                 let classification = StreamingManifestClassifier.classify(
                     url: candidate.url,
@@ -1130,7 +1177,7 @@ public actor StreamingDownloadOrchestrator {
                 )
                 if classification.isManifest {
                     do {
-                        PipelineLogger.shared.log("[Streaming Pipeline] Step 1: Using cached manifest text from network hook (\(cachedText.count) chars). Skipping network fetch.")
+                        PipelineLogger.shared.log("[Streaming Pipeline] Step 1: Using cached manifest text from network hook (\(normalizedText.count) chars). Skipping network fetch.")
                         let manifest = try await parseManifest(
                             data: cachedData,
                             finalURL: candidate.url,
@@ -1305,12 +1352,14 @@ public actor StreamingDownloadOrchestrator {
                 } else {
                     variantURI = variant.uri
                 }
+                let variantCachedText = cachedManifestTextsByURL[variantURI.absoluteString] ?? cachedManifestTextsByURL[variantURI.absoluteString.lowercased()]
                 let variantCandidate = try StreamingManifestCandidate(
                     url: variantURI,
                     mimeType: "application/vnd.apple.mpegurl",
                     browserRequestContext: candidate.browserRequestContext,
                     browserSessionSnapshot: candidate.browserSessionSnapshot,
-                    hlsVariantPreferences: candidate.hlsVariantPreferences
+                    hlsVariantPreferences: candidate.hlsVariantPreferences,
+                    cachedManifestText: variantCachedText
                 )
                 let subResponse = try await loadManifestResponse(
                     candidate: variantCandidate,

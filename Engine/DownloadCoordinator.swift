@@ -1141,6 +1141,35 @@ public actor DownloadCoordinator {
         request: DownloadRequest,
         progress handler: ProgressHandler?
     ) async throws {
+        let persistedHeaders = headersForPersistence(request)
+        var initialRecord = DownloadRecord(
+            id: request.id,
+            originalURL: request.url,
+            resolvedURL: request.url,
+            destinationURL: request.destinationURL,
+            totalSize: 0,
+            state: .downloading,
+            storageMode: .directSeek,
+            headers: persistedHeaders,
+            segments: [SegmentRecord(segment: DownloadSegment(
+                id: 0,
+                startOffset: 0,
+                endOffset: 0,
+                length: 0
+            ))]
+        )
+        try await persistenceStore.save(initialRecord)
+
+        updateProgress(
+            downloadID: request.id,
+            state: .probing,
+            bytesReceived: 0,
+            totalBytes: nil,
+            completedSegments: 0,
+            totalSegments: 1,
+            handler: handler
+        )
+
         let probe = HTTPRangeProbe(session: session)
         let probeResult: HTTPRangeProbeResult
         do {
@@ -1166,35 +1195,12 @@ public actor DownloadCoordinator {
         }
 
         let totalSize = probeResult.totalSize ?? 0
-        let persistedHeaders = headersForPersistence(request)
-        let initialRecord = DownloadRecord(
-            id: request.id,
-            originalURL: request.url,
-            resolvedURL: probeResult.finalURL,
-            destinationURL: request.destinationURL,
-            totalSize: totalSize,
-            state: .downloading,
-            storageMode: .directSeek,
-            headers: persistedHeaders,
-            segments: [SegmentRecord(
-                id: 0,
-                startOffset: 0,
-                endOffset: max(0, totalSize - 1),
-                length: totalSize,
-                completedBytes: 0
-            )]
-        )
-        try await persistenceStore.save(initialRecord)
-
-        updateProgress(
-            downloadID: request.id,
-            state: .downloading,
-            bytesReceived: 0,
-            totalBytes: totalSize > 0 ? totalSize : nil,
-            completedSegments: 0,
-            totalSegments: 1,
-            handler: handler
-        )
+        if totalSize > 0 {
+            initialRecord.totalSize = totalSize
+            initialRecord.segments[0].endOffset = totalSize - 1
+            initialRecord.segments[0].length = totalSize
+            try? await persistenceStore.save(initialRecord)
+        }
 
         var segmentRequest = URLRequest(url: probeResult.finalURL)
         segmentRequest.httpMethod = "GET"
@@ -1289,25 +1295,12 @@ public actor DownloadCoordinator {
             }
             try FileManager.default.moveItem(at: temporaryURL, to: request.destinationURL)
 
-            let completedRecord = DownloadRecord(
-                id: request.id,
-                originalURL: request.url,
-                resolvedURL: probeResult.finalURL,
-                destinationURL: request.destinationURL,
-                totalSize: receivedBytes,
-                state: .completed,
-                storageMode: .directSeek,
-                headers: persistedHeaders,
-                createdAt: initialRecord.createdAt,
-                updatedAt: Date(),
-                segments: [SegmentRecord(
-                    id: 0,
-                    startOffset: 0,
-                    endOffset: max(0, receivedBytes - 1),
-                    length: receivedBytes,
-                    completedBytes: receivedBytes
-                )]
-            )
+            var completedRecord = initialRecord
+            completedRecord.totalSize = receivedBytes
+            completedRecord.segments[0].completedBytes = receivedBytes
+            completedRecord.segments[0].length = receivedBytes
+            completedRecord.segments[0].endOffset = max(0, receivedBytes - 1)
+            completedRecord.transition(to: .completed)
             try await persistenceStore.save(completedRecord)
 
             updateProgress(
@@ -1665,7 +1658,6 @@ public actor DownloadCoordinator {
                     handler: handler
                 )
             }
-            try? await writer.close()
             throw error
         }
 

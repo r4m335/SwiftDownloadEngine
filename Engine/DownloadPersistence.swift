@@ -85,8 +85,8 @@ public enum HTTPTransportPolicy: String, Codable, Sendable, CaseIterable {
 public struct SegmentRecord: Codable, Equatable, Identifiable, Sendable {
     public let id: Int
     public let startOffset: Int64
-    public let endOffset: Int64
-    public let length: Int64
+    public var endOffset: Int64
+    public var length: Int64
     public var completedBytes: Int64
 
     public var isCompleted: Bool {
@@ -135,7 +135,7 @@ public struct DownloadRecord: Codable, Equatable, Identifiable, Sendable {
     public let originalURL: URL
     public var resolvedURL: URL?
     public let destinationURL: URL
-    public let totalSize: Int64
+    public var totalSize: Int64
     public var state: DownloadState
     public var storageMode: DownloadStorageMode
     public var transportPolicy: HTTPTransportPolicy

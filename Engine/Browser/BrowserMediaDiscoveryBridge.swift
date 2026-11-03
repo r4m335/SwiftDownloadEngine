@@ -563,10 +563,13 @@ public final class BrowserMediaDiscoveryBridge: NSObject, @unchecked Sendable {
             try { urlPath = new URL(lowerURL).pathname.toLowerCase(); } catch (_) {}
             var text = prefix ? String(prefix).replace(/^\uFEFF/, "").trim() : "";
             var hls = text.indexOf("#EXTM3U") === 0 ||
-                mime.indexOf("mpegurl") >= 0 || /(?:^|[./])m3u8$/.test(urlPath);
+                mime.indexOf("mpegurl") >= 0 ||
+                /(?:^|[./])m3u8(?:$|[?#&;])/.test(urlPath) ||
+                lowerURL.indexOf(".m3u8") !== -1;
             var dash = /<\s*(?:[a-z_][a-z0-9_.-]*:)?mpd(?:\s|>)/i.test(text) ||
                 mime === "application/dash+xml" || mime === "video/vnd.mpeg.dash.mpd" ||
-                /(?:^|[./])mpd$/.test(urlPath);
+                /(?:^|[./])mpd(?:$|[?#&;])/.test(urlPath) ||
+                lowerURL.indexOf(".mpd") !== -1;
             if (hls && dash) { return "unsupported"; }
             if (hls) { return "hls"; }
             if (dash) { return "dash"; }
@@ -586,36 +589,24 @@ public final class BrowserMediaDiscoveryBridge: NSObject, @unchecked Sendable {
         }
 
         function inspectResponsePrefix(response) {
-            if (!response || !response.clone || !response.body || !window.TextDecoder) {
+            if (!response || !response.clone) {
                 return Promise.resolve(null);
             }
-            var clone;
-            try { clone = response.clone(); } catch (_) { return Promise.resolve(null); }
-            var reader;
-            try { reader = clone.body.getReader(); } catch (_) { return Promise.resolve(null); }
-            var decoder = new TextDecoder();
-            var text = "";
-            var total = 0;
-            function readNext() {
-                return reader.read().then(function(part) {
-                    if (!part || part.done) { return text; }
-                    var bytes = part.value || new Uint8Array(0);
-                    var remaining = MAX_INSPECTION_BYTES - total;
-                    if (remaining <= 0) {
-                        try { reader.cancel(); } catch (_) {}
-                        return text;
-                    }
-                    if (bytes.byteLength > remaining) { bytes = bytes.slice(0, remaining); }
-                    total += bytes.byteLength;
-                    text += decoder.decode(bytes);
-                    if (total >= MAX_INSPECTION_BYTES) {
-                        try { reader.cancel(); } catch (_) {}
-                        return text;
-                    }
-                    return readNext();
-                }).catch(function() { return text || null; });
-            }
-            return readNext();
+            try {
+                var clone = response.clone();
+                if (typeof clone.text === "function") {
+                    return clone.text().then(function(text) {
+                        return text ? String(text).slice(0, MAX_INSPECTION_BYTES) : null;
+                    }).catch(function() { return null; });
+                }
+                if (clone.body && typeof clone.body.getReader === "function") {
+                    var reader = clone.body.getReader();
+                    return reader.read().then(function(part) {
+                        return part && part.value ? new TextDecoder().decode(part.value).slice(0, MAX_INSPECTION_BYTES) : null;
+                    }).catch(function() { return null; });
+                }
+            } catch (_) {}
+            return Promise.resolve(null);
         }
 
         function emit(value, source, metadata) {
@@ -920,13 +911,19 @@ public final class BrowserMediaDiscoveryBridge: NSObject, @unchecked Sendable {
                 }
                 var reqMethod = meta ? meta.method : "GET";
                 if (reqURL) {
-                    this.addEventListener("loadend", function() {
+                    var captured = false;
+                    var onComplete = function() {
+                        if (captured) { return; }
+                        if (request.readyState !== 4) { return; }
+                        captured = true;
                         var type = null;
                         try { type = request.getResponseHeader("content-type"); } catch (_) {}
                         var prefix = null;
                         try {
                             if ((request.responseType === "" || request.responseType === "text") && shouldInspect(reqURL, type)) {
                                 prefix = String(request.responseText || "").slice(0, MAX_INSPECTION_BYTES);
+                            } else if (request.responseType === "arraybuffer" && request.response instanceof ArrayBuffer && shouldInspect(reqURL, type)) {
+                                prefix = new TextDecoder().decode(new Uint8Array(request.response.slice(0, MAX_INSPECTION_BYTES)));
                             }
                         } catch (_) {}
                         emit(reqURL, "xmlHttpRequest", {
@@ -938,7 +935,9 @@ public final class BrowserMediaDiscoveryBridge: NSObject, @unchecked Sendable {
                             manifestPrefix: prefix,
                             manifestKind: manifestKindFor(reqURL, type, prefix)
                         });
-                    }, { once: true });
+                    };
+                    request.addEventListener("readystatechange", onComplete, false);
+                    request.addEventListener("loadend", onComplete, { once: true });
                 }
                 return originalSend.apply(this, arguments);
             };
@@ -989,6 +988,7 @@ public final class BrowserMediaDiscoveryBridge: NSObject, @unchecked Sendable {
 
     private let lock = NSLock()
     private var seenKeys: Set<String> = []
+    private var seenKeysWithPrefix: Set<String> = []
 
     public init(userScriptManager: UserScriptManager = UserScriptManager()) {
         self.userScriptManager = userScriptManager
@@ -1002,6 +1002,7 @@ public final class BrowserMediaDiscoveryBridge: NSObject, @unchecked Sendable {
     public func reset() {
         lock.lock()
         seenKeys.removeAll(keepingCapacity: true)
+        seenKeysWithPrefix.removeAll(keepingCapacity: true)
         lock.unlock()
     }
 
@@ -1134,10 +1135,32 @@ public final class BrowserMediaDiscoveryBridge: NSObject, @unchecked Sendable {
             dedupeKey = isBlob ? "blob:\(rawURL)" : resolved.absoluteString
         }
 
+        let key = dedupeKey.lowercased()
+        let hasPrefix = message.manifestPrefix != nil && !message.manifestPrefix!.isEmpty
+
         lock.lock()
-        let isNew = seenKeys.insert(dedupeKey.lowercased()).inserted
+        let isAlreadySeen = seenKeys.contains(key)
+        let isAlreadySeenWithPrefix = seenKeysWithPrefix.contains(key)
+        let shouldAccept: Bool
+        if hasPrefix {
+            if isAlreadySeenWithPrefix {
+                shouldAccept = false
+            } else {
+                seenKeysWithPrefix.insert(key)
+                seenKeys.insert(key)
+                shouldAccept = true
+            }
+        } else {
+            if isAlreadySeen {
+                shouldAccept = false
+            } else {
+                seenKeys.insert(key)
+                shouldAccept = true
+            }
+        }
         lock.unlock()
-        guard isNew else { return nil }
+
+        guard shouldAccept else { return nil }
 
         let declaredType = Self.normalizedMetadata(message.declaredType)
         let manifestPrefix = message.manifestPrefix.map {
@@ -1272,23 +1295,29 @@ public final class BrowserMediaDiscoveryBridge: NSObject, @unchecked Sendable {
 
         let asyncScript = """
         let acceptHeader = '*/*';
-        const lowerUrl = url.toLowerCase();
+        const lowerUrl = String(url || '').toLowerCase();
         if (lowerUrl.includes('.mpd')) {
             acceptHeader = 'application/dash+xml, application/xml, text/xml, */*';
         } else if (lowerUrl.includes('.m3u8')) {
             acceptHeader = 'application/vnd.apple.mpegurl, application/x-mpegURL, */*';
         }
-        const response = await fetch(url, {
-            method: 'GET',
-            credentials: 'include',
-            headers: {
-                'Accept': acceptHeader
+        try {
+            const response = await fetch(url, {
+                method: 'GET',
+                credentials: 'include',
+                headers: {
+                    'Accept': acceptHeader
+                }
+            });
+            if (!response.ok) {
+                return { error: 'HTTP ' + response.status + (response.statusText ? ' ' + response.statusText : '') };
             }
-        });
-        if (!response.ok) {
-            throw new Error('HTTP ' + response.status);
+            const text = await response.text();
+            return { text: text };
+        } catch (e) {
+            const errMsg = (e && e.name ? (e.name + ': ' + (e.message || '')) : String(e));
+            return { error: errMsg || 'Unknown fetch error' };
         }
-        return await response.text();
         """
 
         do {
@@ -1299,6 +1328,7 @@ public final class BrowserMediaDiscoveryBridge: NSObject, @unchecked Sendable {
                 contentWorld: .page
             )
         } catch let pageError {
+            PipelineLogger.shared.log("[BrowserMediaDiscoveryBridge] .page contentWorld fetch failed for \(rawString): \(pageError.localizedDescription). Trying .defaultClient...")
             // Attempt in .defaultClient world if .page fails (e.g. CSP restrictions)
             do {
                 return try await executeAsyncJavaScript(
@@ -1308,7 +1338,7 @@ public final class BrowserMediaDiscoveryBridge: NSObject, @unchecked Sendable {
                     contentWorld: .defaultClient
                 )
             } catch {
-                // Ignore fallback error and throw pageError
+                PipelineLogger.shared.log("[BrowserMediaDiscoveryBridge] .defaultClient fetch also failed for \(rawString): \(error.localizedDescription)")
                 throw pageError
             }
         }
@@ -1325,6 +1355,8 @@ public final class BrowserMediaDiscoveryBridge: NSObject, @unchecked Sendable {
             throw StreamingManifestLoadError.browserFetchUnavailable
         }
 
+        let rawTargetURL = (arguments["url"] as? String) ?? "unknown"
+
         return try await withThrowingTaskGroup(of: String.self) { group in
             group.addTask { @MainActor in
                 try await withCheckedThrowingContinuation { continuation in
@@ -1336,13 +1368,30 @@ public final class BrowserMediaDiscoveryBridge: NSObject, @unchecked Sendable {
                     ) { (result: Result<Any, Error>) in
                         switch result {
                         case .success(let anyValue):
+                            if let dict = anyValue as? [String: Any] {
+                                if let errorMsg = dict["error"] as? String, !errorMsg.isEmpty {
+                                    PipelineLogger.shared.log("[BrowserMediaDiscoveryBridge] JS fetch error for \(rawTargetURL): \(errorMsg)")
+                                    continuation.resume(throwing: StreamingManifestLoadError.failed(errorMsg))
+                                    return
+                                }
+                                if let text = dict["text"] as? String, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                                    continuation.resume(returning: text)
+                                    return
+                                }
+                            }
                             if let text = anyValue as? String, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                                 continuation.resume(returning: text)
                             } else {
                                 continuation.resume(throwing: StreamingManifestLoadError.invalidResponse)
                             }
                         case .failure(let error):
-                            continuation.resume(throwing: error)
+                            let nsError = error as NSError
+                            let detail = (nsError.userInfo["WKJavaScriptExceptionMessageErrorKey"] as? String)
+                                ?? (nsError.userInfo["WKErrorJavaScriptExceptionMessageKey"] as? String)
+                                ?? (nsError.userInfo["WKJavaScriptExceptionMessage"] as? String)
+                                ?? error.localizedDescription
+                            PipelineLogger.shared.log("[BrowserMediaDiscoveryBridge] JS evaluation failed for \(rawTargetURL): \(detail)")
+                            continuation.resume(throwing: StreamingManifestLoadError.failed(detail))
                         }
                     }
                 }
