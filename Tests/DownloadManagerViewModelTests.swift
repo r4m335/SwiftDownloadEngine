@@ -689,4 +689,58 @@ final class DownloadManagerViewModelTests: XCTestCase {
             XCTAssertTrue(addErr?.contains("Streaming segment chunks") == true)
         }
     }
+
+    // MARK: - 16. Multi-Select and Bulk Removal Workflow
+
+    func testMultiSelectAndBulkRemoval() async throws {
+        let payload1 = makePayload(size: 8 * 1024, byte: 0x11)
+        let payload2 = makePayload(size: 8 * 1024, byte: 0x22)
+        let payload3 = makePayload(size: 8 * 1024, byte: 0x33)
+
+        server.register(path: "/bulk1.bin", data: payload1)
+        server.register(path: "/bulk2.bin", data: payload2)
+        server.register(path: "/bulk3.bin", data: payload3)
+
+        let snap1 = try await viewModel.addDownload(
+            urlText: server.baseURL.appendingPathComponent("bulk1.bin").absoluteString,
+            filename: "bulk1.bin",
+            autoStart: false
+        )
+        let snap2 = try await viewModel.addDownload(
+            urlText: server.baseURL.appendingPathComponent("bulk2.bin").absoluteString,
+            filename: "bulk2.bin",
+            autoStart: false
+        )
+        let snap3 = try await viewModel.addDownload(
+            urlText: server.baseURL.appendingPathComponent("bulk3.bin").absoluteString,
+            filename: "bulk3.bin",
+            autoStart: false
+        )
+
+        await viewModel.refreshSnapshots()
+        let initialTransfers = await viewModel.unifiedTransfers
+        XCTAssertTrue(initialTransfers.contains { $0.id == snap1.id })
+        XCTAssertTrue(initialTransfers.contains { $0.id == snap2.id })
+        XCTAssertTrue(initialTransfers.contains { $0.id == snap3.id })
+
+        // Simulate multi-selection of items 1 and 2
+        var selectedIDs: Set<String> = [snap1.id, snap2.id]
+        XCTAssertEqual(selectedIDs.count, 2)
+
+        // Bulk removal of selected IDs
+        for id in selectedIDs {
+            try await viewModel.removeTransfer(id: id, deleteFiles: false)
+        }
+        await viewModel.refreshSnapshots()
+
+        let remainingTransfers = await viewModel.unifiedTransfers
+        XCTAssertFalse(remainingTransfers.contains { $0.id == snap1.id })
+        XCTAssertFalse(remainingTransfers.contains { $0.id == snap2.id })
+        XCTAssertTrue(remainingTransfers.contains { $0.id == snap3.id })
+
+        // Pruning logic test:
+        let remainingSet = Set(remainingTransfers.map(\.id))
+        selectedIDs = selectedIDs.intersection(remainingSet)
+        XCTAssertTrue(selectedIDs.isEmpty, "Selected IDs that no longer exist in unifiedTransfers should be pruned")
+    }
 }

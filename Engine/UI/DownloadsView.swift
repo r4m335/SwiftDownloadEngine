@@ -270,77 +270,57 @@ public struct DownloadsView: View {
                 } else {
                     List {
                         ForEach(viewModel.filteredTransfers) { transfer in
-                            if isSelectingMultiple {
-                                // MARK: Selection Mode Row
-                                Button {
-                                    toggleSelection(for: transfer.id)
-                                } label: {
-                                    HStack(spacing: 12) {
-                                        Image(systemName: selectedIDs.contains(transfer.id)
-                                              ? "checkmark.circle.fill"
-                                              : "circle")
-                                            .font(.title3)
-                                            .foregroundColor(selectedIDs.contains(transfer.id) ? .blue : .secondary)
-                                            .animation(.easeInOut(duration: 0.15), value: selectedIDs.contains(transfer.id))
+                            HStack(spacing: 12) {
+                                if isSelectingMultiple {
+                                    Image(systemName: selectedIDs.contains(transfer.id)
+                                          ? "checkmark.circle.fill"
+                                          : "circle")
+                                        .font(.title3)
+                                        .foregroundColor(selectedIDs.contains(transfer.id) ? .blue : .secondary)
+                                        .animation(.easeInOut(duration: 0.15), value: selectedIDs.contains(transfer.id))
+                                        .transition(.scale.combined(with: .opacity))
+                                }
 
-                                        UnifiedTransferRowView(
-                                            viewModel: viewModel,
-                                            transfer: transfer,
-                                            onOpen: {},
-                                            onSaveToFiles: {},
-                                            onShare: {},
-                                            onCopyLink: {},
-                                            onShowDetails: {},
-                                            onPause: {},
-                                            onResume: {},
-                                            onRemoveQueue: {},
-                                            onDeleteFile: {}
-                                        )
-                                        .allowsHitTesting(false)
-                                    }
-                                }
-                                .buttonStyle(.plain)
-                                .listRowBackground(
-                                    selectedIDs.contains(transfer.id)
-                                        ? Color.blue.opacity(0.08)
-                                        : Color.clear
+                                UnifiedTransferRowView(
+                                    viewModel: viewModel,
+                                    transfer: transfer,
+                                    onOpen: { openTransferFile(transfer) },
+                                    onSaveToFiles: { saveTransferToFiles(transfer) },
+                                    onShare: { shareTransferFile(transfer) },
+                                    onCopyLink: { copyTransferLink(transfer) },
+                                    onShowDetails: { showTransferDetails(transfer) },
+                                    onPause: { pauseTransfer(transfer) },
+                                    onResume: { resumeTransfer(transfer) },
+                                    onRemoveQueue: { removeTransferFromQueue(transfer) },
+                                    onDeleteFile: { promptDeleteTransferFile(transfer) }
                                 )
-                            } else {
-                                // MARK: Normal Mode Row
-                                NavigationLink(
-                                    destination: DownloadDetailsView(viewModel: viewModel, transfer: transfer)
-                                ) {
-                                    UnifiedTransferRowView(
-                                        viewModel: viewModel,
-                                        transfer: transfer,
-                                        onOpen: { openTransferFile(transfer) },
-                                        onSaveToFiles: { saveTransferToFiles(transfer) },
-                                        onShare: { shareTransferFile(transfer) },
-                                        onCopyLink: { copyTransferLink(transfer) },
-                                        onShowDetails: { showTransferDetails(transfer) },
-                                        onPause: { pauseTransfer(transfer) },
-                                        onResume: { resumeTransfer(transfer) },
-                                        onRemoveQueue: { removeTransferFromQueue(transfer) },
-                                        onDeleteFile: { promptDeleteTransferFile(transfer) }
-                                    )
+                                .allowsHitTesting(!isSelectingMultiple)
+                            }
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                if isSelectingMultiple {
+                                    toggleSelection(for: transfer.id)
+                                } else {
+                                    showTransferDetails(transfer)
                                 }
-                                .contextMenu {
-                                    UnifiedTransferMenuContent(
-                                        transfer: transfer,
-                                        isScheduled: viewModel.isScheduled(transferID: transfer.id),
-                                        onOpen: { openTransferFile(transfer) },
-                                        onSaveToFiles: { saveTransferToFiles(transfer) },
-                                        onShare: { shareTransferFile(transfer) },
-                                        onCopyLink: { copyTransferLink(transfer) },
-                                        onShowDetails: { showTransferDetails(transfer) },
-                                        onPause: { pauseTransfer(transfer) },
-                                        onResume: { resumeTransfer(transfer) },
-                                        onToggleSchedule: { toggleTransferSchedule(transfer) },
-                                        onRemoveQueue: { removeTransferFromQueue(transfer) },
-                                        onDeleteFile: { promptDeleteTransferFile(transfer) }
-                                    )
+                            }
+                            .onLongPressGesture(minimumDuration: 0.45) {
+                                guard !isSelectingMultiple else { return }
+                                withAnimation(.easeInOut(duration: 0.2)) {
+                                    isSelectingMultiple = true
+                                    selectedIDs = [transfer.id]
                                 }
-                                .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                                #if canImport(UIKit)
+                                UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                                #endif
+                            }
+                            .listRowBackground(
+                                isSelectingMultiple && selectedIDs.contains(transfer.id)
+                                    ? Color.blue.opacity(0.08)
+                                    : Color.clear
+                            )
+                            .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                                if !isSelectingMultiple {
                                     Button(role: .destructive) {
                                         removeTransferFromQueue(transfer)
                                     } label: {
@@ -363,16 +343,6 @@ public struct DownloadsView: View {
                                         .tint(.orange)
                                     }
                                 }
-                                // Long-press activates multi-select and selects this item.
-                                .onLongPressGesture {
-                                    withAnimation(.easeInOut(duration: 0.2)) {
-                                        isSelectingMultiple = true
-                                        selectedIDs = [transfer.id]
-                                    }
-                                    #if canImport(UIKit)
-                                    UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-                                    #endif
-                                }
                             }
                         }
                     }
@@ -381,16 +351,14 @@ public struct DownloadsView: View {
                         await viewModel.refreshSnapshots()
                         await viewModel.refreshTorrentSnapshots()
                     }
-                    // Exit selection mode when leaving the view entirely
-                    .onChange(of: viewModel.filteredTransfers.count) { _ in
-                        // If all selected items were removed, exit selection mode automatically
-                        let remaining = selectedIDs.filter { id in
-                            viewModel.filteredTransfers.contains(where: { $0.id == id })
-                        }
-                        if remaining.isEmpty && isSelectingMultiple {
+                    .onChange(of: viewModel.unifiedTransfers.map(\.id)) { currentIDs in
+                        guard isSelectingMultiple else { return }
+                        let currentSet = Set(currentIDs)
+                        let remaining = selectedIDs.intersection(currentSet)
+                        if !selectedIDs.isEmpty && remaining.isEmpty {
                             withAnimation { exitSelectionMode() }
                         } else {
-                            selectedIDs = Set(remaining)
+                            selectedIDs = remaining
                         }
                     }
                 }
@@ -559,16 +527,16 @@ public struct DownloadsView: View {
     private var iOSSelectionBottomBar: some View {
         // Select All / Deselect All
         Button {
-            let all = Set(viewModel.filteredTransfers.map(\.id))
+            let filteredIDs = Set(viewModel.filteredTransfers.map(\.id))
             withAnimation {
-                if selectedIDs == all {
-                    selectedIDs.removeAll()
+                if filteredIDs.isSubset(of: selectedIDs) {
+                    selectedIDs.subtract(filteredIDs)
                 } else {
-                    selectedIDs = all
+                    selectedIDs.formUnion(filteredIDs)
                 }
             }
         } label: {
-            let allSelected = !viewModel.filteredTransfers.isEmpty && selectedIDs == Set(viewModel.filteredTransfers.map(\.id))
+            let allSelected = !viewModel.filteredTransfers.isEmpty && Set(viewModel.filteredTransfers.map(\.id)).isSubset(of: selectedIDs)
             Text(allSelected ? "Deselect All" : "Select All")
         }
 
@@ -592,12 +560,16 @@ public struct DownloadsView: View {
     private var macOSSelectionLeadingBar: some View {
         // macOS: show Select All and Delete in the leading navigation area
         Button {
-            let all = Set(viewModel.filteredTransfers.map(\.id))
+            let filteredIDs = Set(viewModel.filteredTransfers.map(\.id))
             withAnimation {
-                selectedIDs = (selectedIDs == all) ? [] : all
+                if filteredIDs.isSubset(of: selectedIDs) {
+                    selectedIDs.subtract(filteredIDs)
+                } else {
+                    selectedIDs.formUnion(filteredIDs)
+                }
             }
         } label: {
-            let allSelected = !viewModel.filteredTransfers.isEmpty && selectedIDs == Set(viewModel.filteredTransfers.map(\.id))
+            let allSelected = !viewModel.filteredTransfers.isEmpty && Set(viewModel.filteredTransfers.map(\.id)).isSubset(of: selectedIDs)
             Text(allSelected ? "Deselect All" : "Select All")
         }
 
@@ -673,6 +645,9 @@ public struct DownloadsView: View {
 
     private func deleteSelectedTransfers(deleteFiles: Bool) {
         let ids = selectedIDs
+        withAnimation(.easeInOut(duration: 0.2)) {
+            exitSelectionMode()
+        }
         Task { @MainActor in
             var deletedCount = 0
             for id in ids {
@@ -688,9 +663,6 @@ public struct DownloadsView: View {
                 let action = deleteFiles ? "deleted" : "removed"
                 viewModel.showNotification("\(deletedCount) \(noun) \(action).")
             }
-        }
-        withAnimation(.easeInOut(duration: 0.2)) {
-            exitSelectionMode()
         }
     }
 
