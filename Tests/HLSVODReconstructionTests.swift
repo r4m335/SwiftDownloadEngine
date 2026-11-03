@@ -280,6 +280,13 @@ final class HLSVODReconstructionTests: XCTestCase {
 
         XCTAssertEqual(result.container, .mpegTS)
         XCTAssertTrue(FileManager.default.fileExists(atPath: output.path))
+
+        let mediaAssemblyDir = directory.appendingPathComponent(".media-assembly")
+        if FileManager.default.fileExists(atPath: mediaAssemblyDir.path) {
+            let decryptedFiles = (try? FileManager.default.contentsOfDirectory(atPath: mediaAssemblyDir.path))?
+                .filter { $0.hasPrefix("decrypted_seg_") } ?? []
+            XCTAssertTrue(decryptedFiles.isEmpty, "Decrypted segment files must be cleaned up after assembly: \(decryptedFiles)")
+        }
         #endif
     }
 

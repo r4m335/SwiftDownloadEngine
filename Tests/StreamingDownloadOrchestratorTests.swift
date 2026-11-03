@@ -369,6 +369,12 @@ final class StreamingDownloadOrchestratorTests: XCTestCase {
         XCTAssertEqual(result.destinationURL.pathExtension.lowercased(), "mp4")
         XCTAssertTrue(FileManager.default.fileExists(atPath: result.destinationURL.path))
 
+        let remainingHLSParts = (try? FileManager.default.contentsOfDirectory(atPath: tempDir.path))?
+            .filter { $0.hasSuffix(".part") } ?? []
+        XCTAssertTrue(remainingHLSParts.isEmpty, "Raw .part files must be cleaned up after HLS assembly: \(remainingHLSParts)")
+        let hlsMediaAssembly = tempDir.appendingPathComponent(".media-assembly")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: hlsMediaAssembly.path), ".media-assembly directory must be cleaned up after HLS assembly")
+
         let snapshots = await engine.allSnapshots()
         // Verifies Bug 1 fix: Exactly 1 record
         XCTAssertEqual(snapshots.count, 1)
@@ -425,6 +431,57 @@ final class StreamingDownloadOrchestratorTests: XCTestCase {
         XCTAssertEqual(result.container, .fragmentedMP4)
         XCTAssertEqual(result.trackCount, 1)
         XCTAssertTrue(FileManager.default.fileExists(atPath: output.path))
+
+        let remainingParts = (try? FileManager.default.contentsOfDirectory(atPath: directory.path))?
+            .filter { $0.hasSuffix(".part") } ?? []
+        XCTAssertTrue(remainingParts.isEmpty, "Raw .part files must be cleaned up after DASH assembly: \(remainingParts)")
+
+        let mediaAssemblyDir = directory.appendingPathComponent(".media-assembly")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: mediaAssemblyDir.path), ".media-assembly directory must be cleaned up after DASH assembly")
+    }
+
+    func testDASHExecutionCleansUpSegmentDirectoryWhenOutputIsExternal() async throws {
+        let url = URL(string: "https://video.example/vod/manifest.mpd")!
+        let mpd = """
+        <MPD type="static" mediaPresentationDuration="PT2S">
+          <Period duration="PT2S">
+            <AdaptationSet contentType="video" mimeType="video/mp4" codecs="avc1">
+              <Representation id="v1" bandwidth="1000">
+                <SegmentTemplate timescale="1" duration="2" initialization="init.mp4" media="segment-$Number$.m4s"/>
+              </Representation>
+            </AdaptationSet>
+          </Period>
+        </MPD>
+        """
+        let orchestrator = StreamingDownloadOrchestrator(
+            manifestLoader: RecordingManifestLoader(
+                data: Data(mpd.utf8),
+                finalURL: url,
+                mimeType: "application/dash+xml"
+            ),
+            segmentExecutor: DASHWritingSegmentExecutor()
+        )
+        let proposal = try await orchestrator.prepare(candidate: StreamingManifestCandidate(url: url))
+        let segmentDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("dash-segments-\(UUID().uuidString)", isDirectory: true)
+        let outputDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("dash-output-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: outputDirectory, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(at: segmentDirectory)
+            try? FileManager.default.removeItem(at: outputDirectory)
+        }
+        let output = outputDirectory.appendingPathComponent("assembled.mp4")
+
+        let result = try await orchestrator.executeAndAssembleDASH(
+            proposal,
+            approved: true,
+            destinationDirectory: segmentDirectory,
+            outputURL: output
+        )
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: result.destinationURL.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: segmentDirectory.path), "Entire temporary segment directory must be deleted when output is external")
     }
 
     func testStreamingDownloadOrchestrator_UsesURLResolverWhenAvailable() async throws {
@@ -602,6 +659,13 @@ final class StreamingDownloadOrchestratorTests: XCTestCase {
         XCTAssertEqual(result.container, .fragmentedMP4)
         XCTAssertEqual(result.trackCount, 1)
         XCTAssertTrue(FileManager.default.fileExists(atPath: output.path))
+
+        let remainingParts = (try? FileManager.default.contentsOfDirectory(atPath: directory.path))?
+            .filter { $0.hasSuffix(".part") } ?? []
+        XCTAssertTrue(remainingParts.isEmpty, "Raw .part files must be cleaned up after DASH assembly: \(remainingParts)")
+
+        let mediaAssemblyDir = directory.appendingPathComponent(".media-assembly")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: mediaAssemblyDir.path), ".media-assembly directory must be cleaned up after DASH assembly")
     }
 
     func testStreamingDownloadOrchestrator_fallsBackToJSFetchWhenURLSessionFailsWith403() async throws {

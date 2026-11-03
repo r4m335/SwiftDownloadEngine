@@ -2277,7 +2277,7 @@ public actor StreamingDownloadOrchestrator {
             // the completed parent record for lifecycle/reconciliation, but
             // remove the child records and raw artifacts after a successful
             // assembly. Failure paths intentionally preserve both.
-            await cleanupCompletedHLSArtifacts(
+            await cleanupCompletedStreamingArtifacts(
                 proposal: runProposal,
                 segmentDirectory: destinationDirectory,
                 outputURL: assemblyOutput.destinationURL
@@ -2490,7 +2490,7 @@ public actor StreamingDownloadOrchestrator {
         }
     }
 
-    private func cleanupCompletedHLSArtifacts(
+    private func cleanupCompletedStreamingArtifacts(
         proposal: StreamingTransferProposal,
         segmentDirectory: URL,
         outputURL: URL
@@ -2498,10 +2498,13 @@ public actor StreamingDownloadOrchestrator {
         await cleanupHLSChildRecords(proposal: proposal)
 
         let fileManager = FileManager.default
+        let mediaAssemblyDir = segmentDirectory.appendingPathComponent(".media-assembly", isDirectory: true)
+        try? fileManager.removeItem(at: mediaAssemblyDir)
+
         guard let children = try? fileManager.contentsOfDirectory(
             at: segmentDirectory,
             includingPropertiesForKeys: nil,
-            options: .skipsHiddenFiles
+            options: []
         ) else { return }
 
         for child in children {
@@ -2510,7 +2513,7 @@ public actor StreamingDownloadOrchestrator {
             }
         }
 
-        // `downloadHLS` may place the output inside the temporary directory;
+        // `downloadHLS` or `downloadDASH` may place the output inside the temporary directory;
         // remove the directory only when doing so cannot remove the final file.
         let directoryPath = segmentDirectory.standardizedFileURL.path
         let outputPath = outputURL.standardizedFileURL.path
@@ -2572,6 +2575,11 @@ public actor StreamingDownloadOrchestrator {
                     ".media-assembly",
                     isDirectory: true
                 )
+            )
+            await cleanupCompletedStreamingArtifacts(
+                proposal: proposal,
+                segmentDirectory: destinationDirectory,
+                outputURL: assemblyOutput.destinationURL
             )
             if let engine = self.downloadEngine {
                 let finalSize = FileManager.default.fileSize(atPath: assemblyOutput.destinationURL.path) ?? 0

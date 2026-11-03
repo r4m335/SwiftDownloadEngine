@@ -242,6 +242,13 @@ public enum HLSVODReconstructor {
         let resolvedPlan: HLSVODTransferPlan
         let resolvedCompleted: [HLSCompletedResource]
 
+        var decryptedFilesToCleanUp: [URL] = []
+        defer {
+            for fileURL in decryptedFilesToCleanUp {
+                try? FileManager.default.removeItem(at: fileURL)
+            }
+        }
+
         if hasEncryption {
             var keyMap: [URL: Data] = [:]
             for completed in completedResources where completed.resource.kind == .encryptionKey {
@@ -294,6 +301,7 @@ public enum HLSVODReconstructor {
                         let decryptedURL = effectiveTempDir.appendingPathComponent("decrypted_seg_\(index).\(ext)")
                         do {
                             try HLSSegmentDecryptor.decryptFile(at: completed.fileURL, to: decryptedURL, key: keyData, iv: ivData)
+                            decryptedFilesToCleanUp.append(decryptedURL)
                         } catch let decErr as HLSSegmentDecryptionError {
                             throw HLSVODReconstructionError.decryptionFailed(decErr)
                         } catch {
