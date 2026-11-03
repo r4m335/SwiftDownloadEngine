@@ -755,16 +755,25 @@ public actor DownloadEngine {
 
     /// Pauses all active and queued downloads in bulk.
     public func pauseAllDownloads() async {
+        if let orchestrator = streamingOrchestrator {
+            await orchestrator.pauseAll()
+        }
         await queueManager.pauseAll()
     }
 
     /// Resumes all paused downloads in bulk.
     public func resumeAllDownloads() async {
+        if let orchestrator = streamingOrchestrator {
+            await orchestrator.resumeAll()
+        }
         await queueManager.resumeAll()
     }
 
     /// Cancels all active and queued downloads in bulk.
     public func cancelAllDownloads(deleteFiles: Bool = false) async {
+        if let orchestrator = streamingOrchestrator {
+            await orchestrator.cancelAll()
+        }
         await queueManager.cancelAll(deleteDestinationFiles: deleteFiles)
     }
 

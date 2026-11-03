@@ -123,7 +123,7 @@ final class StreamingDownloadOrchestratorTests: XCTestCase {
     func testInvalidManifestURLRejectedBeforeLoaderRuns() async throws {
         let loader = RecordingManifestLoader(data: Data(), finalURL: URL(string: "https://example.com/file")!, mimeType: nil)
         let executor = RecordingSegmentExecutor()
-        let orchestrator = StreamingDownloadOrchestrator(manifestLoader: loader, segmentExecutor: executor)
+        _ = StreamingDownloadOrchestrator(manifestLoader: loader, segmentExecutor: executor)
 
         XCTAssertThrowsError(try StreamingManifestCandidate(url: URL(string: "file:///tmp/index.m3u8")!)) { error in
             XCTAssertEqual(error as? StreamingDownloadOrchestratorError, .invalidManifestURL)
@@ -1320,6 +1320,11 @@ final class StreamingDownloadOrchestratorTests: XCTestCase {
             }
         }
 
+        final class Box<T>: @unchecked Sendable {
+            var value: T
+            init(_ value: T) { self.value = value }
+        }
+
         let provider = MockPromptProvider()
         let authHandler = BrowserAuthenticationHandler(promptProvider: provider)
         let pageURL = URL(string: "https://example.com:443/watch")!
@@ -1332,7 +1337,7 @@ final class StreamingDownloadOrchestratorTests: XCTestCase {
             realm: "TestRealm",
             authenticationMethod: NSURLAuthenticationMethodHTTPBasic
         )
-        var sameOutcome: URLSession.AuthChallengeDisposition?
+        let sameOutcome = Box<URLSession.AuthChallengeDisposition?>(nil)
         let sameChallenge = URLAuthenticationChallenge(
             protectionSpace: sameSpace,
             proposedCredential: nil,
@@ -1342,9 +1347,9 @@ final class StreamingDownloadOrchestratorTests: XCTestCase {
             sender: DummyAuthSender()
         )
         authHandler.handleChallenge(sameChallenge, targetPageURL: pageURL) { disposition, _ in
-            sameOutcome = disposition
+            sameOutcome.value = disposition
         }
-        XCTAssertEqual(sameOutcome, .useCredential, "Same origin should be permitted and prompt for credentials")
+        XCTAssertEqual(sameOutcome.value, .useCredential, "Same origin should be permitted and prompt for credentials")
         XCTAssertEqual(provider.promptedHost, "example.com")
         provider.promptedHost = nil
 
@@ -1356,7 +1361,7 @@ final class StreamingDownloadOrchestratorTests: XCTestCase {
             realm: "TestRealm",
             authenticationMethod: NSURLAuthenticationMethodHTTPBasic
         )
-        var subdomainOutcome: URLSession.AuthChallengeDisposition?
+        let subdomainOutcome = Box<URLSession.AuthChallengeDisposition?>(nil)
         let subdomainChallenge = URLAuthenticationChallenge(
             protectionSpace: subdomainSpace,
             proposedCredential: nil,
@@ -1366,9 +1371,9 @@ final class StreamingDownloadOrchestratorTests: XCTestCase {
             sender: DummyAuthSender()
         )
         authHandler.handleChallenge(subdomainChallenge, targetPageURL: pageURL) { disposition, _ in
-            subdomainOutcome = disposition
+            subdomainOutcome.value = disposition
         }
-        XCTAssertEqual(subdomainOutcome, .cancelAuthenticationChallenge, "Subdomains must not inherit credentials")
+        XCTAssertEqual(subdomainOutcome.value, .cancelAuthenticationChallenge, "Subdomains must not inherit credentials")
         XCTAssertNil(provider.promptedHost)
 
         // 3. Different port 8443 -> Cancelled without prompting
@@ -1379,7 +1384,7 @@ final class StreamingDownloadOrchestratorTests: XCTestCase {
             realm: "TestRealm",
             authenticationMethod: NSURLAuthenticationMethodHTTPBasic
         )
-        var portOutcome: URLSession.AuthChallengeDisposition?
+        let portOutcome = Box<URLSession.AuthChallengeDisposition?>(nil)
         let portChallenge = URLAuthenticationChallenge(
             protectionSpace: diffPortSpace,
             proposedCredential: nil,
@@ -1389,9 +1394,9 @@ final class StreamingDownloadOrchestratorTests: XCTestCase {
             sender: DummyAuthSender()
         )
         authHandler.handleChallenge(portChallenge, targetPageURL: pageURL) { disposition, _ in
-            portOutcome = disposition
+            portOutcome.value = disposition
         }
-        XCTAssertEqual(portOutcome, .cancelAuthenticationChallenge, "Different ports must not inherit credentials")
+        XCTAssertEqual(portOutcome.value, .cancelAuthenticationChallenge, "Different ports must not inherit credentials")
         XCTAssertNil(provider.promptedHost)
 
         // 4. Different scheme http -> Cancelled without prompting
@@ -1402,7 +1407,7 @@ final class StreamingDownloadOrchestratorTests: XCTestCase {
             realm: "TestRealm",
             authenticationMethod: NSURLAuthenticationMethodHTTPBasic
         )
-        var schemeOutcome: URLSession.AuthChallengeDisposition?
+        let schemeOutcome = Box<URLSession.AuthChallengeDisposition?>(nil)
         let schemeChallenge = URLAuthenticationChallenge(
             protectionSpace: diffSchemeSpace,
             proposedCredential: nil,
@@ -1412,10 +1417,61 @@ final class StreamingDownloadOrchestratorTests: XCTestCase {
             sender: DummyAuthSender()
         )
         authHandler.handleChallenge(schemeChallenge, targetPageURL: pageURL) { disposition, _ in
-            schemeOutcome = disposition
+            schemeOutcome.value = disposition
         }
-        XCTAssertEqual(schemeOutcome, .cancelAuthenticationChallenge, "Different schemes must not inherit credentials")
+        XCTAssertEqual(schemeOutcome.value, .cancelAuthenticationChallenge, "Different schemes must not inherit credentials")
         XCTAssertNil(provider.promptedHost)
+    }
+
+    func testOrchestratorBulkPauseResumeCancelOperations() async throws {
+        let manifestURL = URL(string: "https://video.example/bulk.m3u8")!
+        let mediaData = """
+        #EXTM3U
+        #EXT-X-VERSION:3
+        #EXTINF:4.0,
+        seg0.ts
+        #EXT-X-ENDLIST
+        """.data(using: .utf8)!
+        let loader = VariantManifestLoader(responses: [
+            manifestURL: StreamingManifestResponse(data: mediaData, finalURL: manifestURL, mimeType: "application/vnd.apple.mpegurl")
+        ])
+        let orchestrator = StreamingDownloadOrchestrator(
+            manifestLoader: loader,
+            segmentExecutor: RecordingSegmentExecutor()
+        )
+        let persistence = HLSPersistenceStore(inMemory: true)
+        await orchestrator.setHLSPersistenceStore(persistence)
+
+        let candidate = try StreamingManifestCandidate(url: manifestURL)
+        _ = try await orchestrator.prepare(candidate: candidate)
+        let transferID = "bulk-transfer-1"
+
+        let record = HLSTransferRecord(
+            id: transferID,
+            manifestURL: manifestURL,
+            outputFilename: "bulk.mp4",
+            outputDestinationURL: FileManager.default.temporaryDirectory.appendingPathComponent("bulk.mp4"),
+            segmentDirectoryURL: FileManager.default.temporaryDirectory.appendingPathComponent("bulk-segments"),
+            totalSegments: 1,
+            completedSegmentOrders: [],
+            state: .downloading
+        )
+        try await persistence.save(record)
+
+        // Register running transfer
+        try await orchestrator.pause(transferID: transferID)
+        let isPaused1 = await orchestrator.isPaused(transferID: transferID)
+        XCTAssertTrue(isPaused1)
+
+        // Bulk resume
+        await orchestrator.resumeAll()
+        let isPaused2 = await orchestrator.isPaused(transferID: transferID)
+        XCTAssertFalse(isPaused2)
+
+        // Bulk cancel
+        await orchestrator.cancelAll()
+        let isCancelled = await orchestrator.isCancelled(transferID: transferID)
+        XCTAssertTrue(isCancelled)
     }
 }
 

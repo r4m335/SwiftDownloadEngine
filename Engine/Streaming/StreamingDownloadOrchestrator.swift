@@ -766,11 +766,14 @@ public actor StreamingDownloadOrchestrator {
     }
 
     public func pause(transferID: String) async throws {
+        runningTransfers.remove(transferID)
         pausedTransfers.insert(transferID)
         if let mapped = registeredTransferIDs[transferID] {
+            runningTransfers.remove(mapped)
             pausedTransfers.insert(mapped)
         }
         for (k, v) in registeredTransferIDs where v == transferID {
+            runningTransfers.remove(k)
             pausedTransfers.insert(k)
         }
         try await persistHLSState(
@@ -782,11 +785,14 @@ public actor StreamingDownloadOrchestrator {
 
     public func resume(transferID: String) async throws {
         pausedTransfers.remove(transferID)
+        runningTransfers.insert(transferID)
         if let mapped = registeredTransferIDs[transferID] {
             pausedTransfers.remove(mapped)
+            runningTransfers.insert(mapped)
         }
         for (k, v) in registeredTransferIDs where v == transferID {
             pausedTransfers.remove(k)
+            runningTransfers.insert(k)
         }
         try await persistHLSState(
             id: hlsParentID(for: transferID),
@@ -796,14 +802,19 @@ public actor StreamingDownloadOrchestrator {
     }
 
     public func cancel(transferID: String) async {
+        runningTransfers.remove(transferID)
+        pausedTransfers.remove(transferID)
         cancelledTransfers.insert(transferID)
         if let mapped = registeredTransferIDs[transferID] {
+            runningTransfers.remove(mapped)
+            pausedTransfers.remove(mapped)
             cancelledTransfers.insert(mapped)
         }
         for (k, v) in registeredTransferIDs where v == transferID {
+            runningTransfers.remove(k)
+            pausedTransfers.remove(k)
             cancelledTransfers.insert(k)
         }
-        pausedTransfers.remove(transferID)
         let parentID = hlsParentID(for: transferID)
         let proposal = proposals[parentID] ?? proposals[transferID]
         await handleHLSCancellation(
@@ -812,6 +823,32 @@ public actor StreamingDownloadOrchestrator {
             proposal: proposal
         )
         PipelineLogger.shared.log("[HLS Pipeline] Cancelled transfer: \(transferID)")
+    }
+
+    public func pauseAll() async {
+        let running = Array(runningTransfers)
+        for id in running {
+            try? await pause(transferID: id)
+        }
+    }
+
+    public func resumeAll() async {
+        let paused = Array(pausedTransfers)
+        for id in paused {
+            try? await resume(transferID: id)
+        }
+    }
+
+    public func cancelAll() async {
+        var targets = runningTransfers.union(pausedTransfers)
+        for id in registeredTransferIDs.values {
+            if completedTransfers[id] == nil && !cancelledTransfers.contains(id) {
+                targets.insert(id)
+            }
+        }
+        for id in targets {
+            await cancel(transferID: id)
+        }
     }
 
     public func isPaused(transferID: String) -> Bool {
