@@ -116,4 +116,42 @@ final class AdaptiveSegmentWorkQueueTests: XCTestCase {
         let finalBytes = await accumulator.parentCompletedBytes(1)
         XCTAssertEqual(finalBytes, 1_000)
     }
+
+    func testProgressAccumulatorIgnoresStaleOutOfOrderUpdatesAfterProgressOrCompletion() async {
+        let segment = DownloadSegment(id: 1, startOffset: 0, endOffset: 999, length: 1_000)
+        let accumulator = AdaptiveSegmentProgressAccumulator(
+            segments: [segment],
+            initialCompletedBytes: [1: 0]
+        )
+        let workItem = AdaptiveSegmentWorkItem(
+            id: 300,
+            parentSegmentID: 1,
+            startOffset: 0,
+            endOffset: 999,
+            splitDepth: 0
+        )
+
+        await accumulator.register(workItem)
+        // Normal progress update to 500 bytes
+        let snap1 = await accumulator.update(workItemID: workItem.id, completedBytes: 500)
+        XCTAssertEqual(snap1.bytesReceived, 500)
+
+        // Delayed out-of-order task reports older progress (300 bytes) - must be ignored
+        let snapStale = await accumulator.update(workItemID: workItem.id, completedBytes: 300)
+        XCTAssertEqual(snapStale.bytesReceived, 500)
+        let bytesAfterStale = await accumulator.parentCompletedBytes(1)
+        XCTAssertEqual(bytesAfterStale, 500)
+
+        // Work completes
+        let snapComplete = await accumulator.complete(workItem)
+        XCTAssertEqual(snapComplete.bytesReceived, 1_000)
+        XCTAssertEqual(snapComplete.completedSegments, 1)
+
+        // Trailing progress task arrives after completion (e.g. 800 bytes) - must not downgrade completed status
+        let snapTrailing = await accumulator.update(workItemID: workItem.id, completedBytes: 800)
+        XCTAssertEqual(snapTrailing.bytesReceived, 1_000)
+        XCTAssertEqual(snapTrailing.completedSegments, 1)
+        let finalBytes = await accumulator.parentCompletedBytes(1)
+        XCTAssertEqual(finalBytes, 1_000)
+    }
 }

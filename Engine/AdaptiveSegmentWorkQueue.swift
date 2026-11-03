@@ -64,9 +64,11 @@ actor AdaptiveSegmentWorkQueue {
 
         // Prefer the largest pending range. This keeps the remaining tail of
         // the slowest parent available for work stealing first.
-        let index = pending.indices.max { lhs, rhs in
+        guard let index = pending.indices.max(by: { lhs, rhs in
             pending[lhs].length < pending[rhs].length
-        }!
+        }) else {
+            return nil
+        }
         var item = pending.remove(at: index)
 
         if item.splitDepth == 0, item.length >= Self.minimumSplitLength * 2 {
@@ -141,7 +143,13 @@ actor AdaptiveSegmentProgressAccumulator {
             return snapshot()
         }
 
-        workCompleted[workItemID] = min(workLength, max(0, completedBytes))
+        let current = workCompleted[workItemID] ?? 0
+        let clamped = min(workLength, max(0, completedBytes))
+        guard clamped > current else {
+            return snapshot()
+        }
+
+        workCompleted[workItemID] = clamped
         recalculate(parentID: parentID)
         return snapshot()
     }
