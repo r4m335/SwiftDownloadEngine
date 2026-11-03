@@ -2559,19 +2559,6 @@ public actor DownloadCoordinator {
                         handler: handler
                     )
 
-                    let needsCheckpoint = await progressAccumulator.shouldCheckpoint(segmentID: segID, completedBytes: done)
-                    if needsCheckpoint {
-                        do {
-                            _ = try await self.persistenceStore.updateSegmentProgress(
-                                tag: request.id,
-                                segmentID: segID,
-                                completedBytes: done
-                            )
-                        } catch {
-                            PipelineLogger.shared.log("[DownloadCoordinator] Single stream checkpoint failed for \(request.id) segment \(segID): \(error.localizedDescription)")
-                        }
-                    }
-
                 case .completed(let segID, _):
                     completedSegmentsSet.insert(segID)
                     guard let seg = segments.first(where: { $0.id == segID }) else { continue }
@@ -2664,12 +2651,20 @@ public actor DownloadCoordinator {
             }
         } catch is CancellationError {
             await bgManager.cancelTasks(for: request.id)
-            let completedMap = await progressAccumulator.getCompletedBytes()
-            for (segID, bytes) in completedMap {
+            // Bug #20: Reconcile each segment's checkpoint strictly to what is committed on disk
+            for seg in segments {
+                let partURL = bgManager.partFileURL(downloadID: request.id, segmentID: seg.id)
+                let diskBytes = FileManager.default.fileSize(atPath: partURL.path) ?? 0
+                let committedBytes = min(seg.length, max(0, diskBytes))
                 do {
-                    _ = try await persistenceStore.updateSegmentProgress(tag: request.id, segmentID: segID, completedBytes: bytes)
+                    _ = try await persistenceStore.updateSegmentProgress(
+                        tag: request.id,
+                        segmentID: seg.id,
+                        completedBytes: committedBytes,
+                        allowDecrease: true
+                    )
                 } catch {
-                    PipelineLogger.shared.log("[DownloadCoordinator] Failed to persist background segment \(segID) progress on pause for \(request.id): \(error.localizedDescription)")
+                    PipelineLogger.shared.log("[DownloadCoordinator] Failed to persist background segment \(seg.id) progress on pause for \(request.id): \(error.localizedDescription)")
                 }
             }
             do {
@@ -2677,14 +2672,18 @@ public actor DownloadCoordinator {
             } catch {
                 PipelineLogger.shared.log("[DownloadCoordinator] Failed to persist background paused state for \(request.id): \(error.localizedDescription)")
             }
-            let snap = await progressAccumulator.snapshot()
+            let committedTotal = segments.reduce(Int64(0)) { sum, seg in
+                let partURL = bgManager.partFileURL(downloadID: request.id, segmentID: seg.id)
+                let diskBytes = FileManager.default.fileSize(atPath: partURL.path) ?? 0
+                return sum + min(seg.length, max(0, diskBytes))
+            }
             let metrics = speedTracker.snapshot(expectedTotalBytes: totalSize)
             updateProgress(
                 downloadID: request.id,
                 state: .paused,
-                bytesReceived: snap.bytesReceived,
+                bytesReceived: committedTotal,
                 totalBytes: totalSize,
-                completedSegments: snap.completedSegments,
+                completedSegments: completedSegmentsSet.count,
                 totalSegments: segments.count,
                 currentSpeed: 0,
                 averageSpeed: metrics.averageBytesPerSecond,
@@ -2695,12 +2694,20 @@ public actor DownloadCoordinator {
             throw CancellationError()
         } catch {
             await bgManager.cancelTasks(for: request.id)
-            let completedMap = await progressAccumulator.getCompletedBytes()
-            for (segID, bytes) in completedMap {
+            // Bug #20: Reconcile each segment's checkpoint strictly to what is committed on disk
+            for seg in segments {
+                let partURL = bgManager.partFileURL(downloadID: request.id, segmentID: seg.id)
+                let diskBytes = FileManager.default.fileSize(atPath: partURL.path) ?? 0
+                let committedBytes = min(seg.length, max(0, diskBytes))
                 do {
-                    _ = try await persistenceStore.updateSegmentProgress(tag: request.id, segmentID: segID, completedBytes: bytes)
+                    _ = try await persistenceStore.updateSegmentProgress(
+                        tag: request.id,
+                        segmentID: seg.id,
+                        completedBytes: committedBytes,
+                        allowDecrease: true
+                    )
                 } catch {
-                    PipelineLogger.shared.log("[DownloadCoordinator] Failed to persist background segment \(segID) progress on error for \(request.id): \(error.localizedDescription)")
+                    PipelineLogger.shared.log("[DownloadCoordinator] Failed to persist background segment \(seg.id) progress on error for \(request.id): \(error.localizedDescription)")
                 }
             }
             do {
@@ -2708,14 +2715,18 @@ public actor DownloadCoordinator {
             } catch {
                 PipelineLogger.shared.log("[DownloadCoordinator] Failed to persist background failed state for \(request.id): \(error.localizedDescription)")
             }
-            let snap = await progressAccumulator.snapshot()
+            let committedTotal = segments.reduce(Int64(0)) { sum, seg in
+                let partURL = bgManager.partFileURL(downloadID: request.id, segmentID: seg.id)
+                let diskBytes = FileManager.default.fileSize(atPath: partURL.path) ?? 0
+                return sum + min(seg.length, max(0, diskBytes))
+            }
             let metrics = speedTracker.snapshot(expectedTotalBytes: totalSize)
             updateProgress(
                 downloadID: request.id,
                 state: .failed(reason: error.localizedDescription),
-                bytesReceived: snap.bytesReceived,
+                bytesReceived: committedTotal,
                 totalBytes: totalSize,
-                completedSegments: snap.completedSegments,
+                completedSegments: completedSegmentsSet.count,
                 totalSegments: segments.count,
                 currentSpeed: 0,
                 averageSpeed: metrics.averageBytesPerSecond,

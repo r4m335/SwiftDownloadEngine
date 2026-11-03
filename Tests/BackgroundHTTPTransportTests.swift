@@ -1191,5 +1191,322 @@ final class BackgroundHTTPTransportTests: XCTestCase {
         XCTAssertEqual(reloadedRecord?.downloadID, "dl-atomic-test")
         XCTAssertEqual(reloadedRecord?.taskIdentifier, 42)
     }
+
+    // MARK: - 12. Bug #20: Background Checkpoint Durability Regression Tests
+
+    func testInFlightProgressDoesNotAdvanceDurablePersistence() async throws {
+        let download = DownloadRecord(
+            id: "dl-durability-inflight",
+            originalURL: URL(string: "https://example.com/inflight.bin")!,
+            destinationURL: storageDirectoryURL.appendingPathComponent("inflight.bin"),
+            totalSize: 5000,
+            state: .downloading,
+            storageMode: .partFiles,
+            segments: [
+                SegmentRecord(id: 0, startOffset: 0, endOffset: 4999, length: 5000, completedBytes: 0)
+            ]
+        )
+        try await persistenceStore.save(download)
+
+        let manager = try BackgroundDownloadSessionManager(
+            sessionIdentifier: "test.durability.inflight",
+            storageDirectoryURL: storageDirectoryURL,
+            persistenceStore: persistenceStore
+        )
+
+        let taskRecord = try await manager.scheduleSegmentDownload(
+            download: download,
+            segment: download.segments[0]
+        )
+
+        final class ProgressBox: @unchecked Sendable {
+            var value: Int64 = 0
+        }
+        let box = ProgressBox()
+        manager.addObserver(for: download.id, onProgress: { segID, completed, total in
+            if segID == 0 {
+                box.value = completed
+            }
+        })
+
+        let tasks = await manager.activeSessionTasks()
+        let task = try XCTUnwrap(tasks.first { $0.taskIdentifier == taskRecord.taskIdentifier } as? URLSessionDownloadTask)
+
+        // Simulate delegate in-flight progress of 2000 bytes
+        manager.urlSession(
+            URLSession.shared,
+            downloadTask: task,
+            didWriteData: 2000,
+            totalBytesWritten: 2000,
+            totalBytesExpectedToWrite: 5000
+        )
+        await manager.waitForInFlightEvents()
+
+        // Visible progress notification must have fired
+        XCTAssertEqual(box.value, 2000, "Visible UI progress notification must receive in-flight progress")
+
+        // Crucial invariant (Bug #20): Persistent store must NOT have advanced
+        let saved = try await persistenceStore.fetch(tag: download.id)
+        XCTAssertEqual(saved?.segments[0].completedBytes, 0, "Durable checkpoint must NOT advance for in-flight daemon bytes")
+
+        await manager.cancelTasks(for: download.id)
+    }
+
+    func testCancellationReconcilesPersistedProgressWithDestinationFile() async throws {
+        let download = DownloadRecord(
+            id: "dl-durability-cancel",
+            originalURL: URL(string: "https://example.com/cancel.bin")!,
+            destinationURL: storageDirectoryURL.appendingPathComponent("cancel.bin"),
+            totalSize: 5000,
+            state: .downloading,
+            storageMode: .partFiles,
+            segments: [
+                SegmentRecord(id: 0, startOffset: 0, endOffset: 4999, length: 5000, completedBytes: 0)
+            ]
+        )
+        try await persistenceStore.save(download)
+
+        let manager = try BackgroundDownloadSessionManager(
+            sessionIdentifier: "test.durability.cancel",
+            storageDirectoryURL: storageDirectoryURL,
+            persistenceStore: persistenceStore
+        )
+
+        // Write a physical part file of 500 committed bytes
+        let partURL = manager.partFileURL(downloadID: download.id, segmentID: 0)
+        try FileManager.default.createDirectory(at: partURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data(repeating: 0xAA, count: 500).write(to: partURL)
+
+        let taskRecord = try await manager.scheduleSegmentDownload(
+            download: download,
+            segment: download.segments[0]
+        )
+
+        let tasks = await manager.activeSessionTasks()
+        let task = try XCTUnwrap(tasks.first { $0.taskIdentifier == taskRecord.taskIdentifier } as? URLSessionDownloadTask)
+
+        // Simulate in-flight progress of 2500 bytes
+        manager.urlSession(
+            URLSession.shared,
+            downloadTask: task,
+            didWriteData: 2500,
+            totalBytesWritten: 2500,
+            totalBytesExpectedToWrite: 5000
+        )
+        await manager.waitForInFlightEvents()
+
+        // Cancel task
+        await manager.cancelTask(taskIdentifier: task.taskIdentifier)
+        await manager.waitForInFlightEvents()
+
+        // Persisted progress must strictly equal physical on-disk size (500), not in-flight (2500)
+        let saved = try await persistenceStore.fetch(tag: download.id)
+        XCTAssertEqual(saved?.segments[0].completedBytes, 500, "Persisted progress after cancellation must match actual file size on disk")
+    }
+
+    func testNetworkFailureReconcilesPersistedProgressWithDestinationFile() async throws {
+        let download = DownloadRecord(
+            id: "dl-durability-fail",
+            originalURL: URL(string: "https://example.com/fail.bin")!,
+            destinationURL: storageDirectoryURL.appendingPathComponent("fail.bin"),
+            totalSize: 5000,
+            state: .downloading,
+            storageMode: .partFiles,
+            segments: [
+                SegmentRecord(id: 0, startOffset: 0, endOffset: 4999, length: 5000, completedBytes: 0)
+            ]
+        )
+        try await persistenceStore.save(download)
+
+        let manager = try BackgroundDownloadSessionManager(
+            sessionIdentifier: "test.durability.fail",
+            storageDirectoryURL: storageDirectoryURL,
+            persistenceStore: persistenceStore
+        )
+
+        // Write 800 bytes to disk
+        let partURL = manager.partFileURL(downloadID: download.id, segmentID: 0)
+        try FileManager.default.createDirectory(at: partURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data(repeating: 0xBB, count: 800).write(to: partURL)
+
+        let taskRecord = try await manager.scheduleSegmentDownload(
+            download: download,
+            segment: download.segments[0]
+        )
+
+        let tasks = await manager.activeSessionTasks()
+        let task = try XCTUnwrap(tasks.first { $0.taskIdentifier == taskRecord.taskIdentifier })
+
+        // Simulate failure
+        manager.urlSession(
+            URLSession.shared,
+            task: task,
+            didCompleteWithError: URLError(.networkConnectionLost)
+        )
+        await manager.waitForInFlightEvents()
+
+        // Persisted progress must reconcile to physical disk file size (800)
+        let saved = try await persistenceStore.fetch(tag: download.id)
+        XCTAssertEqual(saved?.segments[0].completedBytes, 800, "Persisted progress after task failure must reconcile to physical disk file size")
+
+        await manager.cancelTasks(for: download.id)
+    }
+
+    func testSuccessfulCompletionCommitsStagedFileBeforePersistingFullProgress() async throws {
+        let download = DownloadRecord(
+            id: "dl-durability-complete",
+            originalURL: URL(string: "https://example.com/complete.bin")!,
+            destinationURL: storageDirectoryURL.appendingPathComponent("complete.bin"),
+            totalSize: 1000,
+            state: .downloading,
+            storageMode: .partFiles,
+            segments: [
+                SegmentRecord(id: 0, startOffset: 0, endOffset: 999, length: 1000, completedBytes: 0)
+            ]
+        )
+        try await persistenceStore.save(download)
+
+        let manager = try BackgroundDownloadSessionManager(
+            sessionIdentifier: "test.durability.complete",
+            storageDirectoryURL: storageDirectoryURL,
+            persistenceStore: persistenceStore
+        )
+
+        let taskRecord = try await manager.scheduleSegmentDownload(
+            download: download,
+            segment: download.segments[0]
+        )
+
+        let tasks = await manager.activeSessionTasks()
+        let task = try XCTUnwrap(tasks.first { $0.taskIdentifier == taskRecord.taskIdentifier } as? URLSessionDownloadTask)
+
+        // Create staging file
+        let stageTemp = tempDirectoryURL.appendingPathComponent("simulated_stage.tmp")
+        try Data(repeating: 0xCC, count: 1000).write(to: stageTemp)
+
+        manager.urlSession(
+            URLSession.shared,
+            downloadTask: task,
+            didFinishDownloadingTo: stageTemp
+        )
+        await manager.waitForInFlightEvents()
+
+        // Destination part file must exist and have 1000 bytes
+        let partURL = manager.partFileURL(downloadID: download.id, segmentID: 0)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: partURL.path))
+        let diskSize = FileManager.default.fileSize(atPath: partURL.path)
+        XCTAssertEqual(diskSize, 1000)
+
+        // Persistence store must record segment completed
+        let saved = try await persistenceStore.fetch(tag: download.id)
+        XCTAssertEqual(saved?.segments[0].completedBytes, 1000)
+
+        await manager.cancelTasks(for: download.id)
+    }
+
+    func testTruncatedCompletionDecreasesPersistedProgressToCommittedSize() async throws {
+        let download = DownloadRecord(
+            id: "dl-durability-truncated",
+            originalURL: URL(string: "https://example.com/truncated.bin")!,
+            destinationURL: storageDirectoryURL.appendingPathComponent("truncated.bin"),
+            totalSize: 5000,
+            state: .downloading,
+            storageMode: .partFiles,
+            segments: [
+                SegmentRecord(id: 0, startOffset: 0, endOffset: 4999, length: 5000, completedBytes: 4000)
+            ]
+        )
+        try await persistenceStore.save(download)
+
+        // Verify initial state has 4000
+        let initial = try await persistenceStore.fetch(tag: download.id)
+        XCTAssertEqual(initial?.segments[0].completedBytes, 4000)
+
+        // Reconcile with truncated on-disk size (e.g. 1500 bytes) with allowDecrease: true
+        let updated = try await persistenceStore.updateSegmentProgress(
+            tag: download.id,
+            segmentID: 0,
+            completedBytes: 1500,
+            allowDecrease: true
+        )
+        XCTAssertEqual(updated.segments[0].completedBytes, 1500, "Progress must decrease to committed disk size when allowDecrease is true")
+
+        // Without allowDecrease: false, it must NOT decrease
+        let rejected = try await persistenceStore.updateSegmentProgress(
+            tag: download.id,
+            segmentID: 0,
+            completedBytes: 800,
+            allowDecrease: false
+        )
+        XCTAssertEqual(rejected.segments[0].completedBytes, 1500, "Progress must not decrease when allowDecrease is false")
+    }
+
+    func testSynchronizationFailureCannotProduceSuccessfulCommit() async throws {
+        let sourceURL = tempDirectoryURL.appendingPathComponent("sync_source.tmp")
+        try Data(repeating: 0xDD, count: 500).write(to: sourceURL)
+
+        // Destination in a non-existent unwritable directory
+        let invalidDestURL = URL(fileURLWithPath: "/non_existent_root_dir_\(UUID().uuidString)/cannot_write.bin")
+
+        XCTAssertThrowsError(
+            try BackgroundDownloadFileHandler.relocateOrAppendTemporaryFile(
+                from: sourceURL,
+                to: invalidDestURL,
+                expectedNewBytes: 500,
+                expectedFinalTotalBytes: 500,
+                append: false
+            )
+        ) { error in
+            guard case BackgroundTransportError.fileRelocationFailed = error else {
+                XCTFail("Expected fileRelocationFailed error on invalid sync/write destination, got \(error)")
+                return
+            }
+        }
+    }
+
+    func testRecoveryReopenPersistenceStoreMatchesPhysicalPartFileSizes() async throws {
+        let download = DownloadRecord(
+            id: "dl-durability-recovery",
+            originalURL: URL(string: "https://example.com/recovery.bin")!,
+            destinationURL: storageDirectoryURL.appendingPathComponent("recovery.bin"),
+            totalSize: 4000,
+            state: .downloading,
+            storageMode: .partFiles,
+            transportPolicy: .background,
+            segments: [
+                SegmentRecord(id: 0, startOffset: 0, endOffset: 1999, length: 2000, completedBytes: 2000),
+                SegmentRecord(id: 1, startOffset: 2000, endOffset: 3999, length: 2000, completedBytes: 1800) // Corrupted inflated progress!
+            ]
+        )
+        try await persistenceStore.save(download)
+
+        let manager = try BackgroundDownloadSessionManager(
+            sessionIdentifier: "test.durability.recovery",
+            storageDirectoryURL: storageDirectoryURL,
+            persistenceStore: persistenceStore
+        )
+
+        // Physical files on disk:
+        // Segment 0: 2000 bytes
+        let part0 = manager.partFileURL(downloadID: download.id, segmentID: 0)
+        try FileManager.default.createDirectory(at: part0.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data(repeating: 0xEE, count: 2000).write(to: part0)
+
+        // Segment 1: Only 750 bytes physically committed
+        let part1 = manager.partFileURL(downloadID: download.id, segmentID: 1)
+        try Data(repeating: 0xFF, count: 750).write(to: part1)
+
+        // Reconcile partial files using DownloadCoordinator's reconciliation engine
+        let reconciled = DownloadCoordinator.reconcilePartialFile(
+            destinationURL: download.destinationURL,
+            record: download,
+            backgroundSessionManager: manager
+        )
+
+        XCTAssertEqual(reconciled.segments[0].completedBytes, 2000)
+        XCTAssertEqual(reconciled.segments[1].completedBytes, 750, "Recovered progress must match physical 750 bytes on disk, discarding phantom 1800 bytes")
+
+        await manager.cancelTasks(for: download.id)
+    }
 }
 

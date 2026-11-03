@@ -428,7 +428,11 @@ public enum BackgroundDownloadFileHandler {
         }
 
         let parentDir = destinationURL.deletingLastPathComponent()
-        try fileManager.createDirectory(at: parentDir, withIntermediateDirectories: true)
+        do {
+            try fileManager.createDirectory(at: parentDir, withIntermediateDirectories: true)
+        } catch {
+            throw BackgroundTransportError.fileRelocationFailed(underlyingError: "Failed to create destination directory: \(error.localizedDescription)")
+        }
 
         // Stage into a temporary file alongside destination
         let stagingURL = parentDir
@@ -467,7 +471,6 @@ public enum BackgroundDownloadFileHandler {
             do {
                 let writeHandle = try FileHandle(forWritingTo: stagingURL)
                 defer {
-                    try? writeHandle.synchronize()
                     try? writeHandle.close()
                 }
                 try writeHandle.seekToEnd()
@@ -481,6 +484,8 @@ public enum BackgroundDownloadFileHandler {
                     if chunk.isEmpty { break }
                     writeHandle.write(chunk)
                 }
+                // Bug #20: Explicitly synchronize appended staging data and propagate errors
+                try writeHandle.synchronize()
                 _ = try? fileManager.removeItem(at: sourceURL)
             } catch {
                 try? fileManager.removeItem(at: stagingURL)
@@ -553,6 +558,17 @@ public enum BackgroundDownloadFileHandler {
                 try? fileManager.removeItem(at: stagingURL)
                 throw BackgroundTransportError.fileRelocationFailed(underlyingError: error.localizedDescription)
             }
+        }
+
+        // Bug #20: Explicitly synchronize committed destination file before declaring success
+        do {
+            let destHandle = try FileHandle(forWritingTo: destinationURL)
+            defer { try? destHandle.close() }
+            try destHandle.synchronize()
+        } catch {
+            throw BackgroundTransportError.fileRelocationFailed(
+                underlyingError: "Failed to synchronize committed destination file: \(error.localizedDescription)"
+            )
         }
 
         return fileSize
@@ -864,6 +880,9 @@ public final class BackgroundDownloadSessionManager: NSObject, @unchecked Sendab
     public func cancelTask(taskIdentifier: Int) async {
         let task = await findTask(withIdentifier: taskIdentifier)
         task?.cancel()
+        if let rec = await mappingStore.record(sessionIdentifier: sessionIdentifier, taskIdentifier: taskIdentifier) {
+            await reconcileSegmentWithDisk(downloadID: rec.downloadID, segmentID: rec.segmentID, partURL: rec.destinationPartURL)
+        }
         try? await mappingStore.remove(sessionIdentifier: sessionIdentifier, taskIdentifier: taskIdentifier)
     }
 
@@ -873,7 +892,24 @@ public final class BackgroundDownloadSessionManager: NSObject, @unchecked Sendab
         for r in records {
             let task = await findTask(withIdentifier: r.taskIdentifier)
             task?.cancel()
+            await reconcileSegmentWithDisk(downloadID: r.downloadID, segmentID: r.segmentID, partURL: r.destinationPartURL)
             try? await mappingStore.remove(sessionIdentifier: r.sessionIdentifier, taskIdentifier: r.taskIdentifier)
+        }
+    }
+
+    /// Reconciles a segment's persisted checkpoint strictly to the bytes actually committed to disk.
+    private func reconcileSegmentWithDisk(downloadID: String, segmentID: Int, partURL: URL) async {
+        guard let persistence = self.persistenceStore else { return }
+        let currentSize = FileManager.default.fileSize(atPath: partURL.path) ?? 0
+        do {
+            _ = try await persistence.updateSegmentProgress(
+                tag: downloadID,
+                segmentID: segmentID,
+                completedBytes: max(0, currentSize),
+                allowDecrease: true
+            )
+        } catch {
+            print("[BackgroundDownloadSessionManager] Warning: failed to reconcile task with disk size: \(error)")
         }
     }
 
@@ -1089,17 +1125,12 @@ extension BackgroundDownloadSessionManager: URLSessionDownloadDelegate {
             // segmentTotalCompleted = initialSegmentCompletedBytes + totalBytesWritten (clamped to segmentLength)
             let segmentTotalCompleted = min(record.segmentLength, record.initialSegmentCompletedBytes + totalBytesWritten)
 
-            if let persistence = self.persistenceStore {
-                do {
-                    _ = try await persistence.updateSegmentProgress(
-                        tag: record.downloadID,
-                        segmentID: record.segmentID,
-                        completedBytes: segmentTotalCompleted
-                    )
-                } catch {
-                    print("[BackgroundDownloadSessionManager] Warning: failed to persist segment progress: \(error)")
-                }
-            }
+            // CRITICAL (Bug #20): Stop treating daemon-side in-flight bytes as durable persisted progress.
+            // In background downloads, in-flight bytes reside solely within Apple's system daemon
+            // (nsurlsessiond) temporary staging storage and are NOT committed to the destination
+            // part file on disk until didFinishDownloadingTo validates, relocates/appends, and flushes them.
+            // Persisting in-flight progress here corrupts durable checkpoints if the task is interrupted,
+            // cancelled, or fails. UI progress notifications remain fully active via notifyProgress.
 
             self.notifyProgress(
                 downloadID: record.downloadID,
@@ -1177,7 +1208,11 @@ extension BackgroundDownloadSessionManager: URLSessionDownloadDelegate {
                     try? FileManager.default.removeItem(at: destination)
                     try? await self.mappingStore.markFailed(sessionIdentifier: sessID, taskIdentifier: taskID, error: error.localizedDescription)
                     if let persistence = self.persistenceStore {
-                        _ = try? await persistence.updateSegmentProgress(tag: downloadID, segmentID: segmentID, completedBytes: 0, allowDecrease: true)
+                        do {
+                            _ = try await persistence.updateSegmentProgress(tag: downloadID, segmentID: segmentID, completedBytes: 0, allowDecrease: true)
+                        } catch {
+                            print("[BackgroundDownloadSessionManager] Warning: failed to reset segment progress on response error: \(error)")
+                        }
                     }
                     self.notifyFailed(downloadID: downloadID, segmentID: segmentID, error: error)
                     return
@@ -1201,7 +1236,11 @@ extension BackgroundDownloadSessionManager: URLSessionDownloadDelegate {
                 try? await self.mappingStore.markFailed(sessionIdentifier: sessID, taskIdentifier: taskID, error: error.localizedDescription)
                 if let persistence = self.persistenceStore {
                     let currentSize = FileManager.default.fileSize(atPath: destination.path) ?? 0
-                    _ = try? await persistence.updateSegmentProgress(tag: downloadID, segmentID: segmentID, completedBytes: currentSize, allowDecrease: true)
+                    do {
+                        _ = try await persistence.updateSegmentProgress(tag: downloadID, segmentID: segmentID, completedBytes: currentSize, allowDecrease: true)
+                    } catch {
+                        print("[BackgroundDownloadSessionManager] Warning: failed to reconcile segment progress after commit error: \(error)")
+                    }
                 }
                 self.notifyFailed(downloadID: downloadID, segmentID: segmentID, error: error)
                 return
@@ -1212,7 +1251,11 @@ extension BackgroundDownloadSessionManager: URLSessionDownloadDelegate {
                 print("[BackgroundDownloadSessionManager] Error: \(errorMsg)")
                 try? await self.mappingStore.markFailed(sessionIdentifier: sessID, taskIdentifier: taskID, error: errorMsg)
                 if let persistence = self.persistenceStore {
-                    _ = try? await persistence.updateSegmentProgress(tag: downloadID, segmentID: segmentID, completedBytes: finalSize)
+                    do {
+                        _ = try await persistence.updateSegmentProgress(tag: downloadID, segmentID: segmentID, completedBytes: finalSize, allowDecrease: true)
+                    } catch {
+                        print("[BackgroundDownloadSessionManager] Warning: failed to persist final size on mismatch: \(error)")
+                    }
                 }
                 self.notifyFailed(
                     downloadID: downloadID,
@@ -1265,6 +1308,8 @@ extension BackgroundDownloadSessionManager: URLSessionDownloadDelegate {
             defer { self.trackDelegateTaskFinished() }
             if let rec = await self.mappingStore.record(sessionIdentifier: sessID, taskIdentifier: taskID) {
                 try? await self.mappingStore.markFailed(sessionIdentifier: sessID, taskIdentifier: taskID, error: finalError.localizedDescription)
+                // Bug #20: Reconcile persisted progress against actual committed file on disk when a task fails
+                await reconcileSegmentWithDisk(downloadID: rec.downloadID, segmentID: rec.segmentID, partURL: rec.destinationPartURL)
                 self.notifyFailed(downloadID: rec.downloadID, segmentID: rec.segmentID, error: finalError)
             }
         }
