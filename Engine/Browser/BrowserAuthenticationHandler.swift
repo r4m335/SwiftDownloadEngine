@@ -62,17 +62,35 @@ public final class BrowserAuthenticationHandler: @unchecked Sendable {
             return
         }
 
-        // Never expose credentials to unrelated origins if targetPageURL is provided
-        if let targetPageURL, let pageHost = targetPageURL.host?.lowercased() {
-            if host != pageHost && !host.hasSuffix("." + pageHost) && !pageHost.hasSuffix("." + host) {
+        // Enforce strict origin equality (Scheme, Host, Port) if targetPageURL is provided
+        if let targetPageURL {
+            let pageScheme = targetPageURL.scheme?.lowercased() ?? "https"
+            let pageHost = targetPageURL.host?.lowercased() ?? ""
+            let pagePort = targetPageURL.port ?? (pageScheme == "https" ? 443 : 80)
+
+            let spaceScheme = (space.`protocol`?.lowercased()) ?? (space.port == 443 ? "https" : "http")
+            let spacePort = space.port <= 0 ? (spaceScheme == "https" ? 443 : 80) : space.port
+
+            // Strictly require identical scheme, hostname, and effective port without cross-subdomain sharing
+            guard pageScheme == spaceScheme && pageHost == host && pagePort == spacePort else {
                 completionHandler(.cancelAuthenticationChallenge, nil)
                 return
             }
         }
 
+        let effectivePort = space.port <= 0 ? ((space.`protocol`?.lowercased() == "http") ? 80 : 443) : space.port
+        let serverKey = (effectivePort == 80 || effectivePort == 443) ? host : "\(host):\(effectivePort)"
+        let authPath: String
+        if let realm = space.realm, !realm.isEmpty {
+            authPath = "/\(realm)"
+        } else {
+            authPath = "/"
+        }
+
         // Check Keychain if this is the first attempt
         if challenge.previousFailureCount == 0 {
-            if let saved = keychain.getInternetPassword(server: host, path: "/") {
+            if let saved = keychain.getInternetPassword(server: serverKey, path: authPath) ??
+                           keychain.getInternetPassword(server: host, path: "/") {
                 let credential = URLCredential(
                     user: saved.username,
                     password: saved.password,
@@ -105,9 +123,9 @@ public final class BrowserAuthenticationHandler: @unchecked Sendable {
             self.keychain.storeInternetPassword(
                 username: username,
                 password: password,
-                server: host,
-                protocolType: isProxySpace ? "http" : (space.port == 443 ? "https" : "http"),
-                path: "/"
+                server: serverKey,
+                protocolType: isProxySpace ? "http" : (effectivePort == 443 ? "https" : "http"),
+                path: authPath
             )
 
             let credential = URLCredential(

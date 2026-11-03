@@ -128,6 +128,12 @@ public struct SegmentRecord: Codable, Equatable, Identifiable, Sendable {
     }
 }
 
+/// Constants for internal streaming transfers.
+public enum InternalStreamingConstants {
+    public static let segmentIDPrefix = "internal-stream-segment-"
+    public static let legacySegmentIDPrefix = "stream-segment-"
+}
+
 /// Comprehensive persistent download record reproducing 1DM+'s `DownloadInfo`.
 public struct DownloadRecord: Codable, Equatable, Identifiable, Sendable {
     public let id: String
@@ -148,6 +154,13 @@ public struct DownloadRecord: Codable, Equatable, Identifiable, Sendable {
     public var createdAt: Date
     public var updatedAt: Date
     public var segments: [SegmentRecord]
+    public var isInternalStreamingSegment: Bool
+
+    public var isStreamingSegment: Bool {
+        isInternalStreamingSegment ||
+        id.hasPrefix(InternalStreamingConstants.segmentIDPrefix) ||
+        id.hasPrefix(InternalStreamingConstants.legacySegmentIDPrefix)
+    }
 
     public var completedBytes: Int64 {
         segments.reduce(0) { $0 + $1.completedBytes }
@@ -183,7 +196,8 @@ public struct DownloadRecord: Codable, Equatable, Identifiable, Sendable {
         headers: [String: String] = [:],
         createdAt: Date = Date(),
         updatedAt: Date = Date(),
-        segments: [SegmentRecord] = []
+        segments: [SegmentRecord] = [],
+        isInternalStreamingSegment: Bool = false
     ) {
         self.id = id
         self.originalURL = originalURL
@@ -213,11 +227,12 @@ public struct DownloadRecord: Codable, Equatable, Identifiable, Sendable {
         self.createdAt = createdAt
         self.updatedAt = updatedAt
         self.segments = segments
+        self.isInternalStreamingSegment = isInternalStreamingSegment
     }
 
     enum CodingKeys: String, CodingKey {
         case id, originalURL, resolvedURL, destinationURL, totalSize, state, storageMode, transportPolicy, networkPolicy
-        case eTag, lastModified, suggestedFilename, mimeType, headers, createdAt, updatedAt, segments
+        case eTag, lastModified, suggestedFilename, mimeType, headers, createdAt, updatedAt, segments, isInternalStreamingSegment
     }
 
     public init(from decoder: Decoder) throws {
@@ -239,6 +254,7 @@ public struct DownloadRecord: Codable, Equatable, Identifiable, Sendable {
         self.createdAt = try container.decode(Date.self, forKey: .createdAt)
         self.updatedAt = try container.decode(Date.self, forKey: .updatedAt)
         self.segments = try container.decode([SegmentRecord].self, forKey: .segments)
+        self.isInternalStreamingSegment = (try? container.decodeIfPresent(Bool.self, forKey: .isInternalStreamingSegment)) ?? false
     }
 
     /// Evaluates remote server headers before resuming an interrupted download.

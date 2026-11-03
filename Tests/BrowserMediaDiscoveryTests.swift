@@ -536,6 +536,34 @@ final class BrowserMediaDiscoveryTests: XCTestCase {
         }
     }
     #endif
+
+    func testObserverScriptContainsIncrementalBoundedReaderAndCancellation() {
+        let script = BrowserMediaDiscoveryBridge.observerScript
+        XCTAssertTrue(script.contains("getReader"))
+        XCTAssertTrue(script.contains("readNextChunk"))
+        XCTAssertTrue(script.contains("reader.cancel"))
+    }
+
+    func testUserDownloadStartingWithSegIsNotClassifiedAsInternalStreamingSegment() {
+        let userRecord = DownloadRecord(
+            id: "seg-user-video.mp4",
+            originalURL: URL(string: "https://example.com/seg-user-video.mp4")!,
+            destinationURL: URL(fileURLWithPath: "/tmp/seg-user-video.mp4"),
+            totalSize: 1024
+        )
+        XCTAssertFalse(userRecord.isStreamingSegment, "A user download whose ID starts with seg- must NOT be classified as internal streaming segment")
+        XCTAssertFalse(DownloadCoordinator.isInternalStreamingSegmentID("seg-user-video.mp4"))
+
+        let internalRecord = DownloadRecord(
+            id: "\(InternalStreamingConstants.segmentIDPrefix)abc12345",
+            originalURL: URL(string: "https://example.com/chunk.ts")!,
+            destinationURL: URL(fileURLWithPath: "/tmp/chunk.ts"),
+            totalSize: 1024,
+            isInternalStreamingSegment: true
+        )
+        XCTAssertTrue(internalRecord.isStreamingSegment)
+        XCTAssertTrue(DownloadCoordinator.isInternalStreamingSegmentID(internalRecord.id))
+    }
 }
 
 

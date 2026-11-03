@@ -88,12 +88,18 @@ public protocol StreamingManifestLoader: Sendable {
 public protocol BrowserMediaURLResolver: Sendable {
     @MainActor func resolveMediaURL(_ rawURL: URL) async throws -> URL
     @MainActor func fetchManifestText(from url: URL) async throws -> String
+    @MainActor func fetchManifestText(from url: URL, maxBytes: Int) async throws -> String
 }
 
 extension BrowserMediaURLResolver {
     @MainActor
     public func fetchManifestText(from url: URL) async throws -> String {
         throw StreamingManifestLoadError.browserFetchUnavailable
+    }
+
+    @MainActor
+    public func fetchManifestText(from url: URL, maxBytes: Int) async throws -> String {
+        try await fetchManifestText(from: url)
     }
 }
 
@@ -855,7 +861,7 @@ public actor StreamingDownloadOrchestrator {
         guard let engine = downloadEngine,
               let records = try? await engine.persistenceStore.fetchAll() else { return }
         let directoryPath = directory?.standardizedFileURL.path
-        for record in records where record.id.hasPrefix("stream-segment-") || record.id.hasPrefix("seg-") {
+        for record in records where record.isStreamingSegment {
             if let directoryPath,
                !record.destinationURL.standardizedFileURL.path.hasPrefix(directoryPath + "/") {
                 continue
@@ -884,8 +890,12 @@ public actor StreamingDownloadOrchestrator {
             for child in children where child.lastPathComponent.hasPrefix(".assembly_temp_") {
                 let path = child.standardizedFileURL.path
                 guard !activeDirectories.contains(path) else { continue }
-                try? fileManager.removeItem(at: child)
-                PipelineLogger.shared.log("[HLS Recovery] Removed orphaned assembly directory: \(path)")
+                do {
+                    try fileManager.removeItem(at: child)
+                    PipelineLogger.shared.log("[HLS Recovery] Removed orphaned assembly directory: \(path)")
+                } catch {
+                    PipelineLogger.shared.log("[HLS Recovery] Failed to remove orphaned assembly directory \(path): \(error.localizedDescription)")
+                }
             }
         }
     }
@@ -984,8 +994,12 @@ public actor StreamingDownloadOrchestrator {
         // whose output file has already been removed from disk by the user.
         for record in records where record.state == .completed {
             if !FileManager.default.fileExists(atPath: record.outputDestinationURL.path) {
-                try? await persistence.delete(id: record.id)
-                PipelineLogger.shared.log("[HLS Recovery] Pruned stale completed record: \(record.id)")
+                do {
+                    try await persistence.delete(id: record.id)
+                    PipelineLogger.shared.log("[HLS Recovery] Pruned stale completed record: \(record.id)")
+                } catch {
+                    PipelineLogger.shared.log("[HLS Recovery] Warning: Failed to prune stale completed record \(record.id): \(error.localizedDescription)")
+                }
             }
         }
     }
@@ -1107,7 +1121,7 @@ public actor StreamingDownloadOrchestrator {
             PipelineLogger.shared.log("[HLS Pipeline] Step 1: URLSession manifest fetch (status: \(status))")
             if let resolver = self.urlResolver {
                 do {
-                    let text = try await resolver.fetchManifestText(from: candidate.url)
+                    let text = try await resolver.fetchManifestText(from: candidate.url, maxBytes: parsingLimits.maxBytes)
                     let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
                     guard !trimmed.isEmpty else {
                         let jsReason = "Empty manifest response"
@@ -1117,6 +1131,9 @@ public actor StreamingDownloadOrchestrator {
                         throw StreamingManifestLoadError.failed(combinedMessage)
                     }
                     let data = Data(trimmed.utf8)
+                    if data.count > parsingLimits.maxBytes {
+                        throw ManifestParserError.inputTooLarge(limit: parsingLimits.maxBytes)
+                    }
                     if Self.isHTMLResponse(data) {
                         let htmlSnippet = String(decoding: data.prefix(500), as: UTF8.self)
                         PipelineLogger.shared.log("[Streaming Pipeline] Block page received from JS fallback (first 500 chars):\n\(htmlSnippet)")
@@ -1129,6 +1146,9 @@ public actor StreamingDownloadOrchestrator {
                         mimeType: candidate.mimeType,
                         statusCode: 200
                     )
+                } catch let parserErr as ManifestParserError {
+                    PipelineLogger.shared.log("[HLS Pipeline] Error: Manifest size limit reached on JS fetch fallback: \(parserErr.localizedDescription)")
+                    throw parserErr
                 } catch let jsError as StreamingManifestLoadError {
                     if case .failed = jsError {
                         throw jsError
@@ -1154,8 +1174,24 @@ public actor StreamingDownloadOrchestrator {
 
     public func prepare(candidate: StreamingManifestCandidate) async throws -> StreamingTransferProposal {
         let candidateMIME = candidate.mimeType ?? ""
+        var fingerprintComponents = [candidate.url.absoluteString, candidateMIME]
+        if let context = candidate.browserRequestContext {
+            fingerprintComponents.append(context.userAgent ?? "")
+            fingerprintComponents.append(context.referer ?? "")
+            let cookieDesc = context.cookies.map { "\($0.name)=\($0.value)" }.sorted().joined(separator: ";")
+            fingerprintComponents.append(cookieDesc)
+            if !context.customHeaders.isEmpty {
+                let headerDesc = context.customHeaders.sorted(by: { $0.key < $1.key }).map { "\($0.key):\($0.value)" }.joined(separator: "\n")
+                fingerprintComponents.append(headerDesc)
+            }
+        }
+        if let snapshot = candidate.browserSessionSnapshot {
+            fingerprintComponents.append(snapshot.userAgent)
+            let cookieDesc = snapshot.allCookies.map { "\($0.name)=\($0.value)" }.sorted().joined(separator: ";")
+            fingerprintComponents.append(cookieDesc)
+        }
         let metadataFingerprint = EngineSHA256.hash(
-            data: Data((candidate.url.absoluteString + "|" + candidateMIME).utf8)
+            data: Data(fingerprintComponents.joined(separator: "|").utf8)
         )
         if let existing = proposals[metadataFingerprint] {
             return existing
@@ -1277,6 +1313,7 @@ public actor StreamingDownloadOrchestrator {
             estimatedTransferBytes: estimatedBytes(for: manifest)
         )
         proposals[metadataFingerprint] = proposal
+        proposals[proposal.transferID] = proposal
         candidatesByTransfer[proposal.transferID] = candidate
         let masterKey = candidate.url.absoluteString
         let variantKey = proposal.manifest.manifestURL.absoluteString
@@ -1524,7 +1561,14 @@ public actor StreamingDownloadOrchestrator {
         let parentID = proposal.manifest.kind == .hls ? hlsParentID(for: proposal) : proposal.transferID
 
         if case .hls(let plan) = proposal.manifest, let persistence = hlsPersistenceStore {
-            if (try? await persistence.load(id: parentID)) == nil {
+            let existingRecord: HLSTransferRecord?
+            do {
+                existingRecord = try await persistence.load(id: parentID)
+            } catch {
+                PipelineLogger.shared.log("[HLS Pipeline] Warning: Failed to load parent record \(parentID): \(error.localizedDescription)")
+                existingRecord = nil
+            }
+            if existingRecord == nil {
                 let filename = HLSVODReconstructionPlanner.suggestedFilename(for: plan)
                 let initialRecord = HLSTransferRecord(
                     id: parentID,
@@ -1537,7 +1581,18 @@ public actor StreamingDownloadOrchestrator {
                     state: .downloading,
                     assemblyState: .notStarted
                 )
-                try? await persistence.save(initialRecord)
+                do {
+                    try await persistence.save(initialRecord)
+                    guard let verified = try await persistence.load(id: parentID), verified.id == parentID else {
+                        throw StreamingDownloadOrchestratorError.persistenceFailed(
+                            "Failed to establish durable parent checkpoint for \(parentID): Record verification failed after save"
+                        )
+                    }
+                    PipelineLogger.shared.log("[HLS Pipeline] Durable parent checkpoint created and verified for: \(parentID)")
+                } catch {
+                    PipelineLogger.shared.log("[HLS Pipeline] Critical: Failed to establish durable parent checkpoint for \(parentID): \(error.localizedDescription)")
+                    throw error
+                }
             }
         }
         var completedIdentities: [StreamingSegmentIdentity?] = Array(repeating: nil, count: totalSegments)
@@ -2211,11 +2266,42 @@ public actor StreamingDownloadOrchestrator {
         cancelledTransfers.insert(record.id)
         await segmentExecutor.cancel(transferID: record.id)
         await purgeInternalStreamingSegmentRecords(in: record.segmentDirectoryURL)
-        try? FileManager.default.removeItem(at: record.segmentDirectoryURL)
-        if deleteOutputFile {
-            try? FileManager.default.removeItem(at: record.outputDestinationURL)
+
+        var fileDeletionFailed = false
+        if FileManager.default.fileExists(atPath: record.segmentDirectoryURL.path) {
+            do {
+                try FileManager.default.removeItem(at: record.segmentDirectoryURL)
+                PipelineLogger.shared.log("[HLS Cleanup] Removed segment directory: \(record.segmentDirectoryURL.path)")
+            } catch {
+                fileDeletionFailed = true
+                let nsErr = error as NSError
+                PipelineLogger.shared.log("[FileSystem] Operation: removeItem, Path: \(record.segmentDirectoryURL.path), Domain: \(nsErr.domain), Code: \(nsErr.code), Description: \(nsErr.localizedDescription), UserInfo: \(nsErr.userInfo)")
+            }
         }
-        try? await persistence.delete(id: record.id)
+        if deleteOutputFile && FileManager.default.fileExists(atPath: record.outputDestinationURL.path) {
+            do {
+                try FileManager.default.removeItem(at: record.outputDestinationURL)
+                PipelineLogger.shared.log("[HLS Cleanup] Removed output file: \(record.outputDestinationURL.path)")
+            } catch {
+                fileDeletionFailed = true
+                let nsErr = error as NSError
+                PipelineLogger.shared.log("[FileSystem] Operation: removeItem, Path: \(record.outputDestinationURL.path), Domain: \(nsErr.domain), Code: \(nsErr.code), Description: \(nsErr.localizedDescription), UserInfo: \(nsErr.userInfo)")
+            }
+        }
+
+        if !fileDeletionFailed {
+            do {
+                try await persistence.delete(id: record.id)
+                PipelineLogger.shared.log("[HLS Cleanup] Deleted persistence record: \(record.id)")
+            } catch {
+                PipelineLogger.shared.log("[HLS Cleanup] Warning: Failed to delete persistence record \(record.id): \(error.localizedDescription)")
+            }
+        } else {
+            PipelineLogger.shared.log("[HLS Cleanup] Incomplete deletion for \(record.id): Files remain on disk. Retaining record for future cleanup.")
+            var updated = record
+            updated.state = .failed
+            try? await persistence.save(updated)
+        }
 
         registeredTransferIDs = registeredTransferIDs.filter {
             $0.key != record.id && $0.value != record.id
@@ -2592,7 +2678,7 @@ public actor StreamingDownloadOrchestrator {
         // Segment records are implementation details of the parent HLS/DASH
         // transfer. The queue restore path uses this namespace to avoid
         // exposing them as ordinary Downloads entries.
-        return StreamingSegmentIdentity(transferID: transferID, order: order, value: "stream-segment-\(digest.prefix(32))")
+        return StreamingSegmentIdentity(transferID: transferID, order: order, value: "\(InternalStreamingConstants.segmentIDPrefix)\(digest.prefix(32))")
     }
 
     private func estimatedBytes(for manifest: StreamingTransferManifest) -> Int64? {

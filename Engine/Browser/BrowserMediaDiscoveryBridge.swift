@@ -594,15 +594,36 @@ public final class BrowserMediaDiscoveryBridge: NSObject, @unchecked Sendable {
             }
             try {
                 var clone = response.clone();
+                if (clone.body && typeof clone.body.getReader === "function") {
+                    var reader = clone.body.getReader();
+                    var decoder = new TextDecoder();
+                    var accumulated = "";
+                    var bytesRead = 0;
+                    function readNextChunk() {
+                        return reader.read().then(function(result) {
+                            if (!result || result.done) {
+                                return accumulated.length > 0 ? accumulated.slice(0, MAX_INSPECTION_BYTES) : null;
+                            }
+                            var chunk = result.value;
+                            if (chunk && chunk.byteLength > 0) {
+                                bytesRead += chunk.byteLength;
+                                accumulated += decoder.decode(chunk, { stream: bytesRead < MAX_INSPECTION_BYTES });
+                                if (bytesRead >= MAX_INSPECTION_BYTES || accumulated.length >= MAX_INSPECTION_BYTES) {
+                                    try { reader.cancel().catch(function() {}); } catch (_) {}
+                                    return accumulated.slice(0, MAX_INSPECTION_BYTES);
+                                }
+                            }
+                            return readNextChunk();
+                        }).catch(function() {
+                            try { reader.cancel().catch(function() {}); } catch (_) {}
+                            return accumulated.length > 0 ? accumulated.slice(0, MAX_INSPECTION_BYTES) : null;
+                        });
+                    }
+                    return readNextChunk();
+                }
                 if (typeof clone.text === "function") {
                     return clone.text().then(function(text) {
                         return text ? String(text).slice(0, MAX_INSPECTION_BYTES) : null;
-                    }).catch(function() { return null; });
-                }
-                if (clone.body && typeof clone.body.getReader === "function") {
-                    var reader = clone.body.getReader();
-                    return reader.read().then(function(part) {
-                        return part && part.value ? new TextDecoder().decode(part.value).slice(0, MAX_INSPECTION_BYTES) : null;
                     }).catch(function() { return null; });
                 }
             } catch (_) {}
@@ -1289,8 +1310,13 @@ public final class BrowserMediaDiscoveryBridge: NSObject, @unchecked Sendable {
     /// Evaluates a JavaScript `fetch()` request directly in the given webview using `callAsyncJavaScript`.
     /// This properly awaits asynchronous Promises and bypasses URLSession to guarantee the exact
     /// browser TLS fingerprint, cookies, and session authentication are used to retrieve the manifest text.
+    /// Safely bounds the response reading to `maxBytes` to prevent unbounded memory growth in the WebContent process.
     @MainActor
-    public func fetchManifestText(from url: URL, on webView: WKWebView) async throws -> String {
+    public func fetchManifestText(
+        from url: URL,
+        on webView: WKWebView,
+        maxBytes: Int = 1_048_576
+    ) async throws -> String {
         let rawString = url.absoluteString
 
         let asyncScript = """
@@ -1301,6 +1327,7 @@ public final class BrowserMediaDiscoveryBridge: NSObject, @unchecked Sendable {
         } else if (lowerUrl.includes('.m3u8')) {
             acceptHeader = 'application/vnd.apple.mpegurl, application/x-mpegURL, */*';
         }
+        const limit = Number(maxBytes) || 1048576;
         try {
             const response = await fetch(url, {
                 method: 'GET',
@@ -1312,8 +1339,39 @@ public final class BrowserMediaDiscoveryBridge: NSObject, @unchecked Sendable {
             if (!response.ok) {
                 return { error: 'HTTP ' + response.status + (response.statusText ? ' ' + response.statusText : '') };
             }
-            const text = await response.text();
-            return { text: text };
+            const clHeader = response.headers.get('content-length');
+            if (clHeader !== null) {
+                const cl = parseInt(clHeader, 10);
+                if (!isNaN(cl) && cl > limit) {
+                    return { error: 'Manifest exceeds size limit of ' + limit + ' bytes (Content-Length: ' + cl + ')' };
+                }
+            }
+            if (response.body && typeof response.body.getReader === 'function') {
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                let bytesRead = 0;
+                let textResult = '';
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+                    if (value && value.byteLength > 0) {
+                        bytesRead += value.byteLength;
+                        if (bytesRead > limit) {
+                            try { await reader.cancel(); } catch (_) {}
+                            return { error: 'Manifest exceeds size limit of ' + limit + ' bytes' };
+                        }
+                        textResult += decoder.decode(value, { stream: true });
+                    }
+                }
+                textResult += decoder.decode();
+                return { text: textResult };
+            } else {
+                const text = await response.text();
+                if (text && text.length > limit) {
+                    return { error: 'Manifest exceeds size limit of ' + limit + ' bytes' };
+                }
+                return { text: text };
+            }
         } catch (e) {
             const errMsg = (e && e.name ? (e.name + ': ' + (e.message || '')) : String(e));
             return { error: errMsg || 'Unknown fetch error' };
@@ -1323,7 +1381,7 @@ public final class BrowserMediaDiscoveryBridge: NSObject, @unchecked Sendable {
         do {
             return try await executeAsyncJavaScript(
                 asyncScript,
-                arguments: ["url": rawString],
+                arguments: ["url": rawString, "maxBytes": maxBytes],
                 on: webView,
                 contentWorld: .page
             )
@@ -1333,7 +1391,7 @@ public final class BrowserMediaDiscoveryBridge: NSObject, @unchecked Sendable {
             do {
                 return try await executeAsyncJavaScript(
                     asyncScript,
-                    arguments: ["url": rawString],
+                    arguments: ["url": rawString, "maxBytes": maxBytes],
                     on: webView,
                     contentWorld: .defaultClient
                 )
@@ -1356,6 +1414,7 @@ public final class BrowserMediaDiscoveryBridge: NSObject, @unchecked Sendable {
         }
 
         let rawTargetURL = (arguments["url"] as? String) ?? "unknown"
+        let maxLimit = (arguments["maxBytes"] as? Int) ?? 1_048_576
 
         return try await withThrowingTaskGroup(of: String.self) { group in
             group.addTask { @MainActor in
@@ -1371,6 +1430,10 @@ public final class BrowserMediaDiscoveryBridge: NSObject, @unchecked Sendable {
                             if let dict = anyValue as? [String: Any] {
                                 if let errorMsg = dict["error"] as? String, !errorMsg.isEmpty {
                                     PipelineLogger.shared.log("[BrowserMediaDiscoveryBridge] JS fetch error for \(rawTargetURL): \(errorMsg)")
+                                    if errorMsg.contains("Manifest exceeds size limit") {
+                                        continuation.resume(throwing: ManifestParserError.inputTooLarge(limit: maxLimit))
+                                        return
+                                    }
                                     continuation.resume(throwing: StreamingManifestLoadError.failed(errorMsg))
                                     return
                                 }

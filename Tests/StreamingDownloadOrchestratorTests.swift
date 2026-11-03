@@ -1241,6 +1241,190 @@ final class StreamingDownloadOrchestratorTests: XCTestCase {
             XCTAssertGreaterThan(size, 0)
         }
     }
+
+    func testProposalFingerprintDiffersBetweenAuthenticatedBrowserSessions() async throws {
+        let manifestURL = URL(string: "https://video.example/protected.m3u8")!
+        let playlist = """
+        #EXTM3U
+        #EXT-X-PLAYLIST-TYPE:VOD
+        #EXTINF:2,
+        seg0.ts
+        #EXT-X-ENDLIST
+        """
+        let loader = RecordingManifestLoader(data: Data(playlist.utf8), finalURL: manifestURL, mimeType: "application/vnd.apple.mpegurl")
+        let executor = RecordingSegmentExecutor()
+        let orchestrator = StreamingDownloadOrchestrator(manifestLoader: loader, segmentExecutor: executor)
+
+        let cookieA = BrowserCookie(
+            name: "session_id",
+            value: "alice_session_token",
+            domain: "video.example",
+            path: "/",
+            isSecure: true,
+            isHTTPOnly: true
+        )
+        let contextA = BrowserRequestContext(
+            url: manifestURL,
+            pageURL: URL(string: "https://video.example/watch")!,
+            userAgent: "Browser/1.0",
+            cookies: [cookieA],
+            source: .webpageResource
+        )
+        let candidateA = try StreamingManifestCandidate(
+            url: manifestURL,
+            mimeType: "application/vnd.apple.mpegurl",
+            browserRequestContext: contextA
+        )
+
+        let cookieB = BrowserCookie(
+            name: "session_id",
+            value: "bob_session_token",
+            domain: "video.example",
+            path: "/",
+            isSecure: true,
+            isHTTPOnly: true
+        )
+        let contextB = BrowserRequestContext(
+            url: manifestURL,
+            pageURL: URL(string: "https://video.example/watch")!,
+            userAgent: "Browser/1.0",
+            cookies: [cookieB],
+            source: .webpageResource
+        )
+        let candidateB = try StreamingManifestCandidate(
+            url: manifestURL,
+            mimeType: "application/vnd.apple.mpegurl",
+            browserRequestContext: contextB
+        )
+
+        let proposalA = try await orchestrator.prepare(candidate: candidateA)
+        let proposalB = try await orchestrator.prepare(candidate: candidateB)
+
+        XCTAssertNotEqual(
+            proposalA.transferID,
+            proposalB.transferID,
+            "Proposals with identical URLs but different session cookies must NOT share proposal identities or reuse cached proposals"
+        )
+    }
+
+    func testBrowserAuthenticationHandlerEnforcesStrictOriginEquality() {
+        final class MockPromptProvider: BrowserAuthenticationProviding, @unchecked Sendable {
+            var promptedHost: String?
+            func promptForCredentials(
+                host: String,
+                realm: String?,
+                completionHandler: @escaping @Sendable (String?, String?) -> Void
+            ) {
+                promptedHost = host
+                completionHandler("user", "pass")
+            }
+        }
+
+        let provider = MockPromptProvider()
+        let authHandler = BrowserAuthenticationHandler(promptProvider: provider)
+        let pageURL = URL(string: "https://example.com:443/watch")!
+
+        // 1. Same origin https://example.com:443 -> Allowed and prompts provider
+        let sameSpace = URLProtectionSpace(
+            host: "example.com",
+            port: 443,
+            protocol: "https",
+            realm: "TestRealm",
+            authenticationMethod: NSURLAuthenticationMethodHTTPBasic
+        )
+        var sameOutcome: URLSession.AuthChallengeDisposition?
+        let sameChallenge = URLAuthenticationChallenge(
+            protectionSpace: sameSpace,
+            proposedCredential: nil,
+            previousFailureCount: 0,
+            failureResponse: nil,
+            error: nil,
+            sender: DummyAuthSender()
+        )
+        authHandler.handleChallenge(sameChallenge, targetPageURL: pageURL) { disposition, _ in
+            sameOutcome = disposition
+        }
+        XCTAssertEqual(sameOutcome, .useCredential, "Same origin should be permitted and prompt for credentials")
+        XCTAssertEqual(provider.promptedHost, "example.com")
+        provider.promptedHost = nil
+
+        // 2. Different subdomain video.example.com -> Cancelled without prompting
+        let subdomainSpace = URLProtectionSpace(
+            host: "video.example.com",
+            port: 443,
+            protocol: "https",
+            realm: "TestRealm",
+            authenticationMethod: NSURLAuthenticationMethodHTTPBasic
+        )
+        var subdomainOutcome: URLSession.AuthChallengeDisposition?
+        let subdomainChallenge = URLAuthenticationChallenge(
+            protectionSpace: subdomainSpace,
+            proposedCredential: nil,
+            previousFailureCount: 0,
+            failureResponse: nil,
+            error: nil,
+            sender: DummyAuthSender()
+        )
+        authHandler.handleChallenge(subdomainChallenge, targetPageURL: pageURL) { disposition, _ in
+            subdomainOutcome = disposition
+        }
+        XCTAssertEqual(subdomainOutcome, .cancelAuthenticationChallenge, "Subdomains must not inherit credentials")
+        XCTAssertNil(provider.promptedHost)
+
+        // 3. Different port 8443 -> Cancelled without prompting
+        let diffPortSpace = URLProtectionSpace(
+            host: "example.com",
+            port: 8443,
+            protocol: "https",
+            realm: "TestRealm",
+            authenticationMethod: NSURLAuthenticationMethodHTTPBasic
+        )
+        var portOutcome: URLSession.AuthChallengeDisposition?
+        let portChallenge = URLAuthenticationChallenge(
+            protectionSpace: diffPortSpace,
+            proposedCredential: nil,
+            previousFailureCount: 0,
+            failureResponse: nil,
+            error: nil,
+            sender: DummyAuthSender()
+        )
+        authHandler.handleChallenge(portChallenge, targetPageURL: pageURL) { disposition, _ in
+            portOutcome = disposition
+        }
+        XCTAssertEqual(portOutcome, .cancelAuthenticationChallenge, "Different ports must not inherit credentials")
+        XCTAssertNil(provider.promptedHost)
+
+        // 4. Different scheme http -> Cancelled without prompting
+        let diffSchemeSpace = URLProtectionSpace(
+            host: "example.com",
+            port: 80,
+            protocol: "http",
+            realm: "TestRealm",
+            authenticationMethod: NSURLAuthenticationMethodHTTPBasic
+        )
+        var schemeOutcome: URLSession.AuthChallengeDisposition?
+        let schemeChallenge = URLAuthenticationChallenge(
+            protectionSpace: diffSchemeSpace,
+            proposedCredential: nil,
+            previousFailureCount: 0,
+            failureResponse: nil,
+            error: nil,
+            sender: DummyAuthSender()
+        )
+        authHandler.handleChallenge(schemeChallenge, targetPageURL: pageURL) { disposition, _ in
+            schemeOutcome = disposition
+        }
+        XCTAssertEqual(schemeOutcome, .cancelAuthenticationChallenge, "Different schemes must not inherit credentials")
+        XCTAssertNil(provider.promptedHost)
+    }
+}
+
+private final class DummyAuthSender: NSObject, URLAuthenticationChallengeSender {
+    func use(_ credential: URLCredential, for challenge: URLAuthenticationChallenge) {}
+    func continueWithoutCredential(for challenge: URLAuthenticationChallenge) {}
+    func cancel(_ challenge: URLAuthenticationChallenge) {}
+    func performDefaultHandling(for challenge: URLAuthenticationChallenge) {}
+    func rejectProtectionSpaceAndContinue(with challenge: URLAuthenticationChallenge) {}
 }
 
 private actor FaultInjectingSegmentExecutor: StreamingSegmentExecutor {

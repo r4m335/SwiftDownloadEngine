@@ -2052,12 +2052,17 @@ public final class BrowserViewModel: NSObject, ObservableObject {
 
     @MainActor
     public func fetchManifestText(from url: URL) async throws -> String {
+        try await fetchManifestText(from: url, maxBytes: 1_048_576)
+    }
+
+    @MainActor
+    public func fetchManifestText(from url: URL, maxBytes: Int) async throws -> String {
         #if canImport(WebKit)
         let activeWebView = self.webView ?? (activeTabID.flatMap { tabSessions[$0]?.webView })
         guard let activeWebView else {
             throw StreamingManifestLoadError.browserFetchUnavailable
         }
-        return try await mediaDiscoveryBridge.fetchManifestText(from: url, on: activeWebView)
+        return try await mediaDiscoveryBridge.fetchManifestText(from: url, on: activeWebView, maxBytes: maxBytes)
         #else
         throw StreamingManifestLoadError.browserFetchUnavailable
         #endif
