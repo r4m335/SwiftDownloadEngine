@@ -216,6 +216,12 @@ final class DirectMediaTransferPlannerTests: XCTestCase {
             XCTAssertEqual(error as? DirectMediaTransferPlanError, .expiredURL)
         }
 
+        let zeroExpires = resource(
+            url: URL(string: "https://video.example/movie.mp4?expires=0&sig=signed")!
+        )
+        let zeroPlan = try? DirectMediaTransferPlanner.makePlan(resource: zeroExpires, now: now)
+        XCTAssertNotNil(zeroPlan, "A zero expires parameter indicates non-expiring URL and must not fail with expiredURL")
+
         guard let valid = try? DirectMediaTransferPlanner.makePlan(
             resource: resource(url: URL(string: "https://video.example/movie.mp4")!),
             now: now

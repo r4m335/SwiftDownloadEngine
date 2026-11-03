@@ -88,6 +88,10 @@ final class AppSettingsTests: XCTestCase {
         settings.customUserAgent = "   "
         let config2 = settings.makeEngineConfiguration()
         XCTAssertEqual(config2.userAgent, "SwiftDownloadEngine/1.0 (iOS; iPadOS)")
+
+        settings.customUserAgent = "   Mozilla/5.0 Custom   \n"
+        let config3 = settings.makeEngineConfiguration()
+        XCTAssertEqual(config3.userAgent, "Mozilla/5.0 Custom")
     }
 
     func testAppSettings_VersionMigration() throws {

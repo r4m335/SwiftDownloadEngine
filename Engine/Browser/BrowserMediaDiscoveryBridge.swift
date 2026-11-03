@@ -1476,7 +1476,10 @@ public final class BrowserMediaDiscoveryBridge: NSObject, @unchecked Sendable {
                 throw StreamingManifestLoadError.failed("Browser manifest fetch timed out after 15 seconds")
             }
 
-            let result = try await group.next()!
+            guard let result = try await group.next() else {
+                group.cancelAll()
+                throw StreamingManifestLoadError.failed("Browser manifest fetch completed without result")
+            }
             group.cancelAll()
             return result
         }

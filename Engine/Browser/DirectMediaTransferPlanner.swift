@@ -332,9 +332,11 @@ public enum DirectMediaTransferPlanner {
                 if key == "x-amz-expires",
                    let dateText = values["x-amz-date"],
                    let start = amzDate(dateText) {
+                    guard seconds > 0 else { continue }
                     return now >= start.addingTimeInterval(seconds)
                 }
                 if key != "x-amz-expires" {
+                    guard seconds > 0 else { continue }
                     return now >= Date(timeIntervalSince1970: seconds)
                 }
             }

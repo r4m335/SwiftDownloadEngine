@@ -91,9 +91,12 @@ public struct AppSettings: Codable, Sendable, Equatable {
             targetRatio: targetRatio,
             targetDurationSeconds: TimeInterval(targetDurationMinutes * 60)
         )
-        let ua = (customUserAgent?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false)
-            ? customUserAgent!
-            : "SwiftDownloadEngine/1.0 (iOS; iPadOS)"
+        let ua: String
+        if let trimmed = customUserAgent?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty {
+            ua = trimmed
+        } else {
+            ua = "SwiftDownloadEngine/1.0 (iOS; iPadOS)"
+        }
 
         return EngineConfiguration(
             maxConcurrentDownloads: maxConcurrentDownloads,
