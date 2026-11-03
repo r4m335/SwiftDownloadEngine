@@ -343,7 +343,9 @@ final class HTTPRangeProbe: Sendable {
         if let disposition = contentDisposition,
            let parsedName = parseContentDispositionFilename(disposition),
            !parsedName.isEmpty {
-            let sanitized = sanitizeFilename(parsedName)
+            // Strip any directory path components to prevent path traversal or unwanted directory prefixes in filenames
+            let filenameWithoutPath = parsedName.components(separatedBy: CharacterSet(charactersIn: "/\\")).last ?? parsedName
+            let sanitized = sanitizeFilename(filenameWithoutPath)
             if !sanitized.isEmpty {
                 result = sanitized
             }
@@ -378,20 +380,24 @@ final class HTTPRangeProbe: Sendable {
 
     /// Parses RFC 6266 and RFC 5987 Content-Disposition header.
     static func parseContentDispositionFilename(_ disposition: String) -> String? {
-        // 1. Try filename*=UTF-8''filename.ext
+        // 1. Try filename*=charset'[language]'encoded-filename (RFC 5987)
         if let starRange = disposition.range(of: "filename\\*\\s*=\\s*([^;]+)", options: .regularExpression) {
             let match = String(disposition[starRange])
             if let equalsIndex = match.firstIndex(of: "=") {
                 var value = String(match[match.index(after: equalsIndex)...]).trimmingCharacters(in: .whitespaces)
-                // format: UTF-8''encoded_name.ext
-                if let quoteIndex = value.range(of: "''")?.upperBound {
-                    value = String(value[quoteIndex...])
+                value = value.trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+                // RFC 5987 format: charset "'" [ language ] "'" value-chars
+                if let firstQuote = value.firstIndex(of: "'"),
+                   let secondQuote = value[value.index(after: firstQuote)...].firstIndex(of: "'") {
+                    value = String(value[value.index(after: secondQuote)...])
                 }
                 value = value.trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
-                if let decoded = value.removingPercentEncoding {
+                if let decoded = value.removingPercentEncoding, !decoded.isEmpty {
                     return decoded
                 }
-                return value
+                if !value.isEmpty {
+                    return value
+                }
             }
         }
 
@@ -401,10 +407,12 @@ final class HTTPRangeProbe: Sendable {
             if let equalsIndex = match.firstIndex(of: "=") {
                 var value = String(match[match.index(after: equalsIndex)...]).trimmingCharacters(in: .whitespaces)
                 value = value.trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
-                if let decoded = value.removingPercentEncoding {
+                if let decoded = value.removingPercentEncoding, !decoded.isEmpty {
                     return decoded
                 }
-                return value
+                if !value.isEmpty {
+                    return value
+                }
             }
         }
 

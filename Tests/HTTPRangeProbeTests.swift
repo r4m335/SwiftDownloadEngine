@@ -235,6 +235,48 @@ final class HTTPRangeProbeTests: XCTestCase {
         let result = try await probe.probe(url: testURL)
         XCTAssertEqual(result.suggestedFilename, "Quarterly Report 2026.pdf")
     }
+
+    func testContentDispositionRFC5987WithLanguageTag() async throws {
+        let testURL = URL(string: "https://example.com/download_doc_lang")!
+        
+        MockURLProtocol.setHandler(for: testURL) { _ in
+            let headers = [
+                "Content-Disposition": "attachment; filename*=UTF-8'en-US'Annual%20Summary%202026.pdf",
+                "Content-Length": "1000"
+            ]
+            let response = HTTPURLResponse(url: testURL, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: headers)!
+            return (response, Data())
+        }
+        
+        let result = try await probe.probe(url: testURL)
+        XCTAssertEqual(result.suggestedFilename, "Annual Summary 2026.pdf")
+    }
+
+    func testContentDispositionStripsDirectoryPathSeparators() async throws {
+        let testURL1 = URL(string: "https://example.com/download_windows_path")!
+        MockURLProtocol.setHandler(for: testURL1) { _ in
+            let headers = [
+                "Content-Disposition": "attachment; filename=\"C:\\\\Windows\\\\System32\\\\driver.sys\"",
+                "Content-Length": "1000"
+            ]
+            let response = HTTPURLResponse(url: testURL1, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: headers)!
+            return (response, Data())
+        }
+        let result1 = try await probe.probe(url: testURL1)
+        XCTAssertEqual(result1.suggestedFilename, "driver.sys")
+
+        let testURL2 = URL(string: "https://example.com/download_posix_path")!
+        MockURLProtocol.setHandler(for: testURL2) { _ in
+            let headers = [
+                "Content-Disposition": "attachment; filename=\"/var/log/server/app.log\"",
+                "Content-Length": "1000"
+            ]
+            let response = HTTPURLResponse(url: testURL2, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: headers)!
+            return (response, Data())
+        }
+        let result2 = try await probe.probe(url: testURL2)
+        XCTAssertEqual(result2.suggestedFilename, "app.log")
+    }
     
     func testFilenameFallbackToMimeExtensionWhenURLHasNone() async throws {
         let testURL = URL(string: "https://example.com/media/stream_blob_99")!
