@@ -2899,10 +2899,8 @@ public actor DownloadCoordinator {
         lastModified: String?
     ) -> [String: String] {
         var result = original
-        if let eTag, !eTag.isEmpty {
-            result["If-Range"] = eTag
-        } else if let lastModified, !lastModified.isEmpty {
-            result["If-Range"] = lastModified
+        if let validator = DownloadRequestEnricher.ifRangeValidator(eTag: eTag, lastModified: lastModified) {
+            result["If-Range"] = validator
         }
         return result
     }

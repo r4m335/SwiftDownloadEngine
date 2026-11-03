@@ -436,17 +436,23 @@ public final class LocalHTTPRangeServer: @unchecked Sendable {
         }
 
         // Check If-Range validator if provided
-        if let ifRange = req.headers["if-range"], ifRange != resource.eTag {
-            // Validator mismatched -> RFC 7233 sends full 200 representation
-            let headers = buildCommonHeaders(length: totalSize)
-            return Response(
-                statusCode: 200,
-                statusText: "OK",
-                headers: headers,
-                body: resource.data,
-                chunkDelayMs: resource.chunkDelayMs,
-                dropConnectionAfterBytes: isProbe ? nil : resource.dropConnectionAfterBytes
-            )
+        if let ifRange = req.headers["if-range"] {
+            // RFC 7233 Section 3.2: Origin server MUST NOT use a weak validator for range requests.
+            // If client sends a weak validator, range request is not evaluated and full 200 is returned.
+            let isWeak = ifRange.hasPrefix("W/") || ifRange.hasPrefix("w/")
+            let matches = (ifRange == resource.eTag) || (resource.lastModified != nil && ifRange == resource.lastModified)
+            if isWeak || !matches {
+                // Validator mismatched or weak -> RFC 7233 sends full 200 representation
+                let headers = buildCommonHeaders(length: totalSize)
+                return Response(
+                    statusCode: 200,
+                    statusText: "OK",
+                    headers: headers,
+                    body: resource.data,
+                    chunkDelayMs: resource.chunkDelayMs,
+                    dropConnectionAfterBytes: isProbe ? nil : resource.dropConnectionAfterBytes
+                )
+            }
         }
 
         // Handle empty file (0 bytes)

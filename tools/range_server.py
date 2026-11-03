@@ -69,8 +69,11 @@ class HTTPRangeRequestHandler(BaseHTTPRequestHandler):
 
         # Check If-Range validator if provided
         if_range = self.headers.get("If-Range")
-        if if_range and if_range != etag:
-            # Validator mismatch: return full 200
+        if if_range:
+            is_weak = if_range.startswith("W/") or if_range.startswith("w/")
+            matches = (if_range == etag) or (last_modified and if_range == last_modified)
+            if is_weak or not matches:
+                # Validator mismatch or weak validator (RFC 7233 Section 3.2): return full 200
             self.send_response(200)
             self.send_header("Content-Length", str(total_size))
             self.send_header("Accept-Ranges", "bytes")

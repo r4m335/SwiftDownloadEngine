@@ -825,10 +825,8 @@ public final class BackgroundDownloadSessionManager: NSObject, @unchecked Sendab
         let rangeHeader = "bytes=\(resumeOffset)-\(segment.endOffset)"
         request.setValue(rangeHeader, forHTTPHeaderField: "Range")
 
-        if let eTag = download.eTag {
-            request.setValue(eTag, forHTTPHeaderField: "If-Range")
-        } else if let lm = download.lastModified {
-            request.setValue(lm, forHTTPHeaderField: "If-Range")
+        if let validator = DownloadRequestEnricher.ifRangeValidator(eTag: download.eTag, lastModified: download.lastModified) {
+            request.setValue(validator, forHTTPHeaderField: "If-Range")
         }
 
         let task = session.downloadTask(with: request)

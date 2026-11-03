@@ -273,4 +273,52 @@ final class DownloadRequestEnricherTests: XCTestCase {
         XCTAssertFalse(dir.path.contains("/1DMDownloads"))
         XCTAssertTrue(FileManager.default.isWritableFile(atPath: dir.path))
     }
+
+    func testIfRangeValidatorRFC7233Compliance() {
+        // Strong ETag should be used directly
+        let strong = "\"strong-etag-123\""
+        XCTAssertEqual(
+            DownloadRequestEnricher.ifRangeValidator(eTag: strong, lastModified: "Wed, 21 Oct 2026 07:28:00 GMT"),
+            strong,
+            "Strong ETag must take precedence and be preserved"
+        )
+
+        // Weak ETag (W/...) MUST NOT be used in If-Range (RFC 7233 §3.2); must fallback to Last-Modified
+        let weak = "W/\"weak-etag-456\""
+        let lastMod = "Wed, 21 Oct 2026 07:28:00 GMT"
+        XCTAssertEqual(
+            DownloadRequestEnricher.ifRangeValidator(eTag: weak, lastModified: lastMod),
+            lastMod,
+            "Weak ETag must be rejected for If-Range in favor of Last-Modified"
+        )
+
+        // Lowercase weak ETag (w/...) must also fallback
+        let lowerWeak = "w/\"weak-etag-789\""
+        XCTAssertEqual(
+            DownloadRequestEnricher.ifRangeValidator(eTag: lowerWeak, lastModified: lastMod),
+            lastMod,
+            "Lowercase weak ETag must be rejected for If-Range"
+        )
+
+        // Weak ETag without Last-Modified must return nil (never emit a weak If-Range)
+        XCTAssertNil(
+            DownloadRequestEnricher.ifRangeValidator(eTag: weak, lastModified: nil),
+            "Weak ETag without Last-Modified must return nil to prevent 200 OK degradation"
+        )
+
+        XCTAssertNil(
+            DownloadRequestEnricher.ifRangeValidator(eTag: weak, lastModified: "   "),
+            "Weak ETag with whitespace-only Last-Modified must return nil"
+        )
+
+        // Empty ETag with Last-Modified falls back to Last-Modified
+        XCTAssertEqual(
+            DownloadRequestEnricher.ifRangeValidator(eTag: "", lastModified: lastMod),
+            lastMod,
+            "Empty ETag must fallback to Last-Modified"
+        )
+
+        // Both nil/empty must return nil
+        XCTAssertNil(DownloadRequestEnricher.ifRangeValidator(eTag: nil, lastModified: nil))
+    }
 }

@@ -227,13 +227,19 @@ public final class SegmentDownloader: Sendable {
         // Mandatory byte-safe transfer encoding (C1569kI.java:L57)
         request.setValue("identity", forHTTPHeaderField: "Accept-Encoding")
 
-        if let eTag = eTag, !eTag.isEmpty {
-            request.setValue(eTag, forHTTPHeaderField: "If-Range")
+        if let validator = DownloadRequestEnricher.ifRangeValidator(eTag: eTag, lastModified: nil) {
+            request.setValue(validator, forHTTPHeaderField: "If-Range")
         }
 
         for (name, value) in headers {
             if name.caseInsensitiveCompare("Accept-Encoding") == .orderedSame ||
                name.caseInsensitiveCompare("Range") == .orderedSame {
+                continue
+            }
+            if name.caseInsensitiveCompare("If-Range") == .orderedSame {
+                if let sanitized = DownloadRequestEnricher.ifRangeValidator(eTag: value, lastModified: nil) {
+                    request.setValue(sanitized, forHTTPHeaderField: name)
+                }
                 continue
             }
             request.setValue(value, forHTTPHeaderField: name)

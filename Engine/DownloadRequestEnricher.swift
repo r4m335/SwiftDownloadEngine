@@ -330,6 +330,26 @@ public enum DownloadRequestEnricher {
         return enriched
     }
 
+    /// Evaluates ETag and Last-Modified to produce a compliant `If-Range` header value (RFC 7233 §3.2, RFC 9110 §13.1.5).
+    ///
+    /// RFC 7233 §3.2 states:
+    /// "A client MUST NOT generate an If-Range header field containing a weak entity tag."
+    /// "An origin server MUST NOT use a weak validator for range requests..."
+    /// "If the client has only a weak entity tag for the representation, it MUST NOT use it in an If-Range header field.
+    /// It MAY use a 1-second-resolution Last-Modified date instead, if available."
+    public static func ifRangeValidator(eTag: String?, lastModified: String?) -> String? {
+        if let rawETag = eTag?.trimmingCharacters(in: .whitespacesAndNewlines), !rawETag.isEmpty {
+            let isWeak = rawETag.hasPrefix("W/") || rawETag.hasPrefix("w/")
+            if !isWeak {
+                return rawETag
+            }
+        }
+        if let lm = lastModified?.trimmingCharacters(in: .whitespacesAndNewlines), !lm.isEmpty {
+            return lm
+        }
+        return nil
+    }
+
     /// Writes back any rotated cookies from HTTP response headers (e.g. Set-Cookie) into HTTPCookieStorage.shared and Keychain.
     public static func recordResponseCookies(headers: [String: String], for url: URL) {
         let cookies = HTTPCookie.cookies(withResponseHeaderFields: headers, for: url)

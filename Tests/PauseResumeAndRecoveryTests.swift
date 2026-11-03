@@ -976,4 +976,35 @@ final class PauseResumeAndRecoveryTests: XCTestCase {
         XCTAssertEqual(writtenData, payload)
         XCTAssertEqual(EngineSHA256.hash(data: writtenData), expectedSHA)
     }
+
+    func testMultiSegmentDownloadWithWeakETagFallsBackToLastModified() async throws {
+        let size = 128 * 1024
+        let payload = makePayload(size: size, seed: 0x5C)
+        let path = "/weak_etag_test.bin"
+        let lastMod = "Wed, 21 Oct 2026 07:28:00 GMT"
+        server.register(
+            path: path,
+            data: payload,
+            eTag: "W/\"weak-v1\"",
+            lastModified: lastMod
+        )
+
+        let destURL = tempDirectory.appendingPathComponent("weak_etag_test.bin")
+        let request = DownloadRequest(
+            id: "dl-weak-etag",
+            url: server.url(for: path),
+            destinationURL: destURL,
+            configuredThreadCount: 4,
+            reserveDiskBytes: 1024
+        )
+
+        try await coordinator.start(request)
+
+        let finalData = try Data(contentsOf: destURL)
+        XCTAssertEqual(finalData, payload, "Downloaded payload must match server payload when weak ETag falls back to Last-Modified")
+
+        let record = try await persistenceStore.fetch(tag: "dl-weak-etag")
+        XCTAssertEqual(record?.state, .completed)
+        XCTAssertEqual(record?.lastModified, lastMod)
+    }
 }
