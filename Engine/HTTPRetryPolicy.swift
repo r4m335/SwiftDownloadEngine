@@ -109,15 +109,16 @@ enum HTTPRetryPolicy {
             return actual
         }
         let nsError = error as NSError
-        #if canImport(Darwin)
-        if let response = nsError.userInfo[NSURLErrorFailingURLResponseErrorKey] as? HTTPURLResponse {
+        if let response = (nsError.userInfo["response"] ?? nsError.userInfo["NSErrorFailingURLResponseKey"]) as? HTTPURLResponse {
             return response.statusCode
         }
-        #endif
         if let status = nsError.userInfo["HTTPStatus"] as? Int {
             return status
         }
         if let status = nsError.userInfo["statusCode"] as? Int {
+            return status
+        }
+        if let status = nsError.userInfo["HTTPStatusCode"] as? Int {
             return status
         }
         return nil

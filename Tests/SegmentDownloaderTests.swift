@@ -19,6 +19,7 @@ final class SegmentDownloaderTests: XCTestCase {
     }
     
     override func tearDown() {
+        session?.invalidateAndCancel()
         MockURLProtocol.reset()
         session = nil
         if let tempDir = tempDirectory {
