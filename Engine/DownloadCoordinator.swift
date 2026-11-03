@@ -1642,19 +1642,25 @@ public actor DownloadCoordinator {
             }
             if pauseRequested.contains(request.id) || Task.isCancelled {
                 // Ensure writer buffers are flushed to disk before recording checkpoint
+                var syncSucceeded = false
                 do {
                     try await writer.synchronize()
+                    syncSucceeded = true
                 } catch {
-                    PipelineLogger.shared.log("[DownloadCoordinator] Writer synchronize failed on pause for \(request.id): \(error.localizedDescription)")
+                    PipelineLogger.shared.log("[DownloadCoordinator] Writer synchronize failed on pause for \(request.id): \(error.localizedDescription). Segment checkpoints will not be advanced to uncommitted in-memory offsets.")
                 }
-                let completedMap = await progressAccumulator.getCompletedBytes()
-                for (segID, bytes) in completedMap {
-                    do {
-                        _ = try await persistenceStore.updateSegmentProgress(tag: request.id, segmentID: segID, completedBytes: bytes)
-                    } catch {
-                        PipelineLogger.shared.log("[DownloadCoordinator] Failed to persist segment \(segID) progress on pause for \(request.id): \(error.localizedDescription)")
+
+                if syncSucceeded {
+                    let completedMap = await progressAccumulator.getCompletedBytes()
+                    for (segID, bytes) in completedMap {
+                        do {
+                            _ = try await persistenceStore.updateSegmentProgress(tag: request.id, segmentID: segID, completedBytes: bytes)
+                        } catch {
+                            PipelineLogger.shared.log("[DownloadCoordinator] Failed to persist segment \(segID) progress on pause for \(request.id): \(error.localizedDescription)")
+                        }
                     }
                 }
+
                 do {
                     _ = try await persistenceStore.updateState(tag: request.id, state: .paused)
                 } catch {
@@ -1982,12 +1988,16 @@ public actor DownloadCoordinator {
                             Date().timeIntervalSince(lastFlushedSingleStreamTime) >= 1.0 {
                             lastFlushedSingleStreamBytes = totalWritten
                             lastFlushedSingleStreamTime = Date()
-                            try? fileHandle.synchronize()
-                            _ = try? await persistenceStore.updateSegmentProgress(
-                                tag: request.id,
-                                segmentID: 0,
-                                completedBytes: totalWritten
-                            )
+                            do {
+                                try fileHandle.synchronize()
+                                _ = try await persistenceStore.updateSegmentProgress(
+                                    tag: request.id,
+                                    segmentID: 0,
+                                    completedBytes: totalWritten
+                                )
+                            } catch {
+                                PipelineLogger.shared.log("[DownloadCoordinator] Single stream intermediate checkpoint failed for \(request.id): \(error.localizedDescription)")
+                            }
                         }
                     }
                 }
@@ -2006,7 +2016,29 @@ public actor DownloadCoordinator {
                 }
             } catch {
                 if pauseRequested.contains(request.id) || Task.isCancelled {
-                    _ = try? await persistenceStore.updateState(tag: request.id, state: .paused)
+                    var singleStreamSyncSucceeded = false
+                    do {
+                        try fileHandle.synchronize()
+                        singleStreamSyncSucceeded = true
+                    } catch {
+                        PipelineLogger.shared.log("[DownloadCoordinator] Single stream synchronize failed on pause for \(request.id): \(error.localizedDescription)")
+                    }
+                    if singleStreamSyncSucceeded {
+                        do {
+                            _ = try await persistenceStore.updateSegmentProgress(
+                                tag: request.id,
+                                segmentID: 0,
+                                completedBytes: totalWritten
+                            )
+                        } catch {
+                            PipelineLogger.shared.log("[DownloadCoordinator] Single stream progress persistence failed on pause for \(request.id): \(error.localizedDescription)")
+                        }
+                    }
+                    do {
+                        _ = try await persistenceStore.updateState(tag: request.id, state: .paused)
+                    } catch {
+                        PipelineLogger.shared.log("[DownloadCoordinator] Single stream state persistence failed on pause for \(request.id): \(error.localizedDescription)")
+                    }
                     let metrics = speedTracker.snapshot(expectedTotalBytes: expectedTotal)
                     updateProgress(
                         downloadID: request.id,
@@ -2023,7 +2055,11 @@ public actor DownloadCoordinator {
                     )
                     throw CancellationError()
                 }
-                _ = try? await persistenceStore.updateState(tag: request.id, state: .failed(reason: error.localizedDescription))
+                do {
+                    _ = try await persistenceStore.updateState(tag: request.id, state: .failed(reason: error.localizedDescription))
+                } catch {
+                    PipelineLogger.shared.log("[DownloadCoordinator] Single stream failed state persistence error for \(request.id): \(error.localizedDescription)")
+                }
                 updateProgress(
                     downloadID: request.id,
                     state: .failed(reason: error.localizedDescription),
@@ -2318,8 +2354,7 @@ public actor DownloadCoordinator {
         for seg in segments {
             let partURL = bgManager.partFileURL(downloadID: request.id, segmentID: seg.id)
             if FileManager.default.fileExists(atPath: partURL.path),
-               let attrs = try? FileManager.default.attributesOfItem(atPath: partURL.path),
-               let size = attrs[.size] as? Int64 {
+               let size = FileManager.default.fileSize(atPath: partURL.path) {
                 if size == seg.length {
                     // Segment part file exists on disk and is 100% complete
                     initialCompletedMap[seg.id] = seg.length
@@ -2648,8 +2683,7 @@ public actor DownloadCoordinator {
             guard FileManager.default.fileExists(atPath: partURL.path) else {
                 throw DownloadCoordinatorError.cannotResume(reason: "Missing part file for segment \(seg.id)")
             }
-            guard let attrs = try? FileManager.default.attributesOfItem(atPath: partURL.path),
-                  let size = attrs[.size] as? Int64,
+            guard let size = FileManager.default.fileSize(atPath: partURL.path),
                   size == seg.length else {
                 throw DownloadCoordinatorError.cannotResume(reason: "Corrupted or incomplete part file for segment \(seg.id)")
             }
@@ -2746,8 +2780,7 @@ public actor DownloadCoordinator {
             for seg in sortedSegments {
                 let partURL = bgManager.partFileURL(downloadID: record.id, segmentID: seg.id)
                 let exists = FileManager.default.fileExists(atPath: partURL.path)
-                let attrs = try? FileManager.default.attributesOfItem(atPath: partURL.path)
-                let size = (attrs?[.size] as? Int64) ?? 0
+                let size = FileManager.default.fileSize(atPath: partURL.path) ?? 0
                 if !exists || size != seg.length {
                     allSegmentsFinished = false
                     break
@@ -2872,8 +2905,7 @@ public actor DownloadCoordinator {
         let fileManager = FileManager.default
 
         if fileManager.fileExists(atPath: destinationURL.path) {
-            guard let attrs = try? fileManager.attributesOfItem(atPath: destinationURL.path),
-                  let fileSize = attrs[.size] as? Int64 else {
+            guard let fileSize = fileManager.fileSize(atPath: destinationURL.path) else {
                 return reconciled
             }
 
@@ -2930,8 +2962,7 @@ public actor DownloadCoordinator {
                 }()
 
                 guard fileManager.fileExists(atPath: partURL.path),
-                      let attrs = try? fileManager.attributesOfItem(atPath: partURL.path),
-                      let fileSize = attrs[.size] as? Int64 else {
+                      let fileSize = fileManager.fileSize(atPath: partURL.path) else {
                     s.completedBytes = 0
                     return s
                 }

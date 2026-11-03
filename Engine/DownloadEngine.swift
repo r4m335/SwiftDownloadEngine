@@ -440,8 +440,7 @@ public actor DownloadEngine {
     ) async throws -> DownloadSnapshot {
         await attachListeners()
         guard fileURL.isFileURL,
-              let attributes = try? FileManager.default.attributesOfItem(atPath: fileURL.path),
-              let totalBytes = (attributes[.size] as? NSNumber)?.int64Value,
+              let totalBytes = FileManager.default.fileSize(atPath: fileURL.path),
               totalBytes >= 0 else {
             throw DownloadQueueError.persistenceError("The captured file is missing or has no valid size.")
         }
@@ -564,8 +563,7 @@ public actor DownloadEngine {
             throw DownloadError.fileNotFound
         }
 
-        let attributes = try? FileManager.default.attributesOfItem(atPath: localFileURL.path)
-        let actualSize = (attributes?[.size] as? NSNumber)?.int64Value ?? totalBytes
+        let actualSize = FileManager.default.fileSize(atPath: localFileURL.path) ?? totalBytes
         PipelineLogger.shared.log("[DownloadEngine] Validated localFileURL: \(localFileURL.path), size: \(actualSize) bytes, extension: .\(localFileURL.pathExtension)")
 
         // Fallback: If the final file is still .ts (e.g. remuxing failed), mark download as .failed

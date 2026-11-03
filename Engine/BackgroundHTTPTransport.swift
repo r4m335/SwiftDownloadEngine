@@ -905,8 +905,7 @@ public final class BackgroundDownloadSessionManager: NSObject, @unchecked Sendab
                 // Task is no longer running in system session.
                 let partPath = r.destinationPartURL.path
                 if FileManager.default.fileExists(atPath: partPath) {
-                    let attrs = try? FileManager.default.attributesOfItem(atPath: partPath)
-                    let size = (attrs?[.size] as? Int64) ?? 0
+                    let size = FileManager.default.fileSize(atPath: partPath) ?? 0
 
                     if size == r.segmentLength && r.segmentLength > 0 {
                         // Invariant holds: part file strictly equals absolute segment length
@@ -1160,8 +1159,7 @@ extension BackgroundDownloadSessionManager: URLSessionDownloadDelegate {
                 try? FileManager.default.removeItem(at: stagingURL)
                 try? await self.mappingStore.markFailed(sessionIdentifier: sessID, taskIdentifier: taskID, error: error.localizedDescription)
                 if let persistence = self.persistenceStore {
-                    let currentAttrs = try? FileManager.default.attributesOfItem(atPath: destination.path)
-                    let currentSize = (currentAttrs?[.size] as? Int64) ?? 0
+                    let currentSize = FileManager.default.fileSize(atPath: destination.path) ?? 0
                     _ = try? await persistence.updateSegmentProgress(tag: downloadID, segmentID: segmentID, completedBytes: currentSize, allowDecrease: true)
                 }
                 self.notifyFailed(downloadID: downloadID, segmentID: segmentID, error: error)
