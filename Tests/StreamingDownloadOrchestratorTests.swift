@@ -1473,6 +1473,138 @@ final class StreamingDownloadOrchestratorTests: XCTestCase {
         let isCancelled = await orchestrator.isCancelled(transferID: transferID)
         XCTAssertTrue(isCancelled)
     }
+
+    func testDownloadAndSaveSubtitle_PropagatesContextAndHeadersToSegments() async throws {
+        let playlistURL = URL(string: "https://auth.example.com/subtitles/playlist.m3u8")!
+        let seg1URL = URL(string: "https://auth.example.com/subtitles/seg1.vtt")!
+        let seg2URL = URL(string: "https://auth.example.com/subtitles/seg2.vtt")!
+
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [MockURLProtocol.self]
+        let mockSession = URLSession(configuration: config)
+        MockURLProtocol.reset()
+        defer { MockURLProtocol.reset() }
+
+        let cookie = BrowserCookie(
+            name: "sub_auth",
+            value: "secret_token_abc",
+            domain: "auth.example.com",
+            path: "/"
+        )
+        let context = BrowserRequestContext(
+            url: playlistURL,
+            pageURL: URL(string: "https://auth.example.com/watch?v=123")!,
+            userAgent: "TestSubtitleBrowser/2.0",
+            cookies: [cookie],
+            customHeaders: [
+                "X-Custom-Sub": "valid",
+                "Referer": "https://auth.example.com/watch?v=123",
+                "Origin": "https://auth.example.com"
+            ]
+        )
+        let candidate = try StreamingManifestCandidate(url: playlistURL, browserRequestContext: context)
+
+        let m3u8Playlist = """
+        #EXTM3U
+        #EXT-X-TARGETDURATION:10
+        #EXTINF:10.0,
+        seg1.vtt
+        #EXTINF:10.0,
+        seg2.vtt
+        """
+
+        MockURLProtocol.setHandler(for: playlistURL) { req in
+            guard let c = req.value(forHTTPHeaderField: "Cookie"), c.contains("sub_auth=secret_token_abc"),
+                  let ua = req.value(forHTTPHeaderField: "User-Agent"), ua == "TestSubtitleBrowser/2.0" else {
+                return (HTTPURLResponse(url: playlistURL, statusCode: 403, httpVersion: "HTTP/1.1", headerFields: nil)!, Data())
+            }
+            let res = HTTPURLResponse(url: playlistURL, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: ["Content-Type": "application/x-mpegURL"])!
+            return (res, Data(m3u8Playlist.utf8))
+        }
+
+        MockURLProtocol.setHandler(for: seg1URL) { req in
+            guard let c = req.value(forHTTPHeaderField: "Cookie"), c.contains("sub_auth=secret_token_abc"),
+                  let ua = req.value(forHTTPHeaderField: "User-Agent"), ua == "TestSubtitleBrowser/2.0",
+                  req.value(forHTTPHeaderField: "Referer") != nil else {
+                return (HTTPURLResponse(url: seg1URL, statusCode: 403, httpVersion: "HTTP/1.1", headerFields: nil)!, Data())
+            }
+            let body = "WEBVTT\n\n00:00:00.000 --> 00:00:10.000\nHello World\n"
+            let res = HTTPURLResponse(url: seg1URL, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: ["Content-Type": "text/vtt"])!
+            return (res, Data(body.utf8))
+        }
+
+        MockURLProtocol.setHandler(for: seg2URL) { req in
+            guard let c = req.value(forHTTPHeaderField: "Cookie"), c.contains("sub_auth=secret_token_abc"),
+                  let ua = req.value(forHTTPHeaderField: "User-Agent"), ua == "TestSubtitleBrowser/2.0",
+                  req.value(forHTTPHeaderField: "Referer") != nil else {
+                return (HTTPURLResponse(url: seg2URL, statusCode: 403, httpVersion: "HTTP/1.1", headerFields: nil)!, Data())
+            }
+            let body = "WEBVTT\n\n00:00:10.000 --> 00:00:20.000\nSecond Cue\n"
+            let res = HTTPURLResponse(url: seg2URL, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: ["Content-Type": "text/vtt"])!
+            return (res, Data(body.utf8))
+        }
+
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent("sub-test-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let finalVideoURL = tempDir.appendingPathComponent("output.mp4")
+        let destinationVTT = tempDir.appendingPathComponent("output.vtt")
+
+        let orchestrator = StreamingDownloadOrchestrator(
+            manifestLoader: RecordingManifestLoader(data: Data(), finalURL: playlistURL, mimeType: nil),
+            segmentExecutor: RecordingSegmentExecutor()
+        )
+
+        await orchestrator.downloadAndSaveSubtitle(
+            from: playlistURL,
+            candidate: candidate,
+            finalOutputURL: finalVideoURL,
+            customSession: mockSession
+        )
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: destinationVTT.path))
+        let savedContent = try String(contentsOf: destinationVTT, encoding: .utf8)
+        XCTAssertTrue(savedContent.contains("WEBVTT"))
+        XCTAssertTrue(savedContent.contains("Hello World"))
+        XCTAssertTrue(savedContent.contains("Second Cue"))
+    }
+
+    func testDownloadAndSaveSubtitle_RejectsHTMLResponsesAndAvoidsWritingBrokenVTT() async throws {
+        let errorURL = URL(string: "https://auth.example.com/subtitles/error.vtt")!
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [MockURLProtocol.self]
+        let mockSession = URLSession(configuration: config)
+        MockURLProtocol.reset()
+        defer { MockURLProtocol.reset() }
+
+        MockURLProtocol.setHandler(for: errorURL) { _ in
+            let htmlBody = "<!DOCTYPE html><html><body>Error Not Found</body></html>"
+            let res = HTTPURLResponse(url: errorURL, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: ["Content-Type": "text/html"])!
+            return (res, Data(htmlBody.utf8))
+        }
+
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent("sub-err-test-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let finalVideoURL = tempDir.appendingPathComponent("output.mp4")
+        let destinationVTT = tempDir.appendingPathComponent("output.vtt")
+
+        let orchestrator = StreamingDownloadOrchestrator(
+            manifestLoader: RecordingManifestLoader(data: Data(), finalURL: errorURL, mimeType: nil),
+            segmentExecutor: RecordingSegmentExecutor()
+        )
+
+        await orchestrator.downloadAndSaveSubtitle(
+            from: errorURL,
+            candidate: nil,
+            finalOutputURL: finalVideoURL,
+            customSession: mockSession
+        )
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: destinationVTT.path))
+    }
 }
 
 private final class DummyAuthSender: NSObject, URLAuthenticationChallengeSender {

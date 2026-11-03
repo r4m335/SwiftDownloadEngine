@@ -151,7 +151,7 @@ public final class URLSessionStreamingManifestLoader: StreamingManifestLoader, @
             request.setValue("application/vnd.apple.mpegurl, application/x-mpegURL, */*", forHTTPHeaderField: "Accept")
         }
 
-        request = DownloadRequestEnricher.enrich(request, snapshot: effectiveSnapshot)
+        request = DownloadRequestEnricher.enrich(request, snapshot: effectiveSnapshot, context: candidate.browserRequestContext)
 
         // Ensure Accept header is specifically preserved if target was an MPD or M3U8 manifest
         if pathExt == "mpd" || urlString.contains(".mpd") || mime.contains("dash") {
@@ -2779,14 +2779,15 @@ public actor StreamingDownloadOrchestrator {
         }
     }
 
-    private func downloadAndSaveSubtitle(
+    func downloadAndSaveSubtitle(
         from subtitleURL: URL,
         candidate: StreamingManifestCandidate?,
-        finalOutputURL: URL
+        finalOutputURL: URL,
+        customSession: URLSession? = nil
     ) async {
         PipelineLogger.shared.log("[HLS Pipeline] Fetching subtitle from \(subtitleURL.absoluteString)...")
         do {
-            let subtitleSession = ForegroundURLSession.make(maximumConnectionsPerHost: 1)
+            let subtitleSession = customSession ?? ForegroundURLSession.make(maximumConnectionsPerHost: 1)
             var request = URLRequest(url: subtitleURL)
             request.httpMethod = "GET"
             request.timeoutInterval = 30
@@ -2829,20 +2830,49 @@ public actor StreamingDownloadOrchestrator {
                 }
                 if !segmentURLs.isEmpty {
                     var combinedVTT = "WEBVTT\n\n"
+                    var downloadedCount = 0
                     for segURL in segmentURLs {
                         var segReq = URLRequest(url: segURL)
-                        segReq = DownloadRequestEnricher.enrich(segReq, snapshot: effectiveSnapshot)
-                        if let (segData, _) = try? await subtitleSession.data(for: segReq) {
+                        segReq.httpMethod = "GET"
+                        segReq.timeoutInterval = 30
+                        segReq = DownloadRequestEnricher.enrich(segReq, snapshot: effectiveSnapshot, context: candidate?.browserRequestContext)
+                        if segReq.value(forHTTPHeaderField: "User-Agent") == nil,
+                           let ua = candidate?.browserRequestContext?.userAgent, !ua.isEmpty {
+                            segReq.setValue(ua, forHTTPHeaderField: "User-Agent")
+                        }
+                        if segReq.value(forHTTPHeaderField: "Referer") == nil {
+                            let ref = candidate?.browserRequestContext?.referer ?? candidate?.browserRequestContext?.pageURL?.absoluteString ?? subtitleURL.absoluteString
+                            segReq.setValue(ref, forHTTPHeaderField: "Referer")
+                        }
+                        do {
+                            let (segData, segResponse) = try await subtitleSession.data(for: segReq)
+                            guard let segHTTP = segResponse as? HTTPURLResponse, (200...299).contains(segHTTP.statusCode) else {
+                                PipelineLogger.shared.log("[HLS Pipeline] Subtitle segment HTTP failed: \(segURL.absoluteString)")
+                                continue
+                            }
                             let segText = String(decoding: segData, as: UTF8.self)
                             let cleanText = segText.replacingOccurrences(of: "WEBVTT\n", with: "")
                                 .replacingOccurrences(of: "WEBVTT\r\n", with: "")
                             combinedVTT += cleanText + "\n"
+                            downloadedCount += 1
+                        } catch {
+                            PipelineLogger.shared.log("[HLS Pipeline] Subtitle segment fetch error: \(error.localizedDescription)")
                         }
                     }
+                    guard downloadedCount > 0 else {
+                        PipelineLogger.shared.log("[HLS Pipeline] All subtitle segments failed to download for: \(subtitleURL.absoluteString)")
+                        return
+                    }
                     try Data(combinedVTT.utf8).write(to: destinationVTT, options: Data.WritingOptions.atomic)
-                    PipelineLogger.shared.log("[HLS Pipeline] Assembled \(segmentURLs.count) subtitle segments into: \(destinationVTT.path)")
+                    PipelineLogger.shared.log("[HLS Pipeline] Assembled \(downloadedCount)/\(segmentURLs.count) subtitle segments into: \(destinationVTT.path)")
                     return
                 }
+            }
+
+            let trimmedLower = contentString.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            if trimmedLower.isEmpty || trimmedLower.hasPrefix("<!doctype html") || trimmedLower.hasPrefix("<html") {
+                PipelineLogger.shared.log("[HLS Pipeline] Subtitle content is HTML or empty, skipping: \(subtitleURL.absoluteString)")
+                return
             }
 
             try data.write(to: destinationVTT, options: Data.WritingOptions.atomic)
