@@ -575,6 +575,12 @@ public actor DownloadCoordinator {
         if deleteDestinationFile {
             if let record = try? await persistenceStore.fetch(tag: id) {
                 _ = try? FileManager.default.removeItem(at: record.destinationURL)
+                let parentDir = record.destinationURL.deletingLastPathComponent()
+                let tempDir = parentDir.appendingPathComponent(".tmp", isDirectory: true)
+                for seg in record.segments {
+                    let part = tempDir.appendingPathComponent("segment-\(seg.id).part")
+                    _ = try? FileManager.default.removeItem(at: part)
+                }
                 if let bgManager = backgroundSessionManager {
                     for seg in record.segments {
                         let part = bgManager.partFileURL(downloadID: id, segmentID: seg.id)

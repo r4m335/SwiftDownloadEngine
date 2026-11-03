@@ -564,6 +564,12 @@ public actor DownloadQueueManager {
             if deleteDestinationFile {
                 if let record = try? await persistenceStore.fetch(tag: id) {
                     try? FileManager.default.removeItem(at: record.destinationURL)
+                    let parentDir = record.destinationURL.deletingLastPathComponent()
+                    let tempDir = parentDir.appendingPathComponent(".tmp", isDirectory: true)
+                    for seg in record.segments {
+                        let part = tempDir.appendingPathComponent("segment-\(seg.id).part")
+                        try? FileManager.default.removeItem(at: part)
+                    }
                 } else if FileManager.default.fileExists(atPath: item.request.destinationURL.path) {
                     try? FileManager.default.removeItem(at: item.request.destinationURL)
                 }
