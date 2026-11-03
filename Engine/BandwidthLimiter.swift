@@ -20,10 +20,11 @@ public actor BandwidthLimiter {
     private var lastRefillTime: TimeInterval
 
     public init(bytesPerSecond: Int64?, burstCapacity: Int64? = nil) {
-        self.bytesPerSecond = bytesPerSecond
+        let sanitizedRate = bytesPerSecond.flatMap { $0 > 0 ? $0 : nil }
+        self.bytesPerSecond = sanitizedRate
         if let explicitBurst = burstCapacity {
             self.burstCapacity = max(1, explicitBurst)
-        } else if let rate = bytesPerSecond, rate > 0 {
+        } else if let rate = sanitizedRate {
             // Default burst is 1 second worth of bandwidth, or at least 64 KiB
             self.burstCapacity = max(64 * 1024, rate)
         } else {
@@ -37,8 +38,9 @@ public actor BandwidthLimiter {
     /// - Parameter newLimit: Target bytes per second, or `nil` for unrestricted speed.
     public func setRateLimit(_ newLimit: Int64?) {
         refillTokens()
-        self.bytesPerSecond = newLimit
-        if let rate = newLimit, rate > 0 {
+        let sanitizedRate = newLimit.flatMap { $0 > 0 ? $0 : nil }
+        self.bytesPerSecond = sanitizedRate
+        if let rate = sanitizedRate {
             self.burstCapacity = max(64 * 1024, rate)
         }
         self.availableTokens = min(Double(self.burstCapacity), self.availableTokens)
@@ -49,6 +51,10 @@ public actor BandwidthLimiter {
     /// - Parameter bytes: Number of response body bytes to allocate.
     /// - Returns: TimeInterval in seconds to sleep before writing.
     public func reserve(bytes: Int64) -> TimeInterval {
+        guard bytes > 0 else {
+            return 0
+        }
+
         guard let rate = bytesPerSecond, rate > 0 else {
             return 0
         }
@@ -104,8 +110,14 @@ public actor BandwidthLimiter {
             maxDelay = max(maxDelay, delay)
         }
 
-        if maxDelay > 0 {
-            let nanos = UInt64(maxDelay * 1_000_000_000)
+        if maxDelay > 0 && !maxDelay.isNaN && !maxDelay.isInfinite {
+            let nanosDouble = maxDelay * 1_000_000_000
+            let nanos: UInt64
+            if nanosDouble >= Double(UInt64.max) {
+                nanos = UInt64.max
+            } else {
+                nanos = UInt64(nanosDouble)
+            }
             try await Task.sleep(nanoseconds: nanos)
         }
     }

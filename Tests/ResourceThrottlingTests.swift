@@ -366,6 +366,41 @@ final class ResourceThrottlingTests: XCTestCase {
         XCTAssertEqual(delay, 0, "Unrestricted limiter must return 0 delay immediately")
     }
 
+    func testNegativeAndZeroBytesDoNotMintTokensOrAlterQuota() async throws {
+        let rateLimit: Int64 = 50 * 1024
+        let burst: Int64 = 64 * 1024
+        let limiter = BandwidthLimiter(bytesPerSecond: rateLimit, burstCapacity: burst)
+
+        // Exhaust burst capacity
+        let initialDelay = await limiter.reserve(bytes: burst)
+        XCTAssertEqual(initialDelay, 0, "Consuming exact burst should have zero delay")
+
+        // Next positive byte request would require waiting
+        let preDelay = await limiter.reserve(bytes: 1)
+        XCTAssertGreaterThan(preDelay, 0, "Requesting byte after exhaustion must require delay")
+
+        // Passing zero or negative bytes must immediately return 0 without minting tokens
+        let zeroDelay = await limiter.reserve(bytes: 0)
+        XCTAssertEqual(zeroDelay, 0, "Zero byte reservation must return 0 delay")
+
+        let negativeDelay = await limiter.reserve(bytes: -100_000)
+        XCTAssertEqual(negativeDelay, 0, "Negative byte reservation must return 0 delay")
+
+        // Passing 0 or negative bytes to throttle must return immediately without error
+        try await BandwidthLimiter.throttle(bytes: 0, global: limiter, perDownload: nil)
+        try await BandwidthLimiter.throttle(bytes: -500, global: limiter, perDownload: nil)
+
+        // Rate limit sanitization for non-positive values
+        let nonPositiveLimiter = BandwidthLimiter(bytesPerSecond: -50_000)
+        let nonPositiveRate = await nonPositiveLimiter.bytesPerSecond
+        XCTAssertNil(nonPositiveRate, "Non-positive rate limit in init must be sanitized to nil")
+
+        let dynamicLimiter = BandwidthLimiter(bytesPerSecond: 100_000)
+        await dynamicLimiter.setRateLimit(-10_000)
+        let sanitizedDynamicRate = await dynamicLimiter.bytesPerSecond
+        XCTAssertNil(sanitizedDynamicRate, "Non-positive rate limit in setRateLimit must be sanitized to nil")
+    }
+
     // MARK: - 12. Pause and Resume Work While Throttled
 
     func testPauseAndResumeWhileThrottled() async throws {
