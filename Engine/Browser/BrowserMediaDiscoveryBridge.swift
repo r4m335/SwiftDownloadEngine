@@ -134,6 +134,7 @@ public enum BrowserMediaDiscoveryBridgeError: Error, LocalizedError, Equatable, 
     case malformedMessage
     case invalidPageOrigin
     case invalidFrameOrigin
+    case crossOriginFrameRejected
     case emptyCandidateURL
     case candidateURLTooLong
     case unsupportedCandidateScheme
@@ -149,6 +150,8 @@ public enum BrowserMediaDiscoveryBridgeError: Error, LocalizedError, Equatable, 
             return "The browser page origin is invalid for media discovery."
         case .invalidFrameOrigin:
             return "The browser frame origin is invalid for media discovery."
+        case .crossOriginFrameRejected:
+            return "Cross-origin frames cannot report media candidates targeting the page origin."
         case .emptyCandidateURL:
             return "The browser media discovery message did not contain a URL."
         case .candidateURLTooLong:
@@ -1025,6 +1028,11 @@ public final class BrowserMediaDiscoveryBridge: NSObject, @unchecked Sendable {
             throw BrowserMediaDiscoveryBridgeError.invalidFrameOrigin
         }
 
+        let isFrameSameOrigin = Self.originKey(for: frameOrigin) == Self.originKey(for: pageOrigin)
+        if let isMain = isMainFrame, isMain && !isFrameSameOrigin {
+            throw BrowserMediaDiscoveryBridgeError.invalidFrameOrigin
+        }
+
         let rawURL = message.rawURL.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !rawURL.isEmpty else {
             throw BrowserMediaDiscoveryBridgeError.emptyCandidateURL
@@ -1033,7 +1041,7 @@ public final class BrowserMediaDiscoveryBridge: NSObject, @unchecked Sendable {
             throw BrowserMediaDiscoveryBridgeError.candidateURLTooLong
         }
 
-        guard let resolved = WebpageResourceExtractor.resolveURL(rawURL, baseURL: pageURL) else {
+        guard let resolved = WebpageResourceExtractor.resolveURL(rawURL, baseURL: effectiveFrameURL) else {
             throw BrowserMediaDiscoveryBridgeError.unsupportedCandidateScheme
         }
 
@@ -1083,11 +1091,22 @@ public final class BrowserMediaDiscoveryBridge: NSObject, @unchecked Sendable {
             }
         }
 
+        let candidateOriginMatchesPage: Bool
+        if isBlob {
+            candidateOriginMatchesPage = false
+        } else {
+            candidateOriginMatchesPage = Self.originKey(for: resolved) == Self.originKey(for: pageOrigin)
+        }
+
+        if !isFrameSameOrigin && candidateOriginMatchesPage {
+            throw BrowserMediaDiscoveryBridgeError.crossOriginFrameRejected
+        }
+
         let responseURL: URL?
         if let rawResponseURL = message.responseURL?.trimmingCharacters(in: .whitespacesAndNewlines),
            !rawResponseURL.isEmpty {
             guard rawResponseURL.utf8.count <= Self.maximumCandidateLength,
-                  let candidateResponseURL = WebpageResourceExtractor.resolveURL(rawResponseURL, baseURL: pageURL),
+                  let candidateResponseURL = WebpageResourceExtractor.resolveURL(rawResponseURL, baseURL: effectiveFrameURL),
                   let responseScheme = candidateResponseURL.scheme?.lowercased(),
                   responseScheme == "http" || responseScheme == "https",
                   BrowserURLResolver.isValidDownloadURL(candidateResponseURL),
@@ -1096,18 +1115,15 @@ public final class BrowserMediaDiscoveryBridge: NSObject, @unchecked Sendable {
                   responseComponents.password == nil else {
                 throw BrowserMediaDiscoveryBridgeError.unsupportedCandidateScheme
             }
+            if !isFrameSameOrigin && Self.originKey(for: candidateResponseURL) == Self.originKey(for: pageOrigin) {
+                throw BrowserMediaDiscoveryBridgeError.crossOriginFrameRejected
+            }
             responseURL = candidateResponseURL
         } else {
             responseURL = nil
         }
 
-        let candidateOriginMatchesPage: Bool
-        if isBlob {
-            candidateOriginMatchesPage = false
-        } else {
-            candidateOriginMatchesPage = Self.originKey(for: resolved) == Self.originKey(for: pageURL)
-        }
-        let trustedFrame = Self.originKey(for: frameOrigin) == Self.originKey(for: pageOrigin)
+        let trustedFrame = isFrameSameOrigin
         let mayUseCredentials = !isBlob && !metadataOnly && trustedFrame && candidateOriginMatchesPage
         let dedupeKey: String
         if metadataOnly {
@@ -1356,19 +1372,24 @@ public final class BrowserMediaDiscoveryBridge: NSObject, @unchecked Sendable {
 
         let frame = message.frameInfo
         let securityOrigin = frame.securityOrigin
-        let frameURL: URL?
-        if !securityOrigin.host.isEmpty {
-            let portSuffix = securityOrigin.port != 0 ? ":\(securityOrigin.port)" : ""
-            frameURL = URL(string: "\(securityOrigin.protocol)://\(securityOrigin.host)\(portSuffix)")
-        } else {
-            frameURL = frame.request.url
+        let originProtocol = securityOrigin.protocol.lowercased()
+        guard (originProtocol == "http" || originProtocol == "https"),
+              !securityOrigin.host.isEmpty else {
+            errorHandler?(.invalidFrameOrigin)
+            return
+        }
+
+        let portSuffix = securityOrigin.port != 0 ? ":\(securityOrigin.port)" : ""
+        guard let frameURL = URL(string: "\(originProtocol)://\(securityOrigin.host)\(portSuffix)") else {
+            errorHandler?(.invalidFrameOrigin)
+            return
         }
 
         do {
             let observation = try accept(
                 payload: message.body,
                 pageURL: pageURL,
-                frameURL: frameURL ?? pageURL,
+                frameURL: frameURL,
                 isMainFrame: frame.isMainFrame
             )
             if let observation {

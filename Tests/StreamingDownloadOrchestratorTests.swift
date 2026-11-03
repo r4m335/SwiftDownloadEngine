@@ -1027,6 +1027,95 @@ final class StreamingDownloadOrchestratorTests: XCTestCase {
         let logs = PipelineLogger.shared.formattedLogText()
         XCTAssertTrue(logs.contains("Using cached manifest text from network hook"))
     }
+
+    func testUnusableHTMLCachedManifestFallsBackToNetworkLoader() async throws {
+        let manifestURL = URL(string: "https://video.example/stream.m3u8")!
+        let validM3U8 = """
+        #EXTM3U
+        #EXT-X-VERSION:3
+        #EXT-X-TARGETDURATION:5
+        #EXTINF:5.0,
+        network_segment_01.ts
+        #EXT-X-ENDLIST
+        """
+
+        let htmlBlockedText = """
+        <!DOCTYPE html>
+        <html><head><title>Cloudflare Challenge</title></head><body>Please wait...</body></html>
+        """
+
+        let resource = WebpageResource(
+            url: manifestURL,
+            title: "HTML Blocked Stream",
+            suggestedFilename: "stream.mp4",
+            resourceType: .video,
+            manifestText: htmlBlockedText
+        )
+
+        let candidate = try StreamingManifestCandidate(resource: resource)
+        let recordingLoader = RecordingManifestLoader(
+            data: Data(validM3U8.utf8),
+            finalURL: manifestURL,
+            mimeType: "application/vnd.apple.mpegurl"
+        )
+
+        let orchestrator = StreamingDownloadOrchestrator(
+            manifestLoader: recordingLoader,
+            segmentExecutor: RecordingSegmentExecutor()
+        )
+
+        let proposal = try await orchestrator.prepare(candidate: candidate)
+        XCTAssertEqual(proposal.manifest.kind, .hls)
+        XCTAssertEqual(proposal.resources.first?.url.lastPathComponent, "network_segment_01.ts")
+        let loadCount = await recordingLoader.loadCount
+        XCTAssertEqual(loadCount, 1)
+
+        let logs = PipelineLogger.shared.formattedLogText()
+        XCTAssertTrue(logs.contains("Cached manifest text was HTML or exceeded byte limits"))
+    }
+
+    func testUnusableMalformedCachedManifestFallsBackToNetworkLoader() async throws {
+        let manifestURL = URL(string: "https://video.example/stream.m3u8")!
+        let validM3U8 = """
+        #EXTM3U
+        #EXT-X-VERSION:3
+        #EXT-X-TARGETDURATION:5
+        #EXTINF:5.0,
+        network_segment_02.ts
+        #EXT-X-ENDLIST
+        """
+
+        let malformedText = "Random non-manifest garbage text that cannot be classified or parsed"
+
+        let resource = WebpageResource(
+            url: manifestURL,
+            title: "Malformed Cached Stream",
+            suggestedFilename: "stream.mp4",
+            resourceType: .video,
+            manifestText: malformedText
+        )
+
+        let candidate = try StreamingManifestCandidate(resource: resource)
+        let recordingLoader = RecordingManifestLoader(
+            data: Data(validM3U8.utf8),
+            finalURL: manifestURL,
+            mimeType: "application/vnd.apple.mpegurl"
+        )
+
+        let orchestrator = StreamingDownloadOrchestrator(
+            manifestLoader: recordingLoader,
+            segmentExecutor: RecordingSegmentExecutor()
+        )
+
+        let proposal = try await orchestrator.prepare(candidate: candidate)
+        XCTAssertEqual(proposal.manifest.kind, .hls)
+        XCTAssertEqual(proposal.resources.first?.url.lastPathComponent, "network_segment_02.ts")
+        let loadCount = await recordingLoader.loadCount
+        XCTAssertEqual(loadCount, 1)
+
+        let logs = PipelineLogger.shared.formattedLogText()
+        XCTAssertTrue(logs.contains("Cached manifest text not recognized as valid manifest") || logs.contains("Cached manifest text failed to parse"))
+    }
 }
 
 private actor RecordingManifestLoader: StreamingManifestLoader {

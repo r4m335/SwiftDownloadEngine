@@ -118,6 +118,60 @@ final class BrowserMediaDiscoveryTests: XCTestCase {
         }
     }
 
+    func testCrossOriginAndInvalidFrameMessagesAreRejected() throws {
+        let bridge = BrowserMediaDiscoveryBridge()
+
+        // 1. Invalid frame scheme (about:blank, javascript:, data:)
+        let invalidFrameURLs = [
+            URL(string: "about:blank")!,
+            URL(string: "javascript:void(0)")!,
+            URL(string: "data:text/html,test")!
+        ]
+        for frameURL in invalidFrameURLs {
+            XCTAssertThrowsError(try bridge.accept(
+                payload: ["rawURL": "https://cdn.example/video.mp4", "source": "fetch"],
+                pageURL: pageURL,
+                frameURL: frameURL
+            )) { error in
+                XCTAssertEqual(error as? BrowserMediaDiscoveryBridgeError, .invalidFrameOrigin)
+            }
+        }
+
+        // 2. Cross-origin frame claiming isMainFrame: true
+        let crossOriginFrame = URL(string: "https://untrusted-embed.example/player")!
+        XCTAssertThrowsError(try bridge.accept(
+            payload: ["rawURL": "https://cdn.example/video.mp4", "source": "fetch"],
+            pageURL: pageURL,
+            frameURL: crossOriginFrame,
+            isMainFrame: true
+        )) { error in
+            XCTAssertEqual(error as? BrowserMediaDiscoveryBridgeError, .invalidFrameOrigin)
+        }
+
+        // 3. Cross-origin frame reporting candidate targeting parent page origin
+        XCTAssertThrowsError(try bridge.accept(
+            payload: ["rawURL": "https://video.example/protected/stream.m3u8", "source": "fetch"],
+            pageURL: pageURL,
+            frameURL: crossOriginFrame,
+            isMainFrame: false
+        )) { error in
+            XCTAssertEqual(error as? BrowserMediaDiscoveryBridgeError, .crossOriginFrameRejected)
+        }
+
+        // 4. Cross-origin frame relative candidate resolves against frameURL, not pageURL
+        let subframeRelativeObservation = try XCTUnwrap(bridge.accept(
+            payload: ["rawURL": "/media/playlist.m3u8", "source": "fetch"],
+            pageURL: pageURL,
+            frameURL: crossOriginFrame,
+            isMainFrame: false
+        ))
+        XCTAssertEqual(
+            subframeRelativeObservation.url?.absoluteString,
+            "https://untrusted-embed.example/media/playlist.m3u8"
+        )
+        XCTAssertFalse(subframeRelativeObservation.mayUseBrowserCredentials)
+    }
+
     func testObserverScriptContainsRequiredHooksWithoutCredentialAccess() {
         let script = BrowserMediaDiscoveryBridge.observerScript
 

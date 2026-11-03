@@ -3224,6 +3224,29 @@ public final class BrowserWebViewCoordinator: NSObject, WKNavigationDelegate, WK
         }
     }
 
+    public func webView(
+        _ webView: WKWebView,
+        didReceive challenge: URLAuthenticationChallenge,
+        completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
+    ) {
+        BrowserDiagnosticLogger.shared.log(
+            category: .challenge,
+            message: "Authentication challenge received for host: \(challenge.protectionSpace.host)",
+            url: webView.url,
+            tabID: tabID,
+            details: [
+                "host": challenge.protectionSpace.host,
+                "method": challenge.protectionSpace.authenticationMethod,
+                "previousFailures": "\(challenge.previousFailureCount)"
+            ]
+        )
+        BrowserAuthenticationHandler.shared.handleChallenge(
+            challenge,
+            targetPageURL: webView.url,
+            completionHandler: completionHandler
+        )
+    }
+
     public func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
         let nsError = error as NSError
         BrowserDiagnosticLogger.shared.log(
@@ -3350,6 +3373,90 @@ public final class BrowserWebViewCoordinator: NSObject, WKNavigationDelegate, WK
             tabID: tabID
         )
         completionHandler(true)
+    }
+
+    public func webView(
+        _ webView: WKWebView,
+        runJavaScriptTextInputPanelWithPrompt prompt: String,
+        defaultText: String?,
+        initiatedByFrame frame: WKFrameInfo,
+        completionHandler: @escaping (String?) -> Void
+    ) {
+        BrowserDiagnosticLogger.shared.log(
+            category: .challenge,
+            message: "JavaScript prompt panel: \(prompt)",
+            url: frame.request.url,
+            tabID: tabID
+        )
+        BrowserPromptHandler.shared.handlePrompt(
+            prompt: prompt,
+            defaultText: defaultText,
+            frameURL: frame.request.url,
+            completionHandler: completionHandler
+        )
+    }
+
+    @available(iOS 15.0, macOS 12.0, *)
+    public func webView(
+        _ webView: WKWebView,
+        requestMediaCapturePermissionFor origin: WKSecurityOrigin,
+        initiatedByFrame frame: WKFrameInfo,
+        type: WKMediaCaptureType,
+        decisionHandler: @escaping (WKPermissionDecision) -> Void
+    ) {
+        let permType: BrowserPermissionType
+        switch type {
+        case .camera: permType = .camera
+        case .microphone: permType = .microphone
+        case .cameraAndMicrophone: permType = .cameraAndMicrophone
+        @unknown default: permType = .cameraAndMicrophone
+        }
+
+        BrowserDiagnosticLogger.shared.log(
+            category: .policy,
+            message: "Requesting media capture permission: \(permType.rawValue) for origin \(origin.host)",
+            url: frame.request.url,
+            tabID: tabID
+        )
+
+        BrowserPermissionCoordinator.shared.decidePermission(
+            type: permType,
+            originHost: origin.host,
+            frameURL: frame.request.url
+        ) { decision in
+            switch decision {
+            case .grant: decisionHandler(.grant)
+            case .deny: decisionHandler(.deny)
+            case .prompt: decisionHandler(.prompt)
+            }
+        }
+    }
+
+    @available(iOS 15.0, macOS 12.0, *)
+    public func webView(
+        _ webView: WKWebView,
+        requestDeviceOrientationAndMotionPermissionFor origin: WKSecurityOrigin,
+        initiatedByFrame frame: WKFrameInfo,
+        decisionHandler: @escaping (WKPermissionDecision) -> Void
+    ) {
+        BrowserDiagnosticLogger.shared.log(
+            category: .policy,
+            message: "Requesting device motion permission for origin \(origin.host)",
+            url: frame.request.url,
+            tabID: tabID
+        )
+
+        BrowserPermissionCoordinator.shared.decidePermission(
+            type: .deviceMotion,
+            originHost: origin.host,
+            frameURL: frame.request.url
+        ) { decision in
+            switch decision {
+            case .grant: decisionHandler(.grant)
+            case .deny: decisionHandler(.deny)
+            case .prompt: decisionHandler(.prompt)
+            }
+        }
     }
 
     public func webView(

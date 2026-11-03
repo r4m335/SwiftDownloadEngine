@@ -1069,17 +1069,43 @@ public actor StreamingDownloadOrchestrator {
         }
 
         let headers = manifestHeaders(for: candidate)
-        var response: StreamingManifestResponse
+        var parsedManifest: StreamingTransferManifest?
+        var manifestData: Data?
 
         if let cachedText = candidate.cachedManifestText, !cachedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            PipelineLogger.shared.log("[Streaming Pipeline] Step 1: Using cached manifest text from network hook (\(cachedText.count) chars). Skipping network fetch.")
-            response = StreamingManifestResponse(
-                data: Data(cachedText.utf8),
-                finalURL: candidate.url,
-                mimeType: candidate.mimeType,
-                statusCode: 200
-            )
-        } else {
+            let cachedData = Data(cachedText.utf8)
+            if cachedData.count <= parsingLimits.maxBytes && !Self.isHTMLResponse(cachedData) {
+                let classification = StreamingManifestClassifier.classify(
+                    url: candidate.url,
+                    mimeType: candidate.mimeType,
+                    content: cachedData,
+                    limits: parsingLimits
+                )
+                if classification.isManifest {
+                    do {
+                        PipelineLogger.shared.log("[Streaming Pipeline] Step 1: Using cached manifest text from network hook (\(cachedText.count) chars). Skipping network fetch.")
+                        let manifest = try await parseManifest(
+                            data: cachedData,
+                            finalURL: candidate.url,
+                            mimeType: candidate.mimeType,
+                            candidate: candidate,
+                            classification: classification
+                        )
+                        parsedManifest = manifest
+                        manifestData = cachedData
+                    } catch {
+                        PipelineLogger.shared.log("[Streaming Pipeline] Cached manifest text failed to parse (\(error.localizedDescription)). Falling back to network loader.")
+                    }
+                } else {
+                    PipelineLogger.shared.log("[Streaming Pipeline] Cached manifest text not recognized as valid manifest. Falling back to network loader.")
+                }
+            } else {
+                PipelineLogger.shared.log("[Streaming Pipeline] Cached manifest text was HTML or exceeded byte limits (\(cachedData.count) bytes). Falling back to network loader.")
+            }
+        }
+
+        if parsedManifest == nil {
+            let response: StreamingManifestResponse
             do {
                 response = try await loadManifestResponse(
                     candidate: candidate,
@@ -1090,219 +1116,54 @@ public actor StreamingDownloadOrchestrator {
             } catch {
                 throw error
             }
-        }
 
-        if Self.isHTMLResponse(response.data) {
-            let htmlSnippet = String(decoding: response.data.prefix(500), as: UTF8.self)
-            PipelineLogger.shared.log("[Streaming Pipeline] Server blocked request. Returned HTML instead of manifest. Snippet:\n\(htmlSnippet)")
-            throw StreamingDownloadOrchestratorError.manifestParseFailed(
-                ManifestParserError.malformed(reason: "Server blocked request. Returned HTML instead of manifest.")
-            )
-        }
-
-        let classification = StreamingManifestClassifier.classify(
-            url: response.finalURL,
-            mimeType: response.mimeType ?? candidate.mimeType,
-            content: response.data,
-            limits: parsingLimits
-        )
-        guard classification.isManifest else {
-            if classification.kind == .unsupported {
-                throw StreamingDownloadOrchestratorError.unsupportedManifest(classification.kind)
+            if Self.isHTMLResponse(response.data) {
+                let htmlSnippet = String(decoding: response.data.prefix(500), as: UTF8.self)
+                PipelineLogger.shared.log("[Streaming Pipeline] Server blocked request. Returned HTML instead of manifest. Snippet:\n\(htmlSnippet)")
+                throw StreamingDownloadOrchestratorError.manifestParseFailed(
+                    ManifestParserError.malformed(reason: "Server blocked request. Returned HTML instead of manifest.")
+                )
             }
-            throw StreamingDownloadOrchestratorError.manifestNotRecognized
-        }
 
-        let manifest: StreamingTransferManifest
-        do {
-            switch classification.kind {
-            case .hls:
-                PipelineLogger.shared.log("[HLS Pipeline] 1. Manifest fetched from \(response.finalURL.absoluteString) (\(response.data.count) bytes). Parsing with HLSManifestParser...")
-                var parsed = try HLSManifestParser.parse(
-                    response.data,
-                    baseURL: response.finalURL,
-                    limits: parsingLimits
-                )
-                PipelineLogger.shared.log("[HLS Pipeline] 2. HLSManifestParser initial parse completed: playlistType=\(parsed.playlistType), variants=\(parsed.variants.count), segments=\(parsed.segments.count)")
-
-                var selectedAudioRendition: HLSRendition?
-                var selectedSubtitleRendition: HLSRendition?
-                var selectedVariantBandwidth: Int? = nil
-                var currentURL = response.finalURL
-                var resolutionDepth = 0
-                while parsed.playlistType == .master && resolutionDepth < 5 {
-                    resolutionDepth += 1
-                    let variant: HLSVariant
-                    do {
-                        variant = try HLSVariantSelector.select(
-                            from: parsed,
-                            preferences: candidate.hlsVariantPreferences
-                        )
-                        selectedVariantBandwidth = variant.bandwidth
-                        try HLSVariantSelector.validateAudioLayout(
-                            selectedVariant: variant,
-                            master: parsed
-                        )
-                        if selectedAudioRendition == nil {
-                            selectedAudioRendition = HLSVariantSelector.selectAudioRendition(
-                                for: variant,
-                                master: parsed
-                            )
-                        }
-                        if selectedSubtitleRendition == nil {
-                            if let subGroup = variant.subtitlesGroup {
-                                selectedSubtitleRendition = parsed.renditions.first {
-                                    $0.type.uppercased() == "SUBTITLES" && $0.groupID == subGroup && $0.uri != nil
-                                }
-                            }
-                            if selectedSubtitleRendition == nil {
-                                selectedSubtitleRendition = parsed.renditions.first {
-                                    $0.type.uppercased() == "SUBTITLES" && $0.uri != nil
-                                }
-                            }
-                        }
-                    } catch let error as HLSVariantSelectionError {
-                        PipelineLogger.shared.log("[HLS Pipeline] Error during variant selection: \(error.localizedDescription)")
-                        throw StreamingDownloadOrchestratorError.hlsVariantSelectionFailed(error)
-                    }
-                    PipelineLogger.shared.log("[HLS Pipeline] Master playlist detected. Selected highest quality variant [depth=\(resolutionDepth)]: \(variant.uri.absoluteString), bandwidth=\(variant.bandwidth ?? 0)")
-                    let variantURI: URL
-                    if (variant.uri.query == nil || variant.uri.query?.isEmpty == true),
-                       let parentQuery = currentURL.query ?? candidate.url.query, !parentQuery.isEmpty,
-                       var components = URLComponents(url: variant.uri, resolvingAgainstBaseURL: false) {
-                        components.query = parentQuery
-                        variantURI = components.url ?? variant.uri
-                    } else {
-                        variantURI = variant.uri
-                    }
-                    let variantCandidate = try StreamingManifestCandidate(
-                        url: variantURI,
-                        mimeType: "application/vnd.apple.mpegurl",
-                        browserRequestContext: candidate.browserRequestContext,
-                        browserSessionSnapshot: candidate.browserSessionSnapshot,
-                        hlsVariantPreferences: candidate.hlsVariantPreferences
-                    )
-                    response = try await loadManifestResponse(
-                        candidate: variantCandidate,
-                        headers: manifestHeaders(for: variantCandidate)
-                    )
-                    currentURL = response.finalURL
-                    parsed = try HLSManifestParser.parse(
-                        response.data,
-                        baseURL: currentURL,
-                        limits: parsingLimits
-                    )
-                    PipelineLogger.shared.log("[HLS Pipeline] 2. Sub-playlist parsed: playlistType=\(parsed.playlistType), segments=\(parsed.segments.count)")
+            let classification = StreamingManifestClassifier.classify(
+                url: response.finalURL,
+                mimeType: response.mimeType ?? candidate.mimeType,
+                content: response.data,
+                limits: parsingLimits
+            )
+            guard classification.isManifest else {
+                if classification.kind == .unsupported {
+                    throw StreamingDownloadOrchestratorError.unsupportedManifest(classification.kind)
                 }
-                guard parsed.playlistType == .media else {
-                    PipelineLogger.shared.log("[HLS Pipeline] Error: Expected media playlist with segments, but got: \(parsed.playlistType)")
-                    throw StreamingDownloadOrchestratorError.playlistRequiresVariantSelection
-                }
-                PipelineLogger.shared.log("[HLS Pipeline] 2. Final media playlist confirmed. Segments found: \(parsed.segments.count)")
-
-                let videoPlan = try HLSTransferPlanner.makeVODPlan(
-                    from: parsed,
-                    browserRequestContext: candidate.browserRequestContext
-                )
-                PipelineLogger.shared.log("[HLS Pipeline] 3. HLSTransferPlanner generated video transfer plan with \(videoPlan.resources.count) segments (estimated bytes: \(videoPlan.estimatedTransferBytes ?? 0)).")
-                let audioPlan: [HLSPlannedResource]?
-                if let audioURI = selectedAudioRendition?.uri {
-                    PipelineLogger.shared.log("[HLS Pipeline] Separate audio rendition detected: \(audioURI.absoluteString). Fetching audio manifest...")
-                    let audioFinalURI: URL
-                    if (audioURI.query == nil || audioURI.query?.isEmpty == true),
-                       let parentQuery = currentURL.query ?? candidate.url.query, !parentQuery.isEmpty,
-                       var components = URLComponents(url: audioURI, resolvingAgainstBaseURL: false) {
-                        components.query = parentQuery
-                        audioFinalURI = components.url ?? audioURI
-                    } else {
-                        audioFinalURI = audioURI
-                    }
-                    let audioCandidate = try StreamingManifestCandidate(
-                        url: audioFinalURI,
-                        mimeType: "application/vnd.apple.mpegurl",
-                        browserRequestContext: candidate.browserRequestContext,
-                        browserSessionSnapshot: candidate.browserSessionSnapshot,
-                        hlsVariantPreferences: candidate.hlsVariantPreferences
-                    )
-                    let audioResponse = try await loadManifestResponse(
-                        candidate: audioCandidate,
-                        headers: manifestHeaders(for: audioCandidate)
-                    )
-                    let parsedAudio = try HLSManifestParser.parse(
-                        audioResponse.data,
-                        baseURL: audioResponse.finalURL,
-                        limits: parsingLimits
-                    )
-                    guard parsedAudio.playlistType == .media else {
-                        PipelineLogger.shared.log("[HLS Pipeline] Audio playlist did not resolve to media segments.")
-                        throw StreamingDownloadOrchestratorError.manifestNotRecognized
-                    }
-                    let parsedAudioPlan = try HLSTransferPlanner.makeVODPlan(
-                        from: parsedAudio,
-                        browserRequestContext: candidate.browserRequestContext
-                    )
-                    audioPlan = parsedAudioPlan.resources
-                    PipelineLogger.shared.log("[HLS Pipeline] Audio plan generated with \(parsedAudioPlan.resources.count) audio segments.")
-                } else {
-                    audioPlan = nil
-                }
-                let totalEstimatedBytes: Int64?
-                if let videoBytes = videoPlan.estimatedTransferBytes {
-                    let audioBytes = audioPlan?.reduce(Int64(0)) { $0 + ($1.byteRange?.length ?? 0) } ?? 0
-                    totalEstimatedBytes = videoBytes + audioBytes
-                } else if let bw = selectedVariantBandwidth, bw > 0 {
-                    let totalDuration = parsed.segments.reduce(0.0) { $0 + $1.duration }
-                    let effectiveDuration = totalDuration > 0 ? totalDuration : (Double(parsed.segments.count) * 6.0)
-                    let videoBytes = Int64(Double(bw) / 8.0 * effectiveDuration)
-                    let audioBytes = audioPlan?.reduce(Int64(0)) { $0 + ($1.byteRange?.length ?? 0) } ?? 0
-                    totalEstimatedBytes = videoBytes + audioBytes
-                } else {
-                    totalEstimatedBytes = nil
-                }
-                var resolvedSubtitleURL: URL? = selectedSubtitleRendition?.uri
-                if let subURI = resolvedSubtitleURL {
-                    if (subURI.query == nil || subURI.query?.isEmpty == true),
-                       let parentQuery = currentURL.query ?? candidate.url.query, !parentQuery.isEmpty,
-                       var components = URLComponents(url: subURI, resolvingAgainstBaseURL: false) {
-                        components.query = parentQuery
-                        resolvedSubtitleURL = components.url ?? subURI
-                    }
-                    PipelineLogger.shared.log("[HLS Pipeline] Subtitle stream detected: \(resolvedSubtitleURL?.absoluteString ?? "")")
-                }
-                let plan = HLSVODTransferPlan(
-                    manifestURL: videoPlan.manifestURL,
-                    resources: videoPlan.resources,
-                    browserRequestContext: candidate.browserRequestContext,
-                    estimatedTransferBytes: totalEstimatedBytes,
-                    audioPlan: audioPlan,
-                    subtitleURL: resolvedSubtitleURL
-                )
-                manifest = .hls(plan)
-            case .dash:
-                let parsed = try DASHManifestParser.parse(
-                    response.data,
-                    baseURL: response.finalURL,
-                    limits: parsingLimits
-                )
-                let plan = try DASHTransferPlanner.makeVODPlan(
-                    from: parsed,
-                    browserRequestContext: candidate.browserRequestContext
-                )
-                manifest = .dash(plan)
-            case .unknown, .unsupported:
                 throw StreamingDownloadOrchestratorError.manifestNotRecognized
             }
-        } catch let error as StreamingDownloadOrchestratorError {
-            throw error
-        } catch let error as ManifestParserError {
-            throw StreamingDownloadOrchestratorError.manifestParseFailed(error)
-        } catch let error as HLSVODTransferPlanError {
-            if case .unsupportedEncryption = error {
-                throw StreamingDownloadOrchestratorError.unsupportedEncryption
+
+            do {
+                let manifest = try await parseManifest(
+                    data: response.data,
+                    finalURL: response.finalURL,
+                    mimeType: response.mimeType ?? candidate.mimeType,
+                    candidate: candidate,
+                    classification: classification
+                )
+                parsedManifest = manifest
+                manifestData = response.data
+            } catch let error as StreamingDownloadOrchestratorError {
+                throw error
+            } catch let error as ManifestParserError {
+                throw StreamingDownloadOrchestratorError.manifestParseFailed(error)
+            } catch let error as HLSVODTransferPlanError {
+                if case .unsupportedEncryption = error {
+                    throw StreamingDownloadOrchestratorError.unsupportedEncryption
+                }
+                throw StreamingDownloadOrchestratorError.hlsPlanningFailed(error)
+            } catch let error as DASHVODTransferPlanError {
+                throw StreamingDownloadOrchestratorError.dashPlanningFailed(error)
             }
-            throw StreamingDownloadOrchestratorError.hlsPlanningFailed(error)
-        } catch let error as DASHVODTransferPlanError {
-            throw StreamingDownloadOrchestratorError.dashPlanningFailed(error)
+        }
+
+        guard let manifest = parsedManifest, let finalData = manifestData else {
+            throw StreamingDownloadOrchestratorError.manifestNotRecognized
         }
 
         // Derive the parent ID from the candidate URL, not the redirected or
@@ -1315,7 +1176,7 @@ public actor StreamingDownloadOrchestrator {
         }
         let proposal = StreamingTransferProposal(
             transferID: transferID,
-            manifestID: EngineSHA256.hash(data: response.data),
+            manifestID: EngineSHA256.hash(data: finalData),
             manifest: manifest,
             resources: resources,
             estimatedTransferBytes: estimatedBytes(for: manifest)
@@ -1328,6 +1189,192 @@ public actor StreamingDownloadOrchestrator {
         registeredTransferIDs[variantKey] = proposal.transferID
         registeredTransferIDs[proposal.transferID] = masterKey
         return proposal
+    }
+
+    private func parseManifest(
+        data: Data,
+        finalURL: URL,
+        mimeType: String?,
+        candidate: StreamingManifestCandidate,
+        classification: StreamingManifestClassification
+    ) async throws -> StreamingTransferManifest {
+        switch classification.kind {
+        case .hls:
+            PipelineLogger.shared.log("[HLS Pipeline] 1. Manifest fetched from \(finalURL.absoluteString) (\(data.count) bytes). Parsing with HLSManifestParser...")
+            var parsed = try HLSManifestParser.parse(
+                data,
+                baseURL: finalURL,
+                limits: parsingLimits
+            )
+            PipelineLogger.shared.log("[HLS Pipeline] 2. HLSManifestParser initial parse completed: playlistType=\(parsed.playlistType), variants=\(parsed.variants.count), segments=\(parsed.segments.count)")
+
+            var selectedAudioRendition: HLSRendition?
+            var selectedSubtitleRendition: HLSRendition?
+            var selectedVariantBandwidth: Int? = nil
+            var currentURL = finalURL
+            var resolutionDepth = 0
+            while parsed.playlistType == .master && resolutionDepth < 5 {
+                resolutionDepth += 1
+                let variant: HLSVariant
+                do {
+                    variant = try HLSVariantSelector.select(
+                        from: parsed,
+                        preferences: candidate.hlsVariantPreferences
+                    )
+                    selectedVariantBandwidth = variant.bandwidth
+                    try HLSVariantSelector.validateAudioLayout(
+                        selectedVariant: variant,
+                        master: parsed
+                    )
+                    if selectedAudioRendition == nil {
+                        selectedAudioRendition = HLSVariantSelector.selectAudioRendition(
+                            for: variant,
+                            master: parsed
+                        )
+                    }
+                    if selectedSubtitleRendition == nil {
+                        if let subGroup = variant.subtitlesGroup {
+                            selectedSubtitleRendition = parsed.renditions.first {
+                                $0.type.uppercased() == "SUBTITLES" && $0.groupID == subGroup && $0.uri != nil
+                            }
+                        }
+                        if selectedSubtitleRendition == nil {
+                            selectedSubtitleRendition = parsed.renditions.first {
+                                $0.type.uppercased() == "SUBTITLES" && $0.uri != nil
+                            }
+                        }
+                    }
+                } catch let error as HLSVariantSelectionError {
+                    PipelineLogger.shared.log("[HLS Pipeline] Error during variant selection: \(error.localizedDescription)")
+                    throw StreamingDownloadOrchestratorError.hlsVariantSelectionFailed(error)
+                }
+                PipelineLogger.shared.log("[HLS Pipeline] Master playlist detected. Selected highest quality variant [depth=\(resolutionDepth)]: \(variant.uri.absoluteString), bandwidth=\(variant.bandwidth)")
+                let variantURI: URL
+                if (variant.uri.query == nil || variant.uri.query?.isEmpty == true),
+                   let parentQuery = currentURL.query ?? candidate.url.query, !parentQuery.isEmpty,
+                   var components = URLComponents(url: variant.uri, resolvingAgainstBaseURL: false) {
+                    components.query = parentQuery
+                    variantURI = components.url ?? variant.uri
+                } else {
+                    variantURI = variant.uri
+                }
+                let variantCandidate = try StreamingManifestCandidate(
+                    url: variantURI,
+                    mimeType: "application/vnd.apple.mpegurl",
+                    browserRequestContext: candidate.browserRequestContext,
+                    browserSessionSnapshot: candidate.browserSessionSnapshot,
+                    hlsVariantPreferences: candidate.hlsVariantPreferences
+                )
+                let subResponse = try await loadManifestResponse(
+                    candidate: variantCandidate,
+                    headers: manifestHeaders(for: variantCandidate)
+                )
+                currentURL = subResponse.finalURL
+                parsed = try HLSManifestParser.parse(
+                    subResponse.data,
+                    baseURL: currentURL,
+                    limits: parsingLimits
+                )
+                PipelineLogger.shared.log("[HLS Pipeline] 2. Sub-playlist parsed: playlistType=\(parsed.playlistType), segments=\(parsed.segments.count)")
+            }
+            guard parsed.playlistType == .media else {
+                PipelineLogger.shared.log("[HLS Pipeline] Error: Expected media playlist with segments, but got: \(parsed.playlistType)")
+                throw StreamingDownloadOrchestratorError.playlistRequiresVariantSelection
+            }
+            PipelineLogger.shared.log("[HLS Pipeline] 2. Final media playlist confirmed. Segments found: \(parsed.segments.count)")
+
+            let videoPlan = try HLSTransferPlanner.makeVODPlan(
+                from: parsed,
+                browserRequestContext: candidate.browserRequestContext
+            )
+            PipelineLogger.shared.log("[HLS Pipeline] 3. HLSTransferPlanner generated video transfer plan with \(videoPlan.resources.count) segments (estimated bytes: \(videoPlan.estimatedTransferBytes ?? 0)).")
+            let audioPlan: [HLSPlannedResource]?
+            if let audioURI = selectedAudioRendition?.uri {
+                PipelineLogger.shared.log("[HLS Pipeline] Separate audio rendition detected: \(audioURI.absoluteString). Fetching audio manifest...")
+                let audioFinalURI: URL
+                if (audioURI.query == nil || audioURI.query?.isEmpty == true),
+                   let parentQuery = currentURL.query ?? candidate.url.query, !parentQuery.isEmpty,
+                   var components = URLComponents(url: audioURI, resolvingAgainstBaseURL: false) {
+                    components.query = parentQuery
+                    audioFinalURI = components.url ?? audioURI
+                } else {
+                    audioFinalURI = audioURI
+                }
+                let audioCandidate = try StreamingManifestCandidate(
+                    url: audioFinalURI,
+                    mimeType: "application/vnd.apple.mpegurl",
+                    browserRequestContext: candidate.browserRequestContext,
+                    browserSessionSnapshot: candidate.browserSessionSnapshot,
+                    hlsVariantPreferences: candidate.hlsVariantPreferences
+                )
+                let audioResponse = try await loadManifestResponse(
+                    candidate: audioCandidate,
+                    headers: manifestHeaders(for: audioCandidate)
+                )
+                let parsedAudio = try HLSManifestParser.parse(
+                    audioResponse.data,
+                    baseURL: audioResponse.finalURL,
+                    limits: parsingLimits
+                )
+                guard parsedAudio.playlistType == .media else {
+                    PipelineLogger.shared.log("[HLS Pipeline] Audio playlist did not resolve to media segments.")
+                    throw StreamingDownloadOrchestratorError.manifestNotRecognized
+                }
+                let parsedAudioPlan = try HLSTransferPlanner.makeVODPlan(
+                    from: parsedAudio,
+                    browserRequestContext: candidate.browserRequestContext
+                )
+                audioPlan = parsedAudioPlan.resources
+                PipelineLogger.shared.log("[HLS Pipeline] Audio plan generated with \(parsedAudioPlan.resources.count) audio segments.")
+            } else {
+                audioPlan = nil
+            }
+            let totalEstimatedBytes: Int64?
+            if let videoBytes = videoPlan.estimatedTransferBytes {
+                let audioBytes = audioPlan?.reduce(Int64(0)) { $0 + ($1.byteRange?.length ?? 0) } ?? 0
+                totalEstimatedBytes = videoBytes + audioBytes
+            } else if let bw = selectedVariantBandwidth, bw > 0 {
+                let totalDuration = parsed.segments.reduce(0.0) { $0 + $1.duration }
+                let effectiveDuration = totalDuration > 0 ? totalDuration : (Double(parsed.segments.count) * 6.0)
+                let videoBytes = Int64(Double(bw) / 8.0 * effectiveDuration)
+                let audioBytes = audioPlan?.reduce(Int64(0)) { $0 + ($1.byteRange?.length ?? 0) } ?? 0
+                totalEstimatedBytes = videoBytes + audioBytes
+            } else {
+                totalEstimatedBytes = nil
+            }
+            var resolvedSubtitleURL: URL? = selectedSubtitleRendition?.uri
+            if let subURI = resolvedSubtitleURL {
+                if (subURI.query == nil || subURI.query?.isEmpty == true),
+                   let parentQuery = currentURL.query ?? candidate.url.query, !parentQuery.isEmpty,
+                   var components = URLComponents(url: subURI, resolvingAgainstBaseURL: false) {
+                    components.query = parentQuery
+                    resolvedSubtitleURL = components.url ?? subURI
+                }
+                PipelineLogger.shared.log("[HLS Pipeline] Subtitle stream detected: \(resolvedSubtitleURL?.absoluteString ?? "")")
+            }
+            let plan = HLSVODTransferPlan(
+                manifestURL: videoPlan.manifestURL,
+                resources: videoPlan.resources,
+                browserRequestContext: candidate.browserRequestContext,
+                estimatedTransferBytes: totalEstimatedBytes,
+                audioPlan: audioPlan,
+                subtitleURL: resolvedSubtitleURL
+            )
+            return .hls(plan)
+        case .dash:
+            let parsed = try DASHManifestParser.parse(
+                data,
+                baseURL: finalURL,
+                limits: parsingLimits
+            )
+            let plan = try DASHTransferPlanner.makeVODPlan(
+                from: parsed,
+                browserRequestContext: candidate.browserRequestContext
+            )
+            return .dash(plan)
+        case .unknown, .unsupported:
+            throw StreamingDownloadOrchestratorError.manifestNotRecognized
+        }
     }
 
     public func execute(
