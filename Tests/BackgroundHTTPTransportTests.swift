@@ -1162,5 +1162,34 @@ final class BackgroundHTTPTransportTests: XCTestCase {
             }
         }
     }
+
+    // MARK: - 11. BackgroundDownloadTaskMappingStore Non-Destructive Atomic Persistence Test
+
+    func testBackgroundDownloadTaskMappingStoreNonDestructiveAtomicPersistence() async throws {
+        let store = try BackgroundDownloadTaskMappingStore(storageDirectoryURL: storageDirectoryURL)
+        let record = BackgroundDownloadTaskRecord(
+            sessionIdentifier: "test-session",
+            taskIdentifier: 42,
+            downloadID: "dl-atomic-test",
+            segmentID: 1,
+            originalURL: URL(string: "https://example.com/file.bin")!,
+            startOffset: 0,
+            endOffset: 1024,
+            expectedBytes: 1025,
+            segmentLength: 1025,
+            destinationPartURL: storageDirectoryURL.appendingPathComponent("part1.bin")
+        )
+        try await store.save(record: record)
+
+        let loaded = await store.record(sessionIdentifier: "test-session", taskIdentifier: 42)
+        XCTAssertNotNil(loaded)
+        XCTAssertEqual(loaded?.downloadID, "dl-atomic-test")
+
+        // Reload fresh store from disk to ensure bytes persisted properly
+        let reloadedStore = try BackgroundDownloadTaskMappingStore(storageDirectoryURL: storageDirectoryURL)
+        let reloadedRecord = await reloadedStore.record(sessionIdentifier: "test-session", taskIdentifier: 42)
+        XCTAssertEqual(reloadedRecord?.downloadID, "dl-atomic-test")
+        XCTAssertEqual(reloadedRecord?.taskIdentifier, 42)
+    }
 }
 

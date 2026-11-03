@@ -254,8 +254,39 @@ public actor BackgroundDownloadTaskMappingStore {
             .appendingPathComponent("background_tasks_\(UUID().uuidString).tmp")
 
         try data.write(to: tempURL, options: .atomic)
-        _ = try? FileManager.default.removeItem(at: storeFileURL)
-        try FileManager.default.moveItem(at: tempURL, to: storeFileURL)
+
+        let fileManager = FileManager.default
+        if fileManager.fileExists(atPath: storeFileURL.path) {
+            #if canImport(Darwin)
+            do {
+                _ = try fileManager.replaceItemAt(storeFileURL, withItemAt: tempURL, backupItemName: nil, options: .withoutDeletingBackupItem)
+            } catch {
+                let backupURL = storeFileURL.deletingLastPathComponent()
+                    .appendingPathComponent(".backup-\(UUID().uuidString)-\(storeFileURL.lastPathComponent)")
+                try fileManager.moveItem(at: storeFileURL, to: backupURL)
+                do {
+                    try fileManager.moveItem(at: tempURL, to: storeFileURL)
+                    _ = try? fileManager.removeItem(at: backupURL)
+                } catch {
+                    _ = try? fileManager.moveItem(at: backupURL, to: storeFileURL)
+                    throw error
+                }
+            }
+            #else
+            let backupURL = storeFileURL.deletingLastPathComponent()
+                .appendingPathComponent(".backup-\(UUID().uuidString)-\(storeFileURL.lastPathComponent)")
+            try fileManager.moveItem(at: storeFileURL, to: backupURL)
+            do {
+                try fileManager.moveItem(at: tempURL, to: storeFileURL)
+                _ = try? fileManager.removeItem(at: backupURL)
+            } catch {
+                _ = try? fileManager.moveItem(at: backupURL, to: storeFileURL)
+                throw error
+            }
+            #endif
+        } else {
+            try fileManager.moveItem(at: tempURL, to: storeFileURL)
+        }
     }
 }
 

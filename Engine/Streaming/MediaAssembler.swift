@@ -600,26 +600,40 @@ public enum MediaAssembler {
             let parentDir = request.destinationURL.deletingLastPathComponent()
             try DownloadManagerViewModel.ensureDirectoryExistsAndWritable(parentDir, fileManager: fileManager)
 
-            #if canImport(Darwin)
             if fileManager.fileExists(atPath: request.destinationURL.path) {
+                #if canImport(Darwin)
                 do {
                     _ = try fileManager.replaceItemAt(request.destinationURL, withItemAt: temporaryOutput, backupItemName: nil, options: [])
                 } catch {
-                    _ = try? fileManager.removeItem(at: request.destinationURL)
-                    try fileManager.moveItem(at: temporaryOutput, to: request.destinationURL)
+                    // Non-destructive fallback: preserve existing destination if move fails
+                    let backupURL = request.destinationURL.deletingLastPathComponent()
+                        .appendingPathComponent(".backup-\(UUID().uuidString)-\(request.destinationURL.lastPathComponent)")
+                    try fileManager.moveItem(at: request.destinationURL, to: backupURL)
+                    do {
+                        try fileManager.moveItem(at: temporaryOutput, to: request.destinationURL)
+                        _ = try? fileManager.removeItem(at: backupURL)
+                    } catch {
+                        _ = try? fileManager.moveItem(at: backupURL, to: request.destinationURL)
+                        throw error
+                    }
                 }
+                #else
+                let backupURL = request.destinationURL.deletingLastPathComponent()
+                    .appendingPathComponent(".backup-\(UUID().uuidString)-\(request.destinationURL.lastPathComponent)")
+                try fileManager.moveItem(at: request.destinationURL, to: backupURL)
+                do {
+                    try fileManager.moveItem(at: temporaryOutput, to: request.destinationURL)
+                    _ = try? fileManager.removeItem(at: backupURL)
+                } catch {
+                    _ = try? fileManager.moveItem(at: backupURL, to: request.destinationURL)
+                    throw error
+                }
+                #endif
             } else {
                 try fileManager.moveItem(at: temporaryOutput, to: request.destinationURL)
             }
-            #else
-            if fileManager.fileExists(atPath: request.destinationURL.path) {
-                _ = try? fileManager.removeItem(at: request.destinationURL)
-            }
-            try fileManager.moveItem(at: temporaryOutput, to: request.destinationURL)
-            #endif
 
-            let attributes = try fileManager.attributesOfItem(atPath: request.destinationURL.path)
-            guard let byteCount = (attributes[.size] as? NSNumber)?.int64Value, byteCount > 0 else {
+            guard let byteCount = fileManager.fileSize(atPath: request.destinationURL.path), byteCount > 0 else {
                 throw MediaAssemblyError.fileOperationFailed
             }
             PipelineLogger.shared.log("[MediaAssembler] assembleMultipleTracks completed: outputURL=\(request.destinationURL.path), byteCount=\(byteCount), pathExtension=\(request.destinationURL.pathExtension)")
