@@ -44,12 +44,30 @@ enum HTTPRetryPolicy {
         }
 
         if let urlError = error as? URLError {
-            return isRetryableNetworkCode(urlError.code.rawValue)
+            if isRetryableNetworkCode(urlError.code.rawValue) {
+                return true
+            }
+            if urlError.code.rawValue == -1 {
+                let desc = urlError.localizedDescription.lowercased()
+                if desc.contains("missing") || desc.contains("partial") || desc.contains("closed") || desc.contains("connection") || desc.contains("eof") {
+                    return true
+                }
+            }
+            return false
         }
 
         let nsError = error as NSError
         if nsError.domain == NSURLErrorDomain {
-            return isRetryableNetworkCode(nsError.code)
+            if isRetryableNetworkCode(nsError.code) {
+                return true
+            }
+            if nsError.code == -1 {
+                let desc = nsError.localizedDescription.lowercased()
+                if desc.contains("missing") || desc.contains("partial") || desc.contains("closed") || desc.contains("connection") || desc.contains("eof") {
+                    return true
+                }
+            }
+            return false
         }
         return false
     }

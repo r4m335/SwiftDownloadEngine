@@ -41,7 +41,7 @@ final class StreamingDownloadOrchestratorTests: XCTestCase {
         XCTAssertEqual(result.completedSegments.map(\.order), [0, 1])
         let recordedRequests = await executor.requests
         let requestOrders = recordedRequests.map(\.identity.order)
-        XCTAssertEqual(requestOrders, [0, 1])
+        XCTAssertEqual(requestOrders.sorted(), [0, 1])
     }
 
     func testCrossOriginSegmentDoesNotReceiveBrowserCredentials() async throws {

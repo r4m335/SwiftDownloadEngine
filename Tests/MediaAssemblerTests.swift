@@ -327,10 +327,16 @@ final class MediaAssemblerTests: XCTestCase {
             destinationURL: output
         )
 
+#if canImport(AVFoundation)
         let result = try MediaAssembler.assemble(request)
         XCTAssertEqual(result.container, .fragmentedMP4)
         XCTAssertEqual(result.trackCount, 2)
         XCTAssertTrue(FileManager.default.fileExists(atPath: output.path))
+#else
+        XCTAssertThrowsError(try MediaAssembler.assemble(request)) { error in
+            XCTAssertEqual(error as? MediaAssemblyError, .muxingUnavailable)
+        }
+#endif
     }
 
     private func makeTrack(
