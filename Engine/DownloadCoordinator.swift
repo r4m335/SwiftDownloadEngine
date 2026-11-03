@@ -1545,13 +1545,16 @@ public actor DownloadCoordinator {
                                                     completedBytes: parentBytes
                                                 )
                                                 if needsCheckpoint {
-                                                    // Guarantee partial file is safely flushed to disk before committing checkpoint
-                                                    try? await writer.synchronize()
-                                                    _ = try? await self.persistenceStore.updateSegmentProgress(
-                                                        tag: request.id,
-                                                        segmentID: workItem.parentSegmentID,
-                                                        completedBytes: parentBytes
-                                                    )
+                                                    do {
+                                                        try await writer.synchronize()
+                                                        _ = try await self.persistenceStore.updateSegmentProgress(
+                                                            tag: request.id,
+                                                            segmentID: workItem.parentSegmentID,
+                                                            completedBytes: parentBytes
+                                                        )
+                                                    } catch {
+                                                        PipelineLogger.shared.log("[DownloadCoordinator] Intermediate checkpoint failed for \(request.id) segment \(workItem.parentSegmentID): \(error.localizedDescription)")
+                                                    }
                                                 }
                                             }
                                         }
@@ -1606,12 +1609,16 @@ public actor DownloadCoordinator {
                             let aggregate = await progressAccumulator.complete(workItem)
                             await workQueue.complete(workerID: workerID, workItemID: workItem.id)
                             let parentBytes = await progressAccumulator.parentCompletedBytes(workItem.parentSegmentID)
-                            try? await writer.synchronize()
-                            _ = try? await self.persistenceStore.updateSegmentProgress(
-                                tag: request.id,
-                                segmentID: workItem.parentSegmentID,
-                                completedBytes: parentBytes
-                            )
+                            do {
+                                try await writer.synchronize()
+                                _ = try await self.persistenceStore.updateSegmentProgress(
+                                    tag: request.id,
+                                    segmentID: workItem.parentSegmentID,
+                                    completedBytes: parentBytes
+                                )
+                            } catch {
+                                PipelineLogger.shared.log("[DownloadCoordinator] Work item completion checkpoint failed for \(request.id) segment \(workItem.parentSegmentID): \(error.localizedDescription)")
+                            }
 
                             let metrics = speedTracker.snapshot(expectedTotalBytes: totalSize)
                             await self.updateProgress(
@@ -1635,12 +1642,24 @@ public actor DownloadCoordinator {
             }
             if pauseRequested.contains(request.id) || Task.isCancelled {
                 // Ensure writer buffers are flushed to disk before recording checkpoint
-                try? await writer.synchronize()
+                do {
+                    try await writer.synchronize()
+                } catch {
+                    PipelineLogger.shared.log("[DownloadCoordinator] Writer synchronize failed on pause for \(request.id): \(error.localizedDescription)")
+                }
                 let completedMap = await progressAccumulator.getCompletedBytes()
                 for (segID, bytes) in completedMap {
-                    _ = try? await persistenceStore.updateSegmentProgress(tag: request.id, segmentID: segID, completedBytes: bytes)
+                    do {
+                        _ = try await persistenceStore.updateSegmentProgress(tag: request.id, segmentID: segID, completedBytes: bytes)
+                    } catch {
+                        PipelineLogger.shared.log("[DownloadCoordinator] Failed to persist segment \(segID) progress on pause for \(request.id): \(error.localizedDescription)")
+                    }
                 }
-                _ = try? await persistenceStore.updateState(tag: request.id, state: .paused)
+                do {
+                    _ = try await persistenceStore.updateState(tag: request.id, state: .paused)
+                } catch {
+                    PipelineLogger.shared.log("[DownloadCoordinator] Failed to persist paused state for \(request.id): \(error.localizedDescription)")
+                }
                 let snap = await progressAccumulator.snapshot()
                 let metrics = speedTracker.snapshot(expectedTotalBytes: totalSize)
                 updateProgress(
@@ -2451,22 +2470,30 @@ public actor DownloadCoordinator {
 
                     let needsCheckpoint = await progressAccumulator.shouldCheckpoint(segmentID: segID, completedBytes: done)
                     if needsCheckpoint {
-                        _ = try? await self.persistenceStore.updateSegmentProgress(
-                            tag: request.id,
-                            segmentID: segID,
-                            completedBytes: done
-                        )
+                        do {
+                            _ = try await self.persistenceStore.updateSegmentProgress(
+                                tag: request.id,
+                                segmentID: segID,
+                                completedBytes: done
+                            )
+                        } catch {
+                            PipelineLogger.shared.log("[DownloadCoordinator] Single stream checkpoint failed for \(request.id) segment \(segID): \(error.localizedDescription)")
+                        }
                     }
 
                 case .completed(let segID, _):
                     completedSegmentsSet.insert(segID)
                     guard let seg = segments.first(where: { $0.id == segID }) else { continue }
                     let agg = await progressAccumulator.update(segmentID: segID, completedBytes: seg.length)
-                    _ = try? await self.persistenceStore.updateSegmentProgress(
-                        tag: request.id,
-                        segmentID: segID,
-                        completedBytes: seg.length
-                    )
+                    do {
+                        _ = try await self.persistenceStore.updateSegmentProgress(
+                            tag: request.id,
+                            segmentID: segID,
+                            completedBytes: seg.length
+                        )
+                    } catch {
+                        PipelineLogger.shared.log("[DownloadCoordinator] Single stream completion checkpoint failed for \(request.id) segment \(segID): \(error.localizedDescription)")
+                    }
 
                     let metrics = speedTracker.snapshot(expectedTotalBytes: totalSize)
                     updateProgress(
