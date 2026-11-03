@@ -263,4 +263,45 @@ final class TorrentQueueSchedulerTests: XCTestCase {
         stop = await scheduler.shouldStopSeeding(infoHash: hash, totalUploaded: 999999, totalDownloaded: 1000, elapsedSeedingSeconds: 999999)
         XCTAssertFalse(stop)
     }
+
+    func testStartupReconciliationPersistsQueuedStateForExcessActiveDownloads() async throws {
+        // Create 2 records manually directly in the store, marked as .downloading
+        let hash1 = "1111222233334444555566667777888899990001"
+        let hash2 = "1111222233334444555566667777888899990002"
+
+        let record1 = TorrentRecord(
+            infoHash: hash1,
+            source: "src1",
+            name: "Item1",
+            savePath: tempDirectoryURL,
+            state: .downloading,
+            priority: .high,
+            sequenceIndex: 1
+        )
+        let record2 = TorrentRecord(
+            infoHash: hash2,
+            source: "src2",
+            name: "Item2",
+            savePath: tempDirectoryURL,
+            state: .downloading,
+            priority: .low,
+            sequenceIndex: 2
+        )
+        try await store.saveRecords([record1, record2])
+
+        // Initialize scheduler with maxConcurrentTorrents: 1
+        let scheduler = try await TorrentQueueScheduler(persistenceStore: store, maxConcurrentTorrents: 1)
+
+        // hash1 (high priority) should be promoted to .downloading
+        let r1 = await scheduler.record(for: hash1)
+        XCTAssertEqual(r1?.state, .downloading)
+
+        // hash2 (low priority) should be reconciled to .queued
+        let r2 = await scheduler.record(for: hash2)
+        XCTAssertEqual(r2?.state, .queued)
+
+        // Crucial invariant: on disk, the persisted state of hash2 must also be .queued, not .downloading
+        let storedRecord2 = await store.loadRecord(infoHash: hash2)
+        XCTAssertEqual(storedRecord2?.state, .queued)
+    }
 }

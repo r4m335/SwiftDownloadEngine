@@ -374,7 +374,9 @@ public actor TorrentQueueScheduler {
                 }
             } else if r.state.isActive {
                 r.state = .queued
+                r.updatedAt = Date()
                 records[key] = r
+                try? await persistenceStore.saveRecord(r)
             }
         }
         return await pumpQueue()
