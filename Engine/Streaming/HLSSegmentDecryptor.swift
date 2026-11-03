@@ -143,6 +143,8 @@ public enum HLSSegmentDecryptor {
             throw HLSSegmentDecryptionError.fileReadError(sourceURL.path)
         }
         let cleartext = try decrypt(data: ciphertext, key: key, iv: iv)
+        let parentDir = destinationURL.deletingLastPathComponent()
+        try? FileManager.default.createDirectory(at: parentDir, withIntermediateDirectories: true)
         do {
             try cleartext.write(to: destinationURL, options: .atomic)
         } catch {

@@ -253,16 +253,19 @@ public enum HLSVODReconstructor {
                 keyMap[completed.resource.url] = keyData
             }
 
-            var clearResources: [HLSPlannedResource] = []
-            var clearCompleted: [HLSCompletedResource] = []
+            var videoClearResources: [HLSPlannedResource] = []
+            var videoClearFiles: [URL] = []
+            var audioClearResources: [HLSPlannedResource] = []
+            var audioClearFiles: [URL] = []
 
-            for completed in completedResources {
+            for (index, completed) in completedResources.enumerated() {
+                let isVideo = index < transferPlan.resources.count
                 switch completed.resource.kind {
                 case .encryptionKey:
                     continue
                 case .initializationMap:
                     let clearRes = HLSPlannedResource(
-                        order: clearResources.count,
+                        order: isVideo ? videoClearResources.count : audioClearResources.count,
                         kind: completed.resource.kind,
                         url: completed.resource.url,
                         byteRange: completed.resource.byteRange,
@@ -270,9 +273,15 @@ public enum HLSVODReconstructor {
                         duration: completed.resource.duration,
                         encryption: .clear
                     )
-                    clearResources.append(clearRes)
-                    clearCompleted.append(HLSCompletedResource(resource: clearRes, fileURL: completed.fileURL))
+                    if isVideo {
+                        videoClearResources.append(clearRes)
+                        videoClearFiles.append(completed.fileURL)
+                    } else {
+                        audioClearResources.append(clearRes)
+                        audioClearFiles.append(completed.fileURL)
+                    }
                 case .mediaSegment:
+                    let fileURLToUse: URL
                     if case let .aes128(keyURL, explicitIV) = completed.resource.encryption {
                         guard let keyData = keyMap[keyURL] else {
                             throw HLSVODReconstructionError.decryptionFailed(.missingKeyData(keyURL))
@@ -284,7 +293,7 @@ public enum HLSVODReconstructor {
                             ivData = HLSSegmentDecryptor.ivForSequenceNumber(completed.resource.sequenceNumber ?? 0)
                         }
                         let ext = completed.fileURL.pathExtension.isEmpty ? "ts" : completed.fileURL.pathExtension
-                        let decryptedURL = effectiveTempDir.appendingPathComponent("decrypted_seg_\(completed.resource.order).\(ext)")
+                        let decryptedURL = effectiveTempDir.appendingPathComponent("decrypted_seg_\(index).\(ext)")
                         do {
                             try HLSSegmentDecryptor.decryptFile(at: completed.fileURL, to: decryptedURL, key: keyData, iv: ivData)
                         } catch let decErr as HLSSegmentDecryptionError {
@@ -292,36 +301,28 @@ public enum HLSVODReconstructor {
                         } catch {
                             throw HLSVODReconstructionError.decryptionFailed(.fileWriteError(decryptedURL.path))
                         }
-                        let clearRes = HLSPlannedResource(
-                            order: clearResources.count,
-                            kind: .mediaSegment,
-                            url: completed.resource.url,
-                            byteRange: nil,
-                            sequenceNumber: completed.resource.sequenceNumber,
-                            duration: completed.resource.duration,
-                            encryption: .clear
-                        )
-                        clearResources.append(clearRes)
-                        clearCompleted.append(HLSCompletedResource(resource: clearRes, fileURL: decryptedURL))
+                        fileURLToUse = decryptedURL
                     } else {
-                        let clearRes = HLSPlannedResource(
-                            order: clearResources.count,
-                            kind: .mediaSegment,
-                            url: completed.resource.url,
-                            byteRange: completed.resource.byteRange,
-                            sequenceNumber: completed.resource.sequenceNumber,
-                            duration: completed.resource.duration,
-                            encryption: .clear
-                        )
-                        clearResources.append(clearRes)
-                        clearCompleted.append(HLSCompletedResource(resource: clearRes, fileURL: completed.fileURL))
+                        fileURLToUse = completed.fileURL
+                    }
+                    let clearRes = HLSPlannedResource(
+                        order: isVideo ? videoClearResources.count : audioClearResources.count,
+                        kind: .mediaSegment,
+                        url: completed.resource.url,
+                        byteRange: nil,
+                        sequenceNumber: completed.resource.sequenceNumber,
+                        duration: completed.resource.duration,
+                        encryption: .clear
+                    )
+                    if isVideo {
+                        videoClearResources.append(clearRes)
+                        videoClearFiles.append(fileURLToUse)
+                    } else {
+                        audioClearResources.append(clearRes)
+                        audioClearFiles.append(fileURLToUse)
                     }
                 }
             }
-
-            let videoClearCount = clearResources.filter { $0.order < transferPlan.resources.count }.count
-            let videoClearResources = Array(clearResources[..<videoClearCount])
-            let audioClearResources = Array(clearResources[videoClearCount...])
 
             resolvedPlan = HLSVODTransferPlan(
                 manifestURL: transferPlan.manifestURL,
@@ -331,7 +332,14 @@ public enum HLSVODReconstructor {
                 audioPlan: audioClearResources.isEmpty ? nil : audioClearResources,
                 subtitleURL: transferPlan.subtitleURL
             )
-            resolvedCompleted = clearCompleted
+            let allClearFiles = videoClearFiles + audioClearFiles
+            let allClearResources = resolvedPlan.allResources
+            guard allClearFiles.count == allClearResources.count else {
+                throw HLSVODReconstructionError.resourceCountMismatch
+            }
+            resolvedCompleted = zip(allClearResources, allClearFiles).map {
+                HLSCompletedResource(resource: $0.0, fileURL: $0.1)
+            }
         } else {
             resolvedPlan = transferPlan
             resolvedCompleted = completedResources

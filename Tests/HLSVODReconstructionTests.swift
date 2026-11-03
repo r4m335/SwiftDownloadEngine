@@ -196,6 +196,93 @@ final class HLSVODReconstructionTests: XCTestCase {
         XCTAssertEqual(plan.assemblyRequest.tracks[1].kind, .audio)
     }
 
+    func testEncryptedVideoWithSeparateAudioReconstruction() throws {
+        #if canImport(CommonCrypto)
+        let videoPlaylist = """
+        #EXTM3U
+        #EXT-X-VERSION:7
+        #EXT-X-PLAYLIST-TYPE:VOD
+        #EXT-X-KEY:METHOD=AES-128,URI="https://video.example/vod/key.bin"
+        #EXTINF:2,
+        video-1.ts
+        #EXTINF:2,
+        video-2.ts
+        #EXT-X-ENDLIST
+        """
+        let audioPlaylist = """
+        #EXTM3U
+        #EXT-X-VERSION:7
+        #EXT-X-PLAYLIST-TYPE:VOD
+        #EXTINF:2,
+        audio-1.ts
+        #EXTINF:2,
+        audio-2.ts
+        #EXT-X-ENDLIST
+        """
+        let videoManifest = try HLSManifestParser.parse(videoPlaylist, baseURL: manifestURL)
+        let audioManifest = try HLSManifestParser.parse(audioPlaylist, baseURL: manifestURL)
+        let videoPlan = try HLSTransferPlanner.makeVODPlan(from: videoManifest)
+        let audioPlan = try HLSTransferPlanner.makeVODPlan(from: audioManifest)
+
+        let combinedPlan = HLSVODTransferPlan(
+            manifestURL: videoPlan.manifestURL,
+            resources: videoPlan.resources,
+            browserRequestContext: nil,
+            estimatedTransferBytes: nil,
+            audioPlan: audioPlan.resources
+        )
+
+        // videoPlan has 3 resources (key + 2 segments), audioPlan has 2 segments -> total 5 resources
+        XCTAssertEqual(combinedPlan.allResources.count, 5)
+
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let key = Data((0..<16).map { UInt8($0 + 10) })
+        let keyFile = directory.appendingPathComponent("key.bin")
+        try key.write(to: keyFile)
+
+        let videoData1 = packet(fill: 0x11)
+        let videoData2 = packet(fill: 0x22)
+        let audioData1 = packet(fill: 0x33)
+        let audioData2 = packet(fill: 0x44)
+
+        let iv1 = HLSSegmentDecryptor.ivForSequenceNumber(combinedPlan.allResources[1].sequenceNumber ?? 0)
+        let iv2 = HLSSegmentDecryptor.ivForSequenceNumber(combinedPlan.allResources[2].sequenceNumber ?? 1)
+
+        let encVideo1 = try HLSSegmentDecryptor.encrypt(data: videoData1, key: key, iv: iv1)
+        let encVideo2 = try HLSSegmentDecryptor.encrypt(data: videoData2, key: key, iv: iv2)
+
+        let v1File = directory.appendingPathComponent("v-1.ts")
+        let v2File = directory.appendingPathComponent("v-2.ts")
+        let a1File = directory.appendingPathComponent("a-1.ts")
+        let a2File = directory.appendingPathComponent("a-2.ts")
+
+        try encVideo1.write(to: v1File)
+        try encVideo2.write(to: v2File)
+        try audioData1.write(to: a1File)
+        try audioData2.write(to: a2File)
+
+        let completed = [
+            HLSCompletedResource(resource: combinedPlan.allResources[0], fileURL: keyFile),
+            HLSCompletedResource(resource: combinedPlan.allResources[1], fileURL: v1File),
+            HLSCompletedResource(resource: combinedPlan.allResources[2], fileURL: v2File),
+            HLSCompletedResource(resource: combinedPlan.allResources[3], fileURL: a1File),
+            HLSCompletedResource(resource: combinedPlan.allResources[4], fileURL: a2File)
+        ]
+
+        let output = directory.appendingPathComponent("output.ts")
+        let result = try HLSVODReconstructor.assemble(
+            transferPlan: combinedPlan,
+            completedResources: completed,
+            destinationURL: output
+        )
+
+        XCTAssertEqual(result.container, .mpegTS)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: output.path))
+        #endif
+    }
+
     private func makeTemporaryDirectory() throws -> URL {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("hls-reconstruction-\(UUID().uuidString)", isDirectory: true)
