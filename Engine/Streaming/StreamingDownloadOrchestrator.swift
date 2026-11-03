@@ -1534,29 +1534,48 @@ public actor StreamingDownloadOrchestrator {
         let maxConcurrency = 6
         PipelineLogger.shared.log("\(pipelineTag) Step 2: Parallel segment download started (Max concurrency: \(maxConcurrency))")
 
+        // Ensure destination directory exists before preflight and transfers
+        try DownloadManagerViewModel.ensureDirectoryExistsAndWritable(destinationDirectory)
+
         // Preflight disk space verification before downloading streaming segments
         if let estimatedSize = proposal.estimatedTotalBytes, estimatedSize > 0 {
-            let homeURL = URL(fileURLWithPath: NSHomeDirectory())
             #if canImport(Darwin)
             let keys: Set<URLResourceKey> = [.volumeAvailableCapacityForImportantUsageKey, .volumeAvailableCapacityKey]
-            if let values = try? homeURL.resourceValues(forKeys: keys) {
+            if let values = try? destinationDirectory.resourceValues(forKeys: keys) {
                 let available = values.volumeAvailableCapacityForImportantUsage ?? values.volumeAvailableCapacity.map(Int64.init) ?? 0
-                if available > 0 && available < estimatedSize {
-                    throw StreamingDownloadOrchestratorError.insufficientDiskSpace(required: estimatedSize, available: available)
+                if available > 0 {
+                    if available < estimatedSize {
+                        PipelineLogger.shared.log("\(pipelineTag) Insufficient disk space for \(destinationDirectory.path): required \(estimatedSize) bytes, available \(available) bytes")
+                        throw StreamingDownloadOrchestratorError.insufficientDiskSpace(required: estimatedSize, available: available)
+                    } else {
+                        PipelineLogger.shared.log("\(pipelineTag) Disk capacity verified: \(available) bytes available (required \(estimatedSize) bytes)")
+                    }
+                } else {
+                    PipelineLogger.shared.log("\(pipelineTag) Disk capacity unavailable from volume for \(destinationDirectory.path); proceeding with transfer")
                 }
+            } else {
+                PipelineLogger.shared.log("\(pipelineTag) Disk capacity query unhandled for \(destinationDirectory.path); proceeding with transfer")
             }
             #else
             let keys: Set<URLResourceKey> = [.volumeAvailableCapacityKey]
-            if let values = try? homeURL.resourceValues(forKeys: keys) {
+            if let values = try? destinationDirectory.resourceValues(forKeys: keys) {
                 let available = values.volumeAvailableCapacity.map(Int64.init) ?? 0
-                if available > 0 && available < estimatedSize {
-                    throw StreamingDownloadOrchestratorError.insufficientDiskSpace(required: estimatedSize, available: available)
+                if available > 0 {
+                    if available < estimatedSize {
+                        PipelineLogger.shared.log("\(pipelineTag) Insufficient disk space for \(destinationDirectory.path): required \(estimatedSize) bytes, available \(available) bytes")
+                        throw StreamingDownloadOrchestratorError.insufficientDiskSpace(required: estimatedSize, available: available)
+                    } else {
+                        PipelineLogger.shared.log("\(pipelineTag) Disk capacity verified: \(available) bytes available (required \(estimatedSize) bytes)")
+                    }
+                } else {
+                    PipelineLogger.shared.log("\(pipelineTag) Disk capacity unavailable from volume for \(destinationDirectory.path); proceeding with transfer")
                 }
+            } else {
+                PipelineLogger.shared.log("\(pipelineTag) Disk capacity query unhandled for \(destinationDirectory.path); proceeding with transfer")
             }
             #endif
         }
 
-        try DownloadManagerViewModel.ensureDirectoryExistsAndWritable(destinationDirectory)
         let totalSegments = proposal.resources.count
         let parentID = proposal.manifest.kind == .hls ? hlsParentID(for: proposal) : proposal.transferID
 
@@ -1634,7 +1653,13 @@ public actor StreamingDownloadOrchestrator {
             if !fileExists, let altDir = persistedSegmentDirectory {
                 let altURL = altDir.appendingPathComponent("\(resource.identity.value).part", isDirectory: false)
                 if FileManager.default.fileExists(atPath: altURL.path) {
-                    try? FileManager.default.copyItem(at: altURL, to: destinationURL)
+                    do {
+                        try FileManager.default.copyItem(at: altURL, to: destinationURL)
+                        PipelineLogger.shared.log("[FileSystem] Recovered segment from \(altURL.path) to \(destinationURL.path)")
+                    } catch {
+                        let nsErr = error as NSError
+                        PipelineLogger.shared.log("[FileSystem] Failed to copy recovered segment from \(altURL.path) to \(destinationURL.path): \(nsErr.localizedDescription) (Domain: \(nsErr.domain), Code: \(nsErr.code))")
+                    }
                     fileExists = FileManager.default.fileExists(atPath: destinationURL.path)
                     if !fileExists {
                         destinationURL = altURL

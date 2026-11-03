@@ -31,7 +31,15 @@ extension HTTPCookie {
         let requestPath = url.path.isEmpty ? "/" : url.path
         let cookiePath = path.isEmpty ? "/" : path
         if cookiePath != "/" {
-            guard requestPath.hasPrefix(cookiePath) else { return false }
+            if requestPath != cookiePath {
+                guard requestPath.hasPrefix(cookiePath) else { return false }
+                if !cookiePath.hasSuffix("/") {
+                    let nextIndex = requestPath.index(requestPath.startIndex, offsetBy: cookiePath.count)
+                    guard nextIndex < requestPath.endIndex && requestPath[nextIndex] == "/" else {
+                        return false
+                    }
+                }
+            }
         }
 
         // Expiry matching
@@ -218,7 +226,7 @@ public enum DownloadRequestEnricher {
         var req = request
         guard let url = req.url, let host = url.host else { return req }
 
-        let effectiveSnapshot = snapshot ?? sharedSessionSnapshot.snapshot
+        let effectiveSnapshot = snapshot ?? (context != nil ? nil : sharedSessionSnapshot.snapshot)
 
         if let s = effectiveSnapshot {
             if req.value(forHTTPHeaderField: "User-Agent") == nil && !s.userAgent.isEmpty {
@@ -284,8 +292,8 @@ public enum DownloadRequestEnricher {
             }
         }
 
-        // Fallback: if Cookie header is still absent, consult HTTPCookieStorage.shared
-        if req.value(forHTTPHeaderField: "Cookie") == nil {
+        // Fallback: if Cookie header is still absent and no explicit context was provided, consult HTTPCookieStorage.shared
+        if req.value(forHTTPHeaderField: "Cookie") == nil && context == nil {
             if let cookies = HTTPCookieStorage.shared.cookies(for: url), !cookies.isEmpty {
                 let fields = HTTPCookie.requestHeaderFields(with: cookies)
                 if let cookieValue = fields["Cookie"] {

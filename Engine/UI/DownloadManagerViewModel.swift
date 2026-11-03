@@ -149,18 +149,10 @@ public enum DownloadsDirectoryManager: Sendable {
             candidates.append(docs)
         }
 
-        // 3. Fallback: Application Support/Downloads
+        // 3. Fallback: Application Support/Downloads (durable non-purgeable sandbox storage)
         if let appSupport = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first {
             candidates.append(appSupport.appendingPathComponent("SwiftDownloadEngine/Downloads", isDirectory: true))
         }
-
-        // 4. Fallback: Caches/Downloads
-        if let caches = fileManager.urls(for: .cachesDirectory, in: .userDomainMask).first {
-            candidates.append(caches.appendingPathComponent("Downloads", isDirectory: true))
-        }
-
-        // 5. Fallback: Temporary directory / Downloads
-        candidates.append(fileManager.temporaryDirectory.appendingPathComponent("1DMDownloads", isDirectory: true))
 
         var testedPaths: [String] = []
         var lastError: Swift.Error?

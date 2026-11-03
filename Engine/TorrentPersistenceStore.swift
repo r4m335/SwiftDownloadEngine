@@ -178,7 +178,7 @@ public actor TorrentPersistenceStore {
     ) throws -> TorrentQueueManifest {
         guard fileManager.fileExists(atPath: manifestFileURL.path) else {
             let initial = TorrentQueueManifest()
-            try? writeDataAtomically(try encoder.encode(initial), to: manifestFileURL, fileManager: fileManager)
+            try writeDataAtomically(try encoder.encode(initial), to: manifestFileURL, fileManager: fileManager)
             return initial
         }
 
@@ -197,7 +197,7 @@ public actor TorrentPersistenceStore {
             try? fileManager.moveItem(at: manifestFileURL, to: corruptBackupURL)
 
             let fresh = TorrentQueueManifest()
-            try? writeDataAtomically(try encoder.encode(fresh), to: manifestFileURL, fileManager: fileManager)
+            try writeDataAtomically(try encoder.encode(fresh), to: manifestFileURL, fileManager: fileManager)
             return fresh
         }
     }
@@ -206,7 +206,21 @@ public actor TorrentPersistenceStore {
         let tempURL = destinationURL.deletingLastPathComponent()
             .appendingPathComponent(".tmp.\(UUID().uuidString)", isDirectory: false)
         try data.write(to: tempURL, options: .atomic)
-        _ = try? fileManager.removeItem(at: destinationURL)
-        try fileManager.moveItem(at: tempURL, to: destinationURL)
+
+        if fileManager.fileExists(atPath: destinationURL.path) {
+            #if canImport(Darwin)
+            do {
+                _ = try fileManager.replaceItemAt(destinationURL, withItemAt: tempURL, backupItemName: nil, options: .withoutDeletingBackupItem)
+            } catch {
+                _ = try? fileManager.removeItem(at: destinationURL)
+                try fileManager.moveItem(at: tempURL, to: destinationURL)
+            }
+            #else
+            _ = try? fileManager.removeItem(at: destinationURL)
+            try fileManager.moveItem(at: tempURL, to: destinationURL)
+            #endif
+        } else {
+            try fileManager.moveItem(at: tempURL, to: destinationURL)
+        }
     }
 }

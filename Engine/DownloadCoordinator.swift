@@ -624,7 +624,7 @@ public actor DownloadCoordinator {
         let probe = HTTPRangeProbe(session: session)
         let probeConfig = HTTPRangeProbeConfiguration(
             url: newURL,
-            customHeaders: newHeaders ?? record.headers,
+            customHeaders: newHeaders ?? record.securedHeaders,
             allowsCellularAccess: record.networkPolicy.allowsCellularAccess
         )
         let probeResult = try await probe.probe(configuration: probeConfig)
@@ -1772,12 +1772,6 @@ public actor DownloadCoordinator {
         progress handler: ProgressHandler?,
         earliestBeginDate: Date? = nil
     ) async throws {
-        // Discard partially written destination file to prevent overlapping corrupted slices
-        let manager = FileManager.default
-        if manager.fileExists(atPath: request.destinationURL.path) {
-            try? manager.removeItem(at: request.destinationURL)
-        }
-
         try await runSingleStreamDownload(
             request: request,
             probeResult: probeResult,
@@ -1806,14 +1800,22 @@ public actor DownloadCoordinator {
             throw error
         }
 
-        if FileManager.default.fileExists(atPath: destinationURL.path) {
-            try? FileManager.default.removeItem(at: destinationURL)
+        let stagingURL = parentDir.appendingPathComponent(".stage-\(request.id)-\(UUID().uuidString).tmp")
+        if FileManager.default.fileExists(atPath: stagingURL.path) {
+            try? FileManager.default.removeItem(at: stagingURL)
         }
-        guard FileManager.default.createFile(atPath: destinationURL.path, contents: nil) else {
+        guard FileManager.default.createFile(atPath: stagingURL.path, contents: nil) else {
             throw CocoaError(.fileWriteUnknown)
         }
 
-        let fileHandle = try FileHandle(forWritingTo: destinationURL)
+        var publicationSucceeded = false
+        defer {
+            if !publicationSucceeded {
+                try? FileManager.default.removeItem(at: stagingURL)
+            }
+        }
+
+        let fileHandle = try FileHandle(forWritingTo: stagingURL)
         defer {
             try? fileHandle.synchronize()
             try? fileHandle.close()
@@ -2013,8 +2015,8 @@ public actor DownloadCoordinator {
 
             try fileHandle.synchronize()
 
-            // Physical file size validation on disk
-            let diskAttributes = try FileManager.default.attributesOfItem(atPath: request.destinationURL.path)
+            // Physical file size validation on disk for staging file
+            let diskAttributes = try FileManager.default.attributesOfItem(atPath: stagingURL.path)
             if let expected = expectedTotal {
                 guard let actualDiskSize = diskAttributes[.size] as? Int64, actualDiskSize == expected else {
                     let error = SegmentDownloaderError.bodyLengthMismatch(
@@ -2026,9 +2028,9 @@ public actor DownloadCoordinator {
                 }
             }
 
-            // Checksum validation (if provided)
+            // Checksum validation on staging file (if provided)
             if let expectedSHA = request.expectedSHA256, !expectedSHA.isEmpty {
-                let actualSHA = try FileHasher.sha256(for: request.destinationURL)
+                let actualSHA = try FileHasher.sha256(for: stagingURL)
                 guard actualSHA.caseInsensitiveCompare(expectedSHA) == .orderedSame else {
                     checksumOutcomes[request.id] = .mismatch(expected: expectedSHA, actual: actualSHA)
                     let error = DownloadCoordinatorError.checksumMismatch(expected: expectedSHA, actual: actualSHA)
@@ -2039,6 +2041,24 @@ public actor DownloadCoordinator {
             } else {
                 checksumOutcomes[request.id] = .notChecked
             }
+
+            // Atomically publish staged download to final destinationURL
+            if FileManager.default.fileExists(atPath: destinationURL.path) {
+                #if canImport(Darwin)
+                do {
+                    _ = try FileManager.default.replaceItemAt(destinationURL, withItemAt: stagingURL, backupItemName: nil, options: .withoutDeletingBackupItem)
+                } catch {
+                    _ = try? FileManager.default.removeItem(at: destinationURL)
+                    try FileManager.default.moveItem(at: stagingURL, to: destinationURL)
+                }
+                #else
+                _ = try? FileManager.default.removeItem(at: destinationURL)
+                try FileManager.default.moveItem(at: stagingURL, to: destinationURL)
+                #endif
+            } else {
+                try FileManager.default.moveItem(at: stagingURL, to: destinationURL)
+            }
+            publicationSucceeded = true
 
             try await persistenceStore.updateSegmentProgress(tag: request.id, segmentID: 0, completedBytes: totalWritten)
             try await persistenceStore.updateState(tag: request.id, state: .completed)

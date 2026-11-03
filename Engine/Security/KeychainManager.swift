@@ -265,13 +265,27 @@ public final class KeychainManager: @unchecked Sendable {
         defer { lock.unlock() }
 
         #if canImport(Security) && !os(Linux)
-        let prefix = "download:\(downloadId)"
+        let accountPrefix = "download:\(downloadId)"
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: serviceName
+            kSecAttrService as String: serviceName,
+            kSecMatchLimit as String: kSecMatchLimitAll,
+            kSecReturnAttributes as String: true
         ]
-        // Note: Generic password deletion for specific prefix
-        _ = SecItemDelete(query as CFDictionary)
+        var item: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &item)
+        if status == errSecSuccess, let items = item as? [[String: Any]] {
+            for it in items {
+                if let acct = it[kSecAttrAccount as String] as? String, acct.hasPrefix(accountPrefix) {
+                    let delQuery: [String: Any] = [
+                        kSecClass as String: kSecClassGenericPassword,
+                        kSecAttrService as String: serviceName,
+                        kSecAttrAccount as String: acct
+                    ]
+                    SecItemDelete(delQuery as CFDictionary)
+                }
+            }
+        }
         #else
         let prefix = "download:\(downloadId)"
         fallbackStore = fallbackStore.filter { !$0.key.hasPrefix(prefix) }

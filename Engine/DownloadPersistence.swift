@@ -216,7 +216,10 @@ public struct DownloadRecord: Codable, Equatable, Identifiable, Sendable {
         for (k, v) in headers {
             let lower = k.lowercased()
             if lower == "cookie" || lower == "authorization" || lower == "proxy-authorization" {
+                // Scope credentials by download ID for strict session/task isolation
+                KeychainManager.shared.storeGenericSecret(key: lower, account: "download:\(id)", data: Data(v.utf8))
                 if let host = originalURL.host {
+                    // Also store with host fallback for legacy queries
                     KeychainManager.shared.storeGenericSecret(key: lower, account: host, data: Data(v.utf8))
                 }
             } else {
@@ -228,6 +231,22 @@ public struct DownloadRecord: Codable, Equatable, Identifiable, Sendable {
         self.updatedAt = updatedAt
         self.segments = segments
         self.isInternalStreamingSegment = isInternalStreamingSegment
+    }
+
+    /// Reconstitutes full request headers by retrieving sensitive credentials from Keychain scoped to this download ID.
+    public var securedHeaders: [String: String] {
+        var result = headers
+        for key in ["cookie", "authorization", "proxy-authorization"] {
+            if let data = KeychainManager.shared.getGenericSecret(key: key, account: "download:\(id)"),
+               let value = String(data: data, encoding: .utf8), !value.isEmpty {
+                result[key.capitalized] = value
+            } else if let host = originalURL.host,
+                      let data = KeychainManager.shared.getGenericSecret(key: key, account: host),
+                      let value = String(data: data, encoding: .utf8), !value.isEmpty {
+                result[key.capitalized] = value
+            }
+        }
+        return result
     }
 
     enum CodingKeys: String, CodingKey {

@@ -337,34 +337,43 @@ final class HTTPRangeProbe: Sendable {
         finalURL: URL,
         mimeType: String?
     ) -> String {
+        var result = ""
+
         // Step 1: Attempt Content-Disposition extraction
-        if let disposition = contentDisposition {
-            if let parsedName = parseContentDispositionFilename(disposition), !parsedName.isEmpty {
-                return sanitizeFilename(parsedName)
+        if let disposition = contentDisposition,
+           let parsedName = parseContentDispositionFilename(disposition),
+           !parsedName.isEmpty {
+            let sanitized = sanitizeFilename(parsedName)
+            if !sanitized.isEmpty {
+                result = sanitized
             }
         }
 
         // Step 2: Fallback to URL last path component
-        var candidate = finalURL.lastPathComponent.trimmingCharacters(in: .whitespacesAndNewlines)
-        if candidate.isEmpty || candidate == "/" {
-            candidate = "download"
-        }
-
-        // Remove query parameters or percent encoding if present
-        if let decoded = candidate.removingPercentEncoding {
-            candidate = decoded
-        }
-
-        var sanitized = sanitizeFilename(candidate)
-
-        // Step 3: Append MIME extension if missing extension
-        if !sanitized.contains(".") {
-            if let mime = mimeType, let ext = fileExtension(forMimeType: mime) {
-                sanitized += ".\(ext)"
+        if result.isEmpty {
+            var candidate = finalURL.lastPathComponent.trimmingCharacters(in: .whitespacesAndNewlines)
+            if let decoded = candidate.removingPercentEncoding, !decoded.isEmpty {
+                candidate = decoded
+            }
+            let sanitized = sanitizeFilename(candidate)
+            if !sanitized.isEmpty && sanitized != "/" {
+                result = sanitized
             }
         }
 
-        return sanitized.isEmpty ? "download" : sanitized
+        // Step 3: Default fallback
+        if result.isEmpty {
+            result = "download"
+        }
+
+        // Step 4: Append MIME extension if missing extension
+        if !result.contains(".") {
+            if let mime = mimeType, let ext = fileExtension(forMimeType: mime) {
+                result += ".\(ext)"
+            }
+        }
+
+        return result
     }
 
     /// Parses RFC 6266 and RFC 5987 Content-Disposition header.
@@ -410,7 +419,14 @@ final class HTTPRangeProbe: Sendable {
 
         let components = name.components(separatedBy: invalidCharacters)
         let cleaned = components.filter { !$0.isEmpty }.joined(separator: "_")
-        return cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmed = cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        // Prevent dot-only names (e.g. ".", "..", "...") or empty names
+        let nonDotChars = trimmed.trimmingCharacters(in: CharacterSet(charactersIn: ".").union(.whitespacesAndNewlines))
+        if nonDotChars.isEmpty {
+            return ""
+        }
+        return trimmed
     }
 
     /// Maps common media and download MIME types to their standard file extensions.

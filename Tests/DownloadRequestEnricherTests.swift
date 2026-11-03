@@ -197,4 +197,80 @@ final class DownloadRequestEnricherTests: XCTestCase {
         XCTAssertEqual(snapshot.cookiesByDomain[".example.com"]?.count, 1)
         XCTAssertEqual(snapshot.cookiesByDomain["cdn.example.com"]?.count, 1)
     }
+
+    func testHTTPCookieRFC6265PathBoundaryMatching() {
+        let cookie = makeCookie(name: "sid", value: "abc", domain: "example.com", path: "/account")
+
+        // Exact match
+        XCTAssertTrue(cookie.matches(url: URL(string: "https://example.com/account")!))
+        // Trailing slash match
+        XCTAssertTrue(cookie.matches(url: URL(string: "https://example.com/account/")!))
+        // Subpath match with slash boundary
+        XCTAssertTrue(cookie.matches(url: URL(string: "https://example.com/account/settings")!))
+        XCTAssertTrue(cookie.matches(url: URL(string: "https://example.com/account/sub/path")!))
+
+        // Non-boundary prefixes MUST NOT match (RFC 6265 §5.1.4)
+        XCTAssertFalse(cookie.matches(url: URL(string: "https://example.com/accounting")!))
+        XCTAssertFalse(cookie.matches(url: URL(string: "https://example.com/account-billing")!))
+        XCTAssertFalse(cookie.matches(url: URL(string: "https://example.com/accountant")!))
+        XCTAssertFalse(cookie.matches(url: URL(string: "https://example.com/other")!))
+    }
+
+    func testEnrichIsolatesBrowserRequestContextFromSharedSnapshot() {
+        // Set up global snapshot with leaked credentials
+        let globalCookie = makeCookie(name: "leak_cookie", value: "global_secret", domain: "example.com")
+        DownloadRequestEnricher.sharedSessionSnapshot.snapshot = BrowserSessionSnapshot(
+            userAgent: "Global-Shared-UA",
+            acceptLanguage: "en-US",
+            allCookies: [globalCookie]
+        )
+
+        // Set up isolated tab context with separate cookies and User-Agent
+        let isolatedCookie = BrowserCookie(name: "tab_cookie", value: "tab_secret", domain: "example.com", path: "/")
+        let tabContext = BrowserRequestContext(
+            url: URL(string: "https://example.com/media/file.mp4")!,
+            pageURL: URL(string: "https://example.com/page")!,
+            userAgent: "Isolated-Tab-UA",
+            cookies: [isolatedCookie],
+            source: .webpageResource
+        )
+
+        let req = URLRequest(url: URL(string: "https://example.com/media/file.mp4")!)
+        let enriched = DownloadRequestEnricher.enrich(req, context: tabContext)
+
+        // Must use isolated tab User-Agent, NOT the global snapshot User-Agent
+        XCTAssertEqual(enriched.value(forHTTPHeaderField: "User-Agent"), "Isolated-Tab-UA")
+        // Must contain tab cookie, NOT global leak cookie
+        let cookieHeader = enriched.value(forHTTPHeaderField: "Cookie") ?? ""
+        XCTAssertTrue(cookieHeader.contains("tab_cookie=tab_secret"))
+        XCTAssertFalse(cookieHeader.contains("leak_cookie"))
+    }
+
+    func testFilenameSanitizationEdgeCases() {
+        // Dot-only and empty names must fall back safely
+        XCTAssertEqual(HTTPRangeProbe.sanitizeFilename("."), "")
+        XCTAssertEqual(HTTPRangeProbe.sanitizeFilename(".."), "")
+        XCTAssertEqual(HTTPRangeProbe.sanitizeFilename("..."), "")
+        XCTAssertEqual(HTTPRangeProbe.sanitizeFilename("   "), "")
+        XCTAssertEqual(HTTPRangeProbe.sanitizeFilename(":::"), "")
+
+        // Resolve filename with dot-only disposition falls back to URL component or "download"
+        let fallbackUrl = URL(string: "https://example.com/downloads/my_archive.zip")!
+        let resolved = HTTPRangeProbe.resolveFilename(contentDisposition: "filename=\"...\"", finalURL: fallbackUrl, mimeType: "application/zip")
+        XCTAssertEqual(resolved, "my_archive.zip")
+
+        // Content-Disposition with empty or invalid name and bare URL falls back to "download.<ext>"
+        let rootUrl = URL(string: "https://example.com/")!
+        let resolvedRoot = HTTPRangeProbe.resolveFilename(contentDisposition: "filename=\"???\"", finalURL: rootUrl, mimeType: "video/mp4")
+        XCTAssertEqual(resolvedRoot, "download.mp4")
+    }
+
+    func testValidatedDownloadsDirectoryExcludesVolatileStorage() throws {
+        let dir = try DownloadManagerViewModel.validatedDownloadsDirectory()
+        // Must NOT be in Caches or Temporary directory
+        XCTAssertFalse(dir.path.contains("/Caches/"))
+        XCTAssertFalse(dir.path.contains("/tmp/"))
+        XCTAssertFalse(dir.path.contains("/1DMDownloads"))
+        XCTAssertTrue(FileManager.default.isWritableFile(atPath: dir.path))
+    }
 }
