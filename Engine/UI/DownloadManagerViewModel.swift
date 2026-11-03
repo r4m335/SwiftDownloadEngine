@@ -37,6 +37,167 @@ public enum DownloadFilter: String, CaseIterable, Sendable, Identifiable {
     public var id: String { rawValue }
 }
 
+/// Defensive manager for resolving, creating, and validating the downloads directory across the application.
+public enum DownloadsDirectoryManager: Sendable {
+    public enum Error: LocalizedError, Equatable, Sendable {
+        case unwritableDirectory(path: String, underlyingError: String)
+        case directoryIsAFile(path: String)
+        case allCandidatesFailed(testedPaths: [String], lastError: String)
+
+        public var errorDescription: String? {
+            switch self {
+            case .unwritableDirectory(let path, let underlyingError):
+                return "Downloads directory at '\(path)' is not writable: \(underlyingError)"
+            case .directoryIsAFile(let path):
+                return "Downloads destination at '\(path)' already exists as a regular file, not a directory."
+            case .allCandidatesFailed(let paths, let lastError):
+                return "Failed to initialize a writable downloads directory (tested: \(paths.joined(separator: ", "))): \(lastError)"
+            }
+        }
+    }
+
+    /// Directory creation attributes ensuring standard POSIX permissions (0755) and
+    /// completeUntilFirstUserAuthentication file protection on Apple platforms so background/locked writes succeed.
+    public static var defaultDirectoryAttributes: [FileAttributeKey: Any] {
+        var attrs: [FileAttributeKey: Any] = [
+            .posixPermissions: NSNumber(value: Int16(0o755))
+        ]
+        #if canImport(Darwin)
+        attrs[.protectionKey] = FileProtectionType.completeUntilFirstUserAuthentication
+        #endif
+        return attrs
+    }
+
+    /// Verifies that a directory exists and is writable.
+    /// Checks for file-vs-directory collision, applies completeUntilFirstUserAuthentication
+    /// file protection on iOS, and runs a live write probe.
+    @discardableResult
+    public static func ensureDirectoryExistsAndWritable(
+        _ directory: URL,
+        fileManager: FileManager = .default
+    ) throws -> URL {
+        var isDirectory: ObjCBool = false
+        if fileManager.fileExists(atPath: directory.path, isDirectory: &isDirectory) {
+            guard isDirectory.boolValue else {
+                let msg = "A non-directory file already exists at downloads path: \(directory.path)"
+                PipelineLogger.shared.log("[FileSystem] Error: \(msg)")
+                throw Error.directoryIsAFile(path: directory.path)
+            }
+            #if canImport(Darwin)
+            if let attrs = try? fileManager.attributesOfItem(atPath: directory.path),
+               let protection = attrs[.protectionKey] as? FileProtectionType,
+               protection == .complete {
+                PipelineLogger.shared.log("[FileSystem] Warning: Directory at \(directory.path) has restrictive NSFileProtectionComplete. Upgrading to completeUntilFirstUserAuthentication.")
+                do {
+                    try fileManager.setAttributes(
+                        [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication],
+                        ofItemAtPath: directory.path
+                    )
+                } catch {
+                    let nsErr = error as NSError
+                    PipelineLogger.shared.log("[FileSystem] Operation: setAttributes, Path: \(directory.path), Domain: \(nsErr.domain), Code: \(nsErr.code), Description: \(nsErr.localizedDescription), UserInfo: \(nsErr.userInfo)")
+                }
+            }
+            #endif
+        } else {
+            do {
+                try fileManager.createDirectory(
+                    at: directory,
+                    withIntermediateDirectories: true,
+                    attributes: defaultDirectoryAttributes
+                )
+                PipelineLogger.shared.log("[FileSystem] Successfully created downloads directory at: \(directory.path)")
+            } catch {
+                let nsErr = error as NSError
+                let logMsg = "[FileSystem] Operation: createDirectory, Path: \(directory.path), Domain: \(nsErr.domain), Code: \(nsErr.code), Description: \(nsErr.localizedDescription), UserInfo: \(nsErr.userInfo)"
+                PipelineLogger.shared.log(logMsg)
+                throw Error.unwritableDirectory(
+                    path: directory.path,
+                    underlyingError: "\(nsErr.localizedDescription) (Domain: \(nsErr.domain), Code: \(nsErr.code))"
+                )
+            }
+        }
+
+        // Live write probe verification
+        let probeFile = directory.appendingPathComponent(".probe_\(UUID().uuidString).tmp", isDirectory: false)
+        do {
+            let probeData = Data("probe".utf8)
+            try probeData.write(to: probeFile, options: .atomic)
+            try fileManager.removeItem(at: probeFile)
+        } catch {
+            let nsErr = error as NSError
+            let logMsg = "[FileSystem] Operation: writeProbe, Path: \(probeFile.path), Domain: \(nsErr.domain), Code: \(nsErr.code), Description: \(nsErr.localizedDescription), UserInfo: \(nsErr.userInfo)"
+            PipelineLogger.shared.log(logMsg)
+            throw Error.unwritableDirectory(
+                path: directory.path,
+                underlyingError: "\(nsErr.localizedDescription) (Domain: \(nsErr.domain), Code: \(nsErr.code))"
+            )
+        }
+
+        return directory
+    }
+
+    /// Resolves and validates a writable downloads directory by checking primary and fallback sandbox locations.
+    /// Throws if no candidate directory can be created or written to.
+    public static func validatedDownloadsDirectory(fileManager: FileManager = .default) throws -> URL {
+        var candidates: [URL] = []
+
+        // 1. Primary: Documents/Downloads
+        if let docs = fileManager.urls(for: .documentDirectory, in: .userDomainMask).first {
+            candidates.append(docs.appendingPathComponent("Downloads", isDirectory: true))
+            // 2. Direct fallback: Documents directory directly
+            candidates.append(docs)
+        }
+
+        // 3. Fallback: Application Support/Downloads
+        if let appSupport = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first {
+            candidates.append(appSupport.appendingPathComponent("SwiftDownloadEngine/Downloads", isDirectory: true))
+        }
+
+        // 4. Fallback: Caches/Downloads
+        if let caches = fileManager.urls(for: .cachesDirectory, in: .userDomainMask).first {
+            candidates.append(caches.appendingPathComponent("Downloads", isDirectory: true))
+        }
+
+        // 5. Fallback: Temporary directory / Downloads
+        candidates.append(fileManager.temporaryDirectory.appendingPathComponent("1DMDownloads", isDirectory: true))
+
+        var testedPaths: [String] = []
+        var lastError: Swift.Error?
+
+        for candidate in candidates {
+            testedPaths.append(candidate.path)
+            do {
+                let validated = try ensureDirectoryExistsAndWritable(candidate, fileManager: fileManager)
+                PipelineLogger.shared.log("[FileSystem] Validated writable downloads directory: \(validated.path)")
+                return validated
+            } catch {
+                lastError = error
+                PipelineLogger.shared.log("[FileSystem] Candidate directory '\(candidate.path)' failed validation (\(error.localizedDescription)). Testing next candidate...")
+            }
+        }
+
+        let failure = Error.allCandidatesFailed(
+            testedPaths: testedPaths,
+            lastError: lastError?.localizedDescription ?? "All sandbox directory candidates failed write probe"
+        )
+        PipelineLogger.shared.log("[FileSystem] Critical: \(failure.localizedDescription)")
+        throw failure
+    }
+
+    /// Resolves the default destination downloads directory with defensive validation and fallback cascades.
+    public static func defaultDownloadsDirectory() -> URL {
+        do {
+            return try validatedDownloadsDirectory()
+        } catch {
+            let emergencyURL = FileManager.default.temporaryDirectory.appendingPathComponent("EmergencyDownloads", isDirectory: true)
+            _ = try? FileManager.default.createDirectory(at: emergencyURL, withIntermediateDirectories: true, attributes: defaultDirectoryAttributes)
+            PipelineLogger.shared.log("[FileSystem] Critical fallback: using emergency temporary directory: \(emergencyURL.path)")
+            return emergencyURL
+        }
+    }
+}
+
 /// Main-actor isolated view model bridging `DownloadEngine` and `TorrentEngine` to UI layers (SwiftUI / UIKit).
 ///
 /// Features:
@@ -132,17 +293,34 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
     private let continuedProcessingCoordinator: ContinuedProcessingTaskCoordinator
 #endif
 
-    /// Resolves the default destination downloads directory.
-    public static func defaultDownloadsDirectory() -> URL {
-        let fileManager = FileManager.default
-        let baseDir: URL
-        if let docs = fileManager.urls(for: .documentDirectory, in: .userDomainMask).first {
-            baseDir = docs.appendingPathComponent("Downloads", isDirectory: true)
-        } else {
-            baseDir = fileManager.temporaryDirectory.appendingPathComponent("1DMDownloads", isDirectory: true)
-        }
-        try? fileManager.createDirectory(at: baseDir, withIntermediateDirectories: true)
-        return baseDir
+    public typealias DownloadsDirectoryError = DownloadsDirectoryManager.Error
+
+    /// Directory creation attributes ensuring standard POSIX permissions (0755) and
+    /// completeUntilFirstUserAuthentication file protection on Apple platforms so background/locked writes succeed.
+    nonisolated public static var defaultDirectoryAttributes: [FileAttributeKey: Any] {
+        DownloadsDirectoryManager.defaultDirectoryAttributes
+    }
+
+    /// Verifies that a directory exists and is writable.
+    /// Checks for file-vs-directory collision, applies completeUntilFirstUserAuthentication
+    /// file protection on iOS, and runs a live write probe.
+    @discardableResult
+    nonisolated public static func ensureDirectoryExistsAndWritable(
+        _ directory: URL,
+        fileManager: FileManager = .default
+    ) throws -> URL {
+        try DownloadsDirectoryManager.ensureDirectoryExistsAndWritable(directory, fileManager: fileManager)
+    }
+
+    /// Resolves and validates a writable downloads directory by checking primary and fallback sandbox locations.
+    /// Throws if no candidate directory can be created or written to.
+    nonisolated public static func validatedDownloadsDirectory(fileManager: FileManager = .default) throws -> URL {
+        try DownloadsDirectoryManager.validatedDownloadsDirectory(fileManager: fileManager)
+    }
+
+    /// Resolves the default destination downloads directory with defensive validation and fallback cascades.
+    nonisolated public static func defaultDownloadsDirectory() -> URL {
+        DownloadsDirectoryManager.defaultDownloadsDirectory()
     }
 
     public init(
@@ -153,7 +331,18 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
     ) {
         self.engine = engine
         self.torrentEngine = torrentEngine
-        self.downloadsDirectoryURL = downloadsDirectory ?? Self.defaultDownloadsDirectory()
+        let resolvedDirectory: URL
+        if let custom = downloadsDirectory {
+            do {
+                resolvedDirectory = try Self.ensureDirectoryExistsAndWritable(custom)
+            } catch {
+                PipelineLogger.shared.log("[DownloadManager] Custom downloads directory '\(custom.path)' unwritable: \(error.localizedDescription). Falling back to validated default.")
+                resolvedDirectory = Self.defaultDownloadsDirectory()
+            }
+        } else {
+            resolvedDirectory = Self.defaultDownloadsDirectory()
+        }
+        self.downloadsDirectoryURL = resolvedDirectory
         self.userDefaults = userDefaults
         self.scheduleCoordinator = ScheduleCoordinator(
             engine: engine,
@@ -507,6 +696,15 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
             resolvedFilename = (!last.isEmpty && last != "/") ? last : "download_\(UUID().uuidString.prefix(8)).bin"
         }
 
+        do {
+            try Self.ensureDirectoryExistsAndWritable(downloadsDirectoryURL)
+        } catch {
+            let msg = "Cannot start download: destination directory is not writable (\(error.localizedDescription))"
+            PipelineLogger.shared.log("[DownloadManager] \(msg)")
+            self.errorMessage = msg
+            throw error
+        }
+
         let destURL = FileConflictResolver.uniqueDestinationURL(desiredFilename: resolvedFilename, directory: downloadsDirectoryURL)
         let sanitizedLimit: Int64? = (speedLimitBytesPerSecond != nil && speedLimitBytesPerSecond! > 0) ? speedLimitBytesPerSecond : nil
         let request = DownloadRequest(
@@ -657,11 +855,21 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
         }
         let normalizedMagnetURI = parsedMagnet.uri.absoluteString
 
+        let targetDir = saveDirectoryURL ?? downloadsDirectoryURL
+        do {
+            try Self.ensureDirectoryExistsAndWritable(targetDir)
+        } catch {
+            let msg = "Cannot start torrent: destination directory is not writable (\(error.localizedDescription))"
+            PipelineLogger.shared.log("[DownloadManager] \(msg)")
+            self.errorMessage = msg
+            throw error
+        }
+
         let resolvedPriority = priority ?? defaultTorrentPriority
         do {
             let task = try await te.addTorrent(
                 magnetURI: normalizedMagnetURI,
-                saveDirectoryURL: saveDirectoryURL ?? downloadsDirectoryURL,
+                saveDirectoryURL: targetDir,
                 priority: resolvedPriority
             )
             try? await te.setSeedingPreference(defaultSeedingPreference, for: task.infoHash)
@@ -698,9 +906,19 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
             }
             #endif
 
+            let targetDir = saveDirectoryURL ?? downloadsDirectoryURL
+            do {
+                try Self.ensureDirectoryExistsAndWritable(targetDir)
+            } catch {
+                let msg = "Cannot start torrent: destination directory is not writable (\(error.localizedDescription))"
+                PipelineLogger.shared.log("[DownloadManager] \(msg)")
+                self.errorMessage = msg
+                throw error
+            }
+
             let task = try await te.addTorrent(
                 fileURL: fileURL,
-                saveDirectoryURL: saveDirectoryURL ?? downloadsDirectoryURL,
+                saveDirectoryURL: targetDir,
                 priority: resolvedPriority
             )
             try? await te.setSeedingPreference(defaultSeedingPreference, for: task.infoHash)
@@ -728,11 +946,21 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
         }
 
         let resolvedPriority = priority ?? defaultTorrentPriority
+        let targetDir = saveDirectoryURL ?? downloadsDirectoryURL
+        do {
+            try Self.ensureDirectoryExistsAndWritable(targetDir)
+        } catch {
+            let msg = "Cannot start torrent: destination directory is not writable (\(error.localizedDescription))"
+            PipelineLogger.shared.log("[DownloadManager] \(msg)")
+            self.errorMessage = msg
+            throw error
+        }
+
         do {
             let task = try await te.addTorrent(
                 data: data,
                 name: name,
-                saveDirectoryURL: saveDirectoryURL ?? downloadsDirectoryURL,
+                saveDirectoryURL: targetDir,
                 priority: resolvedPriority
             )
             try? await te.setSeedingPreference(defaultSeedingPreference, for: task.infoHash)

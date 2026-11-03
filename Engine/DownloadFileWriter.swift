@@ -64,18 +64,12 @@ public actor DownloadFileWriter {
         self.destinationURL = destinationURL
         self.totalSize = totalSize
         self.mode = mode
+        let parentDir = destinationURL.deletingLastPathComponent()
         self.temporaryDirectoryURL = temporaryDirectoryURL
-            ?? destinationURL.deletingLastPathComponent()
-                .appendingPathComponent(".tmp", isDirectory: true)
+            ?? parentDir.appendingPathComponent(".tmp", isDirectory: true)
 
-        try FileManager.default.createDirectory(
-            at: destinationURL.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
-        try FileManager.default.createDirectory(
-            at: self.temporaryDirectoryURL,
-            withIntermediateDirectories: true
-        )
+        try DownloadManagerViewModel.ensureDirectoryExistsAndWritable(parentDir)
+        try DownloadManagerViewModel.ensureDirectoryExistsAndWritable(self.temporaryDirectoryURL)
 
         if mode == .directSeek {
             if !FileManager.default.fileExists(atPath: destinationURL.path) {
@@ -103,10 +97,7 @@ public actor DownloadFileWriter {
         }
 
         let parent = destinationURL.deletingLastPathComponent()
-        try FileManager.default.createDirectory(
-            at: parent,
-            withIntermediateDirectories: true
-        )
+        try DownloadManagerViewModel.ensureDirectoryExistsAndWritable(parent)
 
 #if canImport(Darwin)
         let keys: Set<URLResourceKey> = [.volumeAvailableCapacityForImportantUsageKey, .volumeAvailableCapacityKey]
@@ -257,7 +248,7 @@ public actor DownloadFileWriter {
 
         let fileManager = FileManager.default
         let parentDir = destinationURL.deletingLastPathComponent()
-        try fileManager.createDirectory(at: parentDir, withIntermediateDirectories: true)
+        try DownloadManagerViewModel.ensureDirectoryExistsAndWritable(parentDir, fileManager: fileManager)
 
         if fileManager.fileExists(atPath: destinationURL.path) {
             try fileManager.removeItem(at: destinationURL)

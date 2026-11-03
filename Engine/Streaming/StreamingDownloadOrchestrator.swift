@@ -515,7 +515,8 @@ public final class URLSessionStreamingSegmentExecutor: StreamingSegmentExecutor,
         }
 
         try? FileManager.default.removeItem(at: request.destinationURL)
-        try FileManager.default.createDirectory(at: request.destinationURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let parentDir = request.destinationURL.deletingLastPathComponent()
+        try DownloadManagerViewModel.ensureDirectoryExistsAndWritable(parentDir)
         try FileManager.default.moveItem(at: tempURL, to: request.destinationURL)
         progress?(1.0)
     }
@@ -1518,7 +1519,7 @@ public actor StreamingDownloadOrchestrator {
             #endif
         }
 
-        try FileManager.default.createDirectory(at: destinationDirectory, withIntermediateDirectories: true)
+        try DownloadManagerViewModel.ensureDirectoryExistsAndWritable(destinationDirectory)
         let totalSegments = proposal.resources.count
         let parentID = proposal.manifest.kind == .hls ? hlsParentID(for: proposal) : proposal.transferID
 

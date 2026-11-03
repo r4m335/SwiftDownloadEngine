@@ -743,4 +743,53 @@ final class DownloadManagerViewModelTests: XCTestCase {
         selectedIDs = selectedIDs.intersection(remainingSet)
         XCTAssertTrue(selectedIDs.isEmpty, "Selected IDs that no longer exist in unifiedTransfers should be pruned")
     }
+
+    // MARK: - 17. Downloads Directory Validation and Error Handling
+
+    func testEnsureDirectoryExistsAndWritableCreatesDirectoryAndSucceeds() throws {
+        let testDir = tempDirectory.appendingPathComponent("TestValidDir_\(UUID().uuidString)", isDirectory: true)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: testDir.path))
+
+        let validated = try DownloadsDirectoryManager.ensureDirectoryExistsAndWritable(testDir)
+        XCTAssertEqual(validated.path, testDir.path)
+
+        var isDir: ObjCBool = false
+        XCTAssertTrue(FileManager.default.fileExists(atPath: testDir.path, isDirectory: &isDir))
+        XCTAssertTrue(isDir.boolValue)
+
+        // Ensure probe file was cleaned up
+        let contents = try FileManager.default.contentsOfDirectory(atPath: testDir.path)
+        XCTAssertTrue(contents.filter { $0.hasPrefix(".probe_") }.isEmpty)
+    }
+
+    func testEnsureDirectoryExistsThrowsWhenBlockedByRegularFile() throws {
+        let blockingFile = tempDirectory.appendingPathComponent("BlockingFile_\(UUID().uuidString)", isDirectory: false)
+        try Data("dummy".utf8).write(to: blockingFile)
+
+        XCTAssertThrowsError(try DownloadsDirectoryManager.ensureDirectoryExistsAndWritable(blockingFile)) { error in
+            guard let dirError = error as? DownloadsDirectoryManager.Error else {
+                XCTFail("Expected DownloadsDirectoryManager.Error, got \(error)")
+                return
+            }
+            if case .directoryIsAFile(let path) = dirError {
+                XCTAssertEqual(path, blockingFile.path)
+            } else {
+                XCTFail("Expected .directoryIsAFile, got \(dirError)")
+            }
+        }
+    }
+
+    func testValidatedDownloadsDirectoryReturnsUsablePath() throws {
+        let dir = try DownloadsDirectoryManager.validatedDownloadsDirectory()
+        var isDir: ObjCBool = false
+        XCTAssertTrue(FileManager.default.fileExists(atPath: dir.path, isDirectory: &isDir))
+        XCTAssertTrue(isDir.boolValue)
+    }
+
+    func testDefaultDownloadsDirectoryNeverCrashesAndReturnsDirectory() {
+        let dir = DownloadsDirectoryManager.defaultDownloadsDirectory()
+        var isDir: ObjCBool = false
+        XCTAssertTrue(FileManager.default.fileExists(atPath: dir.path, isDirectory: &isDir))
+        XCTAssertTrue(isDir.boolValue)
+    }
 }

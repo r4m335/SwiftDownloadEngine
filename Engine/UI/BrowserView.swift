@@ -175,8 +175,8 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         }
         self.streamingOrchestrator = orchestrator
         self.streamingDestinationDirectoryURL = streamingDestinationDirectoryURL ??
-            FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first?.appendingPathComponent("Downloads", isDirectory: true) ??
-            FileManager.default.temporaryDirectory.appendingPathComponent("LIDDownloads", isDirectory: true)
+            (downloadDelegate as? DownloadManagerViewModel)?.downloadsDirectoryURL ??
+            DownloadManagerViewModel.defaultDownloadsDirectory()
         super.init()
         if let orchestrator {
             Task { await orchestrator.setURLResolver(self) }
@@ -1129,8 +1129,8 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                 let completionMessage: String
                 let tempAssemblyDir = destination
                     .appendingPathComponent(".assembly_temp_\(UUID().uuidString)", isDirectory: true)
-                try FileManager.default.createDirectory(at: tempAssemblyDir, withIntermediateDirectories: true)
-                try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+                try DownloadManagerViewModel.ensureDirectoryExistsAndWritable(destination)
+                try DownloadManagerViewModel.ensureDirectoryExistsAndWritable(tempAssemblyDir)
 
                 switch proposal.manifest {
                 case .hls(let transferPlan):

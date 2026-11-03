@@ -1103,10 +1103,14 @@ public actor DownloadCoordinator {
                 throw DownloadCoordinatorError.unexpectedSingleStreamError(reason: "Ranged resource omitted Content-Range")
             }
 
-            try FileManager.default.createDirectory(
-                at: request.destinationURL.deletingLastPathComponent(),
-                withIntermediateDirectories: true
-            )
+            let parentDir = request.destinationURL.deletingLastPathComponent()
+            do {
+                try DownloadManagerViewModel.ensureDirectoryExistsAndWritable(parentDir)
+            } catch {
+                let nsErr = error as NSError
+                PipelineLogger.shared.log("[DownloadCoordinator] Operation: createDirectory, Path: \(parentDir.path), Domain: \(nsErr.domain), Code: \(nsErr.code), Description: \(nsErr.localizedDescription), UserInfo: \(nsErr.userInfo)")
+                throw error
+            }
             try data.write(to: temporaryURL, options: .atomic)
             if FileManager.default.fileExists(atPath: request.destinationURL.path) {
                 try FileManager.default.removeItem(at: request.destinationURL)
@@ -1285,10 +1289,14 @@ public actor DownloadCoordinator {
                 throw SegmentDownloaderError.bodyLengthMismatch(expected: totalSize, actual: receivedBytes)
             }
 
-            try FileManager.default.createDirectory(
-                at: request.destinationURL.deletingLastPathComponent(),
-                withIntermediateDirectories: true
-            )
+            let parentDir = request.destinationURL.deletingLastPathComponent()
+            do {
+                try DownloadManagerViewModel.ensureDirectoryExistsAndWritable(parentDir)
+            } catch {
+                let nsErr = error as NSError
+                PipelineLogger.shared.log("[DownloadCoordinator] Operation: createDirectory, Path: \(parentDir.path), Domain: \(nsErr.domain), Code: \(nsErr.code), Description: \(nsErr.localizedDescription), UserInfo: \(nsErr.userInfo)")
+                throw error
+            }
             try data.write(to: temporaryURL, options: .atomic)
             if FileManager.default.fileExists(atPath: request.destinationURL.path) {
                 try FileManager.default.removeItem(at: request.destinationURL)
@@ -1756,7 +1764,13 @@ public actor DownloadCoordinator {
 
         let destinationURL = request.destinationURL
         let parentDir = destinationURL.deletingLastPathComponent()
-        try FileManager.default.createDirectory(at: parentDir, withIntermediateDirectories: true)
+        do {
+            try DownloadManagerViewModel.ensureDirectoryExistsAndWritable(parentDir)
+        } catch {
+            let nsErr = error as NSError
+            PipelineLogger.shared.log("[DownloadCoordinator] Operation: createDirectory, Path: \(parentDir.path), Domain: \(nsErr.domain), Code: \(nsErr.code), Description: \(nsErr.localizedDescription), UserInfo: \(nsErr.userInfo)")
+            throw error
+        }
 
         if FileManager.default.fileExists(atPath: destinationURL.path) {
             try? FileManager.default.removeItem(at: destinationURL)

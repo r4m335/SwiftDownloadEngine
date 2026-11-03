@@ -205,7 +205,11 @@ public struct SwiftDownloadEngineApp: App {
         } else {
             baseDir = DownloadManagerViewModel.defaultDownloadsDirectory().appendingPathComponent(".store", isDirectory: true)
         }
-        try? fileManager.createDirectory(at: baseDir, withIntermediateDirectories: true)
+        do {
+            try DownloadManagerViewModel.ensureDirectoryExistsAndWritable(baseDir, fileManager: fileManager)
+        } catch {
+            PipelineLogger.shared.log("[SwiftDownloadEngineApp] Storage directory setup warning: \(error.localizedDescription)")
+        }
         return baseDir
     }
 
@@ -237,7 +241,7 @@ public struct SwiftDownloadEngineApp: App {
 
         var engineInstance: DownloadEngine? = nil
         do {
-            try FileManager.default.createDirectory(at: storeDir, withIntermediateDirectories: true)
+            try DownloadManagerViewModel.ensureDirectoryExistsAndWritable(storeDir)
             engineInstance = try DownloadEngine(
                 configuration: engineConfig,
                 storageDirectoryURL: storeDir,
