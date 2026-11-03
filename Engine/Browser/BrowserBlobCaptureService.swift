@@ -716,8 +716,7 @@ public actor BlobExportWriter {
             abort(transferID: transferID, reason: "fsync/close failed")
             throw BlobExportError.writeFailure
         }
-        let stagingSize = (try? FileManager.default
-            .attributesOfItem(atPath: session.record.stagingURL.path))?[.size] as? Int64 ?? -1
+        let stagingSize = FileManager.default.fileSize(atPath: session.record.stagingURL.path) ?? -1
         guard stagingSize == session.record.bytesWritten else {
             abort(transferID: transferID, reason: "staging size \(stagingSize) != \(session.record.bytesWritten)")
             throw BlobExportError.incompleteTransfer
@@ -781,8 +780,7 @@ public actor BlobExportWriter {
                 removeRecord(for: record.transferID); continue
             }
             if FileManager.default.fileExists(atPath: record.stagingURL.path) {
-                let actualSize = (try? FileManager.default
-                    .attributesOfItem(atPath: record.stagingURL.path))?[.size] as? Int64 ?? 0
+                let actualSize = FileManager.default.fileSize(atPath: record.stagingURL.path) ?? 0
                 record.state = .failed
                 record.failureReason = "Incomplete transfer recovered at launch (staging \(actualSize) bytes)."
                 persistRecord(record)

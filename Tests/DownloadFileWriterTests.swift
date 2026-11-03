@@ -175,4 +175,20 @@ final class DownloadFileWriterTests: XCTestCase {
         XCTAssertEqual(restoredData, originalData, "Failed mergePartFiles must not destroy existing destination")
         try await writer.close()
     }
+
+    func testFileManagerFileSizeExtensionCrossPlatform() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = root.appendingPathComponent("testfile.bin")
+        let data = Data(repeating: 0x55, count: 1234)
+        try data.write(to: file)
+
+        let sizeFromPath = FileManager.default.fileSize(atPath: file.path)
+        let sizeFromURL = FileManager.default.fileSize(at: file)
+        XCTAssertEqual(sizeFromPath, 1234)
+        XCTAssertEqual(sizeFromURL, 1234)
+
+        let nonexistent = FileManager.default.fileSize(atPath: root.appendingPathComponent("missing.bin").path)
+        XCTAssertNil(nonexistent)
+    }
 }

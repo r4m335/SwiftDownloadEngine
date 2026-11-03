@@ -859,7 +859,7 @@ public actor DownloadQueueManager {
             // Reconcile completed items with physical disk file
             if item.state == .completed {
                 if FileManager.default.fileExists(atPath: item.request.destinationURL.path),
-                   let diskSize = try? FileManager.default.attributesOfItem(atPath: item.request.destinationURL.path)[.size] as? Int64,
+                   let diskSize = FileManager.default.fileSize(atPath: item.request.destinationURL.path),
                    diskSize >= 0 {
                     var updated = self.items[id] ?? item
                     if updated.completedBytes == 0 {

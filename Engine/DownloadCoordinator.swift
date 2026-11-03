@@ -1716,10 +1716,11 @@ public actor DownloadCoordinator {
 
         // 8. MANDATORY INVARIANT: Physical file validation before marking completed
         let diskAttributes = try FileManager.default.attributesOfItem(atPath: request.destinationURL.path)
-        guard let actualDiskSize = diskAttributes[.size] as? Int64, actualDiskSize == totalSize else {
+        let actualDiskSize = (diskAttributes[.size] as? NSNumber)?.int64Value ?? (diskAttributes[.size] as? Int64)
+        guard let actualDiskSize, actualDiskSize == totalSize else {
             let error = SegmentDownloaderError.bodyLengthMismatch(
                 expected: totalSize,
-                actual: (diskAttributes[.size] as? Int64) ?? -1
+                actual: actualDiskSize ?? -1
             )
             _ = try? await persistenceStore.updateState(tag: request.id, state: .failed(reason: error.localizedDescription))
             throw error
@@ -2030,10 +2031,11 @@ public actor DownloadCoordinator {
             // Physical file size validation on disk for staging file
             let diskAttributes = try FileManager.default.attributesOfItem(atPath: stagingURL.path)
             if let expected = expectedTotal {
-                guard let actualDiskSize = diskAttributes[.size] as? Int64, actualDiskSize == expected else {
+                let actualDiskSize = (diskAttributes[.size] as? NSNumber)?.int64Value ?? (diskAttributes[.size] as? Int64)
+                guard let actualDiskSize, actualDiskSize == expected else {
                     let error = SegmentDownloaderError.bodyLengthMismatch(
                         expected: expected,
-                        actual: (diskAttributes[.size] as? Int64) ?? -1
+                        actual: actualDiskSize ?? -1
                     )
                     _ = try? await persistenceStore.updateState(tag: request.id, state: .failed(reason: error.localizedDescription))
                     throw error
@@ -2641,10 +2643,11 @@ public actor DownloadCoordinator {
 
         // 4. Validate physical disk file attributes
         let diskAttributes = try FileManager.default.attributesOfItem(atPath: request.destinationURL.path)
-        guard let actualDiskSize = diskAttributes[.size] as? Int64, actualDiskSize == totalSize else {
+        let actualDiskSize = (diskAttributes[.size] as? NSNumber)?.int64Value ?? (diskAttributes[.size] as? Int64)
+        guard let actualDiskSize, actualDiskSize == totalSize else {
             let error = SegmentDownloaderError.bodyLengthMismatch(
                 expected: totalSize,
-                actual: (diskAttributes[.size] as? Int64) ?? -1
+                actual: actualDiskSize ?? -1
             )
             _ = try? await persistenceStore.updateState(tag: request.id, state: .failed(reason: error.localizedDescription))
             throw error
@@ -3075,7 +3078,7 @@ public enum FileHasher {
     public static func sha256(for url: URL, progress: (@Sendable (Double) -> Void)? = nil) throws -> String {
         let fileHandle = try FileHandle(forReadingFrom: url)
         defer { try? fileHandle.close() }
-        let totalSize: Int64 = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int64) ?? 0
+        let totalSize: Int64 = FileManager.default.fileSize(atPath: url.path) ?? 0
         var hasher = SHA256()
         let bufferSize = 256 * 1024
         var processed: Int64 = 0

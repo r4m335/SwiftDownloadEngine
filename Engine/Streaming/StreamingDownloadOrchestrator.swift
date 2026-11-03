@@ -448,7 +448,7 @@ public final class DownloadCoordinatorSegmentExecutor: StreamingSegmentExecutor,
                 PipelineLogger.shared.log("[DownloadCoordinatorSegmentExecutor] Missing output file for segment \(request.identity.order) at \(request.destinationURL.path)")
                 throw StreamingDownloadOrchestratorError.segmentTransferFailed(order: request.identity.order)
             }
-            let fileSize = (try? FileManager.default.attributesOfItem(atPath: request.destinationURL.path)[.size] as? Int64) ?? 0
+            let fileSize = FileManager.default.fileSize(atPath: request.destinationURL.path) ?? 0
             guard fileSize > 0 else {
                 PipelineLogger.shared.log("[DownloadCoordinatorSegmentExecutor] Empty output file (0 bytes) for segment \(request.identity.order)")
                 throw StreamingDownloadOrchestratorError.segmentTransferFailed(order: request.identity.order)
@@ -2045,7 +2045,7 @@ public actor StreamingDownloadOrchestrator {
             PipelineLogger.shared.log("\(pipelineTag) Segment \(resource.identity.order) destination file missing at \(destinationURL.path)")
             throw StreamingDownloadOrchestratorError.segmentTransferFailed(order: resource.identity.order)
         }
-        let segSize = (try? FileManager.default.attributesOfItem(atPath: destinationURL.path)[.size] as? Int64) ?? 0
+        let segSize = FileManager.default.fileSize(atPath: destinationURL.path) ?? 0
         guard segSize > 0 else {
             PipelineLogger.shared.log("\(pipelineTag) Segment \(resource.identity.order) destination file is empty (0 bytes) at \(destinationURL.path)")
             throw StreamingDownloadOrchestratorError.segmentTransferFailed(order: resource.identity.order)
@@ -2258,7 +2258,7 @@ public actor StreamingDownloadOrchestrator {
                 )
             }
             if let engine = self.downloadEngine {
-                let finalSize = (try? FileManager.default.attributesOfItem(atPath: assemblyOutput.destinationURL.path)[.size] as? Int64) ?? 0
+                let finalSize = FileManager.default.fileSize(atPath: assemblyOutput.destinationURL.path) ?? 0
                 _ = try await engine.completeStreamingDownload(
                     id: parentID,
                     finalFileURL: assemblyOutput.destinationURL,
@@ -2575,7 +2575,7 @@ public actor StreamingDownloadOrchestrator {
                 )
             )
             if let engine = self.downloadEngine {
-                let finalSize = (try? FileManager.default.attributesOfItem(atPath: assemblyOutput.destinationURL.path)[.size] as? Int64) ?? 0
+                let finalSize = FileManager.default.fileSize(atPath: assemblyOutput.destinationURL.path) ?? 0
                 _ = try? await engine.completeStreamingDownload(
                     id: parentID,
                     finalFileURL: assemblyOutput.destinationURL,

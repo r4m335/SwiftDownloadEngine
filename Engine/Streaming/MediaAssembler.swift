@@ -718,7 +718,7 @@ public enum MediaAssembler {
         sema.wait()
 
         if exportSession.status == .completed && FileManager.default.fileExists(atPath: outputURL.path) {
-            let size = (try? FileManager.default.attributesOfItem(atPath: outputURL.path)[.size] as? Int64) ?? 0
+            let size = FileManager.default.fileSize(atPath: outputURL.path) ?? 0
             if size > 0 {
                 PipelineLogger.shared.log("[MediaAssembler] Passthrough export succeeded as fallback: \(size) bytes")
                 return true
@@ -777,7 +777,7 @@ public enum MediaAssembler {
             }
             sema.wait()
             if exportSession.status == .completed && fileManager.fileExists(atPath: tempMP4.path) {
-                let size = (try? fileManager.attributesOfItem(atPath: tempMP4.path)[.size] as? Int64) ?? 0
+                let size = fileManager.fileSize(atPath: tempMP4.path) ?? 0
                 if size > 0 {
                     didSucceed = true
                 }
@@ -797,7 +797,7 @@ public enum MediaAssembler {
                 }
                 sema.wait()
                 if exportSession.status == .completed && fileManager.fileExists(atPath: tempMP4.path) {
-                    let size = (try? fileManager.attributesOfItem(atPath: tempMP4.path)[.size] as? Int64) ?? 0
+                    let size = fileManager.fileSize(atPath: tempMP4.path) ?? 0
                     if size > 0 {
                         didSucceed = true
                     }
@@ -866,7 +866,7 @@ public enum MediaAssembler {
                             writer.finishWriting { finishSem.signal() }
                             finishSem.wait()
                             if writer.status == .completed && fileManager.fileExists(atPath: tempMP4.path) {
-                                let size = (try? fileManager.attributesOfItem(atPath: tempMP4.path)[.size] as? Int64) ?? 0
+                                let size = fileManager.fileSize(atPath: tempMP4.path) ?? 0
                                 if size > 0 {
                                     didSucceed = true
                                 }
