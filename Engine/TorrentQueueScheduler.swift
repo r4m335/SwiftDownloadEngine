@@ -157,10 +157,11 @@ public actor TorrentQueueScheduler {
 
     /// Configures the maximum number of simultaneously active downloading torrents.
     public func setMaxConcurrentTorrents(_ limit: Int) async throws -> (promoted: [String], demoted: [String]) {
-        self.maxConcurrentTorrents = max(1, limit)
+        let newLimit = max(1, limit)
         var manifest = await persistenceStore.loadManifest()
-        manifest.maxConcurrentTorrents = self.maxConcurrentTorrents
+        manifest.maxConcurrentTorrents = newLimit
         try await persistenceStore.saveManifest(manifest)
+        self.maxConcurrentTorrents = newLimit
 
         return await pumpQueue()
     }
@@ -277,22 +278,29 @@ public actor TorrentQueueScheduler {
 
         // 2. If active exceeds max limit (e.g. limit reduced), demote excess lowest-priority items
         while activeKeys.count > maxConcurrentTorrents {
-            let demotedKey = activeKeys.removeLast()
-            if var r = records[demotedKey] {
-                r.state = .queued
-                r.updatedAt = Date()
-                do {
-                    try await persistenceStore.saveRecord(r)
-                    records[demotedKey] = r
-                    demoted.append(demotedKey)
-                } catch {
-                    PipelineLogger.shared.log("[TorrentQueueScheduler] Failed to persist demoted queued state for \(demotedKey): \(error.localizedDescription)")
-                }
+            let candidateKey = activeKeys.last!
+            guard var r = records[candidateKey] else {
+                activeKeys.removeLast()
+                continue
+            }
+            r.state = .queued
+            r.updatedAt = Date()
+            do {
+                try await persistenceStore.saveRecord(r)
+                records[candidateKey] = r
+                demoted.append(candidateKey)
+                activeKeys.removeLast()
+            } catch {
+                PipelineLogger.shared.log("[TorrentQueueScheduler] Failed to persist demoted queued state for \(candidateKey): \(error.localizedDescription)")
+                // Demotion failed on disk: record remains in its previous active state in memory and on disk.
+                // Stop demoting to prevent an infinite loop and prevent activeKeys from diverging from records.
+                break
             }
         }
 
-        // 3. If capacity allows, promote eligible queued downloads
-        let availableSlots = maxConcurrentTorrents - activeKeys.count
+        // 3. Calculate available slots strictly from actual committed active states in records
+        let currentActiveCount = records.values.filter { $0.state.isActive }.count
+        let availableSlots = max(0, maxConcurrentTorrents - currentActiveCount)
         if availableSlots > 0 {
             let eligible = records.values
                 .filter { $0.state == .queued && !$0.isExplicitlyPaused }
@@ -303,7 +311,8 @@ public actor TorrentQueueScheduler {
                     return lhs.sequenceIndex < rhs.sequenceIndex
                 }
 
-            for r in eligible.prefix(availableSlots) {
+            var slotsRemaining = availableSlots
+            for r in eligible where slotsRemaining > 0 {
                 guard !r.isExplicitlyPaused else {
                     #if DEBUG
                     print("[TorrentQueueScheduler] Invariant guard: skipping promotion of explicitly paused torrent \(r.infoHash)")
@@ -318,8 +327,10 @@ public actor TorrentQueueScheduler {
                     try await persistenceStore.saveRecord(updated)
                     records[key] = updated
                     promoted.append(key)
+                    slotsRemaining -= 1
                 } catch {
                     PipelineLogger.shared.log("[TorrentQueueScheduler] Failed to persist promoted state for \(key): \(error.localizedDescription)")
+                    break
                 }
             }
         }

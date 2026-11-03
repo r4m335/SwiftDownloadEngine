@@ -164,12 +164,24 @@ public actor TorrentPersistenceStore {
 
     // MARK: - Helper Methods
 
+    #if DEBUG
+    public var simulatedWriteError: Error?
+    public func setSimulatedWriteError(_ error: Error?) {
+        self.simulatedWriteError = error
+    }
+    #endif
+
     public func resumeDataURL(for infoHash: String) -> URL {
         let key = infoHash.lowercased()
         return resumeDataDirectoryURL.appendingPathComponent("\(key).fastresume", isDirectory: false)
     }
 
     private func writeDataAtomically(_ data: Data, to destinationURL: URL) throws {
+        #if DEBUG
+        if let error = simulatedWriteError {
+            throw error
+        }
+        #endif
         try Self.writeDataAtomically(data, to: destinationURL, fileManager: fileManager)
     }
 

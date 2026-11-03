@@ -306,28 +306,100 @@ final class TorrentQueueSchedulerTests: XCTestCase {
     }
 
     func testStartupReconciliationHandlesPersistenceFailureGracefully() async throws {
-        let hash = "aaaaabbbbbcccccdddddeeeeefffff1111122222"
-        let record = TorrentRecord(
-            infoHash: hash,
-            source: "src",
-            name: "Item",
+        // Setup 2 records:
+        // Record 1 was .downloading in the prior session.
+        // Record 2 was .queued in the prior session.
+        let hashActive = "aaaaabbbbbcccccdddddeeeeefffff1111122222"
+        let hashQueued = "bbbbbaaaaacccccdddddeeeeefffff2222233333"
+
+        let recordActive = TorrentRecord(
+            infoHash: hashActive,
+            source: "src1",
+            name: "ActiveItem",
             savePath: tempDirectoryURL,
             state: .downloading,
             priority: .normal,
             sequenceIndex: 1
         )
-        try await store.saveRecord(record)
+        let recordQueued = TorrentRecord(
+            infoHash: hashQueued,
+            source: "src2",
+            name: "QueuedItem",
+            savePath: tempDirectoryURL,
+            state: .queued,
+            priority: .high,
+            sequenceIndex: 2
+        )
+        try await store.saveRecords([recordActive, recordQueued])
 
-        // Make the directory read-only to trigger persistence failure during reconciliation
-        #if os(Linux) || canImport(Darwin)
-        try? FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: tempDirectoryURL.path)
+        // Inject simulated persistence write failure into the store
+        let simulatedError = NSError(domain: "DiskFailure", code: 28, userInfo: [NSLocalizedDescriptionKey: "No space left on device"])
+        await store.setSimulatedWriteError(simulatedError)
         defer {
-            try? FileManager.default.setAttributes([.posixPermissions: 0o777], ofItemAtPath: tempDirectoryURL.path)
+            let s = self.store!
+            Task {
+                await s.setSimulatedWriteError(nil)
+            }
         }
-        #endif
 
-        // Scheduler initialization must not crash or corrupt uncommitted in-memory state when persistence throws
+        // Initialize scheduler with maxConcurrentTorrents = 1
         let scheduler = try await TorrentQueueScheduler(persistenceStore: store, maxConcurrentTorrents: 1)
-        XCTAssertNotNil(scheduler)
+
+        // 1. The failed record must remain in its previous state in memory
+        let inMemoryActive = await scheduler.record(for: hashActive)
+        XCTAssertEqual(inMemoryActive?.state, .downloading, "Failed demotion must not commit .queued to memory if disk write failed")
+
+        // 2. Disk and memory remain consistent
+        let onDiskActive = await store.loadRecord(infoHash: hashActive)
+        XCTAssertEqual(onDiskActive?.state, .downloading, "On-disk record must remain in its previous state")
+        XCTAssertEqual(inMemoryActive?.state, onDiskActive?.state, "Memory and disk records must remain strictly consistent")
+
+        // 3. No additional torrent is promoted when capacity is full
+        let inMemoryQueued = await scheduler.record(for: hashQueued)
+        XCTAssertEqual(inMemoryQueued?.state, .queued, "Queued torrent must NOT be promoted when active capacity is already filled by un-demoted torrent")
+
+        // 4. Concurrency limit is strictly respected
+        let snapshot = await scheduler.snapshot()
+        XCTAssertEqual(snapshot.activeCount, 1, "Scheduler must not exceed maxConcurrentTorrents")
+        XCTAssertEqual(snapshot.queuedCount, 1)
+    }
+
+    func testPumpQueueDemotionFailurePreventsExceedingConcurrencyLimit() async throws {
+        let hash1 = "1111111111111111111111111111111111111111"
+        let hash2 = "2222222222222222222222222222222222222222"
+        let hash3 = "3333333333333333333333333333333333333333"
+
+        let scheduler = try await TorrentQueueScheduler(persistenceStore: store, maxConcurrentTorrents: 2)
+        _ = try await scheduler.enqueue(infoHash: hash1, source: "s1", name: "I1", savePath: tempDirectoryURL, priority: .high)
+        _ = try await scheduler.enqueue(infoHash: hash2, source: "s2", name: "I2", savePath: tempDirectoryURL, priority: .normal)
+        _ = try await scheduler.enqueue(infoHash: hash3, source: "s3", name: "I3", savePath: tempDirectoryURL, priority: .low)
+
+        // hash1 and hash2 are active (.downloading), hash3 is .queued
+        let r1 = await scheduler.record(for: hash1)
+        let r2 = await scheduler.record(for: hash2)
+        let r3 = await scheduler.record(for: hash3)
+        XCTAssertEqual(r1?.state, .downloading)
+        XCTAssertEqual(r2?.state, .downloading)
+        XCTAssertEqual(r3?.state, .queued)
+
+        // Inject simulated write error so demoting hash2 fails
+        await store.setSimulatedWriteError(NSError(domain: "DiskFailure", code: 28, userInfo: nil))
+        defer {
+            let s = self.store!
+            Task {
+                await s.setSimulatedWriteError(nil)
+            }
+        }
+
+        // Pump queue
+        let changes = await scheduler.pumpQueue()
+
+        // Since demotion could not be persisted to disk, it was NOT demoted
+        XCTAssertEqual(changes.demoted, [])
+        XCTAssertEqual(changes.promoted, [])
+        let r2After = await scheduler.record(for: hash2)
+        let r3After = await scheduler.record(for: hash3)
+        XCTAssertEqual(r2After?.state, .downloading)
+        XCTAssertEqual(r3After?.state, .queued, "Queued torrent must NOT be promoted")
     }
 }
