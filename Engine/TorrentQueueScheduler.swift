@@ -291,7 +291,7 @@ public actor TorrentQueueScheduler {
                 demoted.append(candidateKey)
                 activeKeys.removeLast()
             } catch {
-                PipelineLogger.shared.log("[TorrentQueueScheduler] Failed to persist demoted queued state for \(candidateKey): \(error.localizedDescription)")
+                print("[TorrentQueueScheduler] Failed to persist demoted queued state for \(candidateKey): \(error.localizedDescription)")
                 // Demotion failed on disk: record remains in its previous active state in memory and on disk.
                 // Stop demoting to prevent an infinite loop and prevent activeKeys from diverging from records.
                 break
@@ -329,7 +329,7 @@ public actor TorrentQueueScheduler {
                     promoted.append(key)
                     slotsRemaining -= 1
                 } catch {
-                    PipelineLogger.shared.log("[TorrentQueueScheduler] Failed to persist promoted state for \(key): \(error.localizedDescription)")
+                    print("[TorrentQueueScheduler] Failed to persist promoted state for \(key): \(error.localizedDescription)")
                     break
                 }
             }
@@ -393,7 +393,7 @@ public actor TorrentQueueScheduler {
                         try await persistenceStore.saveRecord(r)
                         records[key] = r
                     } catch {
-                        PipelineLogger.shared.log("[TorrentQueueScheduler] Failed to persist reconciled paused state for \(key): \(error.localizedDescription)")
+                        print("[TorrentQueueScheduler] Failed to persist reconciled paused state for \(key): \(error.localizedDescription)")
                     }
                 }
             } else if r.state.isActive {
@@ -403,7 +403,7 @@ public actor TorrentQueueScheduler {
                     try await persistenceStore.saveRecord(r)
                     records[key] = r
                 } catch {
-                    PipelineLogger.shared.log("[TorrentQueueScheduler] Failed to persist reconciled queued state for \(key): \(error.localizedDescription)")
+                    print("[TorrentQueueScheduler] Failed to persist reconciled queued state for \(key): \(error.localizedDescription)")
                 }
             }
         }
