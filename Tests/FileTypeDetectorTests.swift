@@ -68,6 +68,15 @@ final class FileTypeDetectorTests: XCTestCase {
         XCTAssertEqual(FileTypeDetector.detect(bytes: Data(bytes)), .mpegTS)
     }
 
+    func testMPEGTSTwoPacketBoundaryDoesNotCrash() {
+        // Exactly two 188-byte packets (376 bytes total).
+        // Must safely classify as .mpegTS via packet-size multiple heuristic without indexing out-of-bounds.
+        var bytes = [UInt8](repeating: 0x00, count: 376)
+        bytes[0]   = 0x47
+        bytes[188] = 0x47
+        XCTAssertEqual(FileTypeDetector.detect(bytes: Data(bytes)), .mpegTS)
+    }
+
     func testMPEGTSSinglePacketWithSizeMuliple() {
         // Single 188-byte packet: size is multiple of 188 → accepted.
         var bytes = [UInt8](repeating: 0x00, count: 188)

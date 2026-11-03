@@ -207,8 +207,8 @@ public enum FileTypeDetector {
 
         // ── MPEG-TS ─────────────────────────────────────────────────────────
         // 188-byte packets, first byte of each must be 0x47 (sync byte).
-        // Check three packets if available; fall back to a single-packet heuristic.
-        if b.count >= 376, b[0] == 0x47, b[188] == 0x47, b[376] == 0x47 {
+        // Check three packets if available (requiring byte 376 to exist); fall back to a single-packet heuristic.
+        if b.count > 376, b[0] == 0x47, b[188] == 0x47, b[376] == 0x47 {
             return .mpegTS
         }
         if b.count >= 188, b[0] == 0x47, fileSize % 188 == 0 {
