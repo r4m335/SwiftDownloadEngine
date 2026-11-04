@@ -1358,6 +1358,9 @@ public actor StreamingDownloadOrchestrator {
                 }
                 throw StreamingDownloadOrchestratorError.hlsPlanningFailed(error)
             } catch let error as DASHVODTransferPlanError {
+                if case .drmProtectedRepresentation = error {
+                    throw StreamingDownloadOrchestratorError.unsupportedEncryption
+                }
                 throw StreamingDownloadOrchestratorError.dashPlanningFailed(error)
             }
         }

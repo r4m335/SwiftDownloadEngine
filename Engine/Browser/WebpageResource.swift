@@ -52,13 +52,50 @@ public struct WebpageResource: Identifiable, Hashable, Sendable {
     }
 
     /// Indicates whether this resource is an internal transport stream segment or media chunk
-    /// (e.g. .ts, .m4s, video/mp2t) rather than a standalone media file or manifest.
+    /// (e.g. .ts, .m4s, video/mp2t, or fragmented DASH audio/video segments like bbb_a64k_24.m4a) rather than a standalone media file or manifest.
     public var isSegmentChunk: Bool {
         let ext = url.pathExtension.lowercased()
-        let isChunkExt = ext == "ts" || ext == "m4s"
-        let isChunkMIME = mimeType?.lowercased().contains("mp2t") == true ||
-            mimeType?.lowercased().contains("iso.segment") == true
-        return isChunkExt || isChunkMIME
+        if ext == "ts" || ext == "m4s" { return true }
+        if let mime = mimeType?.lowercased() {
+            if mime.contains("mp2t") || mime.contains("iso.segment") {
+                return true
+            }
+        }
+
+        // Segment chunks in fragmented containers (.m4a, .mp4, .m4v, .webm)
+        if ext == "m4a" || ext == "mp4" || ext == "m4v" || ext == "webm" {
+            let stem = url.deletingPathExtension().lastPathComponent.lowercased()
+            // 1. Initialization segments
+            if stem == "init" || stem.hasPrefix("init-") || stem.hasPrefix("init_") ||
+               stem.hasSuffix("-init") || stem.hasSuffix("_init") || stem.contains("_init_") {
+                return true
+            }
+            // 2. Explicit chunk/segment markers in filename
+            if stem.range(of: #"(?:^|[-_.])(?:chunk|segment|frag|fragment|part|seq|sq)[-_.]?\d+"#, options: .regularExpression) != nil {
+                return true
+            }
+            // 3. Segment parameters in query
+            if let query = url.query?.lowercased() {
+                if query.contains("range=") || query.contains("segment=") || query.contains("sq=") ||
+                   query.contains("chunk=") || query.contains("byterange=") {
+                    return true
+                }
+            }
+            // 4. Typical streaming paths (e.g. /dash/, /segments/, /fragments/) with numbered segment
+            let lowerPath = url.path.lowercased()
+            let hasStreamingPath = lowerPath.contains("/dash/") || lowerPath.contains("/segments/") ||
+                lowerPath.contains("/fragments/") || lowerPath.contains("/chunks/")
+            let hasNumberedSuffix = stem.range(of: #"[-_.]\d{1,6}$"#, options: .regularExpression) != nil
+            if hasStreamingPath && hasNumberedSuffix {
+                return true
+            }
+            // 5. Typical adaptive streaming representation naming with segment numbers
+            // e.g. bbb_a64k_24, bbb_30fps_3840x2160_1200k_1, track_audio_64k_1
+            if stem.range(of: #"[a-z0-9]+(?:k|fps|p|\d+x\d+)[-_.]\d{1,6}$"#, options: .regularExpression) != nil {
+                return true
+            }
+        }
+        return false
     }
 
     /// Identifies resources backed by active browser session memory (Blob URLs).
@@ -284,7 +321,13 @@ public struct WebpageResourceExtractor {
             return (false, "Streaming playlist manifest (\(manifestName)). Use the manifest-aware streaming workflow.")
         }
 
-        if pathExt == "ts" || pathExt == "m4s" || normalizedMIME?.contains("mp2t") == true || normalizedMIME?.contains("iso.segment") == true {
+        let isChunkExt = pathExt == "ts" || pathExt == "m4s"
+        let isChunkMIME = normalizedMIME?.contains("mp2t") == true || normalizedMIME?.contains("iso.segment") == true
+        let isDASHChunk = (pathExt == "m4a" || pathExt == "mp4" || pathExt == "m4v" || pathExt == "webm") &&
+            WebpageResourceExtractor.isSegmentFilenamePattern(url.deletingPathExtension().lastPathComponent) &&
+            (url.path.lowercased().contains("/dash/") || url.query?.lowercased().contains("range=") == true || url.query?.lowercased().contains("segment=") == true || url.deletingPathExtension().lastPathComponent.lowercased().range(of: #"[a-z0-9]+(?:k|fps|p|\d+x\d+)[-_.]\d{1,6}$"#, options: .regularExpression) != nil)
+
+        if isChunkExt || isChunkMIME || isDASHChunk {
             let chunkName = pathExt.isEmpty ? "segment" : pathExt.uppercased()
             return (false, "Streaming segment chunk (\(chunkName)). Download the playlist manifest (.m3u8 or .mpd) instead.")
         }
@@ -463,6 +506,47 @@ public struct WebpageResourceExtractor {
             }
         }
         return "blob_stream.\(extensionName)"
+    }
+
+    /// Checks if a filename stem matches typical media segment chunk patterns.
+    public static func isSegmentFilenamePattern(_ stem: String) -> Bool {
+        let lower = stem.lowercased()
+        if lower == "init" || lower.hasPrefix("init-") || lower.hasPrefix("init_") ||
+           lower.hasSuffix("-init") || lower.hasSuffix("_init") || lower.contains("_init_") {
+            return true
+        }
+        if lower.range(of: #"(?:^|[-_.])(?:chunk|segment|frag|fragment|part|seq|sq)[-_.]?\d+"#, options: .regularExpression) != nil {
+            return true
+        }
+        if lower.range(of: #"[a-z0-9]+(?:k|fps|p|\d+x\d+)[-_.]\d{1,6}$"#, options: .regularExpression) != nil {
+            return true
+        }
+        if lower.range(of: #"[-_.]\d{1,6}$"#, options: .regularExpression) != nil {
+            return true
+        }
+        return false
+    }
+
+    /// Detects sequential segment chunks across a collection of resources sharing a common base stem and host.
+    public static func detectSequentialSegmentChunks(in resources: [WebpageResource]) -> Set<String> {
+        var groups: [String: [WebpageResource]] = [:]
+        for res in resources {
+            let ext = res.url.pathExtension.lowercased()
+            guard ext == "m4a" || ext == "mp4" || ext == "m4v" || ext == "webm" || ext == "ts" || ext == "m4s" else { continue }
+            let stem = res.url.deletingPathExtension().lastPathComponent.lowercased()
+            guard let match = stem.range(of: #"[-_.]\d{1,6}$"#, options: .regularExpression) else { continue }
+            let basePrefix = String(stem[..<match.lowerBound])
+            let host = res.url.host?.lowercased() ?? ""
+            let key = "\(host)|\(res.url.deletingLastPathComponent().path)|\(basePrefix)"
+            groups[key, default: []].append(res)
+        }
+        var chunkIDs = Set<String>()
+        for (_, items) in groups where items.count >= 2 {
+            for item in items {
+                chunkIDs.insert(item.id)
+            }
+        }
+        return chunkIDs
     }
 
     private static func sanitizeTitleForFilename(_ title: String) -> String {

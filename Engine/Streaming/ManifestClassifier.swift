@@ -14,7 +14,9 @@ public enum StreamingManifestClassifier {
 
     public static let dashMIMETypes: Set<String> = [
         "application/dash+xml",
-        "video/vnd.mpeg.dash.mpd"
+        "video/vnd.mpeg.dash.mpd",
+        "audio/dash+xml",
+        "video/dash+xml"
     ]
 
     public static func classify(
@@ -141,7 +143,7 @@ public enum StreamingManifestClassifier {
             return .none
         }
         let hls = normalized.hasPrefix("#EXTM3U")
-        let dash = normalized.range(of: #"<\s*(?:[A-Za-z_][A-Za-z0-9_.-]*:)?MPD(?:\s|>)"#, options: .regularExpression) != nil
+        let dash = normalized.range(of: #"<\s*(?:[A-Za-z_][A-Za-z0-9_.-]*:)?MPD(?:\s|>)"#, options: [.regularExpression, .caseInsensitive]) != nil
         if hls && dash { return .conflict }
         if hls { return .hls }
         if dash { return .dash }

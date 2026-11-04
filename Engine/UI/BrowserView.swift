@@ -912,7 +912,8 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                 self.promptStreamingDownload(for: resource)
                 return
             }
-            if resource.isSegmentChunk {
+            let sequentialChunkIDs = WebpageResourceExtractor.detectSequentialSegmentChunks(in: self.discoveredResources)
+            if resource.isSegmentChunk || sequentialChunkIDs.contains(resource.id) {
                 self.blobCaptureErrorMessage = "This is a streaming segment chunk. Download the playlist manifest (.m3u8 or .mpd) instead."
                 return
             }
@@ -1639,7 +1640,8 @@ public final class BrowserViewModel: NSObject, ObservableObject {
             }
 
             // 2. Intercept individual streaming segment chunks
-            if resource.isSegmentChunk {
+            let sequentialChunkIDs = WebpageResourceExtractor.detectSequentialSegmentChunks(in: self.discoveredResources)
+            if resource.isSegmentChunk || sequentialChunkIDs.contains(resource.id) {
                 blobCaptureErrorMessage = "This is a streaming segment chunk. Download the playlist manifest (.m3u8 or .mpd) instead."
                 continue
             }

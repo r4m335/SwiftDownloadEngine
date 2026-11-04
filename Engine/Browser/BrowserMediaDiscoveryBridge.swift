@@ -568,8 +568,11 @@ public final class BrowserMediaDiscoveryBridge: NSObject, @unchecked Sendable {
                 lowerURL.indexOf(".m3u8") !== -1;
             var dash = /<\s*(?:[a-z_][a-z0-9_.-]*:)?mpd(?:\s|>)/i.test(text) ||
                 mime === "application/dash+xml" || mime === "video/vnd.mpeg.dash.mpd" ||
-                /(?:^|[./])mpd(?:$|[?#&;])/.test(urlPath) ||
-                lowerURL.indexOf(".mpd") !== -1;
+                mime === "audio/dash+xml" || mime === "video/dash+xml" ||
+                /(?:^|[./?=&#])mpd(?:$|[?#&;])/.test(lowerURL) ||
+                lowerURL.indexOf(".mpd") !== -1 ||
+                lowerURL.indexOf("format=mpd") !== -1 ||
+                lowerURL.indexOf("type=mpd") !== -1;
             if (hls && dash) { return "unsupported"; }
             if (hls) { return "hls"; }
             if (dash) { return "dash"; }
@@ -577,7 +580,19 @@ public final class BrowserMediaDiscoveryBridge: NSObject, @unchecked Sendable {
         }
 
         function shouldInspect(url, declaredType) {
-            return manifestKindFor(url, declaredType, null) !== null;
+            if (manifestKindFor(url, declaredType, null) !== null) { return true; }
+            var mime = declaredType ? String(declaredType).toLowerCase().split(";", 1)[0].trim() : "";
+            var lowerURL = url ? String(url).toLowerCase() : "";
+            var isPotentialManifestMime = mime === "application/xml" || mime === "text/xml" ||
+                mime === "text/plain" || mime === "application/octet-stream" ||
+                mime.indexOf("dash") !== -1 || mime.indexOf("mpegurl") !== -1;
+            var isPotentialManifestURL = lowerURL.indexOf("mpd") !== -1 ||
+                lowerURL.indexOf("m3u8") !== -1 ||
+                lowerURL.indexOf("manifest") !== -1 ||
+                lowerURL.indexOf("playlist") !== -1 ||
+                lowerURL.indexOf("/dash/") !== -1 ||
+                lowerURL.indexOf("dash") !== -1;
+            return isPotentialManifestMime && isPotentialManifestURL;
         }
 
         function headerContentLength(headers) {
@@ -952,6 +967,10 @@ public final class BrowserMediaDiscoveryBridge: NSObject, @unchecked Sendable {
                         try {
                             if ((request.responseType === "" || request.responseType === "text") && shouldInspect(reqURL, type)) {
                                 prefix = String(request.responseText || "").slice(0, MAX_INSPECTION_BYTES);
+                            } else if (request.responseType === "document" && request.responseXML && shouldInspect(reqURL, type)) {
+                                try {
+                                    prefix = new XMLSerializer().serializeToString(request.responseXML).slice(0, MAX_INSPECTION_BYTES);
+                                } catch (_) {}
                             } else if (request.responseType === "arraybuffer" && request.response instanceof ArrayBuffer && shouldInspect(reqURL, type)) {
                                 prefix = new TextDecoder().decode(new Uint8Array(request.response.slice(0, MAX_INSPECTION_BYTES)));
                             }

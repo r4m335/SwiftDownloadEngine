@@ -55,10 +55,12 @@ public struct BrowserResourceInspectorSheet: View {
 
     private var eligibleResources: [WebpageResource] {
         let hasStreamingManifest = viewModel.discoveredResources.contains(where: { $0.isStreamingManifest })
+        let sequentialChunkIDs = WebpageResourceExtractor.detectSequentialSegmentChunks(in: viewModel.discoveredResources)
         return viewModel.discoveredResources.filter { res in
-            // Discard raw .ts/.m4s chunks when an .m3u8/.mpd manifest is present or in standard media view,
+            let isChunk = res.isSegmentChunk || sequentialChunkIDs.contains(res.id)
+            // Discard raw .ts/.m4s/.m4a segment chunks when an .m3u8/.mpd manifest is present or in standard media view,
             // as they are internal segment chunks that cannot be played standalone.
-            if res.isSegmentChunk && (hasStreamingManifest || !showsAllResources) {
+            if isChunk && (hasStreamingManifest || !showsAllResources) {
                 return false
             }
             // Discard unplayable MediaSource stream buffer blobs when an .m3u8/.mpd manifest is present
@@ -327,7 +329,9 @@ public struct BrowserResourceInspectorSheet: View {
                         }
                     },
                     onDownload: {
-                        if resource.isStreamingManifest || resource.url.pathExtension.lowercased() == "m3u8" || resource.url.pathExtension.lowercased() == "mpd" {
+                        if resource.isSegmentChunk {
+                            viewModel.blobCaptureErrorMessage = "This is a streaming segment chunk. Download the playlist manifest (.m3u8 or .mpd) instead."
+                        } else if resource.isStreamingManifest || resource.url.pathExtension.lowercased() == "m3u8" || resource.url.pathExtension.lowercased() == "mpd" {
                             viewModel.promptStreamingDownload(for: resource)
                         } else {
                             viewModel.promptDownloadFromInspector(for: resource)
@@ -566,7 +570,11 @@ public struct ResourceRowView: View {
                         .cornerRadius(4)
 
                     if resource.isStreamingManifest {
-                        Text("Ready for HLS Download")
+                        let isDash = resource.url.pathExtension.lowercased() == "mpd" ||
+                            resource.mimeType?.lowercased().contains("dash") == true ||
+                            resource.manifestText?.range(of: #"<\s*(?:[A-Za-z_][A-Za-z0-9_.-]*:)?MPD(?:\s|>)"#, options: [.regularExpression, .caseInsensitive]) != nil
+                        let label = isDash ? "Ready for DASH Download" : "Ready for HLS Download"
+                        Text(label)
                             .font(.system(size: 10, weight: .bold))
                             .foregroundColor(.blue)
                             .padding(.horizontal, 6)
@@ -634,12 +642,15 @@ public struct ResourceRowView: View {
             Spacer(minLength: 8)
 
             // Actions (Preview & Download)
-            let canPreview = onPreview != nil && (resource.isStreamingManifest ||
-                resource.url.pathExtension.lowercased() == "m3u8" ||
-                resource.url.pathExtension.lowercased() == "mp4" ||
-                resource.resourceType == .video)
+            let isHLSManifest = resource.isStreamingManifest && (resource.url.pathExtension.lowercased() == "m3u8" || resource.mimeType?.lowercased().contains("mpegurl") == true)
+            let isPlayableDirectMedia = (resource.resourceType == .video || resource.resourceType == .audio) &&
+                !resource.isSegmentChunk &&
+                !isMediaSourceBlob &&
+                resource.isSupported &&
+                resource.url.pathExtension.lowercased() != "mpd"
+            let canPreview = onPreview != nil && (isHLSManifest || isPlayableDirectMedia)
             let canDownload = (resource.isSupported || resource.isStreamingManifest ||
-                resource.url.scheme?.lowercased() == "blob") && (!isMediaSourceBlob || hasManifest)
+                resource.url.scheme?.lowercased() == "blob") && (!isMediaSourceBlob || hasManifest) && !resource.isSegmentChunk
 
             HStack(spacing: 8) {
                 if canPreview {

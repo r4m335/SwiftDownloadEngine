@@ -564,6 +564,127 @@ final class BrowserMediaDiscoveryTests: XCTestCase {
         XCTAssertTrue(internalRecord.isStreamingSegment)
         XCTAssertTrue(DownloadCoordinator.isInternalStreamingSegmentID(internalRecord.id))
     }
+
+    func testDASHSegmentIdentificationDoesNotMisclassifyNormalM4A() {
+        let dashAudioSegment1 = WebpageResource(
+            url: URL(string: "https://dash.akamaized.net/akamai/bbb_30fps/bbb_a64k/bbb_a64k_24.m4a")!,
+            title: "bbb_a64k_24.m4a",
+            suggestedFilename: "bbb_a64k_24.m4a",
+            resourceType: .audio,
+            mimeType: "audio/mp4"
+        )
+        let dashAudioSegment2 = WebpageResource(
+            url: URL(string: "https://dash.akamaized.net/akamai/bbb_30fps/bbb_a64k/bbb_a64k_25.m4a")!,
+            title: "bbb_a64k_25.m4a",
+            suggestedFilename: "bbb_a64k_25.m4a",
+            resourceType: .audio,
+            mimeType: "audio/mp4"
+        )
+        let dashVideoSegment = WebpageResource(
+            url: URL(string: "https://dash.akamaized.net/akamai/bbb_30fps/bbb_30fps_3840x2160_1200k/bbb_30fps_3840x2160_1200k_1.mp4")!,
+            title: "bbb_30fps_3840x2160_1200k_1.mp4",
+            suggestedFilename: "bbb_30fps_3840x2160_1200k_1.mp4",
+            resourceType: .video,
+            mimeType: "video/mp4"
+        )
+        let initSegment = WebpageResource(
+            url: URL(string: "https://dash.akamaized.net/akamai/bbb_30fps/bbb_a64k/init.m4a")!,
+            title: "init.m4a",
+            suggestedFilename: "init.m4a",
+            resourceType: .audio
+        )
+        let normalAudio = WebpageResource(
+            url: URL(string: "https://example.com/music/song.m4a")!,
+            title: "song.m4a",
+            suggestedFilename: "song.m4a",
+            resourceType: .audio,
+            mimeType: "audio/m4a"
+        )
+        let normalPodcast = WebpageResource(
+            url: URL(string: "https://example.com/podcasts/episode_complete.m4a")!,
+            title: "episode_complete.m4a",
+            suggestedFilename: "episode_complete.m4a",
+            resourceType: .audio
+        )
+
+        // Segment chunks identified
+        XCTAssertTrue(dashAudioSegment1.isSegmentChunk)
+        XCTAssertTrue(dashAudioSegment2.isSegmentChunk)
+        XCTAssertTrue(dashVideoSegment.isSegmentChunk)
+        XCTAssertTrue(initSegment.isSegmentChunk)
+
+        // Normal audio resources preserved
+        XCTAssertFalse(normalAudio.isSegmentChunk)
+        XCTAssertFalse(normalPodcast.isSegmentChunk)
+
+        // Support evaluation rejects DASH segments
+        let dashSupport = WebpageResource.evaluateSupport(
+            for: dashAudioSegment1.url,
+            rawURL: dashAudioSegment1.url.absoluteString,
+            mimeType: "audio/mp4"
+        )
+        XCTAssertFalse(dashSupport.isSupported)
+        XCTAssertTrue(dashSupport.reason?.contains("Streaming segment chunk") ?? false)
+
+        // Support evaluation accepts normal audio files
+        let normalSupport = WebpageResource.evaluateSupport(
+            for: normalAudio.url,
+            rawURL: normalAudio.url.absoluteString,
+            mimeType: "audio/m4a"
+        )
+        XCTAssertTrue(normalSupport.isSupported)
+        XCTAssertNil(normalSupport.reason)
+    }
+
+    func testSequentialSegmentChunkDetectionAcrossResources() {
+        let chunk1 = WebpageResource(
+            url: URL(string: "https://example.com/stream/track_1.m4a")!,
+            title: "track_1.m4a",
+            suggestedFilename: "track_1.m4a",
+            resourceType: .audio
+        )
+        let chunk2 = WebpageResource(
+            url: URL(string: "https://example.com/stream/track_2.m4a")!,
+            title: "track_2.m4a",
+            suggestedFilename: "track_2.m4a",
+            resourceType: .audio
+        )
+        let independent = WebpageResource(
+            url: URL(string: "https://example.com/downloads/other.m4a")!,
+            title: "other.m4a",
+            suggestedFilename: "other.m4a",
+            resourceType: .audio
+        )
+
+        let sequentialIDs = WebpageResourceExtractor.detectSequentialSegmentChunks(in: [chunk1, chunk2, independent])
+        XCTAssertTrue(sequentialIDs.contains(chunk1.id))
+        XCTAssertTrue(sequentialIDs.contains(chunk2.id))
+        XCTAssertFalse(sequentialIDs.contains(independent.id))
+    }
+
+    func testDASHManifestReliablyClassifiedCaseInsensitiveAndXML() {
+        let lowercaseMPDContent = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <mpd xmlns="urn:mpeg:dash:schema:mpd:2011" minBufferTime="PT1.5S" type="static" mediaPresentationDuration="PT30S">
+            <Period id="0">
+            </Period>
+        </mpd>
+        """
+        let classification = StreamingManifestClassifier.classify(
+            url: URL(string: "https://example.com/video/manifest")!,
+            mimeType: "application/xml",
+            content: lowercaseMPDContent
+        )
+        XCTAssertEqual(classification.kind, .dash)
+        XCTAssertTrue(classification.isManifest)
+
+        let queryMPDClassification = StreamingManifestClassifier.classify(
+            url: URL(string: "https://example.com/manifest.mpd?auth=token123")!,
+            mimeType: "video/vnd.mpeg.dash.mpd"
+        )
+        XCTAssertEqual(queryMPDClassification.kind, .dash)
+        XCTAssertTrue(queryMPDClassification.isManifest)
+    }
 }
 
 
