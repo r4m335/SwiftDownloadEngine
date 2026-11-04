@@ -1490,9 +1490,9 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         if targetTabID == activeTabID { publishMediaCandidates() }
     }
 
-    fileprivate func ingestMediaResources(
+    public func ingestMediaResources(
         _ resources: [WebpageResource],
-        tabID: UUID?
+        tabID: UUID? = nil
     ) {
         guard let targetTabID = tabID ?? activeTabID else { return }
         var catalog = mediaCandidateCatalogs[targetTabID] ?? BrowserMediaCandidateCatalog()
@@ -1510,9 +1510,9 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         if targetTabID == activeTabID { publishMediaCandidates() }
     }
 
-    fileprivate func ingestMediaResource(
+    public func ingestMediaResource(
         _ resource: WebpageResource,
-        tabID: UUID?
+        tabID: UUID? = nil
     ) {
         ingestMediaResources([resource], tabID: tabID)
     }
