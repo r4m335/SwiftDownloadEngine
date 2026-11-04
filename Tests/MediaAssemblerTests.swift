@@ -339,6 +339,109 @@ final class MediaAssemblerTests: XCTestCase {
 #endif
     }
 
+    func testAssemblySynchronizesAndReplacesExistingDestinationDurably() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("media-assembler-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let first = directory.appendingPathComponent("first.ts")
+        let second = directory.appendingPathComponent("second.ts")
+        let output = directory.appendingPathComponent("movie.ts")
+
+        let firstBytes = mpegTSPacket(fill: 0x33)
+        let secondBytes = mpegTSPacket(fill: 0x44)
+        try firstBytes.write(to: first)
+        try secondBytes.write(to: second)
+
+        // Existing destination file to replace
+        let oldBytes = Data(repeating: 0x99, count: 500)
+        try oldBytes.write(to: output)
+
+        let request = MediaAssemblyRequest(
+            container: .mpegTS,
+            tracks: [MediaAssemblyTrack(
+                kind: .video,
+                container: .mpegTS,
+                mediaSegments: [
+                    MediaAssemblySegment(fileURL: first, order: 0, actualByteCount: 188),
+                    MediaAssemblySegment(fileURL: second, order: 1, actualByteCount: 188)
+                ]
+            )],
+            destinationURL: output
+        )
+        let result = try MediaAssembler.assemble(request)
+
+        XCTAssertEqual(result.container, .mpegTS)
+        XCTAssertEqual(result.byteCount, 376)
+        XCTAssertEqual(FileManager.default.fileSize(atPath: output.path), 376)
+        XCTAssertEqual(try Data(contentsOf: output), firstBytes + secondBytes)
+    }
+
+    func testAssemblyFailsGracefullyWhenTemporaryFileCreationFails() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("media-assembler-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let segmentFile = directory.appendingPathComponent("seg.ts")
+        try mpegTSPacket(fill: 0x55).write(to: segmentFile)
+
+        // Point temporary directory to a non-directory file so directory/file creation fails
+        let invalidTempDir = directory.appendingPathComponent("not-a-dir")
+        try Data([1, 2, 3]).write(to: invalidTempDir)
+
+        let output = directory.appendingPathComponent("movie.ts")
+        let request = MediaAssemblyRequest(
+            container: .mpegTS,
+            tracks: [MediaAssemblyTrack(
+                kind: .video,
+                container: .mpegTS,
+                mediaSegments: [MediaAssemblySegment(fileURL: segmentFile, order: 0, actualByteCount: 188)]
+            )],
+            destinationURL: output,
+            temporaryDirectoryURL: invalidTempDir
+        )
+
+        XCTAssertThrowsError(try MediaAssembler.assemble(request)) { error in
+            XCTAssertEqual(error as? MediaAssemblyError, .fileOperationFailed)
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: output.path))
+    }
+
+    func testAssemblyPreservesExistingDestinationWhenStagedOutputCorrupted() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("media-assembler-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        // Corrupted TS segment (invalid sync byte)
+        let segmentFile = directory.appendingPathComponent("bad.ts")
+        var badPacket = Data(repeating: 0x00, count: 188)
+        badPacket[0] = 0x00 // Should be 0x47
+        try badPacket.write(to: segmentFile)
+
+        let output = directory.appendingPathComponent("movie.ts")
+        let originalBytes = Data([0xAA, 0xBB, 0xCC, 0xDD])
+        try originalBytes.write(to: output)
+
+        let request = MediaAssemblyRequest(
+            container: .mpegTS,
+            tracks: [MediaAssemblyTrack(
+                kind: .video,
+                container: .mpegTS,
+                mediaSegments: [MediaAssemblySegment(fileURL: segmentFile, order: 0, actualByteCount: 188)]
+            )],
+            destinationURL: output
+        )
+
+        XCTAssertThrowsError(try MediaAssembler.assemble(request)) { error in
+            XCTAssertEqual(error as? MediaAssemblyError, .invalidMediaData(.mpegTS))
+        }
+        // Original destination must remain completely untouched
+        XCTAssertEqual(try Data(contentsOf: output), originalBytes)
+    }
+
     private func makeTrack(
         _ kind: MediaAssemblyTrackKind,
         container: MediaAssemblyContainer,

@@ -157,11 +157,11 @@ public enum MediaAssembler {
         defer { try? fileManager.removeItem(at: temporaryOutput) }
 
         do {
-            fileManager.createFile(atPath: temporaryOutput.path, contents: nil)
-            guard let output = FileHandle(forWritingAtPath: temporaryOutput.path) else {
+            guard fileManager.createFile(atPath: temporaryOutput.path, contents: nil) else {
                 throw MediaAssemblyError.fileOperationFailed
             }
-            defer { output.closeFile() }
+            let output = try FileHandle(forWritingTo: temporaryOutput)
+            defer { try? output.close() }
 
             let track = request.tracks[0]
             if let initialization = track.initializationSegment {
@@ -180,7 +180,8 @@ public enum MediaAssembler {
                     output: output
                 )
             }
-            output.synchronizeFile()
+            try output.synchronize()
+            try output.close()
         } catch let error as MediaAssemblyError {
             throw error
         } catch {
@@ -215,8 +216,7 @@ public enum MediaAssembler {
                 }
             }
 
-            let stagingAttrs = try fileManager.attributesOfItem(atPath: stagingPublishedURL.path)
-            guard let stagingBytes = (stagingAttrs[.size] as? NSNumber)?.int64Value, stagingBytes > 0 else {
+            guard let stagingBytes = fileManager.fileSize(atPath: stagingPublishedURL.path), stagingBytes > 0 else {
                 throw MediaAssemblyError.fileOperationFailed
             }
 
@@ -224,6 +224,9 @@ public enum MediaAssembler {
                 #if canImport(Darwin)
                 do {
                     _ = try fileManager.replaceItemAt(request.destinationURL, withItemAt: stagingPublishedURL, backupItemName: nil, options: [])
+                    let destHandle = try FileHandle(forWritingTo: request.destinationURL)
+                    defer { try? destHandle.close() }
+                    try destHandle.synchronize()
                 } catch {
                     // Non-destructive fallback: preserve existing destination if move fails
                     let backupURL = request.destinationURL.deletingLastPathComponent()
@@ -231,8 +234,12 @@ public enum MediaAssembler {
                     try fileManager.moveItem(at: request.destinationURL, to: backupURL)
                     do {
                         try fileManager.moveItem(at: stagingPublishedURL, to: request.destinationURL)
+                        let destHandle = try FileHandle(forWritingTo: request.destinationURL)
+                        defer { try? destHandle.close() }
+                        try destHandle.synchronize()
                         _ = try? fileManager.removeItem(at: backupURL)
                     } catch {
+                        _ = try? fileManager.removeItem(at: request.destinationURL)
                         _ = try? fileManager.moveItem(at: backupURL, to: request.destinationURL)
                         throw error
                     }
@@ -243,18 +250,29 @@ public enum MediaAssembler {
                 try fileManager.moveItem(at: request.destinationURL, to: backupURL)
                 do {
                     try fileManager.moveItem(at: stagingPublishedURL, to: request.destinationURL)
+                    let destHandle = try FileHandle(forWritingTo: request.destinationURL)
+                    defer { try? destHandle.close() }
+                    try destHandle.synchronize()
                     _ = try? fileManager.removeItem(at: backupURL)
                 } catch {
+                    _ = try? fileManager.removeItem(at: request.destinationURL)
                     _ = try? fileManager.moveItem(at: backupURL, to: request.destinationURL)
                     throw error
                 }
                 #endif
             } else {
                 try fileManager.moveItem(at: stagingPublishedURL, to: request.destinationURL)
+                do {
+                    let destHandle = try FileHandle(forWritingTo: request.destinationURL)
+                    defer { try? destHandle.close() }
+                    try destHandle.synchronize()
+                } catch {
+                    _ = try? fileManager.removeItem(at: request.destinationURL)
+                    throw error
+                }
             }
 
-            let attributes = try fileManager.attributesOfItem(atPath: request.destinationURL.path)
-            guard let byteCount = (attributes[.size] as? NSNumber)?.int64Value, byteCount > 0 else {
+            guard let byteCount = fileManager.fileSize(atPath: request.destinationURL.path), byteCount > 0 else {
                 throw MediaAssemblyError.fileOperationFailed
             }
             PipelineLogger.shared.log("[MediaAssembler] assemble completed: outputURL=\(request.destinationURL.path), byteCount=\(byteCount), pathExtension=\(request.destinationURL.pathExtension)")
@@ -330,11 +348,11 @@ public enum MediaAssembler {
 
         do {
             for (track, sourceURL) in zip(request.tracks, sourceURLs) {
-                fileManager.createFile(atPath: sourceURL.path, contents: nil)
-                guard let handle = FileHandle(forWritingAtPath: sourceURL.path) else {
+                guard fileManager.createFile(atPath: sourceURL.path, contents: nil) else {
                     throw MediaAssemblyError.fileOperationFailed
                 }
-                defer { handle.closeFile() }
+                let handle = try FileHandle(forWritingTo: sourceURL)
+                defer { try? handle.close() }
                 if let initialization = track.initializationSegment {
                     try copyValidatedSegment(
                         initialization,
@@ -351,7 +369,8 @@ public enum MediaAssembler {
                         output: handle
                     )
                 }
-                handle.synchronizeFile()
+                try handle.synchronize()
+                try handle.close()
             }
         } catch let error as MediaAssemblyError {
             throw error
@@ -604,6 +623,9 @@ public enum MediaAssembler {
                 #if canImport(Darwin)
                 do {
                     _ = try fileManager.replaceItemAt(request.destinationURL, withItemAt: temporaryOutput, backupItemName: nil, options: [])
+                    let destHandle = try FileHandle(forWritingTo: request.destinationURL)
+                    defer { try? destHandle.close() }
+                    try destHandle.synchronize()
                 } catch {
                     // Non-destructive fallback: preserve existing destination if move fails
                     let backupURL = request.destinationURL.deletingLastPathComponent()
@@ -611,8 +633,12 @@ public enum MediaAssembler {
                     try fileManager.moveItem(at: request.destinationURL, to: backupURL)
                     do {
                         try fileManager.moveItem(at: temporaryOutput, to: request.destinationURL)
+                        let destHandle = try FileHandle(forWritingTo: request.destinationURL)
+                        defer { try? destHandle.close() }
+                        try destHandle.synchronize()
                         _ = try? fileManager.removeItem(at: backupURL)
                     } catch {
+                        _ = try? fileManager.removeItem(at: request.destinationURL)
                         _ = try? fileManager.moveItem(at: backupURL, to: request.destinationURL)
                         throw error
                     }
@@ -623,14 +649,26 @@ public enum MediaAssembler {
                 try fileManager.moveItem(at: request.destinationURL, to: backupURL)
                 do {
                     try fileManager.moveItem(at: temporaryOutput, to: request.destinationURL)
+                    let destHandle = try FileHandle(forWritingTo: request.destinationURL)
+                    defer { try? destHandle.close() }
+                    try destHandle.synchronize()
                     _ = try? fileManager.removeItem(at: backupURL)
                 } catch {
+                    _ = try? fileManager.removeItem(at: request.destinationURL)
                     _ = try? fileManager.moveItem(at: backupURL, to: request.destinationURL)
                     throw error
                 }
                 #endif
             } else {
                 try fileManager.moveItem(at: temporaryOutput, to: request.destinationURL)
+                do {
+                    let destHandle = try FileHandle(forWritingTo: request.destinationURL)
+                    defer { try? destHandle.close() }
+                    try destHandle.synchronize()
+                } catch {
+                    _ = try? fileManager.removeItem(at: request.destinationURL)
+                    throw error
+                }
             }
 
             guard let byteCount = fileManager.fileSize(atPath: request.destinationURL.path), byteCount > 0 else {
@@ -1013,14 +1051,14 @@ public enum MediaAssembler {
             }
         }
 
-        guard let input = FileHandle(forReadingAtPath: segment.fileURL.path) else {
+        guard let input = try? FileHandle(forReadingFrom: segment.fileURL) else {
             throw MediaAssemblyError.fileOperationFailed
         }
-        defer { input.closeFile() }
+        defer { try? input.close() }
         while true {
-            let chunk = input.readData(ofLength: 1_048_576)
+            let chunk = try input.read(upToCount: 1_048_576) ?? Data()
             if chunk.isEmpty { break }
-            output.write(chunk)
+            try output.write(contentsOf: chunk)
         }
     }
 
@@ -1037,22 +1075,26 @@ public enum MediaAssembler {
         guard let size = FileManager.default.fileSize(atPath: url.path),
               size > 0,
               size % 188 == 0,
-              let handle = FileHandle(forReadingAtPath: url.path) else {
+              let handle = try? FileHandle(forReadingFrom: url) else {
             return false
         }
-        defer { handle.closeFile() }
+        defer { try? handle.close() }
         let packetsPerBuffer = 256
         let bufferSize = 188 * packetsPerBuffer
-        while true {
-            let chunk = handle.readData(ofLength: bufferSize)
-            if chunk.isEmpty { break }
-            guard chunk.count % 188 == 0 else { return false }
-            let packetCount = chunk.count / 188
-            for i in 0..<packetCount {
-                guard chunk[i * 188] == 0x47 else { return false }
+        do {
+            while true {
+                let chunk = try handle.read(upToCount: bufferSize) ?? Data()
+                if chunk.isEmpty { break }
+                guard chunk.count % 188 == 0 else { return false }
+                let packetCount = chunk.count / 188
+                for i in 0..<packetCount {
+                    guard chunk[i * 188] == 0x47 else { return false }
+                }
             }
+            return true
+        } catch {
+            return false
         }
-        return true
     }
 
     private static func validateISOBaseMediaFile(
@@ -1061,39 +1103,43 @@ public enum MediaAssembler {
     ) -> Bool {
         guard let fileSizeInt = FileManager.default.fileSize(atPath: url.path),
               fileSizeInt > 0,
-              let handle = FileHandle(forReadingAtPath: url.path) else {
+              let handle = try? FileHandle(forReadingFrom: url) else {
             return false
         }
-        defer { handle.closeFile() }
+        defer { try? handle.close() }
 
         let fileSize = UInt64(fileSizeInt)
 
         var offset: UInt64 = 0
         var boxes = Set<String>()
-        while offset < fileSize {
-            guard fileSize - offset >= 8 else { return false }
-            handle.seek(toFileOffset: offset)
-            let header = handle.readData(ofLength: 8)
-            guard header.count == 8 else { return false }
-            var boxSize = UInt64(header[0]) << 24 | UInt64(header[1]) << 16 |
-                UInt64(header[2]) << 8 | UInt64(header[3])
-            let type = String(bytes: header[4...7], encoding: .ascii) ?? ""
-            guard !type.isEmpty else { return false }
-            var headerSize: UInt64 = 8
-            if boxSize == 1 {
-                guard fileSize - offset >= 16 else { return false }
-                let extended = handle.readData(ofLength: 8)
-                guard extended.count == 8 else { return false }
-                boxSize = extended.reduce(UInt64(0)) { ($0 << 8) | UInt64($1) }
-                headerSize = 16
-            } else if boxSize == 0 {
-                boxSize = fileSize - offset
+        do {
+            while offset < fileSize {
+                guard fileSize - offset >= 8 else { return false }
+                try handle.seek(toOffset: offset)
+                let header = try handle.read(upToCount: 8) ?? Data()
+                guard header.count == 8 else { return false }
+                var boxSize = UInt64(header[0]) << 24 | UInt64(header[1]) << 16 |
+                    UInt64(header[2]) << 8 | UInt64(header[3])
+                let type = String(bytes: header[4...7], encoding: .ascii) ?? ""
+                guard !type.isEmpty else { return false }
+                var headerSize: UInt64 = 8
+                if boxSize == 1 {
+                    guard fileSize - offset >= 16 else { return false }
+                    let extended = try handle.read(upToCount: 8) ?? Data()
+                    guard extended.count == 8 else { return false }
+                    boxSize = extended.reduce(UInt64(0)) { ($0 << 8) | UInt64($1) }
+                    headerSize = 16
+                } else if boxSize == 0 {
+                    boxSize = fileSize - offset
+                }
+                guard boxSize >= headerSize, boxSize <= fileSize - offset else { return false }
+                boxes.insert(type)
+                offset += boxSize
             }
-            guard boxSize >= headerSize, boxSize <= fileSize - offset else { return false }
-            boxes.insert(type)
-            offset += boxSize
+            return requiredBoxes.isSubset(of: boxes)
+        } catch {
+            return false
         }
-        return requiredBoxes.isSubset(of: boxes)
     }
 }
 

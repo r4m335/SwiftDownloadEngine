@@ -449,8 +449,13 @@ final class ResourceThrottlingTests: XCTestCase {
             try await coordinator.start(req)
         }
 
-        // Let it begin receiving chunks (server delay guarantees it is mid-stream)
-        try await Task.sleep(nanoseconds: 40_000_000)
+        // Wait until transfer is actively downloading mid-stream
+        for _ in 0..<100 {
+            if let rec = try await persistenceStore.fetch(tag: req.id), rec.completedBytes > 0 && rec.state == .downloading {
+                break
+            }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
 
         // Pause download
         try await coordinator.pause(id: req.id)
