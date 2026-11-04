@@ -279,11 +279,22 @@ public struct DownloadsView: View {
                                         .foregroundColor(selectedIDs.contains(transfer.id) ? .blue : .secondary)
                                         .animation(.easeInOut(duration: 0.15), value: selectedIDs.contains(transfer.id))
                                         .transition(.scale.combined(with: .opacity))
+                                        .onTapGesture {
+                                            toggleSelection(for: transfer.id)
+                                        }
                                 }
 
                                 UnifiedTransferRowView(
                                     viewModel: viewModel,
                                     transfer: transfer,
+                                    isSelectingMultiple: isSelectingMultiple,
+                                    onTapContent: {
+                                        if isSelectingMultiple {
+                                            toggleSelection(for: transfer.id)
+                                        } else {
+                                            showTransferDetails(transfer)
+                                        }
+                                    },
                                     onOpen: { openTransferFile(transfer) },
                                     onSaveToFiles: { saveTransferToFiles(transfer) },
                                     onShare: { shareTransferFile(transfer) },
@@ -294,15 +305,6 @@ public struct DownloadsView: View {
                                     onRemoveQueue: { removeTransferFromQueue(transfer) },
                                     onDeleteFile: { promptDeleteTransferFile(transfer) }
                                 )
-                                .allowsHitTesting(!isSelectingMultiple)
-                            }
-                            .contentShape(Rectangle())
-                            .onTapGesture {
-                                if isSelectingMultiple {
-                                    toggleSelection(for: transfer.id)
-                                } else {
-                                    showTransferDetails(transfer)
-                                }
                             }
                             .onLongPressGesture(minimumDuration: 0.45) {
                                 guard !isSelectingMultiple else { return }
@@ -1054,6 +1056,8 @@ public struct DownloadMenuContent: View {
 public struct UnifiedTransferRowView: View {
     public let viewModel: DownloadManagerViewModel
     public let transfer: UnifiedTransfer
+    public var isSelectingMultiple: Bool
+    public var onTapContent: (() -> Void)?
     public let onOpen: () -> Void
     public let onSaveToFiles: () -> Void
     public let onShare: () -> Void
@@ -1067,6 +1071,8 @@ public struct UnifiedTransferRowView: View {
     public init(
         viewModel: DownloadManagerViewModel,
         transfer: UnifiedTransfer,
+        isSelectingMultiple: Bool = false,
+        onTapContent: (() -> Void)? = nil,
         onOpen: @escaping () -> Void = {},
         onSaveToFiles: @escaping () -> Void = {},
         onShare: @escaping () -> Void = {},
@@ -1079,6 +1085,8 @@ public struct UnifiedTransferRowView: View {
     ) {
         self.viewModel = viewModel
         self.transfer = transfer
+        self.isSelectingMultiple = isSelectingMultiple
+        self.onTapContent = onTapContent
         self.onOpen = onOpen
         self.onSaveToFiles = onSaveToFiles
         self.onShare = onShare
@@ -1091,24 +1099,130 @@ public struct UnifiedTransferRowView: View {
     }
 
     public var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            // Header: Name, Type Badge, Status Badge, 3-Dot Menu
-            HStack(alignment: .center, spacing: 6) {
-                Text(transfer.name)
-                    .font(.headline)
-                    .lineLimit(1)
+        HStack(alignment: .top, spacing: 6) {
+            // Tappable File Content Area (Tapping opens transfer details or toggles selection)
+            VStack(alignment: .leading, spacing: 6) {
+                // Header (excluding 3-dot menu): Name, clock icon, TypeBadge, UnifiedStatusBadge
+                HStack(alignment: .center, spacing: 6) {
+                    Text(transfer.name)
+                        .font(.headline)
+                        .lineLimit(1)
 
-                if viewModel.isScheduled(transferID: transfer.id) {
-                    Image(systemName: "clock.fill")
-                        .font(.caption2)
-                        .foregroundColor(.indigo)
+                    if viewModel.isScheduled(transferID: transfer.id) {
+                        Image(systemName: "clock.fill")
+                            .font(.caption2)
+                            .foregroundColor(.indigo)
+                    }
+
+                    Spacer()
+
+                    TypeBadge(type: transfer.type)
+                    UnifiedStatusBadge(state: transfer.state)
                 }
 
-                Spacer()
+                // Progress Bar
+                if let total = transfer.totalBytes, total > 0 {
+                    ProgressView(value: transfer.progressFraction)
+                        .progressViewStyle(LinearProgressViewStyle(tint: statusColor))
+                } else if transfer.state == .downloading {
+                    ProgressView()
+                        .progressViewStyle(LinearProgressViewStyle(tint: statusColor))
+                } else {
+                    ProgressView(value: transfer.progressFraction)
+                        .progressViewStyle(LinearProgressViewStyle(tint: statusColor))
+                }
 
-                TypeBadge(type: transfer.type)
-                UnifiedStatusBadge(state: transfer.state)
+                // Metrics: Size & Speed
+                HStack {
+                    if let total = transfer.totalBytes, total > 0 {
+                        let totalStr: String = {
+                            if transfer.isStreaming && transfer.state == .downloading {
+                                return "~\(UIFormatters.formatBytes(total)) (Estimated)"
+                            } else {
+                                return UIFormatters.formatBytes(total)
+                            }
+                        }()
+                        Text("\(UIFormatters.formatBytes(transfer.completedBytes)) / \(totalStr)")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    } else {
+                        Text("\(UIFormatters.formatBytes(transfer.completedBytes)) (Size pending)")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
 
+                    Spacer()
+
+                    if transfer.state == .downloading {
+                        if transfer.isTorrent {
+                            Text("↓ \(UIFormatters.formatSpeed(transfer.downloadSpeedBytesPerSecond))  ↑ \(UIFormatters.formatSpeed(transfer.uploadSpeedBytesPerSecond))")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        } else {
+                            Text(UIFormatters.formatSpeed(transfer.downloadSpeedBytesPerSecond))
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                    } else if transfer.state == .seeding {
+                        Text("Seeding • ↑ \(UIFormatters.formatSpeed(transfer.uploadSpeedBytesPerSecond))")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    } else {
+                        Text("\(Int(transfer.progressFraction * 100))%")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                }
+
+                // Extra metrics for torrent: Peers & Seeds
+                if transfer.isTorrent {
+                    HStack {
+                        Text("Peers: \(transfer.connectedPeers ?? 0) • Seeds: \(transfer.connectedSeeds ?? 0)")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                        if let prio = transfer.torrentPriority {
+                            Spacer()
+                            Text("Priority: \(prioLabel(prio))")
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                }
+
+                // Quick Inline Action Controls
+                HStack(spacing: 12) {
+                    if transfer.canPause {
+                        Button(action: onPause) {
+                            Label("Pause", systemImage: "pause.fill")
+                                .font(.caption2)
+                        }
+                        .buttonStyle(.bordered)
+                        .tint(.orange)
+                    } else if transfer.canResume {
+                        Button(action: onResume) {
+                            Label("Resume", systemImage: "play.fill")
+                                .font(.caption2)
+                        }
+                        .buttonStyle(.bordered)
+                        .tint(.green)
+                    } else if transfer.state == .completed {
+                        Button(action: onOpen) {
+                            Label("Open File", systemImage: "doc.text")
+                                .font(.caption2)
+                        }
+                        .buttonStyle(.bordered)
+                        .tint(.blue)
+                    }
+                }
+                .padding(.top, 2)
+            }
+            .contentShape(Rectangle())
+            .onTapGesture {
+                onTapContent?()
+            }
+
+            // Three-Dot Menu: Independent button with isolated hit area, avoiding parent tap collision
+            if !isSelectingMultiple {
                 Menu {
                     UnifiedTransferMenuContent(
                         transfer: transfer,
@@ -1128,108 +1242,12 @@ public struct UnifiedTransferRowView: View {
                     Image(systemName: "ellipsis")
                         .font(.body.weight(.bold))
                         .foregroundColor(.secondary)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 4)
+                        .frame(width: 32, height: 32)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(BorderlessButtonStyle())
+                .accessibilityLabel("Transfer actions for \(transfer.name)")
             }
-
-            // Progress Bar
-            if let total = transfer.totalBytes, total > 0 {
-                ProgressView(value: transfer.progressFraction)
-                    .progressViewStyle(LinearProgressViewStyle(tint: statusColor))
-            } else if transfer.state == .downloading {
-                ProgressView()
-                    .progressViewStyle(LinearProgressViewStyle(tint: statusColor))
-            } else {
-                ProgressView(value: transfer.progressFraction)
-                    .progressViewStyle(LinearProgressViewStyle(tint: statusColor))
-            }
-
-            // Metrics: Size & Speed
-            HStack {
-                if let total = transfer.totalBytes, total > 0 {
-                    let totalStr: String = {
-                        if transfer.isStreaming && transfer.state == .downloading {
-                            return "~\(UIFormatters.formatBytes(total)) (Estimated)"
-                        } else {
-                            return UIFormatters.formatBytes(total)
-                        }
-                    }()
-                    Text("\(UIFormatters.formatBytes(transfer.completedBytes)) / \(totalStr)")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                } else {
-                    Text("\(UIFormatters.formatBytes(transfer.completedBytes)) (Size pending)")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
-
-                Spacer()
-
-                if transfer.state == .downloading {
-                    if transfer.isTorrent {
-                        Text("↓ \(UIFormatters.formatSpeed(transfer.downloadSpeedBytesPerSecond))  ↑ \(UIFormatters.formatSpeed(transfer.uploadSpeedBytesPerSecond))")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                    } else {
-                        Text(UIFormatters.formatSpeed(transfer.downloadSpeedBytesPerSecond))
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                    }
-                } else if transfer.state == .seeding {
-                    Text("Seeding • ↑ \(UIFormatters.formatSpeed(transfer.uploadSpeedBytesPerSecond))")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                } else {
-                    Text("\(Int(transfer.progressFraction * 100))%")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
-            }
-
-            // Extra metrics for torrent: Peers & Seeds
-            if transfer.isTorrent {
-                HStack {
-                    Text("Peers: \(transfer.connectedPeers ?? 0) • Seeds: \(transfer.connectedSeeds ?? 0)")
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
-                    if let prio = transfer.torrentPriority {
-                        Spacer()
-                        Text("Priority: \(prioLabel(prio))")
-                            .font(.caption2)
-                            .foregroundColor(.secondary)
-                    }
-                }
-            }
-
-            // Quick Inline Action Controls
-            HStack(spacing: 12) {
-                if transfer.canPause {
-                    Button(action: onPause) {
-                        Label("Pause", systemImage: "pause.fill")
-                            .font(.caption2)
-                    }
-                    .buttonStyle(.bordered)
-                    .tint(.orange)
-                } else if transfer.canResume {
-                    Button(action: onResume) {
-                        Label("Resume", systemImage: "play.fill")
-                            .font(.caption2)
-                    }
-                    .buttonStyle(.bordered)
-                    .tint(.green)
-                } else if transfer.state == .completed {
-                    Button(action: onOpen) {
-                        Label("Open File", systemImage: "doc.text")
-                            .font(.caption2)
-                    }
-                    .buttonStyle(.bordered)
-                    .tint(.blue)
-                }
-            }
-            .padding(.top, 2)
         }
         .padding(.vertical, 4)
     }
@@ -1355,6 +1373,8 @@ public struct UnifiedTransferMenuContent: View {
 public struct DownloadRowView: View {
     public let viewModel: DownloadManagerViewModel
     public let download: DownloadSnapshot
+    public var isSelectingMultiple: Bool
+    public var onTapContent: (() -> Void)?
     public let onOpen: () -> Void
     public let onSaveToFiles: () -> Void
     public let onShare: () -> Void
@@ -1372,6 +1392,8 @@ public struct DownloadRowView: View {
     public init(
         viewModel: DownloadManagerViewModel,
         download: DownloadSnapshot,
+        isSelectingMultiple: Bool = false,
+        onTapContent: (() -> Void)? = nil,
         onOpen: @escaping () -> Void = {},
         onSaveToFiles: @escaping () -> Void = {},
         onShare: @escaping () -> Void = {},
@@ -1388,6 +1410,8 @@ public struct DownloadRowView: View {
     ) {
         self.viewModel = viewModel
         self.download = download
+        self.isSelectingMultiple = isSelectingMultiple
+        self.onTapContent = onTapContent
         self.onOpen = onOpen
         self.onSaveToFiles = onSaveToFiles
         self.onShare = onShare
@@ -1404,17 +1428,122 @@ public struct DownloadRowView: View {
     }
 
     public var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            // Filename, Status Badge, and Three-Dot Menu Button
-            HStack(alignment: .center, spacing: 8) {
-                Text(download.destinationURL.lastPathComponent)
-                    .font(.headline)
-                    .lineLimit(1)
+        HStack(alignment: .top, spacing: 8) {
+            // Tappable File Content Area
+            VStack(alignment: .leading, spacing: 6) {
+                // Filename and Status Badge
+                HStack(alignment: .center, spacing: 8) {
+                    Text(download.destinationURL.lastPathComponent)
+                        .font(.headline)
+                        .lineLimit(1)
 
-                Spacer()
+                    Spacer()
 
-                StatusBadge(state: download.state)
+                    StatusBadge(state: download.state)
+                }
 
+                // Progress Bar
+                ProgressView(value: download.progressFraction)
+                    .progressViewStyle(LinearProgressViewStyle(tint: statusColor))
+
+                // Metrics: Size, Progress %, Speed, ETA
+                HStack {
+                    Text("\(UIFormatters.formatBytes(download.completedBytes)) / \(download.totalBytes.map(UIFormatters.formatBytes) ?? "Unknown")")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+
+                    Spacer()
+
+                    if download.state == .downloading {
+                        Text("\(UIFormatters.formatSpeed(download.currentBytesPerSecond)) • ETA: \(UIFormatters.formatTimeInterval(download.estimatedTimeRemaining))")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    } else {
+                        Text("\(Int(download.progressFraction * 100))%")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                }
+
+                // Quick Inline Action Controls
+                HStack(spacing: 12) {
+                    if download.state == .downloading || download.state == .probing {
+                        Button {
+                            onPause()
+                        } label: {
+                            Label("Pause", systemImage: "pause.fill")
+                                .font(.caption2)
+                        }
+                        .buttonStyle(.bordered)
+                        .tint(.orange)
+                    } else if download.state == .paused {
+                        Button {
+                            onResume()
+                        } label: {
+                            Label("Resume", systemImage: "play.fill")
+                                .font(.caption2)
+                        }
+                        .buttonStyle(.bordered)
+                        .tint(.green)
+                    } else if download.state == .completed {
+                        Button {
+                            onOpen()
+                        } label: {
+                            Label("Open File", systemImage: "doc.text")
+                                .font(.caption2)
+                        }
+                        .buttonStyle(.bordered)
+                        .tint(.blue)
+                    } else if download.isFailed {
+                        if download.isNonResumable {
+                            Button {
+                                onRestart()
+                            } label: {
+                                Label("Restart", systemImage: "arrow.counterclockwise")
+                                    .font(.caption2)
+                            }
+                            .buttonStyle(.bordered)
+                            .tint(.orange)
+                        } else if download.isRateLimited {
+                            Button {
+                                onRetry()
+                            } label: {
+                                Label("Retry when eligible", systemImage: "clock.arrow.circlepath")
+                                    .font(.caption2)
+                            }
+                            .buttonStyle(.bordered)
+                            .tint(.purple)
+                        } else {
+                            Button {
+                                onResume()
+                            } label: {
+                                Label("Resume", systemImage: "play.fill")
+                                    .font(.caption2)
+                            }
+                            .buttonStyle(.bordered)
+                            .tint(.green)
+                        }
+                    }
+
+                    if !download.isTerminal {
+                        Button(role: .destructive) {
+                            onCancel()
+                        } label: {
+                            Label("Cancel", systemImage: "xmark")
+                                .font(.caption2)
+                        }
+                        .buttonStyle(.bordered)
+                    }
+                }
+                .padding(.top, 2)
+            }
+            .contentShape(Rectangle())
+            .onTapGesture {
+                onTapContent?()
+            }
+
+            // Three-Dot Menu Button: Exclusively opens menu without row gesture collision
+            if !isSelectingMultiple {
                 Menu {
                     DownloadMenuContent(
                         download: download,
@@ -1436,107 +1565,12 @@ public struct DownloadRowView: View {
                     Image(systemName: "ellipsis")
                         .font(.body.weight(.bold))
                         .foregroundColor(.secondary)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 4)
+                        .frame(width: 32, height: 32)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(BorderlessButtonStyle())
+                .accessibilityLabel("Download actions for \(download.destinationURL.lastPathComponent)")
             }
-
-            // Progress Bar
-            ProgressView(value: download.progressFraction)
-                .progressViewStyle(LinearProgressViewStyle(tint: statusColor))
-
-            // Metrics: Size, Progress %, Speed, ETA
-            HStack {
-                Text("\(UIFormatters.formatBytes(download.completedBytes)) / \(download.totalBytes.map(UIFormatters.formatBytes) ?? "Unknown")")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-
-                Spacer()
-
-                if download.state == .downloading {
-                    Text("\(UIFormatters.formatSpeed(download.currentBytesPerSecond)) • ETA: \(UIFormatters.formatTimeInterval(download.estimatedTimeRemaining))")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                } else {
-                    Text("\(Int(download.progressFraction * 100))%")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
-            }
-
-            // Quick Inline Action Controls
-            HStack(spacing: 12) {
-                if download.state == .downloading || download.state == .probing {
-                    Button {
-                        onPause()
-                    } label: {
-                        Label("Pause", systemImage: "pause.fill")
-                            .font(.caption2)
-                    }
-                    .buttonStyle(.bordered)
-                    .tint(.orange)
-                } else if download.state == .paused {
-                    Button {
-                        onResume()
-                    } label: {
-                        Label("Resume", systemImage: "play.fill")
-                            .font(.caption2)
-                    }
-                    .buttonStyle(.bordered)
-                    .tint(.green)
-                } else if download.state == .completed {
-                    Button {
-                        onOpen()
-                    } label: {
-                        Label("Open File", systemImage: "doc.text")
-                            .font(.caption2)
-                    }
-                    .buttonStyle(.bordered)
-                    .tint(.blue)
-                } else if download.isFailed {
-                    if download.isNonResumable {
-                        Button {
-                            onRestart()
-                        } label: {
-                            Label("Restart", systemImage: "arrow.counterclockwise")
-                                .font(.caption2)
-                        }
-                        .buttonStyle(.bordered)
-                        .tint(.orange)
-                    } else if download.isRateLimited {
-                        Button {
-                            onRetry()
-                        } label: {
-                            Label("Retry when eligible", systemImage: "clock.arrow.circlepath")
-                                .font(.caption2)
-                        }
-                        .buttonStyle(.bordered)
-                        .tint(.purple)
-                    } else {
-                        Button {
-                            onResume()
-                        } label: {
-                            Label("Resume", systemImage: "play.fill")
-                                .font(.caption2)
-                        }
-                        .buttonStyle(.bordered)
-                        .tint(.green)
-                    }
-                }
-
-                if !download.isTerminal {
-                    Button(role: .destructive) {
-                        onCancel()
-                    } label: {
-                        Label("Cancel", systemImage: "xmark")
-                            .font(.caption2)
-                    }
-                    .buttonStyle(.bordered)
-                }
-            }
-            .padding(.top, 2)
         }
         .padding(.vertical, 4)
     }
