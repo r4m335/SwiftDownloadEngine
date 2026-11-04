@@ -484,6 +484,107 @@ final class StreamingDownloadOrchestratorTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: segmentDirectory.path), "Entire temporary segment directory must be deleted when output is external")
     }
 
+    func testDASHExecutionCancellationPreservesRawArtifacts() async throws {
+        let url = URL(string: "https://video.example/vod/manifest.mpd")!
+        let mpd = """
+        <MPD type="static" mediaPresentationDuration="PT2S">
+          <Period duration="PT2S">
+            <AdaptationSet contentType="video" mimeType="video/mp4" codecs="avc1">
+              <Representation id="v1" bandwidth="1000">
+                <SegmentTemplate timescale="1" duration="2" initialization="init.mp4" media="segment-$Number$.m4s"/>
+              </Representation>
+            </AdaptationSet>
+          </Period>
+        </MPD>
+        """
+        let orchestrator = StreamingDownloadOrchestrator(
+            manifestLoader: RecordingManifestLoader(
+                data: Data(mpd.utf8),
+                finalURL: url,
+                mimeType: "application/dash+xml"
+            ),
+            segmentExecutor: DASHWritingSegmentExecutor()
+        )
+        let proposal = try await orchestrator.prepare(candidate: StreamingManifestCandidate(url: url))
+        let segmentDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("dash-cancel-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: segmentDirectory) }
+        let output = segmentDirectory.appendingPathComponent("assembled.mp4")
+
+        // Cancel the transfer before assembly
+        await orchestrator.cancel(transferID: proposal.transferID)
+
+        do {
+            _ = try await orchestrator.executeAndAssembleDASH(
+                proposal,
+                approved: true,
+                destinationDirectory: segmentDirectory,
+                outputURL: output
+            )
+            XCTFail("Cancelled DASH download must throw StreamingDownloadOrchestratorError.cancelled")
+        } catch let error as StreamingDownloadOrchestratorError {
+            XCTAssertEqual(error, .cancelled)
+        } catch {
+            XCTFail("Expected StreamingDownloadOrchestratorError.cancelled, got \(error)")
+        }
+
+        // Verify that raw artifacts were preserved and not deleted
+        let remainingParts = (try? FileManager.default.contentsOfDirectory(atPath: segmentDirectory.path))?
+            .filter { $0.hasSuffix(".part") } ?? []
+        XCTAssertFalse(remainingParts.isEmpty, "Raw segment artifacts must be preserved when DASH execution is cancelled: \(remainingParts)")
+    }
+
+    func testDASHExecutionAssemblyFailurePreservesRawArtifactsForRecovery() async throws {
+        let url = URL(string: "https://video.example/vod/manifest.mpd")!
+        let mpd = """
+        <MPD type="static" mediaPresentationDuration="PT2S">
+          <Period duration="PT2S">
+            <AdaptationSet contentType="video" mimeType="video/mp4" codecs="avc1">
+              <Representation id="v1" bandwidth="1000">
+                <SegmentTemplate timescale="1" duration="2" initialization="init.mp4" media="segment-$Number$.m4s"/>
+              </Representation>
+            </AdaptationSet>
+          </Period>
+        </MPD>
+        """
+        let orchestrator = StreamingDownloadOrchestrator(
+            manifestLoader: RecordingManifestLoader(
+                data: Data(mpd.utf8),
+                finalURL: url,
+                mimeType: "application/dash+xml"
+            ),
+            segmentExecutor: CorruptedDASHWritingSegmentExecutor()
+        )
+        let proposal = try await orchestrator.prepare(candidate: StreamingManifestCandidate(url: url))
+        let segmentDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("dash-fail-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: segmentDirectory) }
+        let output = segmentDirectory.appendingPathComponent("assembled.mp4")
+
+        do {
+            _ = try await orchestrator.executeAndAssembleDASH(
+                proposal,
+                approved: true,
+                destinationDirectory: segmentDirectory,
+                outputURL: output
+            )
+            XCTFail("Corrupted DASH assembly must throw dashReconstructionFailed")
+        } catch let error as StreamingDownloadOrchestratorError {
+            if case .dashReconstructionFailed = error {
+                // Expected
+            } else {
+                XCTFail("Expected .dashReconstructionFailed, got: \(error)")
+            }
+        } catch {
+            XCTFail("Expected StreamingDownloadOrchestratorError, got: \(error)")
+        }
+
+        // Verify raw artifacts were preserved for recovery
+        let remainingParts = (try? FileManager.default.contentsOfDirectory(atPath: segmentDirectory.path))?
+            .filter { $0.hasSuffix(".part") } ?? []
+        XCTAssertFalse(remainingParts.isEmpty, "Raw segment artifacts must be preserved on assembly failure for recovery")
+    }
+
     func testStreamingDownloadOrchestrator_UsesURLResolverWhenAvailable() async throws {
         final class MockURLResolver: BrowserMediaURLResolver {
             @MainActor
@@ -1833,4 +1934,21 @@ private actor DASHWritingSegmentExecutor: StreamingSegmentExecutor {
         data.append(payload)
         return data
     }
+}
+
+private actor CorruptedDASHWritingSegmentExecutor: StreamingSegmentExecutor {
+    func execute(
+        _ request: StreamingSegmentTransferRequest,
+        progress: (@Sendable (Double) -> Void)?
+    ) async throws {
+        try FileManager.default.createDirectory(
+            at: request.destinationURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        let bytes = Data([0xDE, 0xAD, 0xBE, 0xEF])
+        try bytes.write(to: request.destinationURL)
+        progress?(1)
+    }
+
+    func cancel(transferID: String) async {}
 }

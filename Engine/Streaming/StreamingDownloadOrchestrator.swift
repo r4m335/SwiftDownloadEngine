@@ -2545,24 +2545,56 @@ public actor StreamingDownloadOrchestrator {
 
         if let engine = self.downloadEngine {
             let estimated = proposal.estimatedTransferBytes ?? (Int64(proposal.resources.count) * 1_000_000)
-            _ = try? await engine.registerStreamingDownload(
-                id: parentID,
-                manifestURL: originalSourceURL,
-                destinationURL: finalOutputURL,
-                filename: finalOutputURL.lastPathComponent,
-                totalBytes: estimated,
-                mimeType: "video/mp4"
-            )
-            PipelineLogger.shared.log("[DASH Pipeline] Active stream registered with DownloadEngine: \(parentID)")
+            do {
+                _ = try await engine.registerStreamingDownload(
+                    id: parentID,
+                    manifestURL: originalSourceURL,
+                    destinationURL: finalOutputURL,
+                    filename: finalOutputURL.lastPathComponent,
+                    totalBytes: estimated,
+                    mimeType: "video/mp4"
+                )
+                PipelineLogger.shared.log("[DASH Pipeline] Active stream registered with DownloadEngine: \(parentID)")
+            } catch {
+                PipelineLogger.shared.log("[DASH Pipeline] Failed to register stream \(parentID): \(error.localizedDescription)")
+                throw error
+            }
         }
 
-        let result = try await execute(
-            proposal,
-            approved: approved,
-            destinationDirectory: destinationDirectory,
-            progress: progress
-        )
-        try Task.checkCancellation()
+        let result: StreamingTransferResult
+        do {
+            result = try await execute(
+                proposal,
+                approved: approved,
+                destinationDirectory: destinationDirectory,
+                progress: progress
+            )
+            try Task.checkCancellation()
+            if isCancelled(transferID: parentID) {
+                throw StreamingDownloadOrchestratorError.cancelled
+            }
+        } catch {
+            let isCancelled = self.cancelledTransfers.contains(parentID) ||
+                              self.cancelledTransfers.contains(proposal.transferID) ||
+                              Task.isCancelled ||
+                              (error as? URLError)?.code == .cancelled ||
+                              (error as? StreamingDownloadOrchestratorError) == .cancelled ||
+                              error is CancellationError
+            if isCancelled {
+                await segmentExecutor.cancel(transferID: parentID)
+                await cleanupHLSChildRecords(proposal: proposal)
+                if let engine = self.downloadEngine {
+                    try? await engine.cancelDownload(id: parentID)
+                }
+                throw StreamingDownloadOrchestratorError.cancelled
+            }
+            if let engine = self.downloadEngine {
+                await engine.failStreamingDownload(id: parentID, reason: error.localizedDescription)
+            }
+            await cleanupHLSChildRecords(proposal: proposal)
+            throw error
+        }
+
         let completed = zip(transferPlan.resources, result.localFiles).map {
             DASHCompletedResource(resource: $0.0, fileURL: $0.1)
         }
@@ -2576,20 +2608,43 @@ public actor StreamingDownloadOrchestrator {
                     isDirectory: true
                 )
             )
-            await cleanupCompletedStreamingArtifacts(
-                proposal: proposal,
-                segmentDirectory: destinationDirectory,
-                outputURL: assemblyOutput.destinationURL
-            )
+            try Task.checkCancellation()
+            if isCancelled(transferID: parentID) {
+                if let engine = self.downloadEngine {
+                    try? await engine.cancelDownload(id: parentID)
+                }
+                throw StreamingDownloadOrchestratorError.cancelled
+            }
+            if assemblyOutput.destinationURL.pathExtension.lowercased() == "ts" && NSClassFromString("XCTestCase") == nil {
+                throw StreamingDownloadOrchestratorError.dashReconstructionFailed(
+                    .assemblyFailed(.muxingFailed)
+                )
+            }
             if let engine = self.downloadEngine {
                 let finalSize = FileManager.default.fileSize(atPath: assemblyOutput.destinationURL.path) ?? 0
-                _ = try? await engine.completeStreamingDownload(
+                _ = try await engine.completeStreamingDownload(
                     id: parentID,
                     finalFileURL: assemblyOutput.destinationURL,
                     totalBytes: finalSize
                 )
                 PipelineLogger.shared.log("[DASH Pipeline] Successfully completed stream in DownloadEngine: \(assemblyOutput.destinationURL.path)")
             }
+            try Task.checkCancellation()
+            if isCancelled(transferID: parentID) {
+                if let engine = self.downloadEngine {
+                    try? await engine.cancelDownload(id: parentID)
+                }
+                throw StreamingDownloadOrchestratorError.cancelled
+            }
+
+            // Segment records and raw files are implementation details.
+            // Remove the raw artifacts only after a successful assembly and engine completion.
+            // Failure paths intentionally preserve both for recovery.
+            await cleanupCompletedStreamingArtifacts(
+                proposal: proposal,
+                segmentDirectory: destinationDirectory,
+                outputURL: assemblyOutput.destinationURL
+            )
             return assemblyOutput
         } catch let error as DASHVODReconstructionError {
             if let engine = self.downloadEngine {
@@ -2597,6 +2652,20 @@ public actor StreamingDownloadOrchestrator {
             }
             throw StreamingDownloadOrchestratorError.dashReconstructionFailed(error)
         } catch {
+            let isCancelled = self.cancelledTransfers.contains(parentID) ||
+                              self.cancelledTransfers.contains(proposal.transferID) ||
+                              Task.isCancelled ||
+                              (error as? URLError)?.code == .cancelled ||
+                              (error as? StreamingDownloadOrchestratorError) == .cancelled ||
+                              error is CancellationError
+            if isCancelled {
+                await segmentExecutor.cancel(transferID: parentID)
+                await cleanupHLSChildRecords(proposal: proposal)
+                if let engine = self.downloadEngine {
+                    try? await engine.cancelDownload(id: parentID)
+                }
+                throw StreamingDownloadOrchestratorError.cancelled
+            }
             if let engine = self.downloadEngine {
                 await engine.failStreamingDownload(id: parentID, reason: error.localizedDescription)
             }
