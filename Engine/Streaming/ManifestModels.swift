@@ -51,6 +51,14 @@ public struct StreamingManifestClassification: Codable, Sendable, Equatable {
     public var isManifest: Bool {
         kind == .hls || kind == .dash
     }
+
+    public var isHLS: Bool {
+        kind == .hls
+    }
+
+    public var isDASH: Bool {
+        kind == .dash
+    }
 }
 
 public enum ManifestParserError: Error, LocalizedError, Codable, Sendable, Equatable {

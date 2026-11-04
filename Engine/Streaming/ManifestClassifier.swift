@@ -93,11 +93,22 @@ public enum StreamingManifestClassifier {
     }
 
     private static func metadataKind(url: URL, mimeType: String?) -> StreamingManifestKind {
-        let extensionKind: StreamingManifestKind
+        var extensionKind: StreamingManifestKind
         switch url.pathExtension.lowercased() {
         case "m3u8": extensionKind = .hls
         case "mpd": extensionKind = .dash
-        default: extensionKind = .unknown
+        default:
+            if let query = url.query?.lowercased() {
+                if query.contains("format=mpd") || query.contains("type=mpd") || query.contains("manifest=mpd") {
+                    extensionKind = .dash
+                } else if query.contains("format=m3u8") || query.contains("type=m3u8") || query.contains("manifest=m3u8") {
+                    extensionKind = .hls
+                } else {
+                    extensionKind = .unknown
+                }
+            } else {
+                extensionKind = .unknown
+            }
         }
 
         let cleanMIME = mimeType?

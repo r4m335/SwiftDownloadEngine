@@ -684,7 +684,114 @@ final class BrowserMediaDiscoveryTests: XCTestCase {
         )
         XCTAssertEqual(queryMPDClassification.kind, .dash)
         XCTAssertTrue(queryMPDClassification.isManifest)
+        XCTAssertTrue(queryMPDClassification.isDASH)
+        XCTAssertFalse(queryMPDClassification.isHLS)
     }
+
+    func testDirectDASHManifestNavigationResponseClassification() {
+        let directMPDURL = URL(string: "https://dash.akamaized.net/envivio/EnvivioDash3/manifest.mpd")!
+
+        let outcome = BrowserNavigationResponseClassifier.evaluate(
+            url: directMPDURL,
+            statusCode: 200,
+            contentDisposition: nil,
+            contentType: "application/dash+xml",
+            canShowMIMEType: false
+        )
+
+        XCTAssertTrue(outcome.isStreamingManifest)
+        XCTAssertEqual(outcome.manifestKind, .dash)
+        XCTAssertFalse(outcome.shouldInterceptAsDownload, "DASH manifest must not be intercepted as ordinary download")
+        XCTAssertEqual(outcome.suggestedFilename, "manifest.mpd")
+        XCTAssertNotNil(outcome.resource)
+
+        let resource = outcome.resource!
+        XCTAssertEqual(resource.url, directMPDURL)
+        XCTAssertEqual(resource.suggestedFilename, "manifest.mpd")
+        XCTAssertEqual(resource.resourceType, .video)
+        XCTAssertTrue(resource.isStreamingManifest)
+    }
+
+    func testDirectDASHManifestWithAttachmentDispositionIsNotInterceptedAsFlatDownload() {
+        let directMPDURL = URL(string: "https://example.com/live/stream.mpd?token=secure")!
+
+        // Server sends Content-Disposition: attachment which would normally force a single-file download
+        let outcome = BrowserNavigationResponseClassifier.evaluate(
+            url: directMPDURL,
+            statusCode: 200,
+            contentDisposition: "attachment; filename=\"stream.mpd\"",
+            contentType: "application/dash+xml",
+            canShowMIMEType: false
+        )
+
+        XCTAssertTrue(outcome.isStreamingManifest)
+        XCTAssertEqual(outcome.manifestKind, .dash)
+        XCTAssertFalse(outcome.shouldInterceptAsDownload, "Streaming manifest must never be intercepted as a flat single-file download")
+        XCTAssertNotNil(outcome.resource)
+        XCTAssertTrue(outcome.resource!.isStreamingManifest)
+    }
+
+    func testDirectHLSManifestNavigationResponseClassification() {
+        let directHLSURL = URL(string: "https://example.com/live/master.m3u8")!
+
+        let outcome = BrowserNavigationResponseClassifier.evaluate(
+            url: directHLSURL,
+            statusCode: 200,
+            contentDisposition: nil,
+            contentType: "application/vnd.apple.mpegurl",
+            canShowMIMEType: true
+        )
+
+        XCTAssertTrue(outcome.isStreamingManifest)
+        XCTAssertEqual(outcome.manifestKind, .hls)
+        XCTAssertFalse(outcome.shouldInterceptAsDownload)
+        XCTAssertEqual(outcome.suggestedFilename, "master.m3u8")
+        XCTAssertNotNil(outcome.resource)
+        XCTAssertTrue(outcome.resource!.isStreamingManifest)
+    }
+
+    func testOrdinaryBinaryDownloadNavigationResponseClassification() {
+        let zipURL = URL(string: "https://example.com/release/archive.zip")!
+
+        let outcome = BrowserNavigationResponseClassifier.evaluate(
+            url: zipURL,
+            statusCode: 200,
+            contentDisposition: "attachment; filename=\"archive.zip\"",
+            contentType: "application/zip",
+            canShowMIMEType: false
+        )
+
+        XCTAssertFalse(outcome.isStreamingManifest)
+        XCTAssertEqual(outcome.manifestKind, .unknown)
+        XCTAssertTrue(outcome.shouldInterceptAsDownload)
+        XCTAssertEqual(outcome.suggestedFilename, "archive.zip")
+        XCTAssertNil(outcome.resource)
+    }
+
+    #if canImport(SwiftUI)
+    @MainActor
+    func testBrowserViewModelIngestMediaResourcePopulatesDiscoveredResourcesAndSelectsManifest() {
+        let vm = BrowserViewModel()
+        let mpdURL = URL(string: "https://dash.akamaized.net/envivio/EnvivioDash3/manifest.mpd")!
+        let resource = WebpageResource(
+            url: mpdURL,
+            title: "manifest.mpd",
+            suggestedFilename: "manifest.mpd",
+            resourceType: .video,
+            mimeType: "application/dash+xml"
+        )
+
+        XCTAssertTrue(vm.discoveredResources.isEmpty)
+        XCTAssertTrue(vm.selectedResourceIDs.isEmpty)
+
+        vm.ingestMediaResource(resource, tabID: nil)
+
+        XCTAssertEqual(vm.discoveredResources.count, 1)
+        XCTAssertEqual(vm.discoveredResources.first?.url, mpdURL)
+        XCTAssertTrue(vm.discoveredResources.first?.isStreamingManifest == true)
+        XCTAssertEqual(vm.selectedResourceIDs, [resource.id], "Streaming manifest should be automatically selected for download")
+    }
+    #endif
 }
 
 

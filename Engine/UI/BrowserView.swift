@@ -1498,8 +1498,15 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         var catalog = mediaCandidateCatalogs[targetTabID] ?? BrowserMediaCandidateCatalog()
         for resource in resources {
             _ = catalog.ingest(resource: resource)
+            if !discoveredResources.contains(where: { $0.url == resource.url }) {
+                discoveredResources.append(resource)
+            }
         }
         mediaCandidateCatalogs[targetTabID] = catalog
+        if selectedResourceIDs.isEmpty,
+           let manifest = discoveredResources.first(where: { $0.isStreamingManifest }) {
+            selectedResourceIDs.insert(manifest.id)
+        }
         if targetTabID == activeTabID { publishMediaCandidates() }
     }
 
@@ -3652,32 +3659,22 @@ public final class BrowserWebViewCoordinator: NSObject, WKNavigationDelegate, WK
             ]
         )
 
-        let classification = BrowserDownloadClassifier.classify(
+        let outcome = BrowserNavigationResponseClassifier.evaluate(
             url: url,
             statusCode: response.statusCode,
             contentDisposition: disposition,
-            mimeType: contentType,
+            contentType: contentType,
             canShowMIMEType: navigationResponse.canShowMIMEType
         )
 
-        let isHLS = url.pathExtension.lowercased() == "m3u8" ||
-            contentType?.lowercased().contains("application/vnd.apple.mpegurl") == true ||
-            contentType?.lowercased().contains("application/x-mpegurl") == true
-        if isHLS {
-            let resource = WebpageResource(
-                url: url,
-                title: url.lastPathComponent,
-                suggestedFilename: url.lastPathComponent,
-                resourceType: .video,
-                mimeType: contentType ?? "application/vnd.apple.mpegurl"
-            )
+        if outcome.isStreamingManifest, let resource = outcome.resource {
             DispatchQueue.main.async { [weak self] in
                 guard let self = self else { return }
                 self.viewModel?.ingestMediaResource(resource, tabID: self.tabID)
             }
         }
 
-        if classification.isDownload {
+        if outcome.shouldInterceptAsDownload {
             if #available(iOS 14.5, macOS 11.3, *) {
                 // Use native WebKit download conversion to resolve redirects and server filename
                 decisionHandler(.download)
@@ -3694,7 +3691,7 @@ public final class BrowserWebViewCoordinator: NSObject, WKNavigationDelegate, WK
                     ) { context in
                         vm.promptDownload(
                             for: url,
-                            suggestedFilename: classification.suggestedFilename,
+                            suggestedFilename: outcome.suggestedFilename,
                             requestContext: context
                         )
                     }
