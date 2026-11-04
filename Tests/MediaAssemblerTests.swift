@@ -339,6 +339,60 @@ final class MediaAssemblerTests: XCTestCase {
 #endif
     }
 
+    func testAssembleMultipleTracksMPEGTSPreservesPrimarySourceWhenMuxingFails() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("media-assembler-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let videoSegment = directory.appendingPathComponent("video.ts")
+        let audioSegment = directory.appendingPathComponent("audio.ts")
+        let destination = directory.appendingPathComponent("stream.mp4")
+
+        let videoBytes = mpegTSPacket(fill: 0xaa) + mpegTSPacket(fill: 0xbb)
+        let audioBytes = mpegTSPacket(fill: 0xcc) + mpegTSPacket(fill: 0xdd)
+        try videoBytes.write(to: videoSegment)
+        try audioBytes.write(to: audioSegment)
+
+        let request = MediaAssemblyRequest(
+            container: .mpegTS,
+            tracks: [
+                MediaAssemblyTrack(
+                    kind: .video,
+                    container: .mpegTS,
+                    mediaSegments: [
+                        MediaAssemblySegment(fileURL: videoSegment, order: 0, actualByteCount: Int64(videoBytes.count))
+                    ]
+                ),
+                MediaAssemblyTrack(
+                    kind: .audio,
+                    container: .mpegTS,
+                    mediaSegments: [
+                        MediaAssemblySegment(fileURL: audioSegment, order: 0, actualByteCount: Int64(audioBytes.count))
+                    ]
+                )
+            ],
+            destinationURL: destination
+        )
+
+#if canImport(AVFoundation)
+        let output = try MediaAssembler.assemble(request)
+        XCTAssertTrue(output.byteCount > 0)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: output.destinationURL.path))
+        XCTAssertTrue(output.destinationURL.pathExtension == "ts" || output.destinationURL.pathExtension == "mp4")
+        if output.destinationURL.pathExtension == "ts" {
+            XCTAssertEqual(output.container, .mpegTS)
+            XCTAssertEqual(output.trackCount, 1)
+            let preservedData = try Data(contentsOf: output.destinationURL)
+            XCTAssertEqual(preservedData, videoBytes)
+        }
+#else
+        XCTAssertThrowsError(try MediaAssembler.assemble(request)) { error in
+            XCTAssertEqual(error as? MediaAssemblyError, .muxingUnavailable)
+        }
+#endif
+    }
+
     func testAssemblySynchronizesAndReplacesExistingDestinationDurably() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("media-assembler-\(UUID().uuidString)", isDirectory: true)

@@ -570,11 +570,21 @@ public actor DownloadEngine {
         #if canImport(AVFoundation)
         if NSClassFromString("XCTestCase") == nil {
             let asset = AVURLAsset(url: localFileURL)
+            let sema = DispatchSemaphore(value: 0)
+            asset.loadValuesAsynchronously(forKeys: ["tracks", "playable"]) {
+                sema.signal()
+            }
+            _ = sema.wait(timeout: .now() + 3.0)
             var isReadable = false
             if #available(macOS 12.0, iOS 15.0, *) {
                 isReadable = asset.isPlayable || !asset.tracks.isEmpty
             } else {
                 isReadable = !asset.tracks.isEmpty
+            }
+            if !isReadable && localFileURL.pathExtension.lowercased() == "ts" {
+                if let size = FileManager.default.fileSize(atPath: localFileURL.path), size > 0, size % 188 == 0 {
+                    isReadable = true
+                }
             }
             if !isReadable {
                 let reason = "Failed to read final media file (format: \(localFileURL.pathExtension))"

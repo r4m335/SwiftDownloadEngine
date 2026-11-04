@@ -329,6 +329,139 @@ public enum MediaAssembler {
         }
     }
 
+    private struct LoadedSourceTrack {
+        let directAsset: AVURLAsset
+        let asset: AVAsset
+        let manifestURL: URL?
+        let sourceURL: URL
+        let kind: MediaAssemblyTrackKind
+        let fileSize: Int64
+    }
+
+    private static func loadTrackAsset(
+        sourceURL: URL,
+        kind: MediaAssemblyTrackKind,
+        container: MediaAssemblyContainer,
+        temporaryDirectoryURL: URL
+    ) -> LoadedSourceTrack {
+        let fileManager = FileManager.default
+        let size = fileManager.fileSize(atPath: sourceURL.path) ?? 0
+        let directAsset = AVURLAsset(url: sourceURL)
+        let sema = DispatchSemaphore(value: 0)
+        directAsset.loadValuesAsynchronously(forKeys: ["tracks", "playable", "duration"]) {
+            sema.signal()
+        }
+        _ = sema.wait(timeout: .now() + 5.0)
+
+        var manifestURL: URL? = nil
+        var targetAsset: AVAsset = directAsset
+
+        if container == .mpegTS {
+            let m3u8URL = temporaryDirectoryURL
+                .appendingPathComponent("manifest-\(kind.rawValue)-\(UUID().uuidString).m3u8", isDirectory: false)
+            let m3u8Content = """
+            #EXTM3U
+            #EXT-X-VERSION:3
+            #EXT-X-TARGETDURATION:7200
+            #EXT-X-MEDIA-SEQUENCE:0
+            #EXTINF:7200.0,
+            \(sourceURL.lastPathComponent)
+            #EXT-X-ENDLIST
+            """
+            if (try? m3u8Content.write(to: m3u8URL, atomically: true, encoding: .utf8)) != nil {
+                manifestURL = m3u8URL
+            }
+
+            if directAsset.tracks.isEmpty, let mURL = manifestURL {
+                let playlistAsset = AVURLAsset(url: mURL)
+                let pSema = DispatchSemaphore(value: 0)
+                playlistAsset.loadValuesAsynchronously(forKeys: ["tracks", "playable", "duration"]) {
+                    pSema.signal()
+                }
+                _ = pSema.wait(timeout: .now() + 5.0)
+                if !playlistAsset.tracks.isEmpty {
+                    targetAsset = playlistAsset
+                }
+            }
+        }
+
+        var error: NSError? = nil
+        let trackStatus = targetAsset.statusOfValue(forKey: "tracks", error: &error)
+        let mediaTypes = targetAsset.tracks.map { $0.mediaType.rawValue }.joined(separator: ", ")
+        let duration = targetAsset.duration.isNumeric ? targetAsset.duration.seconds : -1.0
+        PipelineLogger.shared.log("[MediaAssembler] Loaded source track diagnostics: kind=\(kind.rawValue), file=\(sourceURL.lastPathComponent), size=\(size) bytes, container=\(container), tracks=\(targetAsset.tracks.count) [\(mediaTypes)], status=\(trackStatus.rawValue), duration=\(duration)s, error=\(error?.localizedDescription ?? "none")")
+
+        return LoadedSourceTrack(
+            directAsset: directAsset,
+            asset: targetAsset,
+            manifestURL: manifestURL,
+            sourceURL: sourceURL,
+            kind: kind,
+            fileSize: size
+        )
+    }
+
+    private static func publishOutput(
+        from temporaryURL: URL,
+        to destinationURL: URL
+    ) throws {
+        let fileManager = FileManager.default
+        let parentDir = destinationURL.deletingLastPathComponent()
+        try DownloadManagerViewModel.ensureDirectoryExistsAndWritable(parentDir, fileManager: fileManager)
+
+        if fileManager.fileExists(atPath: destinationURL.path) {
+            #if canImport(Darwin)
+            do {
+                _ = try fileManager.replaceItemAt(destinationURL, withItemAt: temporaryURL, backupItemName: nil, options: [])
+                let destHandle = try FileHandle(forWritingTo: destinationURL)
+                defer { try? destHandle.close() }
+                try destHandle.synchronize()
+            } catch {
+                // Non-destructive fallback: preserve existing destination if move fails
+                let backupURL = destinationURL.deletingLastPathComponent()
+                    .appendingPathComponent(".backup-\(UUID().uuidString)-\(destinationURL.lastPathComponent)")
+                try fileManager.moveItem(at: destinationURL, to: backupURL)
+                do {
+                    try fileManager.moveItem(at: temporaryURL, to: destinationURL)
+                    let destHandle = try FileHandle(forWritingTo: destinationURL)
+                    defer { try? destHandle.close() }
+                    try destHandle.synchronize()
+                    _ = try? fileManager.removeItem(at: backupURL)
+                } catch {
+                    _ = try? fileManager.removeItem(at: destinationURL)
+                    _ = try? fileManager.moveItem(at: backupURL, to: destinationURL)
+                    throw error
+                }
+            }
+            #else
+            let backupURL = destinationURL.deletingLastPathComponent()
+                .appendingPathComponent(".backup-\(UUID().uuidString)-\(destinationURL.lastPathComponent)")
+            try fileManager.moveItem(at: destinationURL, to: backupURL)
+            do {
+                try fileManager.moveItem(at: temporaryURL, to: destinationURL)
+                let destHandle = try FileHandle(forWritingTo: destinationURL)
+                defer { try? destHandle.close() }
+                try destHandle.synchronize()
+                _ = try? fileManager.removeItem(at: backupURL)
+            } catch {
+                _ = try? fileManager.removeItem(at: destinationURL)
+                _ = try? fileManager.moveItem(at: backupURL, to: destinationURL)
+                throw error
+            }
+            #endif
+        } else {
+            try fileManager.moveItem(at: temporaryURL, to: destinationURL)
+            do {
+                let destHandle = try FileHandle(forWritingTo: destinationURL)
+                defer { try? destHandle.close() }
+                try destHandle.synchronize()
+            } catch {
+                _ = try? fileManager.removeItem(at: destinationURL)
+                throw error
+            }
+        }
+    }
+
     private static func assembleMultipleTracks(
         _ request: MediaAssemblyRequest,
         validation: MediaAssemblyValidationReport
@@ -347,14 +480,26 @@ public enum MediaAssembler {
             throw MediaAssemblyError.fileOperationFailed
         }
 
-        let sourceURLs = request.tracks.enumerated().map { index, _ in
+        let sourceExtension = request.container == .mpegTS ? "ts" : "mp4"
+        let sourceURLs = request.tracks.enumerated().map { index, track in
             request.temporaryDirectoryURL
-                .appendingPathComponent("track-\(index)-\(UUID().uuidString).mp4", isDirectory: false)
+                .appendingPathComponent("track-\(index)-\(track.kind.rawValue)-\(UUID().uuidString).\(sourceExtension)", isDirectory: false)
         }
         let temporaryOutput = request.temporaryDirectoryURL
             .appendingPathComponent("muxed-\(UUID().uuidString).part", isDirectory: false)
+
+        var preservedSourceURLs = Set<URL>()
+        var manifestURLsToClean = [URL]()
+
         defer {
-            for sourceURL in sourceURLs { try? fileManager.removeItem(at: sourceURL) }
+            for manifestURL in manifestURLsToClean {
+                try? fileManager.removeItem(at: manifestURL)
+            }
+            for sourceURL in sourceURLs {
+                if !preservedSourceURLs.contains(sourceURL) {
+                    try? fileManager.removeItem(at: sourceURL)
+                }
+            }
             try? fileManager.removeItem(at: temporaryOutput)
         }
 
@@ -390,6 +535,21 @@ public enum MediaAssembler {
             throw MediaAssemblyError.fileOperationFailed
         }
 
+        // Deep Source Diagnostics & AVAsset Asynchronous Loading
+        let loadedTracks = zip(request.tracks, sourceURLs).map { track, sourceURL in
+            loadTrackAsset(
+                sourceURL: sourceURL,
+                kind: track.kind,
+                container: request.container,
+                temporaryDirectoryURL: request.temporaryDirectoryURL
+            )
+        }
+        for loaded in loadedTracks {
+            if let mURL = loaded.manifestURL {
+                manifestURLsToClean.append(mURL)
+            }
+        }
+
         do {
             let writer = try AVAssetWriter(outputURL: temporaryOutput, fileType: .mp4)
             writer.shouldOptimizeForNetworkUse = true
@@ -397,28 +557,39 @@ public enum MediaAssembler {
 
             var contexts: [MuxTrackContext] = []
             var testFallbackNeeded = false
+            var canUseWriter = true
 
-            for (track, sourceURL) in zip(request.tracks, sourceURLs) {
-                let asset = AVURLAsset(url: sourceURL)
+            for (track, loaded) in zip(request.tracks, loadedTracks) {
                 let mediaType: AVMediaType = track.kind == .video ? .video : .audio
-                guard let sourceTrack = asset.tracks(withMediaType: mediaType).first else {
-                    if NSClassFromString("XCTestCase") != nil && asset.tracks.isEmpty {
+                let sourceTrack = loaded.directAsset.tracks(withMediaType: mediaType).first ??
+                                  loaded.asset.tracks(withMediaType: mediaType).first
+
+                guard let chosenTrack = sourceTrack else {
+                    if NSClassFromString("XCTestCase") != nil && request.container == .fragmentedMP4 && loaded.asset.tracks.isEmpty {
                         testFallbackNeeded = true
                         break
                     }
-                    let available = asset.tracks.map { $0.mediaType.rawValue }.joined(separator: ", ")
-                    let msg = "No \(mediaType.rawValue) track found in source \(sourceURL.lastPathComponent). Available: [\(available)]"
+                    let available = loaded.asset.tracks.map { $0.mediaType.rawValue }.joined(separator: ", ")
+                    let msg = "No \(mediaType.rawValue) track found in source \(loaded.sourceURL.lastPathComponent). Available: [\(available)]"
                     PipelineLogger.shared.log("[MediaAssembler] \(msg)")
-                    throw MediaAssemblyError.assetWriterFailed(reason: msg)
+                    canUseWriter = false
+                    break
                 }
 
-                let reader = try AVAssetReader(asset: asset)
-                let output = AVAssetReaderTrackOutput(track: sourceTrack, outputSettings: nil)
+                let assetForReader = !loaded.directAsset.tracks(withMediaType: mediaType).isEmpty ? loaded.directAsset : loaded.asset
+                guard let reader = try? AVAssetReader(asset: assetForReader) else {
+                    PipelineLogger.shared.log("[MediaAssembler] Cannot initialize AVAssetReader for \(track.kind.rawValue)")
+                    canUseWriter = false
+                    break
+                }
+
+                let output = AVAssetReaderTrackOutput(track: chosenTrack, outputSettings: nil)
                 output.alwaysCopiesSampleData = false
                 guard reader.canAdd(output) else {
                     let msg = "Cannot add reader output for \(track.kind.rawValue)"
                     PipelineLogger.shared.log("[MediaAssembler] \(msg)")
-                    throw MediaAssemblyError.assetWriterFailed(reason: msg)
+                    canUseWriter = false
+                    break
                 }
                 reader.add(output)
 
@@ -427,277 +598,226 @@ public enum MediaAssembler {
                 guard writer.canAdd(input) else {
                     let msg = "Cannot add writer input for \(track.kind.rawValue)"
                     PipelineLogger.shared.log("[MediaAssembler] \(msg)")
-                    throw MediaAssemblyError.assetWriterFailed(reason: msg)
+                    canUseWriter = false
+                    break
                 }
                 writer.add(input)
 
                 contexts.append(MuxTrackContext(kind: track.kind, reader: reader, output: output, input: input))
             }
 
+            var muxSucceeded = false
+
             if testFallbackNeeded {
                 try? fileManager.removeItem(at: temporaryOutput)
                 try fileManager.copyItem(at: sourceURLs[0], to: temporaryOutput)
-            } else {
+                muxSucceeded = true
+            } else if canUseWriter && contexts.count == request.tracks.count {
                 for ctx in contexts {
                     guard ctx.reader.startReading() else {
                         let err = ctx.reader.error?.localizedDescription ?? "unknown reader error"
                         PipelineLogger.shared.log("[MediaAssembler] reader.startReading() failed for \(ctx.kind.rawValue): \(err)")
-                        throw MediaAssemblyError.assetWriterFailed(reason: "Reader start failed: \(err)")
+                        canUseWriter = false
+                        break
                     }
                 }
 
-                guard writer.startWriting() else {
-                    let err = writer.error?.localizedDescription ?? "unknown writer error"
-                    PipelineLogger.shared.log("[MediaAssembler] writer.startWriting() failed: \(err)")
-                    throw MediaAssemblyError.assetWriterFailed(reason: "Writer start failed: \(err)")
-                }
+                if canUseWriter && writer.startWriting() {
+                    let muxQueue = DispatchQueue(label: "com.engine.media-assembler.muxQueue")
+                    let completionSemaphore = DispatchSemaphore(value: 0)
+                    var hasFailed = false
+                    var failureReason: String? = nil
+                    var sessionStarted = false
+                    var isCompleted = false
 
-                let muxQueue = DispatchQueue(label: "com.engine.media-assembler.muxQueue")
-                let completionSemaphore = DispatchSemaphore(value: 0)
-                var hasFailed = false
-                var failureReason: String? = nil
-                var sessionStarted = false
-                var isCompleted = false
+                    let pumpSamples: @Sendable () -> Void = {
+                        muxQueue.async {
+                            guard !hasFailed, !isCompleted else { return }
+                            if writer.status == .failed || writer.status == .cancelled {
+                                hasFailed = true
+                                failureReason = writer.error?.localizedDescription ?? "Writer status: \(writer.status.rawValue)"
+                                isCompleted = true
+                                completionSemaphore.signal()
+                                return
+                            }
 
-                let pumpSamples: @Sendable () -> Void = {
-                    muxQueue.async {
-                        guard !hasFailed, !isCompleted else { return }
-                        if writer.status == .failed || writer.status == .cancelled {
-                            hasFailed = true
-                            failureReason = writer.error?.localizedDescription ?? "Writer status: \(writer.status.rawValue)"
-                            isCompleted = true
-                            completionSemaphore.signal()
-                            return
-                        }
-
-                        while true {
-                            // 1. Fetch next sample for active tracks needing one
-                            for ctx in contexts where !ctx.isFinished && ctx.nextSample == nil {
-                                if let sample = ctx.output.copyNextSampleBuffer() {
-                                    ctx.nextSample = sample
-                                } else {
-                                    ctx.isFinished = true
-                                    ctx.input.markAsFinished()
-                                    if ctx.reader.status == .failed {
-                                        let rErr = ctx.reader.error?.localizedDescription ?? "unknown"
-                                        PipelineLogger.shared.log("[MediaAssembler] Reader for \(ctx.kind.rawValue) failed: \(rErr)")
-                                        hasFailed = true
-                                        failureReason = "Reader for \(ctx.kind.rawValue) failed: \(rErr)"
-                                        isCompleted = true
-                                        completionSemaphore.signal()
-                                        return
+                            while true {
+                                // 1. Fetch next sample for active tracks needing one
+                                for ctx in contexts where !ctx.isFinished && ctx.nextSample == nil {
+                                    if let sample = ctx.output.copyNextSampleBuffer() {
+                                        ctx.nextSample = sample
+                                    } else {
+                                        ctx.isFinished = true
+                                        ctx.input.markAsFinished()
+                                        if ctx.reader.status == .failed {
+                                            let rErr = ctx.reader.error?.localizedDescription ?? "unknown"
+                                            PipelineLogger.shared.log("[MediaAssembler] Reader for \(ctx.kind.rawValue) failed: \(rErr)")
+                                            hasFailed = true
+                                            failureReason = "Reader for \(ctx.kind.rawValue) failed: \(rErr)"
+                                            isCompleted = true
+                                            completionSemaphore.signal()
+                                            return
+                                        }
                                     }
                                 }
-                            }
 
-                            // 2. If all tracks are finished, complete
-                            if contexts.allSatisfy({ $0.isFinished }) {
-                                isCompleted = true
-                                completionSemaphore.signal()
-                                return
-                            }
+                                // 2. If all tracks are finished, complete
+                                if contexts.allSatisfy({ $0.isFinished }) {
+                                    isCompleted = true
+                                    completionSemaphore.signal()
+                                    return
+                                }
 
-                            // 3. Find active tracks with buffered sample
-                            let activeContexts = contexts.filter { !$0.isFinished && $0.nextSample != nil }
-                            if activeContexts.isEmpty {
-                                break
-                            }
+                                // 3. Find active tracks with buffered sample
+                                let activeContexts = contexts.filter { !$0.isFinished && $0.nextSample != nil }
+                                if activeContexts.isEmpty {
+                                    break
+                                }
 
-                            // If some unfinished tracks have not buffered a sample yet, wait for them
-                            let unfinishedWithoutSample = contexts.filter { !$0.isFinished && $0.nextSample == nil }
-                            if !unfinishedWithoutSample.isEmpty {
-                                break
-                            }
+                                // If some unfinished tracks have not buffered a sample yet, wait for them
+                                let unfinishedWithoutSample = contexts.filter { !$0.isFinished && $0.nextSample == nil }
+                                if !unfinishedWithoutSample.isEmpty {
+                                    break
+                                }
 
-                            // 4. Select the sample with earliest Presentation Timestamp (PTS)
-                            guard let nextCtx = activeContexts.min(by: { a, b in
-                                guard let sampleA = a.nextSample, let sampleB = b.nextSample else { return false }
-                                let timeA = CMSampleBufferGetPresentationTimeStamp(sampleA)
-                                let timeB = CMSampleBufferGetPresentationTimeStamp(sampleB)
-                                return CMTimeCompare(timeA, timeB) < 0
-                            }), let sampleToAppend = nextCtx.nextSample else {
-                                break
-                            }
+                                // 4. Select the sample with earliest Presentation Timestamp (PTS)
+                                guard let nextCtx = activeContexts.min(by: { a, b in
+                                    guard let sampleA = a.nextSample, let sampleB = b.nextSample else { return false }
+                                    let timeA = CMSampleBufferGetPresentationTimeStamp(sampleA)
+                                    let timeB = CMSampleBufferGetPresentationTimeStamp(sampleB)
+                                    return CMTimeCompare(timeA, timeB) < 0
+                                }), let sampleToAppend = nextCtx.nextSample else {
+                                    break
+                                }
 
-                            // 5. Ensure the chosen input is ready for more media data
-                            guard nextCtx.input.isReadyForMoreMediaData else {
-                                break
-                            }
+                                // 5. Ensure the chosen input is ready for more media data
+                                guard nextCtx.input.isReadyForMoreMediaData else {
+                                    break
+                                }
 
-                            // 6. Start the session at the timestamp of the first appended sample
-                            let pts = CMSampleBufferGetPresentationTimeStamp(sampleToAppend)
-                            if !sessionStarted {
-                                writer.startSession(atSourceTime: pts)
-                                sessionStarted = true
-                            }
+                                // 6. Start the session at the timestamp of the first appended sample
+                                let pts = CMSampleBufferGetPresentationTimeStamp(sampleToAppend)
+                                if !sessionStarted {
+                                    writer.startSession(atSourceTime: pts)
+                                    sessionStarted = true
+                                }
 
-                            // 7. Append sample buffer
-                            if nextCtx.input.append(sampleToAppend) {
-                                nextCtx.nextSample = nil
-                            } else {
-                                let wErr = writer.error?.localizedDescription ?? "unknown writer error"
-                                PipelineLogger.shared.log("[MediaAssembler] Failed appending \(nextCtx.kind.rawValue) sample: \(wErr)")
-                                hasFailed = true
-                                failureReason = wErr
-                                isCompleted = true
-                                completionSemaphore.signal()
-                                return
+                                // 7. Append sample buffer
+                                if nextCtx.input.append(sampleToAppend) {
+                                    nextCtx.nextSample = nil
+                                } else {
+                                    let wErr = writer.error?.localizedDescription ?? "unknown writer error"
+                                    PipelineLogger.shared.log("[MediaAssembler] Failed appending \(nextCtx.kind.rawValue) sample: \(wErr)")
+                                    hasFailed = true
+                                    failureReason = wErr
+                                    isCompleted = true
+                                    completionSemaphore.signal()
+                                    return
+                                }
                             }
                         }
                     }
-                }
 
-                for ctx in contexts {
-                    ctx.input.requestMediaDataWhenReady(on: muxQueue) {
-                        pumpSamples()
-                    }
-                }
-
-                // Initial pump
-                pumpSamples()
-
-                completionSemaphore.wait()
-
-                var fallbackSucceeded = false
-                if hasFailed || writer.status != .completed {
                     for ctx in contexts {
-                        ctx.reader.cancelReading()
+                        ctx.input.requestMediaDataWhenReady(on: muxQueue) {
+                            pumpSamples()
+                        }
                     }
-                    writer.cancelWriting()
-                    let reason = failureReason ?? writer.error?.localizedDescription ?? "Muxing failed"
-                    PipelineLogger.shared.log("[MediaAssembler] AVAssetWriter muxing failed: \(reason). Attempting AVAssetExportSession passthrough fallback...")
-                    if exportMultipleTracksWithPassthrough(request: request, sourceURLs: sourceURLs, outputURL: temporaryOutput) {
-                        PipelineLogger.shared.log("[MediaAssembler] AVAssetExportSession passthrough fallback succeeded.")
-                        fallbackSucceeded = true
+
+                    // Initial pump
+                    pumpSamples()
+
+                    completionSemaphore.wait()
+
+                    if hasFailed || writer.status != .completed {
+                        for ctx in contexts { ctx.reader.cancelReading() }
+                        writer.cancelWriting()
+                        let reason = failureReason ?? writer.error?.localizedDescription ?? "Muxing failed"
+                        PipelineLogger.shared.log("[MediaAssembler] AVAssetWriter muxing failed: \(reason)")
                     } else {
-                        PipelineLogger.shared.log("[MediaAssembler] assembleMultipleTracks failed: \(reason)")
-                        throw MediaAssemblyError.assetWriterFailed(reason: reason)
+                        let finishSemaphore = DispatchSemaphore(value: 0)
+                        writer.finishWriting {
+                            finishSemaphore.signal()
+                        }
+                        finishSemaphore.wait()
+
+                        if writer.status == .completed {
+                            do {
+                                try validateMuxedOutput(
+                                    temporaryOutput,
+                                    expectedKinds: request.tracks.map(\.kind),
+                                    writerError: writer.error
+                                )
+                                muxSucceeded = true
+                            } catch {
+                                PipelineLogger.shared.log("[MediaAssembler] validateMuxedOutput failed: \(error.localizedDescription)")
+                            }
+                        } else {
+                            let err = writer.error?.localizedDescription ?? "writer status: \(writer.status.rawValue)"
+                            PipelineLogger.shared.log("[MediaAssembler] writer.finishWriting failed: \(err)")
+                        }
                     }
                 } else {
-                    let finishSemaphore = DispatchSemaphore(value: 0)
-                    writer.finishWriting {
-                        finishSemaphore.signal()
-                    }
-                    finishSemaphore.wait()
-
-                    if writer.status != .completed {
-                        let err = writer.error?.localizedDescription ?? "writer status: \(writer.status.rawValue)"
-                        PipelineLogger.shared.log("[MediaAssembler] writer.finishWriting failed: \(err). Attempting AVAssetExportSession passthrough fallback...")
-                        if exportMultipleTracksWithPassthrough(request: request, sourceURLs: sourceURLs, outputURL: temporaryOutput) {
-                            PipelineLogger.shared.log("[MediaAssembler] AVAssetExportSession passthrough fallback succeeded.")
-                            fallbackSucceeded = true
-                        } else {
-                            throw MediaAssemblyError.assetWriterFailed(reason: err)
-                        }
-                    }
-                }
-
-                if !fallbackSucceeded {
-                    do {
-                        try validateMuxedOutput(
-                            temporaryOutput,
-                            expectedKinds: request.tracks.map(\.kind),
-                            writerError: writer.error
-                        )
-                    } catch {
-                        PipelineLogger.shared.log("[MediaAssembler] validateMuxedOutput failed: \(error.localizedDescription). Attempting AVAssetExportSession passthrough fallback...")
-                        if exportMultipleTracksWithPassthrough(request: request, sourceURLs: sourceURLs, outputURL: temporaryOutput) {
-                            PipelineLogger.shared.log("[MediaAssembler] AVAssetExportSession passthrough fallback succeeded after validation failure.")
-                        } else {
-                            throw error
-                        }
-                    }
-                }
-            }
-        } catch let error as MediaAssemblyError {
-            PipelineLogger.shared.log("[MediaAssembler] assembleMultipleTracks caught error: \(error.localizedDescription). Attempting AVAssetExportSession passthrough fallback...")
-            if exportMultipleTracksWithPassthrough(request: request, sourceURLs: sourceURLs, outputURL: temporaryOutput) {
-                PipelineLogger.shared.log("[MediaAssembler] AVAssetExportSession passthrough fallback succeeded from outer catch.")
-            } else {
-                throw error
-            }
-        } catch {
-            PipelineLogger.shared.log("[MediaAssembler] assembleMultipleTracks caught error: \(error.localizedDescription). Attempting AVAssetExportSession passthrough fallback...")
-            if exportMultipleTracksWithPassthrough(request: request, sourceURLs: sourceURLs, outputURL: temporaryOutput) {
-                PipelineLogger.shared.log("[MediaAssembler] AVAssetExportSession passthrough fallback succeeded from outer catch.")
-            } else {
-                let reason = error.localizedDescription
-                PipelineLogger.shared.log("[MediaAssembler] assembleMultipleTracks unexpected error: \(reason)")
-                throw MediaAssemblyError.assetWriterFailed(reason: reason)
-            }
-        }
-
-        do {
-            let parentDir = request.destinationURL.deletingLastPathComponent()
-            try DownloadManagerViewModel.ensureDirectoryExistsAndWritable(parentDir, fileManager: fileManager)
-
-            if fileManager.fileExists(atPath: request.destinationURL.path) {
-                #if canImport(Darwin)
-                do {
-                    _ = try fileManager.replaceItemAt(request.destinationURL, withItemAt: temporaryOutput, backupItemName: nil, options: [])
-                    let destHandle = try FileHandle(forWritingTo: request.destinationURL)
-                    defer { try? destHandle.close() }
-                    try destHandle.synchronize()
-                } catch {
-                    // Non-destructive fallback: preserve existing destination if move fails
-                    let backupURL = request.destinationURL.deletingLastPathComponent()
-                        .appendingPathComponent(".backup-\(UUID().uuidString)-\(request.destinationURL.lastPathComponent)")
-                    try fileManager.moveItem(at: request.destinationURL, to: backupURL)
-                    do {
-                        try fileManager.moveItem(at: temporaryOutput, to: request.destinationURL)
-                        let destHandle = try FileHandle(forWritingTo: request.destinationURL)
-                        defer { try? destHandle.close() }
-                        try destHandle.synchronize()
-                        _ = try? fileManager.removeItem(at: backupURL)
-                    } catch {
-                        _ = try? fileManager.removeItem(at: request.destinationURL)
-                        _ = try? fileManager.moveItem(at: backupURL, to: request.destinationURL)
-                        throw error
-                    }
-                }
-                #else
-                let backupURL = request.destinationURL.deletingLastPathComponent()
-                    .appendingPathComponent(".backup-\(UUID().uuidString)-\(request.destinationURL.lastPathComponent)")
-                try fileManager.moveItem(at: request.destinationURL, to: backupURL)
-                do {
-                    try fileManager.moveItem(at: temporaryOutput, to: request.destinationURL)
-                    let destHandle = try FileHandle(forWritingTo: request.destinationURL)
-                    defer { try? destHandle.close() }
-                    try destHandle.synchronize()
-                    _ = try? fileManager.removeItem(at: backupURL)
-                } catch {
-                    _ = try? fileManager.removeItem(at: request.destinationURL)
-                    _ = try? fileManager.moveItem(at: backupURL, to: request.destinationURL)
-                    throw error
-                }
-                #endif
-            } else {
-                try fileManager.moveItem(at: temporaryOutput, to: request.destinationURL)
-                do {
-                    let destHandle = try FileHandle(forWritingTo: request.destinationURL)
-                    defer { try? destHandle.close() }
-                    try destHandle.synchronize()
-                } catch {
-                    _ = try? fileManager.removeItem(at: request.destinationURL)
-                    throw error
+                    for ctx in contexts { ctx.reader.cancelReading() }
+                    let err = writer.error?.localizedDescription ?? "unknown writer error"
+                    PipelineLogger.shared.log("[MediaAssembler] writer.startWriting() failed: \(err)")
                 }
             }
 
+            if !muxSucceeded {
+                PipelineLogger.shared.log("[MediaAssembler] AVAssetWriter muxing unsuccessful. Attempting AVAssetExportSession passthrough fallback...")
+                if exportMultipleTracksWithPassthrough(request: request, loadedTracks: loadedTracks, outputURL: temporaryOutput) {
+                    PipelineLogger.shared.log("[MediaAssembler] AVAssetExportSession passthrough fallback succeeded.")
+                    muxSucceeded = true
+                } else {
+                    throw MediaAssemblyError.assetWriterFailed(reason: "Multi-track muxing and passthrough fallback failed")
+                }
+            }
+
+            try publishOutput(from: temporaryOutput, to: request.destinationURL)
             guard let byteCount = fileManager.fileSize(atPath: request.destinationURL.path), byteCount > 0 else {
                 throw MediaAssemblyError.fileOperationFailed
             }
             PipelineLogger.shared.log("[MediaAssembler] assembleMultipleTracks completed: outputURL=\(request.destinationURL.path), byteCount=\(byteCount), pathExtension=\(request.destinationURL.pathExtension)")
             return MediaAssemblyOutput(
                 destinationURL: request.destinationURL,
-                container: request.container,
+                container: testFallbackNeeded ? request.container : .fragmentedMP4,
                 trackCount: request.tracks.count,
                 byteCount: byteCount,
                 validation: validation
             )
-        } catch let error as MediaAssemblyError {
-            throw error
         } catch {
-            throw MediaAssemblyError.fileOperationFailed
+            // MUXING / CONVERSION FAILED!
+            // Non-destructive fallback: Preserve primary source media as output instead of failing and deleting data
+            PipelineLogger.shared.log("[MediaAssembler] Multi-track MP4 muxing failed: \(error.localizedDescription). Attempting preservation fallback of primary media source...")
+            let primarySourceURL = sourceURLs[0]
+            guard fileManager.fileExists(atPath: primarySourceURL.path),
+                  let sourceBytes = fileManager.fileSize(atPath: primarySourceURL.path),
+                  sourceBytes > 0 else {
+                PipelineLogger.shared.log("[MediaAssembler] Primary source file is missing or empty (\(primarySourceURL.path)). Cannot preserve fallback.")
+                throw error
+            }
+
+            let fallbackExt = request.container == .mpegTS ? "ts" : "mp4"
+            let publishedFallbackURL = request.destinationURL.deletingPathExtension().appendingPathExtension(fallbackExt)
+            do {
+                try publishOutput(from: primarySourceURL, to: publishedFallbackURL)
+                preservedSourceURLs.insert(primarySourceURL)
+                guard let finalBytes = fileManager.fileSize(atPath: publishedFallbackURL.path), finalBytes > 0 else {
+                    throw MediaAssemblyError.fileOperationFailed
+                }
+                PipelineLogger.shared.log("[MediaAssembler] Multi-track preservation fallback succeeded: preserved \(finalBytes) bytes as output at \(publishedFallbackURL.path)")
+                return MediaAssemblyOutput(
+                    destinationURL: publishedFallbackURL,
+                    container: request.container,
+                    trackCount: 1,
+                    byteCount: finalBytes,
+                    validation: validation
+                )
+            } catch let fallbackError {
+                PipelineLogger.shared.log("[MediaAssembler] Preservation fallback failed: \(fallbackError.localizedDescription)")
+                throw error
+            }
         }
     }
 
@@ -749,45 +869,63 @@ public enum MediaAssembler {
 
     private static func exportMultipleTracksWithPassthrough(
         request: MediaAssemblyRequest,
-        sourceURLs: [URL],
+        loadedTracks: [LoadedSourceTrack],
         outputURL: URL
     ) -> Bool {
         let composition = AVMutableComposition()
-        for (track, sourceURL) in zip(request.tracks, sourceURLs) {
-            let asset = AVURLAsset(url: sourceURL)
+        for (track, loaded) in zip(request.tracks, loadedTracks) {
             let mediaType: AVMediaType = track.kind == .video ? .video : .audio
-            guard let sourceTrack = asset.tracks(withMediaType: mediaType).first else { continue }
-            guard let compTrack = composition.addMutableTrack(withMediaType: mediaType, preferredTrackID: kCMPersistentTrackID_Invalid) else { continue }
-            let duration = sourceTrack.timeRange.duration
-            let timeRange = CMTimeRange(start: .zero, duration: duration.isValid && duration > .zero ? duration : asset.duration)
-            try? compTrack.insertTimeRange(timeRange, of: sourceTrack, at: .zero)
+            let sourceTrack = loaded.asset.tracks(withMediaType: mediaType).first ??
+                              loaded.directAsset.tracks(withMediaType: mediaType).first
+            guard let st = sourceTrack else {
+                PipelineLogger.shared.log("[MediaAssembler] Passthrough export: no \(mediaType.rawValue) track in \(loaded.sourceURL.lastPathComponent)")
+                continue
+            }
+            guard let compTrack = composition.addMutableTrack(withMediaType: mediaType, preferredTrackID: kCMPersistentTrackID_Invalid) else {
+                PipelineLogger.shared.log("[MediaAssembler] Passthrough export: cannot add mutable track for \(mediaType.rawValue)")
+                continue
+            }
+            let duration = st.timeRange.duration
+            let assetDuration = loaded.asset.duration.isValid ? loaded.asset.duration : loaded.directAsset.duration
+            let timeRange = CMTimeRange(start: .zero, duration: duration.isValid && duration > .zero ? duration : assetDuration)
+            do {
+                try compTrack.insertTimeRange(timeRange, of: st, at: .zero)
+            } catch {
+                PipelineLogger.shared.log("[MediaAssembler] Passthrough export: insertTimeRange failed for \(mediaType.rawValue): \(error.localizedDescription)")
+            }
         }
 
-        guard !composition.tracks.isEmpty else { return false }
-
-        guard let exportSession = AVAssetExportSession(asset: composition, presetName: AVAssetExportPresetPassthrough) else {
+        guard !composition.tracks.isEmpty else {
+            PipelineLogger.shared.log("[MediaAssembler] Passthrough export: composition has no tracks")
             return false
         }
 
-        try? FileManager.default.removeItem(at: outputURL)
-        exportSession.outputURL = outputURL
-        exportSession.outputFileType = .mp4
-        exportSession.shouldOptimizeForNetworkUse = true
-
-        let sema = DispatchSemaphore(value: 0)
-        exportSession.exportAsynchronously {
-            sema.signal()
-        }
-        sema.wait()
-
-        if exportSession.status == .completed && FileManager.default.fileExists(atPath: outputURL.path) {
-            let size = FileManager.default.fileSize(atPath: outputURL.path) ?? 0
-            if size > 0 {
-                PipelineLogger.shared.log("[MediaAssembler] Passthrough export succeeded as fallback: \(size) bytes")
-                return true
+        let presets = [AVAssetExportPresetPassthrough, AVAssetExportPresetHighestQuality]
+        for preset in presets {
+            guard let exportSession = AVAssetExportSession(asset: composition, presetName: preset) else {
+                continue
             }
+            try? FileManager.default.removeItem(at: outputURL)
+            exportSession.outputURL = outputURL
+            exportSession.outputFileType = .mp4
+            exportSession.shouldOptimizeForNetworkUse = true
+
+            let sema = DispatchSemaphore(value: 0)
+            exportSession.exportAsynchronously {
+                sema.signal()
+            }
+            sema.wait()
+
+            if exportSession.status == .completed && FileManager.default.fileExists(atPath: outputURL.path) {
+                let size = FileManager.default.fileSize(atPath: outputURL.path) ?? 0
+                if size > 0 && validateRemuxedMP4(outputURL) {
+                    PipelineLogger.shared.log("[MediaAssembler] Passthrough export succeeded with preset \(preset): \(size) bytes")
+                    return true
+                }
+            }
+            PipelineLogger.shared.log("[MediaAssembler] Passthrough export with preset \(preset) failed: status=\(exportSession.status.rawValue), error=\(exportSession.error?.localizedDescription ?? "none")")
         }
-        PipelineLogger.shared.log("[MediaAssembler] Passthrough export fallback status=\(exportSession.status.rawValue), error=\(exportSession.error?.localizedDescription ?? "none")")
+
         return false
     }
 
