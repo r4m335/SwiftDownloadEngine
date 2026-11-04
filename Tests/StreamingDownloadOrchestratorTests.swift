@@ -993,6 +993,47 @@ final class StreamingDownloadOrchestratorTests: XCTestCase {
         XCTAssertTrue(proposal.resources.first?.url.absoluteString.contains("segment0.ts") == true)
     }
 
+    func testStreamingManifestLoaderSuppressesRefererOnHTTPSDowngradeToHTTP() async throws {
+        let insecureManifestURL = URL(string: "http://insecure.example.com/playlist.m3u8")!
+        let securePageURL = URL(string: "https://secure.example.com/watch")!
+
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [MockURLProtocol.self]
+        let mockSession = URLSession(configuration: config)
+
+        var capturedReferer: String? = "SENTINEL"
+        MockURLProtocol.setHandler(for: insecureManifestURL) { request in
+            capturedReferer = request.value(forHTTPHeaderField: "Referer")
+            let playlist = "#EXTM3U\n#EXT-X-VERSION:3\n#EXTINF:4.0,\nseg0.ts\n#EXT-X-ENDLIST\n".data(using: .utf8)!
+            let response = HTTPURLResponse(
+                url: insecureManifestURL,
+                statusCode: 200,
+                httpVersion: "HTTP/1.1",
+                headerFields: ["Content-Type": "application/vnd.apple.mpegurl"]
+            )!
+            return (response, playlist)
+        }
+
+        let loader = URLSessionStreamingManifestLoader(session: mockSession)
+        let context = BrowserRequestContext(
+            url: insecureManifestURL,
+            pageURL: securePageURL,
+            userAgent: "BrowserTest/1.0"
+        )
+        let candidate = try StreamingManifestCandidate(
+            url: insecureManifestURL,
+            browserRequestContext: context
+        )
+
+        _ = try await loader.load(
+            candidate: candidate,
+            headers: [:],
+            limits: ManifestParsingLimits()
+        )
+
+        XCTAssertNil(capturedReferer, "Outbound manifest request must suppress Referer when destination is HTTP and page is HTTPS (RFC 7231 §5.5.2)")
+    }
+
     func testStreamingDownloadOrchestrator_PreservesQueryParametersAndTokensAcrossVariants() async throws {
         // 1. DownloadRequestEnricher preserves query parameters on outbound requests
         let signedURL = URL(string: "https://cdn.example.com/live/master.m3u8?token=AUTH_SEC_99&expires=1850000000")!

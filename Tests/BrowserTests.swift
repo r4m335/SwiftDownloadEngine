@@ -389,6 +389,47 @@ final class BrowserTests: XCTestCase {
         XCTAssertEqual(handoff?.requestContext, context)
     }
 
+    func testPrepareHandoffStripsContextOnInsecureDowngrade() {
+        let secureOriginal = URL(string: "https://example.com/download.zip")!
+        let insecureFinal = URL(string: "http://example.com/files/download.zip")!
+        let context = BrowserRequestContext(
+            url: secureOriginal,
+            pageURL: URL(string: "https://example.com/page")!,
+            cookies: [BrowserCookie(name: "token", value: "secret123", domain: "example.com")]
+        )
+
+        let manager = BrowserDownloadInterceptionManager()
+        let handoff = manager.prepareHandoff(
+            originalURL: secureOriginal,
+            finalURL: insecureFinal,
+            requestContext: context
+        )
+
+        XCTAssertNotNil(handoff)
+        XCTAssertEqual(handoff?.finalURL, insecureFinal)
+        XCTAssertNil(handoff?.requestContext, "Insecure HTTPS -> HTTP downgrade must strip requestContext from handoff")
+    }
+
+    func testPrepareHandoffStripsContextOnCrossOriginWithoutMatchingCookies() {
+        let original = URL(string: "https://trusted.example/download.bin")!
+        let crossOrigin = URL(string: "https://unrelated.cdn.net/download.bin")!
+        let context = BrowserRequestContext(
+            url: original,
+            cookies: [BrowserCookie(name: "scoped", value: "token", domain: "trusted.example")]
+        )
+
+        let manager = BrowserDownloadInterceptionManager()
+        let handoff = manager.prepareHandoff(
+            originalURL: original,
+            finalURL: crossOrigin,
+            requestContext: context
+        )
+
+        XCTAssertNotNil(handoff)
+        XCTAssertEqual(handoff?.finalURL, crossOrigin)
+        XCTAssertNil(handoff?.requestContext, "Cross-origin redirection without matching cookies must strip requestContext")
+    }
+
     // MARK: - 8. Browser Navigation State & Quick Links
 
     func testBrowserNavigationStateDefaults() {

@@ -135,6 +135,25 @@ public final class BrowserDownloadInterceptionManager: @unchecked Sendable {
             mimeType: mimeType
         )
 
+        let isDowngrade: Bool = {
+            let destScheme = destinationURL.scheme?.lowercased() ?? ""
+            guard destScheme == "http" else { return false }
+            let origScheme = originalURL.scheme?.lowercased() ?? ""
+            let pageScheme = requestContext?.pageURL?.scheme?.lowercased() ?? ""
+            return origScheme == "https" || pageScheme == "https"
+        }()
+
+        let safeContext: BrowserRequestContext?
+        if !isDowngrade,
+           let context = requestContext,
+           (BrowserHeaderFilter.sameOrigin(originalURL, destinationURL) ||
+            BrowserHeaderFilter.isSameSiteOrSubdomain(originalURL, destinationURL) ||
+            context.cookies.contains(where: { $0.matches(url: destinationURL) })) {
+            safeContext = context
+        } else {
+            safeContext = nil
+        }
+
         return BrowserDownloadHandoff(
             originalURL: originalURL,
             finalURL: destinationURL,
@@ -142,7 +161,7 @@ public final class BrowserDownloadInterceptionManager: @unchecked Sendable {
             mimeType: mimeType,
             expectedContentLength: expectedLength,
             source: source,
-            requestContext: requestContext
+            requestContext: safeContext
         )
     }
 

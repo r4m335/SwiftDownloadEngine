@@ -167,7 +167,10 @@ public final class URLSessionStreamingManifestLoader: StreamingManifestLoader, @
         }
         if request.value(forHTTPHeaderField: "Referer") == nil {
             if let ref = candidate.browserRequestContext?.referer ?? candidate.browserRequestContext?.pageURL?.absoluteString {
-                request.setValue(ref, forHTTPHeaderField: "Referer")
+                let isDowngrade = candidate.url.scheme?.lowercased() == "http" && (URL(string: ref)?.scheme?.lowercased() == "https")
+                if !isDowngrade {
+                    request.setValue(ref, forHTTPHeaderField: "Referer")
+                }
             }
         }
 
@@ -2876,7 +2879,10 @@ public actor StreamingDownloadOrchestrator {
             }
             if request.value(forHTTPHeaderField: "Referer") == nil {
                 if let ref = candidate?.browserRequestContext?.referer ?? candidate?.browserRequestContext?.pageURL?.absoluteString {
-                    request.setValue(ref, forHTTPHeaderField: "Referer")
+                    let isDowngrade = subtitleURL.scheme?.lowercased() == "http" && (URL(string: ref)?.scheme?.lowercased() == "https")
+                    if !isDowngrade {
+                        request.setValue(ref, forHTTPHeaderField: "Referer")
+                    }
                 }
             }
             let (data, response) = try await subtitleSession.data(for: request)
@@ -2919,7 +2925,10 @@ public actor StreamingDownloadOrchestrator {
                         }
                         if segReq.value(forHTTPHeaderField: "Referer") == nil {
                             let ref = candidate?.browserRequestContext?.referer ?? candidate?.browserRequestContext?.pageURL?.absoluteString ?? subtitleURL.absoluteString
-                            segReq.setValue(ref, forHTTPHeaderField: "Referer")
+                            let isDowngrade = segURL.scheme?.lowercased() == "http" && (URL(string: ref)?.scheme?.lowercased() == "https")
+                            if !isDowngrade {
+                                segReq.setValue(ref, forHTTPHeaderField: "Referer")
+                            }
                         }
                         do {
                             let (segData, segResponse) = try await subtitleSession.data(for: segReq)
