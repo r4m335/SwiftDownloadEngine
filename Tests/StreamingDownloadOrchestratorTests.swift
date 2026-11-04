@@ -1001,9 +1001,19 @@ final class StreamingDownloadOrchestratorTests: XCTestCase {
         config.protocolClasses = [MockURLProtocol.self]
         let mockSession = URLSession(configuration: config)
 
-        var capturedReferer: String? = "SENTINEL"
+        final class SafeBox: @unchecked Sendable {
+            private let lock = NSLock()
+            private var _value: String?
+            init(_ value: String?) { self._value = value }
+            var value: String? {
+                get { lock.lock(); defer { lock.unlock() }; return _value }
+                set { lock.lock(); defer { lock.unlock() }; _value = newValue }
+            }
+        }
+
+        let capturedRefererBox = SafeBox("SENTINEL")
         MockURLProtocol.setHandler(for: insecureManifestURL) { request in
-            capturedReferer = request.value(forHTTPHeaderField: "Referer")
+            capturedRefererBox.value = request.value(forHTTPHeaderField: "Referer")
             let playlist = "#EXTM3U\n#EXT-X-VERSION:3\n#EXTINF:4.0,\nseg0.ts\n#EXT-X-ENDLIST\n".data(using: .utf8)!
             let response = HTTPURLResponse(
                 url: insecureManifestURL,
@@ -1031,7 +1041,7 @@ final class StreamingDownloadOrchestratorTests: XCTestCase {
             limits: ManifestParsingLimits()
         )
 
-        XCTAssertNil(capturedReferer, "Outbound manifest request must suppress Referer when destination is HTTP and page is HTTPS (RFC 7231 §5.5.2)")
+        XCTAssertNil(capturedRefererBox.value, "Outbound manifest request must suppress Referer when destination is HTTP and page is HTTPS (RFC 7231 §5.5.2)")
     }
 
     func testStreamingDownloadOrchestrator_PreservesQueryParametersAndTokensAcrossVariants() async throws {
