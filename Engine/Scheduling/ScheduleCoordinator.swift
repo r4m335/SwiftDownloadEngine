@@ -267,13 +267,29 @@ public final class ScheduleCoordinator: ObservableObject {
 
         var resumedIDs: [String] = []
         var pausedIDs: [String] = []
+        var rulesToUpdate: [ScheduleRule] = []
 
         for rule in rules where rule.isEnabled {
             let isInsideWindow = isDateInScheduleWindow(now, rule: rule)
+            var ghostIDs = Set<String>()
 
             for downloadID in rule.targetDownloadIDs {
                 let record = try? await persistenceStore.fetch(tag: downloadID)
-                let state = record?.state ?? (isInsideWindow ? .paused : .downloading)
+                let engineSnapshot = await engine?.snapshot(for: downloadID)
+
+                let state: DownloadState
+                if let record {
+                    state = record.state
+                } else if let engineSnapshot {
+                    state = engineSnapshot.state
+                } else if engine != nil {
+                    // Download exists neither in persistent storage nor in engine memory: prune ghost download
+                    ghostIDs.insert(downloadID)
+                    continue
+                } else {
+                    // Decoupled / handler-only mock testing without engine or persistence
+                    state = isInsideWindow ? .paused : .downloading
+                }
 
                 if isInsideWindow {
                     if let engine {
@@ -312,6 +328,19 @@ public final class ScheduleCoordinator: ObservableObject {
                         }
                     }
                 }
+            }
+
+            if !ghostIDs.isEmpty {
+                var updatedRule = rule
+                updatedRule.targetDownloadIDs.removeAll { ghostIDs.contains($0) }
+                rulesToUpdate.append(updatedRule)
+            }
+        }
+
+        for updatedRule in rulesToUpdate {
+            try? await persistenceStore.saveScheduleRule(updatedRule)
+            if let idx = rules.firstIndex(where: { $0.id == updatedRule.id }) {
+                rules[idx] = updatedRule
             }
         }
 

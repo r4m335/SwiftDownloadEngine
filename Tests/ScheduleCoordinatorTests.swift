@@ -337,4 +337,59 @@ final class ScheduleCoordinatorTests: XCTestCase {
         await coordinator.toggleScheduled(downloadID: "task-abc")
         XCTAssertFalse(coordinator.isScheduled(downloadID: "task-abc"))
     }
+
+    @MainActor
+    func testScheduleReconciliationPrunesGhostDownloadsWhenEngineActive() async throws {
+        let coordinatorInstance = try DownloadCoordinator(session: .shared, persistenceStore: persistenceStore)
+        let queueManager = DownloadQueueManager(
+            coordinator: coordinatorInstance,
+            persistenceStore: persistenceStore,
+            maxConcurrentDownloads: 2
+        )
+        let engine = DownloadEngine(
+            queueManager: queueManager,
+            coordinator: coordinatorInstance,
+            persistenceStore: persistenceStore
+        )
+
+        // Save one valid download record in persistence store
+        let validRecord = DownloadRecord(
+            id: "valid-task-1",
+            originalURL: URL(string: "https://example.com/file1.zip")!,
+            destinationURL: tempDir.appendingPathComponent("file1.zip"),
+            totalSize: 1000,
+            state: .paused
+        )
+        try await persistenceStore.save(validRecord)
+
+        let scheduleCoordinator = ScheduleCoordinator(
+            engine: engine,
+            persistenceStore: persistenceStore
+        )
+
+        let rule = ScheduleRule(
+            id: "rule-ghost-pruning",
+            isEnabled: true,
+            startTime: DateComponents(hour: 0, minute: 0),
+            stopTime: DateComponents(hour: 23, minute: 59),
+            weekdays: Set(1...7),
+            targetDownloadIDs: ["valid-task-1", "ghost-task-999"]
+        )
+        try await scheduleCoordinator.saveRule(rule)
+
+        let report = await scheduleCoordinator.reconcile()
+        XCTAssertFalse(report.resumedDownloadIDs.contains("ghost-task-999"))
+        XCTAssertFalse(report.pausedDownloadIDs.contains("ghost-task-999"))
+
+        // Check in-memory rule
+        let updatedRule = try XCTUnwrap(scheduleCoordinator.rules.first { $0.id == "rule-ghost-pruning" })
+        XCTAssertTrue(updatedRule.targetDownloadIDs.contains("valid-task-1"))
+        XCTAssertFalse(updatedRule.targetDownloadIDs.contains("ghost-task-999"))
+
+        // Check persisted rule
+        let persistedRules = try await persistenceStore.fetchAllScheduleRules()
+        let persistedRule = try XCTUnwrap(persistedRules.first { $0.id == "rule-ghost-pruning" })
+        XCTAssertTrue(persistedRule.targetDownloadIDs.contains("valid-task-1"))
+        XCTAssertFalse(persistedRule.targetDownloadIDs.contains("ghost-task-999"))
+    }
 }

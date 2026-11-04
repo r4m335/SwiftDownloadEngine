@@ -123,6 +123,7 @@ public struct BlobExportTransferRecord: Codable, Sendable, Equatable {
     public var bytesWritten: Int64
     public var chunksReceived: Int
     public var failureReason: String?
+    public var sha256: String?
     public var lastCheckpoint: Date
 
     public init(
@@ -136,6 +137,7 @@ public struct BlobExportTransferRecord: Codable, Sendable, Equatable {
         bytesWritten: Int64 = 0,
         chunksReceived: Int = 0,
         failureReason: String? = nil,
+        sha256: String? = nil,
         lastCheckpoint: Date = Date()
     ) {
         self.transferID = transferID
@@ -148,6 +150,7 @@ public struct BlobExportTransferRecord: Codable, Sendable, Equatable {
         self.bytesWritten = bytesWritten
         self.chunksReceived = chunksReceived
         self.failureReason = failureReason
+        self.sha256 = sha256
         self.lastCheckpoint = lastCheckpoint
     }
 }
@@ -722,7 +725,7 @@ public actor BlobExportWriter {
             throw BlobExportError.incompleteTransfer
         }
         let outputDigest = session.outputHasher.finalize()
-        if let declared = declaredFileDigest {
+        if let declared = declaredFileDigest?.trimmingCharacters(in: .whitespacesAndNewlines) {
             guard declared.count == 64, declared.allSatisfy(\.isHexDigit) else {
                 abort(transferID: transferID, reason: "invalid whole-file digest")
                 throw BlobExportError.invalidWholeFileDigest
@@ -743,6 +746,7 @@ public actor BlobExportWriter {
             throw BlobExportError.finalizationFailure
         }
         session.record.state = .completed
+        session.record.sha256 = outputDigest
         session.record.lastCheckpoint = Date()
         persistRecord(session.record)
         totalStagingBytes -= session.reservedStagingBytes

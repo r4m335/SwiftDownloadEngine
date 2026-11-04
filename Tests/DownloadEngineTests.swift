@@ -893,7 +893,7 @@ final class DownloadEngineTests: XCTestCase {
         }
     }
 
-    func testCompleteStreamingDownloadTSFallbackFailsWithClearMessage() async throws {
+    func testCompleteStreamingDownloadTSFallbackSucceedsAndPreservesFile() async throws {
         let sourceURL = URL(string: "https://example.com/playlist.m3u8")!
         let tsURL = tempDirectory.appendingPathComponent("stream-\(UUID().uuidString).ts")
         try Data(repeating: 0x47, count: 188).write(to: tsURL)
@@ -907,20 +907,14 @@ final class DownloadEngineTests: XCTestCase {
             mimeType: "video/mp2t"
         )
 
-        do {
-            _ = try await engine.completeStreamingDownload(
-                id: "stream-test-ts-fallback",
-                finalFileURL: tsURL,
-                totalBytes: 188
-            )
-            XCTFail("Expected completeStreamingDownload to reject .ts file")
-        } catch let error as DownloadError {
-            if case .muxingFailed(let reason) = error {
-                XCTAssertTrue(reason.contains("HLS assembly failed: Output is not a valid MP4"))
-            } else {
-                XCTFail("Expected .muxingFailed, got \(error)")
-            }
-        }
+        let snapshot = try await engine.completeStreamingDownload(
+            id: "stream-test-ts-fallback",
+            finalFileURL: tsURL,
+            totalBytes: 188
+        )
+        XCTAssertEqual(snapshot.state, .completed)
+        XCTAssertEqual(snapshot.destinationURL, tsURL)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: tsURL.path))
     }
 
     func testCompleteStreamingDownloadValidFileSucceeds() async throws {

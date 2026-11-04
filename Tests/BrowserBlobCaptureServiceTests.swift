@@ -116,6 +116,29 @@ final class BrowserBlobCaptureServiceTests: XCTestCase {
         XCTAssertEqual(snap.outputDigest, correct)
     }
 
+    func testWholeFileDigestTrimsSurroundingWhitespaceAndPersistsToRecord() async throws {
+        let dir = tmpDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let writer = makeWriter(dir: dir)
+        let data = Data("digest-check-whitespace-and-persistence".utf8)
+        _ = try await writer.begin(authorization: makeAuth(transferID: "t-ws"), envelope: makeEnvelope(transferID: "t-ws", size: Int64(data.count)), suggestedFilename: "ws.mp4")
+        _ = try await writer.append(transferID: "t-ws", chunkIndex: 0, offset: 0, data: data, sha256: sha(data))
+        let correct = sha(data)
+        let declaredWithWhitespace = "  \n  \(correct)  \t "
+
+        let snap = try await writer.complete(transferID: "t-ws", finalChunkIndex: 1, finalOffset: Int64(data.count), declaredFileDigest: declaredWithWhitespace)
+        XCTAssertEqual(snap.state, .completed)
+        XCTAssertEqual(snap.outputDigest, correct)
+
+        // Verify that the persisted record on disk contains the verified SHA-256 digest
+        let recordURL = dir.appendingPathComponent(".transfer-records").appendingPathComponent("t-ws.json")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: recordURL.path))
+        let recordData = try Data(contentsOf: recordURL)
+        let decodedRecord = try JSONDecoder().decode(BlobExportTransferRecord.self, from: recordData)
+        XCTAssertEqual(decodedRecord.state, .completed)
+        XCTAssertEqual(decodedRecord.sha256, correct)
+    }
+
     // MARK: - 2. Protocol validation
 
     func testChunkBeforeMetadataIsRejected() async throws {

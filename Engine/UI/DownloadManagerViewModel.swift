@@ -754,6 +754,7 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
     public func removeDownload(id: DownloadID, deleteFile: Bool = false) async throws {
         do {
             try await engine.removeDownload(id: id, deleteFile: deleteFile)
+            await scheduleCoordinator.removeDownloadFromSchedule(downloadID: id)
             downloads.removeAll { $0.id == id }
             if selectedDownload?.id == id {
                 selectedDownload = nil
