@@ -348,8 +348,7 @@ public enum MediaIntegrityValidator {
     ///
     /// Memory: reads one 188-byte packet at a time; heap use is O(1).
     private static func validateMPEGTS(fileURL: URL) -> MediaIntegrityValidationOutcome {
-        guard let attributes = try? FileManager.default.attributesOfItem(atPath: fileURL.path),
-              let fileSize = (attributes[.size] as? NSNumber)?.int64Value,
+        guard let fileSize = FileManager.default.fileSize(atPath: fileURL.path),
               fileSize > 0 else {
             return .integrityFailure(
                 detectedType: .mpegTS,
@@ -362,40 +361,46 @@ public enum MediaIntegrityValidator {
                 reason: "File size (\(fileSize) bytes) is not a multiple of the 188-byte MPEG-TS packet size."
             )
         }
-        guard let handle = FileHandle(forReadingAtPath: fileURL.path) else {
+        guard let handle = try? FileHandle(forReadingFrom: fileURL) else {
             return .integrityFailure(
                 detectedType: .mpegTS,
                 reason: "File could not be opened for reading."
             )
         }
-        defer { handle.closeFile() }
+        defer { try? handle.close() }
 
         let packetsPerBuffer = 256
         let bufferSize = 188 * packetsPerBuffer
         var packetIndex: Int64 = 0
 
-        while true {
-            let chunk = handle.readData(ofLength: bufferSize)
-            if chunk.isEmpty { break }
-            guard chunk.count % 188 == 0 else {
-                return .integrityFailure(
-                    detectedType: .mpegTS,
-                    reason: "Incomplete MPEG-TS chunk read (\(chunk.count) bytes)."
-                )
-            }
-            let packetCount = chunk.count / 188
-            for i in 0..<packetCount {
-                let offset = i * 188
-                guard chunk[offset] == 0x47 else {
+        do {
+            while true {
+                guard let chunk = try handle.read(upToCount: bufferSize), !chunk.isEmpty else { break }
+                guard chunk.count % 188 == 0 else {
                     return .integrityFailure(
                         detectedType: .mpegTS,
-                        reason: "Packet \(packetIndex + Int64(i)) has an invalid sync byte (0x\(String(chunk[offset], radix: 16, uppercase: true)))."
+                        reason: "Incomplete MPEG-TS chunk read (\(chunk.count) bytes)."
                     )
                 }
+                let packetCount = chunk.count / 188
+                for i in 0..<packetCount {
+                    let offset = i * 188
+                    guard chunk[offset] == 0x47 else {
+                        return .integrityFailure(
+                            detectedType: .mpegTS,
+                            reason: "Packet \(packetIndex + Int64(i)) has an invalid sync byte (0x\(String(chunk[offset], radix: 16, uppercase: true)))."
+                        )
+                    }
+                }
+                packetIndex += Int64(packetCount)
             }
-            packetIndex += Int64(packetCount)
+            return .validated(detectedType: .mpegTS)
+        } catch {
+            return .integrityFailure(
+                detectedType: .mpegTS,
+                reason: "I/O error during packet validation: \(error.localizedDescription)"
+            )
         }
-        return .validated(detectedType: .mpegTS)
     }
 
     // MARK: ISO Base Media File Format structural validator
@@ -406,84 +411,90 @@ public enum MediaIntegrityValidator {
         fileURL: URL,
         requiredBoxes: Set<String>
     ) -> MediaIntegrityValidationOutcome {
-        guard let attributes = try? FileManager.default.attributesOfItem(atPath: fileURL.path),
-              let fileSize = (attributes[.size] as? NSNumber)?.uint64Value,
-              fileSize > 0 else {
+        guard let fileSizeInt = FileManager.default.fileSize(atPath: fileURL.path),
+              fileSizeInt > 0 else {
             return .integrityFailure(
                 detectedType: .fragmentedMP4,
                 reason: "File does not exist or has zero size."
             )
         }
-        guard let handle = FileHandle(forReadingAtPath: fileURL.path) else {
+        let fileSize = UInt64(fileSizeInt)
+        guard let handle = try? FileHandle(forReadingFrom: fileURL) else {
             return .integrityFailure(
                 detectedType: .fragmentedMP4,
                 reason: "File could not be opened for reading."
             )
         }
-        defer { handle.closeFile() }
+        defer { try? handle.close() }
 
         var foundBoxTypes = Set<String>()
         var offset: UInt64 = 0
 
-        while offset < fileSize {
-            guard fileSize - offset >= 8 else {
-                return .integrityFailure(
-                    detectedType: .fragmentedMP4,
-                    reason: "Unexpected end of file at offset \(offset) — box header is incomplete."
-                )
-            }
-            handle.seek(toFileOffset: offset)
-            let header = handle.readData(ofLength: 8)
-            guard header.count == 8 else {
-                return .integrityFailure(
-                    detectedType: .fragmentedMP4,
-                    reason: "Could not read box header at offset \(offset)."
-                )
-            }
-
-            var boxSize = UInt64(header[0]) << 24 | UInt64(header[1]) << 16
-                | UInt64(header[2]) << 8 | UInt64(header[3])
-            let typeBytes = Array(header[4...7])
-            let allPrintable = typeBytes.allSatisfy { $0 >= 0x20 && $0 <= 0x7E }
-            guard allPrintable else {
-                return .integrityFailure(
-                    detectedType: .fragmentedMP4,
-                    reason: "Non-printable box type at offset \(offset)."
-                )
-            }
-            let boxType = String(bytes: typeBytes, encoding: .ascii) ?? ""
-            var headerSize: UInt64 = 8
-
-            if boxSize == 1 {
-                guard fileSize - offset >= 16 else {
+        do {
+            while offset < fileSize {
+                guard fileSize - offset >= 8 else {
                     return .integrityFailure(
                         detectedType: .fragmentedMP4,
-                        reason: "64-bit box size field extends beyond EOF at offset \(offset)."
+                        reason: "Unexpected end of file at offset \(offset) — box header is incomplete."
                     )
                 }
-                let extended = handle.readData(ofLength: 8)
-                guard extended.count == 8 else {
+                try handle.seek(toOffset: offset)
+                guard let header = try handle.read(upToCount: 8), header.count == 8 else {
                     return .integrityFailure(
                         detectedType: .fragmentedMP4,
-                        reason: "Could not read 64-bit box size at offset \(offset)."
+                        reason: "Could not read box header at offset \(offset)."
                     )
                 }
-                boxSize = extended.reduce(UInt64(0)) { ($0 << 8) | UInt64($1) }
-                headerSize = 16
-            } else if boxSize == 0 {
-                // Extends to EOF.
-                boxSize = fileSize - offset
-            }
 
-            guard boxSize >= headerSize, boxSize <= fileSize - offset else {
-                return .integrityFailure(
-                    detectedType: .fragmentedMP4,
-                    reason: "Box '\(boxType)' at offset \(offset) has size \(boxSize) that overruns EOF."
-                )
-            }
+                var boxSize = UInt64(header[0]) << 24 | UInt64(header[1]) << 16
+                    | UInt64(header[2]) << 8 | UInt64(header[3])
+                let typeBytes = Array(header[4...7])
+                let allPrintable = typeBytes.allSatisfy { $0 >= 0x20 && $0 <= 0x7E }
+                guard allPrintable else {
+                    return .integrityFailure(
+                        detectedType: .fragmentedMP4,
+                        reason: "Non-printable box type at offset \(offset)."
+                    )
+                }
+                let boxType = String(bytes: typeBytes, encoding: .ascii) ?? ""
+                var headerSize: UInt64 = 8
 
-            if !boxType.isEmpty { foundBoxTypes.insert(boxType) }
-            offset += boxSize
+                if boxSize == 1 {
+                    guard fileSize - offset >= 16 else {
+                        return .integrityFailure(
+                            detectedType: .fragmentedMP4,
+                            reason: "64-bit box size field extends beyond EOF at offset \(offset)."
+                        )
+                    }
+                    try handle.seek(toOffset: offset + 8)
+                    guard let extended = try handle.read(upToCount: 8), extended.count == 8 else {
+                        return .integrityFailure(
+                            detectedType: .fragmentedMP4,
+                            reason: "Could not read 64-bit box size at offset \(offset)."
+                        )
+                    }
+                    boxSize = extended.reduce(UInt64(0)) { ($0 << 8) | UInt64($1) }
+                    headerSize = 16
+                } else if boxSize == 0 {
+                    // Extends to EOF.
+                    boxSize = fileSize - offset
+                }
+
+                guard boxSize >= headerSize, boxSize <= fileSize - offset else {
+                    return .integrityFailure(
+                        detectedType: .fragmentedMP4,
+                        reason: "Box '\(boxType)' at offset \(offset) has size \(boxSize) that overruns EOF."
+                    )
+                }
+
+                if !boxType.isEmpty { foundBoxTypes.insert(boxType) }
+                offset += boxSize
+            }
+        } catch {
+            return .integrityFailure(
+                detectedType: .fragmentedMP4,
+                reason: "I/O error during box header walk: \(error.localizedDescription)"
+            )
         }
 
         let missing = requiredBoxes.subtracting(foundBoxTypes)
@@ -505,11 +516,7 @@ public enum MediaIntegrityValidator {
     // MARK: - Helpers
 
     private static func diskByteCount(at url: URL) -> Int64? {
-        guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
-              let size = (attributes[.size] as? NSNumber)?.int64Value else {
-            return nil
-        }
-        return size
+        FileManager.default.fileSize(atPath: url.path)
     }
 
     private static func report(

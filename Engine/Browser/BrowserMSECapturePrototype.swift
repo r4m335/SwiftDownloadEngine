@@ -819,38 +819,41 @@ public actor BrowserMSECapturePrototypeWriter {
 
 enum BrowserMSECaptureSegmentInspector {
     static func containsBoxes(_ url: URL, required: Set<String>) -> Bool {
-        guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
-              let fileSize = (attributes[.size] as? NSNumber)?.uint64Value,
-              fileSize > 0,
-              let handle = FileHandle(forReadingAtPath: url.path) else {
+        guard let fileSizeInt = FileManager.default.fileSize(atPath: url.path),
+              fileSizeInt > 0,
+              let handle = try? FileHandle(forReadingFrom: url) else {
             return false
         }
-        defer { handle.closeFile() }
+        defer { try? handle.close() }
 
+        let fileSize = UInt64(fileSizeInt)
         var offset: UInt64 = 0
         var boxes = Set<String>()
         while offset < fileSize {
             guard fileSize - offset >= 8 else { return false }
-            handle.seek(toFileOffset: offset)
-            let header = handle.readData(ofLength: 8)
-            guard header.count == 8 else { return false }
-            var boxSize = UInt64(header[0]) << 24 | UInt64(header[1]) << 16 |
-                UInt64(header[2]) << 8 | UInt64(header[3])
-            let type = String(bytes: header[4...7], encoding: .ascii) ?? ""
-            guard !type.isEmpty else { return false }
-            var headerSize: UInt64 = 8
-            if boxSize == 1 {
-                guard fileSize - offset >= 16 else { return false }
-                let extended = handle.readData(ofLength: 8)
-                guard extended.count == 8 else { return false }
-                boxSize = extended.reduce(UInt64(0)) { ($0 << 8) | UInt64($1) }
-                headerSize = 16
-            } else if boxSize == 0 {
-                boxSize = fileSize - offset
+            do {
+                try handle.seek(toOffset: offset)
+                guard let header = try handle.read(upToCount: 8), header.count == 8 else { return false }
+                var boxSize = UInt64(header[0]) << 24 | UInt64(header[1]) << 16 |
+                    UInt64(header[2]) << 8 | UInt64(header[3])
+                let type = String(bytes: header[4...7], encoding: .ascii) ?? ""
+                guard !type.isEmpty else { return false }
+                var headerSize: UInt64 = 8
+                if boxSize == 1 {
+                    guard fileSize - offset >= 16 else { return false }
+                    try handle.seek(toOffset: offset + 8)
+                    guard let extended = try handle.read(upToCount: 8), extended.count == 8 else { return false }
+                    boxSize = extended.reduce(UInt64(0)) { ($0 << 8) | UInt64($1) }
+                    headerSize = 16
+                } else if boxSize == 0 {
+                    boxSize = fileSize - offset
+                }
+                guard boxSize >= headerSize, boxSize <= fileSize - offset else { return false }
+                boxes.insert(type)
+                offset += boxSize
+            } catch {
+                return false
             }
-            guard boxSize >= headerSize, boxSize <= fileSize - offset else { return false }
-            boxes.insert(type)
-            offset += boxSize
         }
         return required.isSubset(of: boxes)
     }

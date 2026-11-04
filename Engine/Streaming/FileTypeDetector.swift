@@ -179,11 +179,10 @@ public enum FileTypeDetector {
             return .unreadable
         }
         guard fileSize > 0 else { return .empty }
-        guard let handle = FileHandle(forReadingAtPath: url.path) else { return .unreadable }
-        defer { handle.closeFile() }
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return .unreadable }
+        defer { try? handle.close() }
         let readLength = Int(min(Int64(headerBudget), fileSize))
-        let header = handle.readData(ofLength: readLength)
-        guard !header.isEmpty else { return .unreadable }
+        guard let header = try? handle.read(upToCount: readLength), !header.isEmpty else { return .unreadable }
         return classify(header: header, fileSize: fileSize)
     }
 

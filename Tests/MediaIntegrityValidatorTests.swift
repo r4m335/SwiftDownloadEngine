@@ -436,4 +436,56 @@ final class MediaIntegrityValidatorTests: XCTestCase {
         XCTAssertEqual(report.expectedByteCount, expectedSize)
         XCTAssertEqual(report.actualByteCount, expectedSize)
     }
+
+    // ── AC: 64-bit box size ISO-BMFF validation ──────────────────────────────
+
+    func testValidPlainMP4With64BitBoxSizeValidated() {
+        var b = minimalMP4Header // ftyp (20 bytes) + moov (8 bytes)
+        // 64-bit mdat box: boxSize == 1, 8-byte type 'mdat', 8-byte extended size (24), 8-byte payload
+        b += [0x00, 0x00, 0x00, 0x01] // boxSize == 1
+        b += [0x6D, 0x64, 0x61, 0x74] // 'mdat'
+        b += [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x18] // 24 bytes total box size
+        b += [0xDE, 0xAD, 0xBE, 0xEF, 0xFE, 0xED, 0xFA, 0xCE] // 8 bytes payload
+
+        let url = writeFile(bytes: b, name: "largebox.mp4")
+        let report = MediaIntegrityValidator.validateDirectDownload(fileURL: url)
+        XCTAssertEqual(report.outcome, .validated(detectedType: .isoBaseMediaFile),
+                       "ISO-BMFF with 64-bit box size must be validated successfully.")
+    }
+
+    func testISOBMFFWith64BitBoxSizeOverrunningEOFReportsIntegrityFailure() {
+        var b = minimalMP4Header
+        b += [0x00, 0x00, 0x00, 0x01] // boxSize == 1
+        b += [0x6D, 0x64, 0x61, 0x74] // 'mdat'
+        b += [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFF, 0x00] // claims 65280 bytes
+        b += [0x01, 0x02, 0x03, 0x04] // only 4 bytes payload
+
+        let url = writeFile(bytes: b, name: "overrun64.mp4")
+        let report = MediaIntegrityValidator.validateDirectDownload(fileURL: url)
+        if case .integrityFailure(_, let reason) = report.outcome {
+            XCTAssertTrue(reason.contains("overruns EOF") || reason.contains("size"),
+                          "Overrun 64-bit box should report integrity failure.")
+        } else {
+            XCTFail("Overrun 64-bit box must report integrityFailure, got: \(report.outcome)")
+        }
+    }
+
+    // ── AC: Multi-chunk MPEG-TS packet sync byte check ────────────────────────
+
+    func testMPEGTSMultiChunkSyncByteFailureIdentifiesCorrectPacket() {
+        let totalPackets = 300
+        var bytes = makeTSData(packetCount: totalPackets)
+        // Corrupt packet 260 (crossing the 256-packet chunk boundary)
+        bytes[260 * 188] = 0xAA
+
+        let url = writeFile(bytes: bytes, name: "multichunk_corrupt.ts")
+        let report = MediaIntegrityValidator.validateDirectDownload(fileURL: url)
+        if case .integrityFailure(let t, let reason) = report.outcome {
+            XCTAssertEqual(t, .mpegTS)
+            XCTAssertTrue(reason.contains("Packet 260"),
+                          "Integrity failure reason should specifically identify Packet 260. Got: \(reason)")
+        } else {
+            XCTFail("Corrupt packet across buffer boundary should report integrity failure, got: \(report.outcome)")
+        }
+    }
 }
