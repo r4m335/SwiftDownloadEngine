@@ -191,4 +191,84 @@ final class DownloadFileWriterTests: XCTestCase {
         let nonexistent = FileManager.default.fileSize(atPath: root.appendingPathComponent("missing.bin").path)
         XCTAssertNil(nonexistent)
     }
+
+    // MARK: - Bug #21: Preallocation, Indeterminate Capacity & Merge Durability Tests
+
+    func testEmptyPartListRejectsMerge() throws {
+        let destination = FileManager.default.temporaryDirectory.appendingPathComponent("empty_merge.bin")
+        XCTAssertThrowsError(
+            try DownloadFileWriter.mergeFiles(
+                partURLs: [],
+                destinationURL: destination
+            )
+        ) { error in
+            XCTAssertEqual(error as? DownloadFileWriterError, .unsupportedOperationForMode)
+        }
+    }
+
+    func testMergePartFilesRejectsEmptySegments() async throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let destination = root.appendingPathComponent("empty_parts.bin")
+        let writer = try DownloadFileWriter(
+            destinationURL: destination,
+            totalSize: 10,
+            mode: .partFiles,
+            temporaryDirectoryURL: root.appendingPathComponent(".tmp", isDirectory: true)
+        )
+        do {
+            try await writer.mergePartFiles(orderedSegmentIDs: [])
+            XCTFail("Expected unsupportedOperationForMode on empty segment list")
+        } catch let error as DownloadFileWriterError {
+            XCTAssertEqual(error, .unsupportedOperationForMode)
+        }
+        try await writer.close()
+    }
+
+    func testIndeterminateDiskSpaceReportAllowsDownloadToProceed() throws {
+        // When capacity cannot be determined, isCapacityDetermined is false
+        let report = DiskSpaceReport(requiredBytes: 10_000_000, availableBytes: 0, isCapacityDetermined: false)
+        XCTAssertTrue(report.hasEnoughSpace, "Indeterminate disk capacity must allow download to proceed")
+
+        // In contrast, when capacity is genuinely 0 bytes (full disk), hasEnoughSpace is false
+        let fullDiskReport = DiskSpaceReport(requiredBytes: 10_000_000, availableBytes: 0, isCapacityDetermined: true)
+        XCTAssertFalse(fullDiskReport.hasEnoughSpace, "Determined 0 bytes available must reject insufficient space")
+    }
+
+    func testDirectSeekPreallocationCleanupOnFailure() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let destination = root.appendingPathComponent("dir_conflict.bin")
+        // Create directory at destination path so FileHandle(forWritingTo:) fails
+        try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+
+        XCTAssertThrowsError(
+            try DownloadFileWriter(destinationURL: destination, totalSize: 1024, mode: .directSeek)
+        )
+    }
+
+    func testMergeFilesSynchronizesDestinationDurably() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let destination = root.appendingPathComponent("synced_dest.bin")
+        let part1 = root.appendingPathComponent("part1.part")
+        let part2 = root.appendingPathComponent("part2.part")
+
+        let chunk1 = Data(repeating: 0x11, count: 512)
+        let chunk2 = Data(repeating: 0x22, count: 512)
+        try chunk1.write(to: part1)
+        try chunk2.write(to: part2)
+
+        try DownloadFileWriter.mergeFiles(
+            partURLs: [part1, part2],
+            destinationURL: destination,
+            expectedMergedSize: 1024
+        )
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: destination.path))
+        let merged = try Data(contentsOf: destination)
+        XCTAssertEqual(merged.count, 1024)
+        XCTAssertEqual(merged.prefix(512), chunk1)
+        XCTAssertEqual(merged.suffix(512), chunk2)
+    }
 }

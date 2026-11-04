@@ -881,26 +881,8 @@ public actor DownloadCoordinator {
                 record = nil
             }
 
-            // Step 3: Disk-space preflight & preallocation check
+            // Step 3: Disk-space preflight & preallocation check on target destination volume
             if let totalSize = probeResult.totalSize, totalSize > 0 {
-                let homeURL = URL(fileURLWithPath: NSHomeDirectory())
-                #if canImport(Darwin)
-                let keys: Set<URLResourceKey> = [.volumeAvailableCapacityForImportantUsageKey, .volumeAvailableCapacityKey]
-                if let values = try? homeURL.resourceValues(forKeys: keys) {
-                    let available = values.volumeAvailableCapacityForImportantUsage ?? values.volumeAvailableCapacity.map(Int64.init) ?? 0
-                    if available > 0 && available < totalSize {
-                        throw DownloadCoordinatorError.insufficientDiskSpace(required: totalSize, available: available)
-                    }
-                }
-                #else
-                let keys: Set<URLResourceKey> = [.volumeAvailableCapacityKey]
-                if let values = try? homeURL.resourceValues(forKeys: keys) {
-                    let available = values.volumeAvailableCapacity.map(Int64.init) ?? 0
-                    if available > 0 && available < totalSize {
-                        throw DownloadCoordinatorError.insufficientDiskSpace(required: totalSize, available: available)
-                    }
-                }
-                #endif
                 do {
                     _ = try DownloadFileWriter.requireSufficientDiskSpace(
                         for: request.destinationURL,

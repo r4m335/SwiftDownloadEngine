@@ -4,6 +4,14 @@ import Foundation
 import UIKit
 #endif
 
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#elseif canImport(Musl)
+import Musl
+#endif
+
 /// Storage strategy recovered from the 1DM+ investigation notes.
 public enum DownloadStorageMode: String, Codable, Sendable {
     /// Standard HTTP downloads write segments directly to their absolute offsets
@@ -28,12 +36,20 @@ public enum DownloadFileWriterError: Error, Equatable {
 public struct DiskSpaceReport: Equatable, Sendable {
     public let requiredBytes: Int64
     public let availableBytes: Int64
+    public let isCapacityDetermined: Bool
 
-    public var hasEnoughSpace: Bool { availableBytes >= requiredBytes }
-    
-    public init(requiredBytes: Int64, availableBytes: Int64) {
+    public var hasEnoughSpace: Bool {
+        if !isCapacityDetermined {
+            // Indeterminate capacity: allow caller to proceed to write attempt
+            return true
+        }
+        return availableBytes >= requiredBytes
+    }
+
+    public init(requiredBytes: Int64, availableBytes: Int64, isCapacityDetermined: Bool = true) {
         self.requiredBytes = requiredBytes
         self.availableBytes = availableBytes
+        self.isCapacityDetermined = isCapacityDetermined
     }
 }
 
@@ -72,14 +88,37 @@ public actor DownloadFileWriter {
         try DownloadManagerViewModel.ensureDirectoryExistsAndWritable(self.temporaryDirectoryURL)
 
         if mode == .directSeek {
-            if !FileManager.default.fileExists(atPath: destinationURL.path) {
+            let fileExisted = FileManager.default.fileExists(atPath: destinationURL.path)
+            if !fileExisted {
                 guard FileManager.default.createFile(atPath: destinationURL.path, contents: nil) else {
                     throw CocoaError(.fileWriteUnknown)
                 }
             }
-            let handle = try FileHandle(forWritingTo: destinationURL)
-            try handle.truncate(atOffset: UInt64(totalSize))
-            self.destinationHandle = handle
+            do {
+                let handle = try FileHandle(forWritingTo: destinationURL)
+                do {
+                    try handle.truncate(atOffset: UInt64(totalSize))
+                    self.destinationHandle = handle
+                } catch {
+                    try? handle.close()
+                    if !fileExisted {
+                        try? FileManager.default.removeItem(at: destinationURL)
+                    }
+                    throw error
+                }
+            } catch {
+                if !fileExisted {
+                    try? FileManager.default.removeItem(at: destinationURL)
+                }
+                throw error
+            }
+        }
+    }
+
+    deinit {
+        try? destinationHandle?.close()
+        for handle in partHandles.values {
+            try? handle.close()
         }
     }
 
@@ -101,25 +140,44 @@ public actor DownloadFileWriter {
 
 #if canImport(Darwin)
         let keys: Set<URLResourceKey> = [.volumeAvailableCapacityForImportantUsageKey, .volumeAvailableCapacityKey]
-        let values = try parent.resourceValues(forKeys: keys)
-        let capacity = values.volumeAvailableCapacityForImportantUsage
-            ?? values.volumeAvailableCapacity.map(Int64.init)
+        let values = try? parent.resourceValues(forKeys: keys)
+        var capacity = values?.volumeAvailableCapacityForImportantUsage
+            ?? values?.volumeAvailableCapacity.map(Int64.init)
 #else
         let keys: Set<URLResourceKey> = [.volumeAvailableCapacityKey]
         let values = try? parent.resourceValues(forKeys: keys)
-        let capacity: Int64? = values?.volumeAvailableCapacity.map(Int64.init)
+        var capacity: Int64? = values?.volumeAvailableCapacity.map(Int64.init)
 #endif
 
-        guard let capacity else {
-            // If the filesystem cannot report capacity, do not fabricate a
-            // value. Returning zero makes the caller decide whether to proceed.
-            return DiskSpaceReport(requiredBytes: requiredBytes + max(0, reserveBytes), availableBytes: 0)
+        if capacity == nil {
+            #if canImport(Darwin) || canImport(Glibc) || canImport(Musl)
+            var stat = statvfs()
+            let statResult = parent.withUnsafeFileSystemRepresentation { ptr -> Int32 in
+                guard let ptr else { return -1 }
+                return statvfs(ptr, &stat)
+            }
+            if statResult == 0 && stat.f_frsize > 0 {
+                let freeBytes = Int64(stat.f_bavail) * Int64(stat.f_frsize)
+                capacity = max(0, freeBytes)
+            }
+            #endif
         }
 
         let requiredWithReserve = requiredBytes + max(0, reserveBytes)
+        guard let capacity else {
+            // If the filesystem cannot report capacity, do not fabricate a false failure.
+            // Returning an indeterminate report lets the caller attempt writing safely.
+            return DiskSpaceReport(
+                requiredBytes: requiredWithReserve,
+                availableBytes: 0,
+                isCapacityDetermined: false
+            )
+        }
+
         return DiskSpaceReport(
             requiredBytes: requiredWithReserve,
-            availableBytes: Int64(capacity)
+            availableBytes: capacity,
+            isCapacityDetermined: true
         )
     }
 
@@ -192,6 +250,9 @@ public actor DownloadFileWriter {
         guard mode == .partFiles else {
             throw DownloadFileWriterError.unsupportedOperationForMode
         }
+        guard !orderedSegmentIDs.isEmpty else {
+            throw DownloadFileWriterError.unsupportedOperationForMode
+        }
         guard bufferSize > 0 else {
             throw DownloadFileWriterError.invalidOffset
         }
@@ -221,6 +282,9 @@ public actor DownloadFileWriter {
         expectedMergedSize: Int64? = nil,
         bufferSize: Int = 64 * 1024
     ) throws {
+        guard !partURLs.isEmpty else {
+            throw DownloadFileWriterError.unsupportedOperationForMode
+        }
         guard bufferSize > 0 else {
             throw DownloadFileWriterError.invalidOffset
         }
@@ -299,6 +363,15 @@ public actor DownloadFileWriter {
             #endif
         } else {
             try fileManager.moveItem(at: stagingURL, to: destinationURL)
+        }
+
+        // Ensure merged destination file is physically flushed to disk
+        do {
+            let destHandle = try FileHandle(forWritingTo: destinationURL)
+            defer { try? destHandle.close() }
+            try destHandle.synchronize()
+        } catch {
+            throw error
         }
     }
 
