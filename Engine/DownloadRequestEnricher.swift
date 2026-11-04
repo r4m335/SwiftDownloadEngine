@@ -238,10 +238,17 @@ public enum DownloadRequestEnricher {
             if req.value(forHTTPHeaderField: "Accept") == nil {
                 req.setValue("*/*", forHTTPHeaderField: "Accept")
             }
-            if req.value(forHTTPHeaderField: "Origin") == nil, let origin = s.pageOrigin {
+            let isDowngrade: Bool = {
+                guard let page = s.pageURL,
+                      let pageScheme = page.scheme?.lowercased(),
+                      let targetScheme = url.scheme?.lowercased() else { return false }
+                return pageScheme == "https" && targetScheme == "http"
+            }()
+
+            if req.value(forHTTPHeaderField: "Origin") == nil, let origin = s.pageOrigin, !isDowngrade {
                 req.setValue(origin, forHTTPHeaderField: "Origin")
             }
-            if req.value(forHTTPHeaderField: "Referer") == nil, let page = s.pageURL {
+            if req.value(forHTTPHeaderField: "Referer") == nil, let page = s.pageURL, !isDowngrade {
                 req.setValue(page.absoluteString, forHTTPHeaderField: "Referer")
             }
             if req.value(forHTTPHeaderField: "Sec-Fetch-Dest") == nil {
@@ -274,11 +281,26 @@ public enum DownloadRequestEnricher {
             if req.value(forHTTPHeaderField: "User-Agent") == nil, let ua = ctx.userAgent, !ua.isEmpty {
                 req.setValue(ua, forHTTPHeaderField: "User-Agent")
             }
-            if req.value(forHTTPHeaderField: "Origin") == nil, let origin = ctx.origin {
+            let isDowngrade: Bool = {
+                guard let page = ctx.pageURL,
+                      let pageScheme = page.scheme?.lowercased(),
+                      let targetScheme = url.scheme?.lowercased() else { return false }
+                return pageScheme == "https" && targetScheme == "http"
+            }()
+
+            if req.value(forHTTPHeaderField: "Origin") == nil, let origin = ctx.origin, !isDowngrade {
                 req.setValue(origin, forHTTPHeaderField: "Origin")
             }
-            if req.value(forHTTPHeaderField: "Referer") == nil, let ref = ctx.referer ?? ctx.pageURL?.absoluteString {
-                req.setValue(ref, forHTTPHeaderField: "Referer")
+            if req.value(forHTTPHeaderField: "Referer") == nil, !isDowngrade {
+                if let ref = ctx.referer {
+                    if let refURL = URL(string: ref), refURL.scheme?.lowercased() == "https" && url.scheme?.lowercased() == "http" {
+                        // Suppress downgrade referer
+                    } else {
+                        req.setValue(ref, forHTTPHeaderField: "Referer")
+                    }
+                } else if let pageStr = ctx.pageURL?.absoluteString {
+                    req.setValue(pageStr, forHTTPHeaderField: "Referer")
+                }
             }
             if req.value(forHTTPHeaderField: "Cookie") == nil {
                 let matching = ctx.cookies.filter { $0.matches(url: url) }
@@ -307,13 +329,48 @@ public enum DownloadRequestEnricher {
 
     /// Prepares an enriched redirect request for URLSessionTaskDelegate redirection callbacks,
     /// preserving Range headers, injecting authentic browser context and cookies for the redirect target.
+    /// Strips Authorization and sensitive headers on cross-origin redirects, and isolates cookies (RFC 7235 / RFC 6265).
     public static func handleRedirect(
         task: URLSessionTask,
         response: HTTPURLResponse,
         newRequest: URLRequest,
         snapshot: BrowserSessionSnapshot? = nil
     ) -> URLRequest {
-        var enriched = enrich(newRequest, snapshot: snapshot)
+        var req = newRequest
+        let sourceURL = response.url ?? task.currentRequest?.url ?? task.originalRequest?.url
+
+        if let sourceURL, let targetURL = req.url {
+            let isSameOrigin = BrowserHeaderFilter.sameOrigin(sourceURL, targetURL)
+            let isSameSite = BrowserHeaderFilter.isSameSiteOrSubdomain(sourceURL, targetURL)
+
+            // 1. Cross-origin credential stripping (RFC 7235 §2.2 / RFC 9110 §15.4)
+            if !isSameOrigin {
+                req.setValue(nil, forHTTPHeaderField: "Authorization")
+                req.setValue(nil, forHTTPHeaderField: "Proxy-Authorization")
+                if let allHeaders = req.allHTTPHeaderFields {
+                    for (k, _) in allHeaders {
+                        if BrowserHeaderFilter.isSensitiveHeader(k) {
+                            req.setValue(nil, forHTTPHeaderField: k)
+                        }
+                    }
+                }
+            }
+
+            // 2. Cookie isolation across domains (RFC 6265 §5.4):
+            // If redirecting cross-site, clear stale/sensitive origin cookies so target domain cookies can be applied.
+            if !isSameSite {
+                req.setValue(nil, forHTTPHeaderField: "Cookie")
+            }
+
+            // 3. Referer security: strip on HTTPS -> HTTP downgrade or cross-site redirect (RFC 7231 §5.5.2)
+            if let srcScheme = sourceURL.scheme?.lowercased(),
+               let dstScheme = targetURL.scheme?.lowercased(),
+               (srcScheme == "https" && dstScheme == "http") || !isSameSite {
+                req.setValue(nil, forHTTPHeaderField: "Referer")
+            }
+        }
+
+        var enriched = enrich(req, snapshot: snapshot)
 
         // Preserve Range across redirect if present on the original request
         if let originalRange = task.originalRequest?.value(forHTTPHeaderField: "Range"),
@@ -322,9 +379,18 @@ public enum DownloadRequestEnricher {
         }
 
         // Record any Set-Cookie headers from the redirect response for cookie rotation
-        if let url = response.url ?? task.currentRequest?.url,
-           let headers = response.allHeaderFields as? [String: String] {
-            recordResponseCookies(headers: headers, for: url)
+        if let url = response.url ?? task.currentRequest?.url {
+            var stringHeaders: [String: String] = [:]
+            for (key, value) in response.allHeaderFields {
+                if let k = key as? String, let v = value as? String {
+                    stringHeaders[k] = v
+                } else if let k = key as? String {
+                    stringHeaders[k] = String(describing: value)
+                }
+            }
+            if !stringHeaders.isEmpty {
+                recordResponseCookies(headers: stringHeaders, for: url)
+            }
         }
 
         return enriched

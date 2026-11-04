@@ -371,13 +371,9 @@ final class ResourceThrottlingTests: XCTestCase {
         let burst: Int64 = 64 * 1024
         let limiter = BandwidthLimiter(bytesPerSecond: rateLimit, burstCapacity: burst)
 
-        // Exhaust burst capacity
-        let initialDelay = await limiter.reserve(bytes: burst)
-        XCTAssertEqual(initialDelay, 0, "Consuming exact burst should have zero delay")
-
-        // Next positive byte request would require waiting
-        let preDelay = await limiter.reserve(bytes: 1)
-        XCTAssertGreaterThan(preDelay, 0, "Requesting byte after exhaustion must require delay")
+        // Exhaust burst capacity with an excess reservation to ensure a durable deficit
+        let initialDelay = await limiter.reserve(bytes: burst * 2)
+        XCTAssertGreaterThan(initialDelay, 0, "Consuming twice burst capacity must require delay")
 
         // Passing zero or negative bytes must immediately return 0 without minting tokens
         let zeroDelay = await limiter.reserve(bytes: 0)
@@ -385,6 +381,10 @@ final class ResourceThrottlingTests: XCTestCase {
 
         let negativeDelay = await limiter.reserve(bytes: -100_000)
         XCTAssertEqual(negativeDelay, 0, "Negative byte reservation must return 0 delay")
+
+        // Requesting positive bytes while in deficit must still require delay
+        let postDelay = await limiter.reserve(bytes: 100)
+        XCTAssertGreaterThan(postDelay, 0, "Requesting byte after exhaustion must require delay")
 
         // Passing 0 or negative bytes to throttle must return immediately without error
         try await BandwidthLimiter.throttle(bytes: 0, global: limiter, perDownload: nil)

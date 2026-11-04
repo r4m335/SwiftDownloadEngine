@@ -321,4 +321,110 @@ final class DownloadRequestEnricherTests: XCTestCase {
         // Both nil/empty must return nil
         XCTAssertNil(DownloadRequestEnricher.ifRangeValidator(eTag: nil, lastModified: nil))
     }
+
+    func testHandleRedirectStripsAuthorizationAndSensitiveHeadersOnCrossOriginRedirect() {
+        let originalURL = URL(string: "https://auth.example.com/download/file.bin")!
+        let crossOriginURL = URL(string: "https://cdn.thirdparty.com/file.bin")!
+
+        var originalRequest = URLRequest(url: originalURL)
+        originalRequest.setValue("Bearer secret_jwt_token", forHTTPHeaderField: "Authorization")
+        originalRequest.setValue("my-secret-key", forHTTPHeaderField: "X-Api-Key")
+        originalRequest.setValue("bytes=0-100", forHTTPHeaderField: "Range")
+
+        var newRequest = URLRequest(url: crossOriginURL)
+        newRequest.setValue("Bearer secret_jwt_token", forHTTPHeaderField: "Authorization")
+        newRequest.setValue("my-secret-key", forHTTPHeaderField: "X-Api-Key")
+
+        let session = URLSession(configuration: .default)
+        let task = session.dataTask(with: originalRequest)
+        let response = HTTPURLResponse(url: originalURL, statusCode: 302, httpVersion: "HTTP/1.1", headerFields: [:])!
+
+        let redirected = DownloadRequestEnricher.handleRedirect(
+            task: task,
+            response: response,
+            newRequest: newRequest,
+            snapshot: nil
+        )
+
+        // RFC 7235 §2.2 / RFC 9110 §15.4: Authorization and sensitive headers MUST be stripped across origins
+        XCTAssertNil(redirected.value(forHTTPHeaderField: "Authorization"), "Authorization header must be stripped on cross-origin redirect")
+        XCTAssertNil(redirected.value(forHTTPHeaderField: "X-Api-Key"), "Sensitive API key header must be stripped on cross-origin redirect")
+        // Range must be preserved
+        XCTAssertEqual(redirected.value(forHTTPHeaderField: "Range"), "bytes=0-100", "Range header must be preserved across redirect")
+    }
+
+    func testHandleRedirectIsolatesCookiesOnCrossSiteRedirect() {
+        let originalURL = URL(string: "https://first-site.com/start")!
+        let targetURL = URL(string: "https://second-site.com/finish")!
+
+        let firstCookie = makeCookie(name: "first_token", value: "secret1", domain: "first-site.com")
+        let secondCookie = makeCookie(name: "second_token", value: "secret2", domain: "second-site.com")
+
+        let snapshot = BrowserSessionSnapshot(
+            userAgent: "Test-Agent",
+            acceptLanguage: "en-US",
+            allCookies: [firstCookie, secondCookie]
+        )
+
+        var originalRequest = URLRequest(url: originalURL)
+        originalRequest.setValue("first_token=secret1", forHTTPHeaderField: "Cookie")
+
+        var newRequest = URLRequest(url: targetURL)
+        // Simulate URLSession carrying over existing Cookie header
+        newRequest.setValue("first_token=secret1", forHTTPHeaderField: "Cookie")
+
+        let session = URLSession(configuration: .default)
+        let task = session.dataTask(with: originalRequest)
+        let response = HTTPURLResponse(url: originalURL, statusCode: 302, httpVersion: "HTTP/1.1", headerFields: [:])!
+
+        let redirected = DownloadRequestEnricher.handleRedirect(
+            task: task,
+            response: response,
+            newRequest: newRequest,
+            snapshot: snapshot
+        )
+
+        let cookieHeader = redirected.value(forHTTPHeaderField: "Cookie") ?? ""
+        // RFC 6265 §5.4: first-site cookies must NOT leak to second-site!
+        XCTAssertFalse(cookieHeader.contains("first_token"), "First-site cookie must not leak to second-site on cross-site redirect")
+        XCTAssertTrue(cookieHeader.contains("second_token=secret2"), "Second-site matching cookie must be attached for target domain")
+    }
+
+    func testEnrichAndRedirectSuppressesRefererOnHTTPSDowngradeToHTTP() {
+        let securePage = URL(string: "https://secure.example.com/watch/video")!
+        let insecureTarget = URL(string: "http://insecure.example.com/stream.mp4")!
+
+        let snapshot = BrowserSessionSnapshot(
+            userAgent: "Secure-UA",
+            acceptLanguage: "en-US",
+            allCookies: [],
+            pageURL: securePage
+        )
+
+        let req = URLRequest(url: insecureTarget)
+        let enriched = DownloadRequestEnricher.enrich(req, snapshot: snapshot)
+
+        // RFC 7231 §5.5.2: HTTPS referer MUST NOT be sent to HTTP target
+        XCTAssertNil(enriched.value(forHTTPHeaderField: "Referer"), "HTTPS Referer must not be sent over insecure HTTP")
+        XCTAssertNil(enriched.value(forHTTPHeaderField: "Origin"), "Origin must not be sent on HTTPS to HTTP downgrade")
+
+        // Also test in handleRedirect
+        var originalRequest = URLRequest(url: securePage)
+        originalRequest.setValue("https://secure.example.com/watch/video", forHTTPHeaderField: "Referer")
+        var newRequest = URLRequest(url: insecureTarget)
+        newRequest.setValue("https://secure.example.com/watch/video", forHTTPHeaderField: "Referer")
+
+        let session = URLSession(configuration: .default)
+        let task = session.dataTask(with: originalRequest)
+        let response = HTTPURLResponse(url: securePage, statusCode: 302, httpVersion: "HTTP/1.1", headerFields: [:])!
+
+        let redirected = DownloadRequestEnricher.handleRedirect(
+            task: task,
+            response: response,
+            newRequest: newRequest,
+            snapshot: snapshot
+        )
+
+        XCTAssertNil(redirected.value(forHTTPHeaderField: "Referer"), "Referer must be stripped on HTTPS to HTTP redirect downgrade")
+    }
 }
