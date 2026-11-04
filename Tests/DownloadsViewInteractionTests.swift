@@ -41,7 +41,7 @@ final class DownloadsViewInteractionTests: XCTestCase {
         )
         viewModel = DownloadManagerViewModel(
             engine: engine,
-            downloadsDirectoryURL: downloadsDir
+            downloadsDirectory: downloadsDir
         )
     }
 
@@ -59,14 +59,15 @@ final class DownloadsViewInteractionTests: XCTestCase {
 
         let transfer = UnifiedTransfer(
             id: "test-transfer-1",
-            type: .http,
             name: "sample_video.mp4",
+            type: .http,
             state: .completed,
-            progressFraction: 1.0,
             completedBytes: 1024,
             totalBytes: 1024,
-            speedBytesPerSecond: 0,
-            destinationURL: tempDirectory.appendingPathComponent("sample_video.mp4")
+            progressFraction: 1.0,
+            downloadSpeedBytesPerSecond: 0,
+            destinationURL: tempDirectory.appendingPathComponent("sample_video.mp4"),
+            source: "https://example.com/sample_video.mp4"
         )
 
         let rowView = UnifiedTransferRowView(
@@ -107,14 +108,15 @@ final class DownloadsViewInteractionTests: XCTestCase {
 
         let transfer = UnifiedTransfer(
             id: "test-transfer-2",
-            type: .http,
             name: "archive.zip",
+            type: .http,
             state: .completed,
-            progressFraction: 1.0,
             completedBytes: 2048,
             totalBytes: 2048,
-            speedBytesPerSecond: 0,
-            destinationURL: tempDirectory.appendingPathComponent("archive.zip")
+            progressFraction: 1.0,
+            downloadSpeedBytesPerSecond: 0,
+            destinationURL: tempDirectory.appendingPathComponent("archive.zip"),
+            source: "https://example.com/archive.zip"
         )
 
         let rowView = UnifiedTransferRowView(
@@ -181,14 +183,15 @@ final class DownloadsViewInteractionTests: XCTestCase {
 
         let transfer = UnifiedTransfer(
             id: "test-transfer-3",
-            type: .http,
             name: "dataset.tar",
+            type: .http,
             state: .downloading,
-            progressFraction: 0.5,
             completedBytes: 500,
             totalBytes: 1000,
-            speedBytesPerSecond: 100,
-            destinationURL: tempDirectory.appendingPathComponent("dataset.tar")
+            progressFraction: 0.5,
+            downloadSpeedBytesPerSecond: 100,
+            destinationURL: tempDirectory.appendingPathComponent("dataset.tar"),
+            source: "https://example.com/dataset.tar"
         )
 
         let rowView = UnifiedTransferRowView(
