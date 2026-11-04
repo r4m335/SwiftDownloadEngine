@@ -801,16 +801,19 @@ public enum DASHTransferPlanner {
     ) throws -> URL {
         guard let resolved = URL(string: rawURL.absoluteString, relativeTo: baseURL)?.absoluteURL,
               resolved.absoluteString.utf8.count <= limits.maxExpandedURLLength,
-              let components = URLComponents(url: resolved, resolvingAgainstBaseURL: false),
+              var components = URLComponents(url: resolved, resolvingAgainstBaseURL: false),
               let scheme = components.scheme?.lowercased(),
               (scheme == "http" || scheme == "https"),
               let host = components.host, !host.isEmpty,
               components.user == nil,
-              components.password == nil,
-              components.fragment == nil else {
+              components.password == nil else {
             throw DASHVODTransferPlanError.invalidResourceURL
         }
-        return resolved
+        components.fragment = nil
+        guard let sanitizedURL = components.url else {
+            throw DASHVODTransferPlanError.invalidResourceURL
+        }
+        return sanitizedURL
     }
 
     private static func adding(_ lhs: Int64, _ rhs: Int64) throws -> Int64 {

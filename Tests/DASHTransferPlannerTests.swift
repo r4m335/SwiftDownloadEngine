@@ -274,4 +274,27 @@ final class DASHTransferPlannerTests: XCTestCase {
         XCTAssertEqual(plan.audio?.bandwidth, 256000)
         XCTAssertEqual(plan.audio?.resources.first?.url.absoluteString, "https://video.example/path/audio-high.mp4")
     }
+
+    func testDASHResourcesWithFragmentsAreSanitized() throws {
+        let mpdWithFragments = """
+        <MPD type="static" mediaPresentationDuration="PT2S">
+          <Period id="p0" duration="PT2S">
+            <AdaptationSet id="video" contentType="video" mimeType="video/mp4" codecs="avc1">
+              <Representation id="v_frag" bandwidth="1000000" width="1280" height="720">
+                <SegmentTemplate timescale="1" duration="2" initialization="init.mp4#track=video" media="seg-$Number$.m4s#t=0,2"/>
+              </Representation>
+            </AdaptationSet>
+          </Period>
+        </MPD>
+        """
+
+        let manifest = try MPDManifestParser.parse(mpdWithFragments, baseURL: manifestURL)
+        let plan = try DASHTransferPlanner.makeVODPlan(from: manifest)
+
+        XCTAssertEqual(plan.video?.resources.count, 2)
+        XCTAssertEqual(plan.video?.resources[0].url.absoluteString, "https://video.example/path/init.mp4")
+        XCTAssertNil(plan.video?.resources[0].url.fragment)
+        XCTAssertEqual(plan.video?.resources[1].url.absoluteString, "https://video.example/path/seg-1.m4s")
+        XCTAssertNil(plan.video?.resources[1].url.fragment)
+    }
 }

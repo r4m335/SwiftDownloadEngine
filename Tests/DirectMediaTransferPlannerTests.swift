@@ -318,5 +318,44 @@ final class DirectMediaTransferPlannerTests: XCTestCase {
         XCTAssertEqual(first.resourceType, .video)
         XCTAssertTrue(first.suggestedFilename.hasSuffix(".mp4"), "Expected suggested filename to end in .mp4, got \(first.suggestedFilename)")
     }
+
+    func testHTTPSDowngradeToHTTPStripsCookiesRefererOriginAndContext() throws {
+        let secureOriginalURL = URL(string: "https://video.example/video.mp4")!
+        let insecureTargetURL = URL(string: "http://video.example/stream.mp4")!
+        let context = BrowserRequestContext(
+            url: secureOriginalURL,
+            pageURL: URL(string: "https://video.example/watch")!,
+            userAgent: "BrowserTest/1.0",
+            cookies: [
+                BrowserCookie(name: "session_token", value: "secret123", domain: "video.example")
+            ],
+            customHeaders: [
+                "Authorization": "Bearer secret_jwt",
+                "Origin": "https://video.example",
+                "X-Trace-ID": "trace-insecure-downgrade"
+            ]
+        )
+
+        let plan = try DirectMediaTransferPlanner.makePlan(
+            candidate: BrowserMediaCandidateClassifier.classify(
+                resource: resource(url: secureOriginalURL, requestContext: context),
+                now: now
+            ),
+            response: DirectMediaResponseMetadata(
+                finalURL: insecureTargetURL,
+                statusCode: 200,
+                mimeType: "video/mp4"
+            ),
+            now: now
+        )
+
+        XCTAssertEqual(plan.transferURL, insecureTargetURL)
+        XCTAssertNil(plan.requestContext, "Insecure downgrade must not forward secure BrowserRequestContext")
+        XCTAssertNil(plan.requestHeaders["Cookie"], "Cookies must be stripped on HTTPS to HTTP protocol downgrade")
+        XCTAssertNil(plan.requestHeaders["Referer"], "Referer must be stripped on HTTPS to HTTP downgrade per RFC 7231 §5.5.2")
+        XCTAssertNil(plan.requestHeaders["Origin"], "Origin must not leak HTTPS scheme on HTTP downgrade")
+        XCTAssertNil(plan.requestHeaders["Authorization"], "Authorization must be stripped across origin/scheme downgrade")
+        XCTAssertEqual(plan.requestHeaders["X-Trace-ID"], "trace-insecure-downgrade")
+    }
 }
 

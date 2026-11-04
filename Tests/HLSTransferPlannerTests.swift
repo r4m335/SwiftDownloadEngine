@@ -178,4 +178,28 @@ final class HLSTransferPlannerTests: XCTestCase {
             XCTAssertEqual(error as? HLSVODTransferPlanError, .invalidSegmentMetadata)
         }
     }
+
+    func testManifestAndSegmentURLsWithFragmentsAreSanitized() throws {
+        let playlist = """
+        #EXTM3U
+        #EXT-X-PLAYLIST-TYPE:VOD
+        #EXT-X-MAP:URI="init.mp4#track=video",BYTERANGE="100@0"
+        #EXTINF:4.0,
+        segment1.m4s#t=0,4
+        #EXTINF:4.0,
+        https://video.example/path/segment2.m4s#anchor
+        #EXT-X-ENDLIST
+        """
+
+        let manifest = try HLSManifestParser.parse(playlist, baseURL: manifestURL)
+        let plan = try HLSTransferPlanner.makeVODPlan(from: manifest)
+
+        XCTAssertEqual(plan.resources.count, 3)
+        XCTAssertEqual(plan.resources[0].url.absoluteString, "https://video.example/path/init.mp4")
+        XCTAssertNil(plan.resources[0].url.fragment)
+        XCTAssertEqual(plan.resources[1].url.absoluteString, "https://video.example/path/segment1.m4s")
+        XCTAssertNil(plan.resources[1].url.fragment)
+        XCTAssertEqual(plan.resources[2].url.absoluteString, "https://video.example/path/segment2.m4s")
+        XCTAssertNil(plan.resources[2].url.fragment)
+    }
 }

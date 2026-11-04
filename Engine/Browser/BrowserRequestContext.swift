@@ -235,14 +235,22 @@ public struct BrowserRequestContext: Sendable, Codable, Hashable {
             headers["Cookie"] = cookieHeader
         }
 
-        // 2. Referer
+        // 2. Referer (RFC 7231 §5.5.2: Omit Referer on HTTPS -> HTTP downgrade)
         if let ref = self.referer {
-            headers["Referer"] = ref
+            let isRefererHTTPS = URL(string: ref)?.scheme?.lowercased() == "https"
+            let isDestHTTP = dest.scheme?.lowercased() == "http"
+            if !(isRefererHTTPS && isDestHTTP) {
+                headers["Referer"] = ref
+            }
         }
 
-        // 2b. Origin
+        // 2b. Origin (Suppress HTTPS Origin on HTTP downgrade)
         if let orig = self.origin {
-            headers["Origin"] = orig
+            let isOriginHTTPS = orig.lowercased().hasPrefix("https:")
+            let isDestHTTP = dest.scheme?.lowercased() == "http"
+            if !(isOriginHTTPS && isDestHTTP) {
+                headers["Origin"] = orig
+            }
         }
 
         // 3. User-Agent
@@ -251,6 +259,7 @@ public struct BrowserRequestContext: Sendable, Codable, Hashable {
         }
 
         // 4. Approved custom headers (filtered against forbidden names)
+        let isDestHTTP = dest.scheme?.lowercased() == "http"
         for (k, v) in customHeaders {
             let lowerName = k.trimmingCharacters(in: .whitespaces).lowercased()
             if !BrowserHeaderFilter.isForbiddenHeader(k) &&
@@ -258,6 +267,9 @@ public struct BrowserRequestContext: Sendable, Codable, Hashable {
                 lowerName != "referer" &&
                 lowerName != "user-agent" &&
                 (includeCredentials || !BrowserHeaderFilter.isSensitiveHeader(k)) {
+                if lowerName == "origin" && isDestHTTP && v.lowercased().hasPrefix("https:") {
+                    continue
+                }
                 headers[k] = v
             }
         }
@@ -386,13 +398,18 @@ public struct BrowserHeaderFilter {
             return headers
         }
 
+        let isOriginalHTTPS = originalURL.scheme?.lowercased() == "https"
+        let isRedirectHTTP = redirectURL.scheme?.lowercased() == "http"
+        let isDowngrade = isOriginalHTTPS && isRedirectHTTP
+
         let sameSite = isSameSiteOrSubdomain(originalURL, redirectURL)
         var stripped: [String: String] = [:]
         for (k, v) in headers {
             let lower = k.trimmingCharacters(in: .whitespaces).lowercased()
-            // Retain domain-scoped cookies when redirecting to a same-site/subdomain host
+            // Retain domain-scoped cookies when redirecting to a same-site/subdomain host,
+            // UNLESS redirecting across an insecure HTTPS -> HTTP protocol downgrade (RFC 6265 §5.4).
             if lower == "cookie" {
-                if sameSite {
+                if sameSite && !isDowngrade {
                     stripped[k] = v
                 }
                 continue
@@ -400,9 +417,14 @@ public struct BrowserHeaderFilter {
             if isSensitiveHeader(lower) {
                 continue
             }
+            // RFC 7231 §5.5.2: Omit Referer on HTTPS -> HTTP downgrade.
             // The captured page URL can contain private paths or query values;
             // do not carry it across an origin boundary unless same-site.
-            if lower == "referer" && !sameSite {
+            if lower == "referer" && (!sameSite || isDowngrade) {
+                continue
+            }
+            // Suppress secure Origin on insecure downgrade
+            if lower == "origin" && isDowngrade {
                 continue
             }
             stripped[k] = v

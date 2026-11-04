@@ -190,8 +190,10 @@ public enum DirectMediaTransferPlanner {
             headers = [:]
         }
 
+        let isDowngrade = originalURL.scheme?.lowercased() == "https" && transferURL.scheme?.lowercased() == "http"
         let safeContext: BrowserRequestContext?
-        if let context = candidate.requestContext,
+        if !isDowngrade,
+           let context = candidate.requestContext,
            (sameOrigin(originalURL, transferURL) ||
             BrowserHeaderFilter.isSameSiteOrSubdomain(originalURL, transferURL) ||
             context.cookies.contains(where: { $0.matches(url: transferURL) })) {

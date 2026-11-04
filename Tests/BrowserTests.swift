@@ -304,6 +304,72 @@ final class BrowserTests: XCTestCase {
         XCTAssertEqual(stripped["X-Trace-ID"], "trace-1")
     }
 
+    func testBrowserCredentialsAndRefererAreStrippedOnHTTPSDowngradeToHTTP() {
+        let secureOrigin = URL(string: "https://example.com/file.zip")!
+        let insecureSameHost = URL(string: "http://example.com/file.zip")!
+        let insecureSubdomain = URL(string: "http://cdn.example.com/file.zip")!
+
+        let headers = [
+            "Cookie": "session=private",
+            "Authorization": "Bearer private",
+            "Referer": "https://example.com/account",
+            "Origin": "https://example.com",
+            "User-Agent": "BrowserTest/1.0",
+            "X-Trace-ID": "trace-downgrade"
+        ]
+
+        // Even though same-host / same-site, an insecure downgrade must strip cookies, referer, origin, and authorization
+        let sameHostStripped = BrowserHeaderFilter.stripCredentialsOnRedirect(
+            headers: headers,
+            from: secureOrigin,
+            to: insecureSameHost
+        )
+        XCTAssertNil(sameHostStripped["Cookie"], "Cookies must not leak over unencrypted HTTP downgrade")
+        XCTAssertNil(sameHostStripped["Authorization"], "Authorization must not leak over unencrypted HTTP downgrade")
+        XCTAssertNil(sameHostStripped["Referer"], "Referer must not be sent on HTTPS -> HTTP downgrade (RFC 7231 §5.5.2)")
+        XCTAssertNil(sameHostStripped["Origin"], "Origin must not leak HTTPS scheme over unencrypted HTTP")
+        XCTAssertEqual(sameHostStripped["User-Agent"], "BrowserTest/1.0")
+        XCTAssertEqual(sameHostStripped["X-Trace-ID"], "trace-downgrade")
+
+        let subdomainStripped = BrowserHeaderFilter.stripCredentialsOnRedirect(
+            headers: headers,
+            from: secureOrigin,
+            to: insecureSubdomain
+        )
+        XCTAssertNil(subdomainStripped["Cookie"])
+        XCTAssertNil(subdomainStripped["Authorization"])
+        XCTAssertNil(subdomainStripped["Referer"])
+        XCTAssertNil(subdomainStripped["Origin"])
+        XCTAssertEqual(subdomainStripped["User-Agent"], "BrowserTest/1.0")
+        XCTAssertEqual(subdomainStripped["X-Trace-ID"], "trace-downgrade")
+    }
+
+    func testBrowserRequestContextSuppressesRefererAndOriginOnHTTPDowngrade() {
+        let securePage = URL(string: "https://example.com/watch")!
+        let context = BrowserRequestContext(
+            url: URL(string: "https://example.com/video.mp4")!,
+            pageURL: securePage,
+            userAgent: "BrowserTest/1.0",
+            customHeaders: [
+                "Origin": "https://example.com",
+                "X-Trace-ID": "trace-ctx"
+            ]
+        )
+
+        let insecureDest = URL(string: "http://example.com/video.mp4")!
+        let headers = context.effectiveHeaders(for: insecureDest)
+
+        XCTAssertNil(headers["Referer"], "Referer must be omitted when target URL is HTTP and page is HTTPS")
+        XCTAssertNil(headers["Origin"], "Origin must be omitted when target URL is HTTP and origin is HTTPS")
+        XCTAssertEqual(headers["User-Agent"], "BrowserTest/1.0")
+        XCTAssertEqual(headers["X-Trace-ID"], "trace-ctx")
+
+        let secureDest = URL(string: "https://example.com/video.mp4")!
+        let secureHeaders = context.effectiveHeaders(for: secureDest)
+        XCTAssertEqual(secureHeaders["Referer"], "https://example.com/watch")
+        XCTAssertEqual(secureHeaders["Origin"], "https://example.com")
+    }
+
     func testBrowserRequestContextCanBeAttachedToResourceAndHandoff() {
         let url = URL(string: "https://example.com/file.pdf")!
         let context = BrowserRequestContext(url: url, source: .webpageResource)
