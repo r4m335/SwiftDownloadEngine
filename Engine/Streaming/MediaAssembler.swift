@@ -197,13 +197,23 @@ public enum MediaAssembler {
             try DownloadManagerViewModel.ensureDirectoryExistsAndWritable(parentDir, fileManager: fileManager)
 
             let stagingPublishedURL: URL
+            var publishedDestinationURL = request.destinationURL
+            var finalContainer = request.container
             var needsRemuxCleanup = false
             if request.container == .mpegTS && request.destinationURL.pathExtension.lowercased() == "mp4" {
                 #if canImport(AVFoundation)
                 let remuxStaging = parentDir.appendingPathComponent(".remux-\(UUID().uuidString).mp4")
-                try remuxMPEGTSFileToMP4(sourceTSURL: temporaryOutput, destinationMP4URL: remuxStaging)
-                stagingPublishedURL = remuxStaging
-                needsRemuxCleanup = true
+                do {
+                    try remuxMPEGTSFileToMP4(sourceTSURL: temporaryOutput, destinationMP4URL: remuxStaging)
+                    stagingPublishedURL = remuxStaging
+                    needsRemuxCleanup = true
+                    finalContainer = .fragmentedMP4
+                } catch {
+                    PipelineLogger.shared.log("[MediaAssembler] MPEG-TS remux to MP4 failed: \(error.localizedDescription). Preserving valid MPEG-TS assembly as output.")
+                    stagingPublishedURL = temporaryOutput
+                    publishedDestinationURL = request.destinationURL.deletingPathExtension().appendingPathExtension("ts")
+                    finalContainer = .mpegTS
+                }
                 #else
                 stagingPublishedURL = temporaryOutput
                 #endif
@@ -220,65 +230,65 @@ public enum MediaAssembler {
                 throw MediaAssemblyError.fileOperationFailed
             }
 
-            if fileManager.fileExists(atPath: request.destinationURL.path) {
+            if fileManager.fileExists(atPath: publishedDestinationURL.path) {
                 #if canImport(Darwin)
                 do {
-                    _ = try fileManager.replaceItemAt(request.destinationURL, withItemAt: stagingPublishedURL, backupItemName: nil, options: [])
-                    let destHandle = try FileHandle(forWritingTo: request.destinationURL)
+                    _ = try fileManager.replaceItemAt(publishedDestinationURL, withItemAt: stagingPublishedURL, backupItemName: nil, options: [])
+                    let destHandle = try FileHandle(forWritingTo: publishedDestinationURL)
                     defer { try? destHandle.close() }
                     try destHandle.synchronize()
                 } catch {
                     // Non-destructive fallback: preserve existing destination if move fails
-                    let backupURL = request.destinationURL.deletingLastPathComponent()
-                        .appendingPathComponent(".backup-\(UUID().uuidString)-\(request.destinationURL.lastPathComponent)")
-                    try fileManager.moveItem(at: request.destinationURL, to: backupURL)
+                    let backupURL = publishedDestinationURL.deletingLastPathComponent()
+                        .appendingPathComponent(".backup-\(UUID().uuidString)-\(publishedDestinationURL.lastPathComponent)")
+                    try fileManager.moveItem(at: publishedDestinationURL, to: backupURL)
                     do {
-                        try fileManager.moveItem(at: stagingPublishedURL, to: request.destinationURL)
-                        let destHandle = try FileHandle(forWritingTo: request.destinationURL)
+                        try fileManager.moveItem(at: stagingPublishedURL, to: publishedDestinationURL)
+                        let destHandle = try FileHandle(forWritingTo: publishedDestinationURL)
                         defer { try? destHandle.close() }
                         try destHandle.synchronize()
                         _ = try? fileManager.removeItem(at: backupURL)
                     } catch {
-                        _ = try? fileManager.removeItem(at: request.destinationURL)
-                        _ = try? fileManager.moveItem(at: backupURL, to: request.destinationURL)
+                        _ = try? fileManager.removeItem(at: publishedDestinationURL)
+                        _ = try? fileManager.moveItem(at: backupURL, to: publishedDestinationURL)
                         throw error
                     }
                 }
                 #else
-                let backupURL = request.destinationURL.deletingLastPathComponent()
-                    .appendingPathComponent(".backup-\(UUID().uuidString)-\(request.destinationURL.lastPathComponent)")
-                try fileManager.moveItem(at: request.destinationURL, to: backupURL)
+                let backupURL = publishedDestinationURL.deletingLastPathComponent()
+                    .appendingPathComponent(".backup-\(UUID().uuidString)-\(publishedDestinationURL.lastPathComponent)")
+                try fileManager.moveItem(at: publishedDestinationURL, to: backupURL)
                 do {
-                    try fileManager.moveItem(at: stagingPublishedURL, to: request.destinationURL)
-                    let destHandle = try FileHandle(forWritingTo: request.destinationURL)
+                    try fileManager.moveItem(at: stagingPublishedURL, to: publishedDestinationURL)
+                    let destHandle = try FileHandle(forWritingTo: publishedDestinationURL)
                     defer { try? destHandle.close() }
                     try destHandle.synchronize()
                     _ = try? fileManager.removeItem(at: backupURL)
                 } catch {
-                    _ = try? fileManager.removeItem(at: request.destinationURL)
-                    _ = try? fileManager.moveItem(at: backupURL, to: request.destinationURL)
+                    _ = try? fileManager.removeItem(at: publishedDestinationURL)
+                    _ = try? fileManager.moveItem(at: backupURL, to: publishedDestinationURL)
                     throw error
                 }
                 #endif
             } else {
-                try fileManager.moveItem(at: stagingPublishedURL, to: request.destinationURL)
+                try fileManager.moveItem(at: stagingPublishedURL, to: publishedDestinationURL)
                 do {
-                    let destHandle = try FileHandle(forWritingTo: request.destinationURL)
+                    let destHandle = try FileHandle(forWritingTo: publishedDestinationURL)
                     defer { try? destHandle.close() }
                     try destHandle.synchronize()
                 } catch {
-                    _ = try? fileManager.removeItem(at: request.destinationURL)
+                    _ = try? fileManager.removeItem(at: publishedDestinationURL)
                     throw error
                 }
             }
 
-            guard let byteCount = fileManager.fileSize(atPath: request.destinationURL.path), byteCount > 0 else {
+            guard let byteCount = fileManager.fileSize(atPath: publishedDestinationURL.path), byteCount > 0 else {
                 throw MediaAssemblyError.fileOperationFailed
             }
-            PipelineLogger.shared.log("[MediaAssembler] assemble completed: outputURL=\(request.destinationURL.path), byteCount=\(byteCount), pathExtension=\(request.destinationURL.pathExtension)")
+            PipelineLogger.shared.log("[MediaAssembler] assemble completed: outputURL=\(publishedDestinationURL.path), byteCount=\(byteCount), pathExtension=\(publishedDestinationURL.pathExtension)")
             return MediaAssemblyOutput(
-                destinationURL: request.destinationURL,
-                container: request.container,
+                destinationURL: publishedDestinationURL,
+                container: finalContainer,
                 trackCount: request.tracks.count,
                 byteCount: byteCount,
                 validation: validation
@@ -294,6 +304,8 @@ public enum MediaAssembler {
     private final class MuxState: @unchecked Sendable {
         let lock = NSLock()
         var appendFailed = false
+        var lastError: String? = nil
+        var samplesAppended = 0
     }
 
     private final class MuxTrackContext: @unchecked Sendable {
@@ -779,6 +791,26 @@ public enum MediaAssembler {
         return false
     }
 
+    private static func validateRemuxedMP4(_ url: URL) -> Bool {
+        let fileManager = FileManager.default
+        guard let size = fileManager.fileSize(atPath: url.path), size > 0 else {
+            return false
+        }
+        let asset = AVURLAsset(url: url)
+        let sema = DispatchSemaphore(value: 0)
+        asset.loadValuesAsynchronously(forKeys: ["tracks", "duration"]) {
+            sema.signal()
+        }
+        _ = sema.wait(timeout: .now() + 3.0)
+        guard !asset.tracks.isEmpty else {
+            return false
+        }
+        guard asset.duration.isNumeric && asset.duration.seconds > 0 else {
+            return false
+        }
+        return true
+    }
+
     private static func remuxMPEGTSFileToMP4(sourceTSURL: URL, destinationMP4URL: URL) throws {
         let fileManager = FileManager.default
         let tempDir = destinationMP4URL.deletingLastPathComponent()
@@ -810,14 +842,56 @@ public enum MediaAssembler {
         try? m3u8Content.write(to: playlistURL, atomically: true, encoding: .utf8)
         defer { try? fileManager.removeItem(at: playlistURL) }
 
-        var targetAsset = AVURLAsset(url: tsFileURL)
-        if targetAsset.tracks.isEmpty {
-            targetAsset = AVURLAsset(url: playlistURL)
+        let tsAsset = AVURLAsset(url: tsFileURL)
+        let loadSema = DispatchSemaphore(value: 0)
+        tsAsset.loadValuesAsynchronously(forKeys: ["tracks", "playable", "duration"]) {
+            loadSema.signal()
+        }
+        _ = loadSema.wait(timeout: .now() + 5.0)
+
+        var targetAsset = tsAsset
+        if tsAsset.tracks.isEmpty {
+            let playlistAsset = AVURLAsset(url: playlistURL)
+            let pSema = DispatchSemaphore(value: 0)
+            playlistAsset.loadValuesAsynchronously(forKeys: ["tracks", "playable", "duration"]) {
+                pSema.signal()
+            }
+            _ = pSema.wait(timeout: .now() + 5.0)
+            if !playlistAsset.tracks.isEmpty {
+                targetAsset = playlistAsset
+            }
         }
 
+        let videoTracks = targetAsset.tracks(withMediaType: .video)
+        let audioTracks = targetAsset.tracks(withMediaType: .audio)
+        let durationSec = targetAsset.duration.isNumeric ? targetAsset.duration.seconds : -1.0
+        let playable: Bool
+        if #available(macOS 12.0, iOS 15.0, *) {
+            playable = targetAsset.isPlayable
+        } else {
+            playable = true
+        }
+        let trackCodecs = targetAsset.tracks.compactMap { track -> String? in
+            let desc = (track.formatDescriptions as? [CMFormatDescription])?.first
+            if let desc = desc {
+                let mediaSubtype = CMFormatDescriptionGetMediaSubType(desc)
+                let fourCC = String(format: "%c%c%c%c",
+                                    (mediaSubtype >> 24) & 0xff,
+                                    (mediaSubtype >> 16) & 0xff,
+                                    (mediaSubtype >> 8) & 0xff,
+                                    mediaSubtype & 0xff)
+                return "\(track.mediaType.rawValue):\(fourCC)"
+            }
+            return track.mediaType.rawValue
+        }.joined(separator: ", ")
+
+        PipelineLogger.shared.log("[MediaAssembler] MPEG-TS source diagnostics: totalTracks=\(targetAsset.tracks.count), video=\(videoTracks.count), audio=\(audioTracks.count), duration=\(durationSec)s, playable=\(playable), codecs=[\(trackCodecs)]")
+
         var didSucceed = false
+        var lastErrorReason: String? = nil
 
         // Attempt 1: AVAssetExportSession passthrough
+        PipelineLogger.shared.log("[MediaAssembler] Remux Attempt 1: AVAssetExportSession with AVAssetExportPresetPassthrough...")
         if let exportSession = AVAssetExportSession(asset: targetAsset, presetName: AVAssetExportPresetPassthrough) {
             exportSession.outputURL = tempMP4
             exportSession.outputFileType = .mp4
@@ -829,15 +903,27 @@ public enum MediaAssembler {
             sema.wait()
             if exportSession.status == .completed && fileManager.fileExists(atPath: tempMP4.path) {
                 let size = fileManager.fileSize(atPath: tempMP4.path) ?? 0
-                if size > 0 {
+                if size > 0 && validateRemuxedMP4(tempMP4) {
+                    PipelineLogger.shared.log("[MediaAssembler] Remux Attempt 1 succeeded: \(size) bytes")
                     didSucceed = true
+                } else {
+                    lastErrorReason = "Attempt 1 output validation failed (size=\(size))"
+                    PipelineLogger.shared.log("[MediaAssembler] Remux Attempt 1 produced invalid MP4 (size=\(size))")
                 }
+            } else {
+                let errDesc = exportSession.error?.localizedDescription ?? "unknown error"
+                lastErrorReason = "Attempt 1 status=\(exportSession.status.rawValue), error=\(errDesc)"
+                PipelineLogger.shared.log("[MediaAssembler] Remux Attempt 1 failed: status=\(exportSession.status.rawValue), error=\(errDesc)")
             }
+        } else {
+            lastErrorReason = "AVAssetExportSession(preset: Passthrough) could not be initialized"
+            PipelineLogger.shared.log("[MediaAssembler] Remux Attempt 1: export session could not be created with preset Passthrough")
         }
 
         // Attempt 2: AVAssetExportPresetHighestQuality
         if !didSucceed {
             try? fileManager.removeItem(at: tempMP4)
+            PipelineLogger.shared.log("[MediaAssembler] Remux Attempt 2: AVAssetExportSession with AVAssetExportPresetHighestQuality...")
             if let exportSession = AVAssetExportSession(asset: targetAsset, presetName: AVAssetExportPresetHighestQuality) {
                 exportSession.outputURL = tempMP4
                 exportSession.outputFileType = .mp4
@@ -849,43 +935,76 @@ public enum MediaAssembler {
                 sema.wait()
                 if exportSession.status == .completed && fileManager.fileExists(atPath: tempMP4.path) {
                     let size = fileManager.fileSize(atPath: tempMP4.path) ?? 0
-                    if size > 0 {
+                    if size > 0 && validateRemuxedMP4(tempMP4) {
+                        PipelineLogger.shared.log("[MediaAssembler] Remux Attempt 2 succeeded: \(size) bytes")
                         didSucceed = true
+                    } else {
+                        lastErrorReason = "Attempt 2 output validation failed (size=\(size))"
+                        PipelineLogger.shared.log("[MediaAssembler] Remux Attempt 2 produced invalid MP4 (size=\(size))")
                     }
+                } else {
+                    let errDesc = exportSession.error?.localizedDescription ?? "unknown error"
+                    lastErrorReason = "Attempt 2 status=\(exportSession.status.rawValue), error=\(errDesc)"
+                    PipelineLogger.shared.log("[MediaAssembler] Remux Attempt 2 failed: status=\(exportSession.status.rawValue), error=\(errDesc)")
                 }
+            } else {
+                lastErrorReason = "AVAssetExportSession(preset: HighestQuality) could not be initialized"
+                PipelineLogger.shared.log("[MediaAssembler] Remux Attempt 2: export session could not be created with preset HighestQuality")
             }
         }
 
         // Attempt 3: AVAssetReader + AVAssetWriter if tracks are exposed
         if !didSucceed {
             try? fileManager.removeItem(at: tempMP4)
-            let assetToRead = targetAsset.tracks.isEmpty ? AVURLAsset(url: tsFileURL) : targetAsset
+            PipelineLogger.shared.log("[MediaAssembler] Remux Attempt 3: AVAssetReader + AVAssetWriter...")
+            let assetToRead = targetAsset.tracks.isEmpty ? tsAsset : targetAsset
             if !assetToRead.tracks.isEmpty {
                 do {
                     let writer = try AVAssetWriter(outputURL: tempMP4, fileType: .mp4)
                     let reader = try AVAssetReader(asset: assetToRead)
-                    var outputsAndInputs: [(AVAssetReaderTrackOutput, AVAssetWriterInput)] = []
+                    var outputsAndInputs: [(AVAssetReaderTrackOutput, AVAssetWriterInput, MediaAssemblyTrackKind)] = []
 
                     for track in assetToRead.tracks {
                         guard track.mediaType == .video || track.mediaType == .audio else { continue }
+                        let kind: MediaAssemblyTrackKind = track.mediaType == .video ? .video : .audio
                         let output = AVAssetReaderTrackOutput(track: track, outputSettings: nil)
-                        guard reader.canAdd(output) else { continue }
+                        output.alwaysCopiesSampleData = false
+                        guard reader.canAdd(output) else {
+                            PipelineLogger.shared.log("[MediaAssembler] Remux Attempt 3: cannot add reader output for \(kind.rawValue)")
+                            continue
+                        }
                         reader.add(output)
 
                         let input = AVAssetWriterInput(mediaType: track.mediaType, outputSettings: nil)
                         input.expectsMediaDataInRealTime = false
-                        guard writer.canAdd(input) else { continue }
+                        guard writer.canAdd(input) else {
+                            PipelineLogger.shared.log("[MediaAssembler] Remux Attempt 3: cannot add writer input for \(kind.rawValue)")
+                            continue
+                        }
                         writer.add(input)
 
-                        outputsAndInputs.append((output, input))
+                        outputsAndInputs.append((output, input, kind))
                     }
 
-                    if !outputsAndInputs.isEmpty && reader.startReading() && writer.startWriting() {
+                    if outputsAndInputs.isEmpty {
+                        let msg = "No suitable video or audio tracks could be added to reader/writer"
+                        lastErrorReason = msg
+                        PipelineLogger.shared.log("[MediaAssembler] Remux Attempt 3: \(msg)")
+                    } else if !reader.startReading() {
+                        let rErr = reader.error?.localizedDescription ?? "unknown reader start error"
+                        lastErrorReason = "Reader startReading failed: \(rErr)"
+                        PipelineLogger.shared.log("[MediaAssembler] Remux Attempt 3: \(lastErrorReason!)")
+                    } else if !writer.startWriting() {
+                        let wErr = writer.error?.localizedDescription ?? "unknown writer start error"
+                        lastErrorReason = "Writer startWriting failed: \(wErr)"
+                        PipelineLogger.shared.log("[MediaAssembler] Remux Attempt 3: \(lastErrorReason!)")
+                        reader.cancelReading()
+                    } else {
                         writer.startSession(atSourceTime: .zero)
                         let group = DispatchGroup()
                         let state = MuxState()
 
-                        for (output, input) in outputsAndInputs {
+                        for (output, input, kind) in outputsAndInputs {
                             group.enter()
                             input.requestMediaDataWhenReady(on: DispatchQueue(label: "remux-track-\(UUID().uuidString)")) {
                                 while input.isReadyForMoreMediaData {
@@ -894,9 +1013,16 @@ public enum MediaAssembler {
                                         group.leave()
                                         return
                                     }
-                                    if !input.append(sample) {
+                                    if input.append(sample) {
+                                        state.lock.lock()
+                                        state.samplesAppended += 1
+                                        state.lock.unlock()
+                                    } else {
+                                        let wErr = writer.error?.localizedDescription ?? "unknown writer error"
+                                        PipelineLogger.shared.log("[MediaAssembler] Remux Attempt 3: failed appending \(kind.rawValue) sample: \(wErr)")
                                         state.lock.lock()
                                         state.appendFailed = true
+                                        state.lastError = wErr
                                         state.lock.unlock()
                                         reader.cancelReading()
                                         input.markAsFinished()
@@ -910,23 +1036,40 @@ public enum MediaAssembler {
                         group.wait()
                         state.lock.lock()
                         let failed = state.appendFailed
+                        let samples = state.samplesAppended
+                        let appendErr = state.lastError
                         state.lock.unlock()
 
-                        if !failed {
+                        if !failed && samples > 0 {
                             let finishSem = DispatchSemaphore(value: 0)
                             writer.finishWriting { finishSem.signal() }
                             finishSem.wait()
                             if writer.status == .completed && fileManager.fileExists(atPath: tempMP4.path) {
                                 let size = fileManager.fileSize(atPath: tempMP4.path) ?? 0
-                                if size > 0 {
+                                if size > 0 && validateRemuxedMP4(tempMP4) {
+                                    PipelineLogger.shared.log("[MediaAssembler] Remux Attempt 3 succeeded: \(size) bytes, \(samples) samples appended")
                                     didSucceed = true
+                                } else {
+                                    lastErrorReason = "Attempt 3 output validation failed (size=\(size))"
+                                    PipelineLogger.shared.log("[MediaAssembler] Remux Attempt 3 produced invalid MP4: size=\(size)")
                                 }
+                            } else {
+                                let fErr = writer.error?.localizedDescription ?? "writer status: \(writer.status.rawValue)"
+                                lastErrorReason = "Writer finishWriting failed: \(fErr)"
+                                PipelineLogger.shared.log("[MediaAssembler] Remux Attempt 3 finishWriting failed: \(fErr)")
                             }
+                        } else {
+                            lastErrorReason = appendErr ?? "No samples appended or append failed (samples=\(samples))"
+                            PipelineLogger.shared.log("[MediaAssembler] Remux Attempt 3 failed: appendFailed=\(failed), samples=\(samples), error=\(lastErrorReason!)")
                         }
                     }
                 } catch {
-                    // Ignore
+                    lastErrorReason = "Attempt 3 threw error: \(error.localizedDescription)"
+                    PipelineLogger.shared.log("[MediaAssembler] Remux Attempt 3 error: \(error.localizedDescription)")
                 }
+            } else {
+                lastErrorReason = "No tracks exposed on assetToRead"
+                PipelineLogger.shared.log("[MediaAssembler] Remux Attempt 3: assetToRead has no tracks")
             }
         }
 
@@ -938,8 +1081,9 @@ public enum MediaAssembler {
         }
 
         guard didSucceed else {
-            PipelineLogger.shared.log("[MediaAssembler] MPEG-TS remuxing failed to produce valid MP4: \(destinationMP4URL.path)")
-            throw MediaAssemblyError.muxingFailed
+            let reason = lastErrorReason ?? "All remux attempts failed"
+            PipelineLogger.shared.log("[MediaAssembler] MPEG-TS remuxing failed to produce valid MP4: \(destinationMP4URL.path). Reason: \(reason)")
+            throw MediaAssemblyError.assetWriterFailed(reason: reason)
         }
 
         if fileManager.fileExists(atPath: destinationMP4URL.path) {

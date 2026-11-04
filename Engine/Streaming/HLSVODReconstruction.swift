@@ -359,12 +359,6 @@ public enum HLSVODReconstructor {
         )
         do {
             let output = try MediaAssembler.assemble(reconstructionPlan.assemblyRequest)
-            #if canImport(AVFoundation)
-            if output.destinationURL.pathExtension.lowercased() == "ts" && NSClassFromString("XCTestCase") == nil {
-                PipelineLogger.shared.log("[HLS Reconstruction] Output has .ts extension, expected .mp4: \(output.destinationURL.path)")
-                throw HLSVODReconstructionError.assemblyFailed(.muxingFailed)
-            }
-            #endif
             return output
         } catch let error as MediaAssemblyError {
             throw HLSVODReconstructionError.assemblyFailed(error)

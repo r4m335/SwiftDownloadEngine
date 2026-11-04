@@ -2254,11 +2254,6 @@ public actor StreamingDownloadOrchestrator {
             if isCancelled(transferID: parentID) {
                 throw StreamingDownloadOrchestratorError.cancelled
             }
-            if assemblyOutput.destinationURL.pathExtension.lowercased() == "ts" && NSClassFromString("XCTestCase") == nil {
-                throw StreamingDownloadOrchestratorError.hlsReconstructionFailed(
-                    .assemblyFailed(.muxingFailed)
-                )
-            }
             if let engine = self.downloadEngine {
                 let finalSize = FileManager.default.fileSize(atPath: assemblyOutput.destinationURL.path) ?? 0
                 _ = try await engine.completeStreamingDownload(
@@ -2617,11 +2612,6 @@ public actor StreamingDownloadOrchestrator {
                     try? await engine.cancelDownload(id: parentID)
                 }
                 throw StreamingDownloadOrchestratorError.cancelled
-            }
-            if assemblyOutput.destinationURL.pathExtension.lowercased() == "ts" && NSClassFromString("XCTestCase") == nil {
-                throw StreamingDownloadOrchestratorError.dashReconstructionFailed(
-                    .assemblyFailed(.muxingFailed)
-                )
             }
             if let engine = self.downloadEngine {
                 let finalSize = FileManager.default.fileSize(atPath: assemblyOutput.destinationURL.path) ?? 0

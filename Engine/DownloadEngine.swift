@@ -566,14 +566,6 @@ public actor DownloadEngine {
         let actualSize = FileManager.default.fileSize(atPath: localFileURL.path) ?? totalBytes
         PipelineLogger.shared.log("[DownloadEngine] Validated localFileURL: \(localFileURL.path), size: \(actualSize) bytes, extension: .\(localFileURL.pathExtension)")
 
-        // Fallback: If the final file is still .ts (e.g. remuxing failed), mark download as .failed
-        if localFileURL.pathExtension.lowercased() == "ts" {
-            let reason = "HLS assembly failed: Output is not a valid MP4"
-            PipelineLogger.shared.log("[DownloadEngine] \(reason) for id: \(id)")
-            await failStreamingDownload(id: id, reason: reason)
-            throw DownloadError.muxingFailed(reason)
-        }
-
         // Handle AVAsset Loading Errors Gracefully
         #if canImport(AVFoundation)
         if NSClassFromString("XCTestCase") == nil {

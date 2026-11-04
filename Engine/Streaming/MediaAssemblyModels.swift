@@ -216,6 +216,14 @@ public enum MediaAssemblyError: Error, LocalizedError, Equatable, Sendable {
     case muxingUnavailable
     case muxingFailed
     case assetWriterFailed(reason: String)
+    case videoTrackNotFound
+    case audioTrackNotFound
+    case readerInitializationFailed(reason: String)
+    case writerInitializationFailed(reason: String)
+    case sampleBufferAppendFailed(reason: String)
+    case invalidPresentationTimestamp(reason: String)
+    case mediaAssemblyTimedOut
+    case finalValidationFailed(reason: String)
     case invalidMediaData(MediaAssemblyContainer)
     case fileOperationFailed
 
@@ -261,6 +269,22 @@ public enum MediaAssemblyError: Error, LocalizedError, Equatable, Sendable {
             return "Separate media tracks could not be muxed into a validated output."
         case .assetWriterFailed(let reason):
             return "Separate media tracks could not be muxed into a validated output: \(reason)"
+        case .videoTrackNotFound:
+            return "Video track not found in source media."
+        case .audioTrackNotFound:
+            return "Audio track not found in source media."
+        case .readerInitializationFailed(let reason):
+            return "AVAssetReader initialization failed: \(reason)"
+        case .writerInitializationFailed(let reason):
+            return "AVAssetWriter initialization failed: \(reason)"
+        case .sampleBufferAppendFailed(let reason):
+            return "Sample buffer append failed: \(reason)"
+        case .invalidPresentationTimestamp(let reason):
+            return "Invalid presentation timestamp: \(reason)"
+        case .mediaAssemblyTimedOut:
+            return "Media assembly timed out."
+        case .finalValidationFailed(let reason):
+            return "Final MP4 validation failed: \(reason)"
         case .invalidMediaData(let container):
             return "Downloaded media does not contain a valid \(container.rawValue) structure."
         case .fileOperationFailed:
