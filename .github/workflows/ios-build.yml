@@ -598,19 +598,34 @@ jobs:
 
       - name: Build iOS Application Target (Simulator)
         run: |
-          SIM_NAME=$(xcrun simctl list devices available | grep -E "iPhone 15|iPhone 14|iPhone 16|iPhone" | head -n 1 | sed -E 's/^[[:space:]]+//; s/ \([A-F0-9-]+\)//')
-          echo "Selected simulator device: ${SIM_NAME:-iPhone 15}"
+          set -o pipefail
+          xcodebuild -version
+          SIM_NAME=$(xcrun simctl list devices available | grep -E "iPhone" | head -n 1 | sed -E 's/^[[:space:]]+//; s/ \([A-F0-9-]+\)//')
+          echo "Selected simulator device: ${SIM_NAME:-none}"
+          DESTINATION="generic/platform=iOS Simulator"
+          if [ -n "$SIM_NAME" ]; then
+            DESTINATION="platform=iOS Simulator,name=$SIM_NAME"
+          fi
+          echo "Using destination: $DESTINATION"
           xcodebuild \
             -project SwiftDownloadEngine.xcodeproj \
             -scheme SwiftDownloadEngine \
             -sdk iphonesimulator \
-            -destination "platform=iOS Simulator,name=${SIM_NAME:-iPhone 15}" \
+            -destination "$DESTINATION" \
             -configuration Debug \
             -derivedDataPath build \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
-            build
+            build 2>&1 | tee sim_build.log || {
+              echo "::error::Simulator build failed. Printing failure details:"
+              grep -E "error:|fatal error:|BUILD FAILED" sim_build.log | while IFS= read -r line; do
+                echo "::error::$line"
+              done
+              echo "=== Last 100 lines of xcodebuild log ==="
+              tail -n 100 sim_build.log
+              exit 1
+            }
 
       - name: Dump Diagnostic Reports on Failure
         if: failure()
@@ -677,6 +692,8 @@ jobs:
 
       - name: Build iOS Application Target (Device - Unsigned)
         run: |
+          set -o pipefail
+          xcodebuild -version
           xcodebuild \
             -project SwiftDownloadEngine.xcodeproj \
             -scheme SwiftDownloadEngine \
@@ -687,7 +704,15 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
-            build
+            build 2>&1 | tee device_build.log || {
+              echo "::error::Device build failed. Printing failure details:"
+              grep -E "error:|fatal error:|BUILD FAILED" device_build.log | while IFS= read -r line; do
+                echo "::error::$line"
+              done
+              echo "=== Last 100 lines of xcodebuild log ==="
+              tail -n 100 device_build.log
+              exit 1
+            }
 
       - name: Dump Diagnostic Reports on Failure
         if: failure()
