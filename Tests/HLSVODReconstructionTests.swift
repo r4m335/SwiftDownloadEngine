@@ -22,8 +22,8 @@ final class HLSVODReconstructionTests: XCTestCase {
 
         let first = directory.appendingPathComponent("first.part")
         let second = directory.appendingPathComponent("second.part")
-        let firstData = packet(fill: 0x11)
-        let secondData = packet(fill: 0x22)
+        let firstData = makePATPacket()
+        let secondData = makePMTPacket()
         try firstData.write(to: first)
         try secondData.write(to: second)
         let completed = [
@@ -272,14 +272,23 @@ final class HLSVODReconstructionTests: XCTestCase {
         ]
 
         let output = directory.appendingPathComponent("output.ts")
-        let result = try HLSVODReconstructor.assemble(
-            transferPlan: combinedPlan,
-            completedResources: completed,
-            destinationURL: output
-        )
+        // Multi-track assembly must NOT return a single-track fallback success when muxing fails
+        XCTAssertThrowsError(
+            try HLSVODReconstructor.assemble(
+                transferPlan: combinedPlan,
+                completedResources: completed,
+                destinationURL: output
+            )
+        ) { error in
+            guard case let HLSVODReconstructionError.assemblyFailed(mediaErr) = error else {
+                XCTFail("Expected assemblyFailed error, got \(error)")
+                return
+            }
+            XCTAssertTrue(mediaErr is MediaAssemblyError)
+        }
 
-        XCTAssertEqual(result.container, .mpegTS)
-        XCTAssertTrue(FileManager.default.fileExists(atPath: output.path))
+        // Incomplete single-track fallback must not be published as success
+        XCTAssertFalse(FileManager.default.fileExists(atPath: output.path))
 
         let mediaAssemblyDir = directory.appendingPathComponent(".media-assembly")
         if FileManager.default.fileExists(atPath: mediaAssemblyDir.path) {
@@ -287,7 +296,31 @@ final class HLSVODReconstructionTests: XCTestCase {
                 .filter { $0.hasPrefix("decrypted_seg_") } ?? []
             XCTAssertTrue(decryptedFiles.isEmpty, "Decrypted segment files must be cleaned up after assembly: \(decryptedFiles)")
         }
+
+        // Failed multi-track inputs must be preserved in quarantine
+        let quarantined = (try? FileManager.default.contentsOfDirectory(atPath: directory.path))?
+            .filter { $0.contains(".media-quarantine-") } ?? []
+        XCTAssertFalse(quarantined.isEmpty, "Failed multi-track inputs must be quarantined for diagnosis")
         #endif
+    }
+
+    private func makePATPacket() -> Data {
+        var p = Data(repeating: 0xFF, count: 188)
+        p[0] = 0x47; p[1] = 0x40; p[2] = 0x00; p[3] = 0x10; p[4] = 0x00
+        p[5] = 0x00; p[6] = 0xB0; p[7] = 0x0D; p[8] = 0x00; p[9] = 0x01
+        p[10] = 0xC1; p[11] = 0x00; p[12] = 0x00; p[13] = 0x00; p[14] = 0x01
+        p[15] = 0xE1; p[16] = 0x00
+        return p
+    }
+
+    private func makePMTPacket(videoStream: UInt8 = 0x1B) -> Data {
+        var p = Data(repeating: 0xFF, count: 188)
+        p[0] = 0x47; p[1] = 0x41; p[2] = 0x00; p[3] = 0x10; p[4] = 0x00
+        p[5] = 0x02; p[6] = 0xB0; p[7] = 0x12; p[8] = 0x00; p[9] = 0x01
+        p[10] = 0xC1; p[11] = 0x00; p[12] = 0x00; p[13] = 0xE1; p[14] = 0x01
+        p[15] = 0xF0; p[16] = 0x00
+        p[17] = videoStream; p[18] = 0xE1; p[19] = 0x01; p[20] = 0xF0; p[21] = 0x00
+        return p
     }
 
     private func makeTemporaryDirectory() throws -> URL {

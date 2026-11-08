@@ -140,9 +140,9 @@ final class HLSSegmentDecryptorTests: XCTestCase {
         let keyFile = tempDir.appendingPathComponent("key.bin")
         try key.write(to: keyFile)
 
-        // Make two valid MPEG-TS packets (188 bytes starting with 0x47 sync byte)
-        var packet1 = Data([0x47]) + Data(repeating: 0x11, count: 187)
-        var packet2 = Data([0x47]) + Data(repeating: 0x22, count: 187)
+        // Make two valid MPEG-TS packets (PAT + PMT declaring video stream)
+        let packet1 = makePATPacket()
+        let packet2 = makePMTPacket()
 
         let iv1 = HLSSegmentDecryptor.ivForSequenceNumber(transferPlan.resources[1].sequenceNumber ?? 0)
         let iv2 = HLSSegmentDecryptor.ivForSequenceNumber(transferPlan.resources[2].sequenceNumber ?? 1)
@@ -173,5 +173,24 @@ final class HLSSegmentDecryptorTests: XCTestCase {
         let assembledData = try Data(contentsOf: outputURL)
         XCTAssertEqual(assembledData, packet1 + packet2)
         #endif
+    }
+
+    private func makePATPacket() -> Data {
+        var p = Data(repeating: 0xFF, count: 188)
+        p[0] = 0x47; p[1] = 0x40; p[2] = 0x00; p[3] = 0x10; p[4] = 0x00
+        p[5] = 0x00; p[6] = 0xB0; p[7] = 0x0D; p[8] = 0x00; p[9] = 0x01
+        p[10] = 0xC1; p[11] = 0x00; p[12] = 0x00; p[13] = 0x00; p[14] = 0x01
+        p[15] = 0xE1; p[16] = 0x00
+        return p
+    }
+
+    private func makePMTPacket(videoStream: UInt8 = 0x1B) -> Data {
+        var p = Data(repeating: 0xFF, count: 188)
+        p[0] = 0x47; p[1] = 0x41; p[2] = 0x00; p[3] = 0x10; p[4] = 0x00
+        p[5] = 0x02; p[6] = 0xB0; p[7] = 0x12; p[8] = 0x00; p[9] = 0x01
+        p[10] = 0xC1; p[11] = 0x00; p[12] = 0x00; p[13] = 0xE1; p[14] = 0x01
+        p[15] = 0xF0; p[16] = 0x00
+        p[17] = videoStream; p[18] = 0xE1; p[19] = 0x01; p[20] = 0xF0; p[21] = 0x00
+        return p
     }
 }
