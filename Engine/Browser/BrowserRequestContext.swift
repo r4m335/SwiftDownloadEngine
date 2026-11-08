@@ -19,6 +19,7 @@ public struct BrowserCookie: Sendable, Hashable, Codable {
     public let path: String
     public let isSecure: Bool
     public let isHTTPOnly: Bool
+    public let isHostOnly: Bool
     public let expiresDate: Date?
 
     public init(
@@ -28,26 +29,41 @@ public struct BrowserCookie: Sendable, Hashable, Codable {
         path: String = "/",
         isSecure: Bool = false,
         isHTTPOnly: Bool = false,
+        isHostOnly: Bool = false,
         expiresDate: Date? = nil
     ) {
         self.name = name.trimmingCharacters(in: .whitespacesAndNewlines)
         self.value = value
-        self.domain = domain.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let trimmedDomain = domain.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        self.domain = trimmedDomain
         self.path = path.isEmpty ? "/" : path
         self.isSecure = isSecure
         self.isHTTPOnly = isHTTPOnly
+        // If domain explicitly begins with a dot (e.g. .example.com), RFC 6265 defines it as a domain cookie
+        if trimmedDomain.hasPrefix(".") {
+            self.isHostOnly = false
+        } else {
+            self.isHostOnly = isHostOnly
+        }
         self.expiresDate = expiresDate
     }
 
     /// Convenience initializer from Foundation `HTTPCookie`.
-    public init?(from httpCookie: HTTPCookie) {
+    public init?(from httpCookie: HTTPCookie, isHostOnly: Bool? = nil) {
         guard !httpCookie.name.isEmpty else { return nil }
         self.name = httpCookie.name
         self.value = httpCookie.value
-        self.domain = httpCookie.domain.lowercased()
+        let trimmedDomain = httpCookie.domain.lowercased()
+        self.domain = trimmedDomain
         self.path = httpCookie.path.isEmpty ? "/" : httpCookie.path
         self.isSecure = httpCookie.isSecure
         self.isHTTPOnly = httpCookie.isHTTPOnly
+        if let explicit = isHostOnly {
+            self.isHostOnly = trimmedDomain.hasPrefix(".") ? false : explicit
+        } else {
+            // In RFC 6265 and WebKit: domain cookies carry a leading dot, while host-only cookies do not
+            self.isHostOnly = !trimmedDomain.hasPrefix(".")
+        }
         self.expiresDate = httpCookie.expiresDate
     }
 
@@ -56,7 +72,7 @@ public struct BrowserCookie: Sendable, Hashable, Codable {
         var properties: [HTTPCookiePropertyKey: Any] = [
             .name: name,
             .value: value,
-            .domain: domain,
+            .domain: isHostOnly ? (domain.hasPrefix(".") ? String(domain.dropFirst()) : domain) : (domain.hasPrefix(".") ? domain : "." + domain),
             .path: path
         ]
         if isSecure {
@@ -81,15 +97,21 @@ public struct BrowserCookie: Sendable, Hashable, Codable {
             return false
         }
 
-        // 3. Domain matching (RFC 6265 §5.1.3)
+        // 3. Domain matching (RFC 6265 §5.1.3 & §5.3 step 6)
         guard let host = url.host?.lowercased(), !host.isEmpty else {
             return false
         }
 
         let cookieDomain = self.domain.hasPrefix(".") ? String(self.domain.dropFirst()) : self.domain
-        if host != cookieDomain {
-            // Must be a subdomain separated by a dot
-            if !host.hasSuffix("." + cookieDomain) {
+        if isHostOnly {
+            // RFC 6265 §5.3 step 6: A host-only cookie matches if and only if the request host
+            // is identical to the cookie's domain (subdomains are strictly rejected).
+            if host != cookieDomain {
+                return false
+            }
+        } else {
+            // Domain-scoped cookie: matches exact domain or any valid subdomain
+            if host != cookieDomain && !host.hasSuffix("." + cookieDomain) {
                 return false
             }
         }

@@ -421,6 +421,97 @@ final class BrowserTests: XCTestCase {
         XCTAssertFalse(hostOnlyCookie.matches(url: exampleCDN))
     }
 
+    func testPublicSuffixWildcardAndExceptionRules() {
+        // 1. Wildcard rule (*.ck):
+        // Cook Islands wildcard: any direct subdomain under .ck is a public suffix
+        XCTAssertEqual(PublicSuffixList.publicSuffix(for: "foo.ck"), "foo.ck")
+        XCTAssertNil(PublicSuffixList.registrableDomain(for: "foo.ck"), "foo.ck is a public suffix itself")
+        XCTAssertEqual(PublicSuffixList.registrableDomain(for: "bar.foo.ck"), "bar.foo.ck")
+        XCTAssertEqual(PublicSuffixList.registrableDomain(for: "www.bar.foo.ck"), "bar.foo.ck")
+
+        // 2. Exception rule (!www.ck):
+        // Overrides *.ck exception so www.ck is an ordinary registrable domain under .ck
+        XCTAssertEqual(PublicSuffixList.publicSuffix(for: "www.ck"), "ck")
+        XCTAssertEqual(PublicSuffixList.registrableDomain(for: "www.ck"), "www.ck")
+        XCTAssertEqual(PublicSuffixList.registrableDomain(for: "sub.www.ck"), "www.ck")
+
+        // 3. Wildcard and exception in Japanese geo domains (*.tokyo.jp and !metro.tokyo.jp):
+        XCTAssertEqual(PublicSuffixList.publicSuffix(for: "other.tokyo.jp"), "other.tokyo.jp")
+        XCTAssertNil(PublicSuffixList.registrableDomain(for: "other.tokyo.jp"))
+        XCTAssertEqual(PublicSuffixList.registrableDomain(for: "app.other.tokyo.jp"), "app.other.tokyo.jp")
+
+        XCTAssertEqual(PublicSuffixList.publicSuffix(for: "metro.tokyo.jp"), "tokyo.jp")
+        XCTAssertEqual(PublicSuffixList.registrableDomain(for: "metro.tokyo.jp"), "metro.tokyo.jp")
+        XCTAssertEqual(PublicSuffixList.registrableDomain(for: "sub.metro.tokyo.jp"), "metro.tokyo.jp")
+
+        // 4. Kawasaki exception rule (!city.kawasaki.jp vs *.kawasaki.jp):
+        XCTAssertEqual(PublicSuffixList.publicSuffix(for: "city.kawasaki.jp"), "kawasaki.jp")
+        XCTAssertEqual(PublicSuffixList.registrableDomain(for: "city.kawasaki.jp"), "city.kawasaki.jp")
+        XCTAssertEqual(PublicSuffixList.publicSuffix(for: "ward.kawasaki.jp"), "ward.kawasaki.jp")
+
+        // 5. Dynamic runtime rule registration (arbitrary PSL rules):
+        let psl = PublicSuffixList()
+        psl.addRule("*.custom.test")
+        psl.addRule("!exempt.custom.test")
+
+        XCTAssertEqual(psl.publicSuffix(for: "wild.custom.test"), "wild.custom.test")
+        XCTAssertNil(psl.registrableDomain(for: "wild.custom.test"))
+        XCTAssertEqual(psl.registrableDomain(for: "app.wild.custom.test"), "app.wild.custom.test")
+
+        XCTAssertEqual(psl.publicSuffix(for: "exempt.custom.test"), "custom.test")
+        XCTAssertEqual(psl.registrableDomain(for: "exempt.custom.test"), "exempt.custom.test")
+        XCTAssertEqual(psl.registrableDomain(for: "sub.exempt.custom.test"), "exempt.custom.test")
+    }
+
+    func testCookieHostOnlyVsDomainCookieSemantics() {
+        let exactHostURL = URL(string: "https://video.example.com/watch")!
+        let subHostURL = URL(string: "https://sub.video.example.com/watch")!
+        let siblingHostURL = URL(string: "https://cdn.example.com/watch")!
+        let apexURL = URL(string: "https://example.com/watch")!
+
+        // 1. Host-only cookie (explicitly marked or default without leading dot):
+        let hostOnlyCookie = BrowserCookie(
+            name: "host_only_token",
+            value: "secret",
+            domain: "video.example.com",
+            isHostOnly: true
+        )
+        XCTAssertTrue(hostOnlyCookie.isHostOnly)
+        // Must match exact host:
+        XCTAssertTrue(hostOnlyCookie.matches(url: exactHostURL))
+        // RFC 6265 §5.3 step 6: A host-only cookie must NEVER match a subdomain:
+        XCTAssertFalse(hostOnlyCookie.matches(url: subHostURL), "Host-only cookies must not match subdomains")
+        XCTAssertFalse(hostOnlyCookie.matches(url: siblingHostURL))
+        XCTAssertFalse(hostOnlyCookie.matches(url: apexURL))
+
+        // 2. Domain-scoped cookie (domain begins with dot or isHostOnly is false):
+        let domainCookie = BrowserCookie(
+            name: "domain_token",
+            value: "domain_secret",
+            domain: ".example.com",
+            isHostOnly: false
+        )
+        XCTAssertFalse(domainCookie.isHostOnly)
+        // Must match apex and all subdomains:
+        XCTAssertTrue(domainCookie.matches(url: apexURL))
+        XCTAssertTrue(domainCookie.matches(url: exactHostURL))
+        XCTAssertTrue(domainCookie.matches(url: subHostURL))
+        XCTAssertTrue(domainCookie.matches(url: siblingHostURL))
+        XCTAssertFalse(domainCookie.matches(url: URL(string: "https://attacker.com/watch")!))
+
+        // 3. Foundation HTTPCookie conversion preserves host-only semantics
+        let hostOnlyHTTP = hostOnlyCookie.toHTTPCookie()!
+        let roundTrippedHostOnly = BrowserCookie(from: hostOnlyHTTP)!
+        XCTAssertTrue(roundTrippedHostOnly.isHostOnly)
+        XCTAssertTrue(roundTrippedHostOnly.matches(url: exactHostURL))
+        XCTAssertFalse(roundTrippedHostOnly.matches(url: subHostURL))
+
+        let domainHTTP = domainCookie.toHTTPCookie()!
+        let roundTrippedDomain = BrowserCookie(from: domainHTTP)!
+        XCTAssertFalse(roundTrippedDomain.isHostOnly)
+        XCTAssertTrue(roundTrippedDomain.matches(url: subHostURL))
+    }
+
     func testBrowserRequestContextSuppressesRefererAndOriginOnHTTPDowngrade() {
         let securePage = URL(string: "https://example.com/watch")!
         let context = BrowserRequestContext(
