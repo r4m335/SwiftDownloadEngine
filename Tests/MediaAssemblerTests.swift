@@ -167,8 +167,8 @@ final class MediaAssemblerTests: XCTestCase {
         let first = directory.appendingPathComponent("first.ts")
         let second = directory.appendingPathComponent("second.ts")
         let output = directory.appendingPathComponent("movie.ts")
-        let firstBytes = mpegTSPacket(fill: 0x11)
-        let secondBytes = mpegTSPacket(fill: 0x22)
+        let firstBytes = makePATPacket()
+        let secondBytes = makePMTPacket()
         try firstBytes.write(to: first)
         try secondBytes.write(to: second)
 
@@ -339,7 +339,7 @@ final class MediaAssemblerTests: XCTestCase {
 #endif
     }
 
-    func testAssembleMultipleTracksMPEGTSPreservesPrimarySourceWhenMuxingFails() throws {
+    func testAssembleMultipleTracksFailsAndQuarantinesWhenMuxingFails() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("media-assembler-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -349,8 +349,8 @@ final class MediaAssemblerTests: XCTestCase {
         let audioSegment = directory.appendingPathComponent("audio.ts")
         let destination = directory.appendingPathComponent("stream.mp4")
 
-        let videoBytes = mpegTSPacket(fill: 0xaa) + mpegTSPacket(fill: 0xbb)
-        let audioBytes = mpegTSPacket(fill: 0xcc) + mpegTSPacket(fill: 0xdd)
+        let videoBytes = makePATPacket() + makePMTPacket()
+        let audioBytes = makePATPacket() + makePMTPacket()
         try videoBytes.write(to: videoSegment)
         try audioBytes.write(to: audioSegment)
 
@@ -376,16 +376,17 @@ final class MediaAssemblerTests: XCTestCase {
         )
 
 #if canImport(AVFoundation)
-        let output = try MediaAssembler.assemble(request)
-        XCTAssertTrue(output.byteCount > 0)
-        XCTAssertTrue(FileManager.default.fileExists(atPath: output.destinationURL.path))
-        XCTAssertTrue(output.destinationURL.pathExtension == "ts" || output.destinationURL.pathExtension == "mp4")
-        if output.destinationURL.pathExtension == "ts" {
-            XCTAssertEqual(output.container, .mpegTS)
-            XCTAssertEqual(output.trackCount, 1)
-            let preservedData = try Data(contentsOf: output.destinationURL)
-            XCTAssertEqual(preservedData, videoBytes)
+        // Multi-track assembly must NOT return a successful 1-track output when muxing fails!
+        XCTAssertThrowsError(try MediaAssembler.assemble(request)) { error in
+            XCTAssertTrue(error is MediaAssemblyError)
         }
+        // Incomplete single-track fallback must NOT be published at destination
+        XCTAssertFalse(FileManager.default.fileExists(atPath: destination.path))
+        // Verify quarantine directory was created to preserve inputs
+        let parentDir = destination.deletingLastPathComponent()
+        let contents = (try? FileManager.default.contentsOfDirectory(atPath: parentDir.path)) ?? []
+        let quarantineDirName = contents.first { $0.contains(".media-quarantine-") }
+        XCTAssertNotNil(quarantineDirName, "Quarantine directory must be created when muxing fails")
 #else
         XCTAssertThrowsError(try MediaAssembler.assemble(request)) { error in
             XCTAssertEqual(error as? MediaAssemblyError, .muxingUnavailable)
@@ -403,8 +404,8 @@ final class MediaAssemblerTests: XCTestCase {
         let second = directory.appendingPathComponent("second.ts")
         let output = directory.appendingPathComponent("movie.ts")
 
-        let firstBytes = mpegTSPacket(fill: 0x33)
-        let secondBytes = mpegTSPacket(fill: 0x44)
+        let firstBytes = makePATPacket()
+        let secondBytes = makePMTPacket()
         try firstBytes.write(to: first)
         try secondBytes.write(to: second)
 
@@ -539,6 +540,122 @@ final class MediaAssemblerTests: XCTestCase {
         var bytes = Data([0x47])
         bytes.append(Data(repeating: fill, count: 187))
         return bytes
+    }
+
+    private func makePATPacket() -> Data {
+        var p = Data(repeating: 0xFF, count: 188)
+        p[0] = 0x47; p[1] = 0x40; p[2] = 0x00; p[3] = 0x10; p[4] = 0x00
+        p[5] = 0x00; p[6] = 0xB0; p[7] = 0x0D; p[8] = 0x00; p[9] = 0x01
+        p[10] = 0xC1; p[11] = 0x00; p[12] = 0x00; p[13] = 0x00; p[14] = 0x01
+        p[15] = 0xE1; p[16] = 0x00
+        return p
+    }
+
+    private func makePMTPacket(videoStream: UInt8 = 0x1B, audioStream: UInt8 = 0x0F) -> Data {
+        var p = Data(repeating: 0xFF, count: 188)
+        p[0] = 0x47; p[1] = 0x41; p[2] = 0x00; p[3] = 0x10; p[4] = 0x00
+        p[5] = 0x02; p[6] = 0xB0; p[7] = 0x17; p[8] = 0x00; p[9] = 0x01
+        p[10] = 0xC1; p[11] = 0x00; p[12] = 0x00; p[13] = 0xE1; p[14] = 0x01
+        p[15] = 0xF0; p[16] = 0x00
+        p[17] = videoStream; p[18] = 0xE1; p[19] = 0x01; p[20] = 0xF0; p[21] = 0x00
+        p[22] = audioStream; p[23] = 0xE1; p[24] = 0x02; p[25] = 0xF0; p[26] = 0x00
+        return p
+    }
+
+    // MARK: - Regression Tests for Item 4
+
+    func testMPEGTSMissingPATPMTRejectedDuringAssemblyValidation() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("media-assembler-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let segment = directory.appendingPathComponent("no_pat.ts")
+        let output = directory.appendingPathComponent("output.ts")
+        // Headerless packets with 0x47 sync bytes only (no PAT/PMT)
+        let data = mpegTSPacket(fill: 0x11) + mpegTSPacket(fill: 0x22)
+        try data.write(to: segment)
+
+        let request = MediaAssemblyRequest(
+            container: .mpegTS,
+            tracks: [MediaAssemblyTrack(
+                kind: .video,
+                container: .mpegTS,
+                mediaSegments: [MediaAssemblySegment(fileURL: segment, order: 0, actualByteCount: Int64(data.count))]
+            )],
+            destinationURL: output
+        )
+
+        XCTAssertThrowsError(try MediaAssembler.assemble(request)) { error in
+            XCTAssertTrue(error is MediaAssemblyError)
+        }
+    }
+
+    func testMPEGTSDeclaringNoMediaStreamsRejected() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("media-assembler-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let segment = directory.appendingPathComponent("no_streams.ts")
+        let output = directory.appendingPathComponent("output.ts")
+        // PMT with 0x00 for both streams (unsupported / no media)
+        let data = makePATPacket() + makePMTPacket(videoStream: 0x00, audioStream: 0x00)
+        try data.write(to: segment)
+
+        let request = MediaAssemblyRequest(
+            container: .mpegTS,
+            tracks: [MediaAssemblyTrack(
+                kind: .video,
+                container: .mpegTS,
+                mediaSegments: [MediaAssemblySegment(fileURL: segment, order: 0, actualByteCount: Int64(data.count))]
+            )],
+            destinationURL: output
+        )
+
+        XCTAssertThrowsError(try MediaAssembler.assemble(request)) { error in
+            XCTAssertTrue(error is MediaAssemblyError)
+        }
+    }
+
+    func testMediaAssemblyStatesRecordedInValidationReport() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("media-assembler-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let initialization = directory.appendingPathComponent("init.mp4")
+        let media = directory.appendingPathComponent("segment.m4s")
+        let output = directory.appendingPathComponent("movie.mp4")
+        let initBytes = isoBox("ftyp", payload: Data([0, 0, 0, 1])) + isoBox("moov", payload: Data([0, 0, 0, 2]))
+        let mediaBytes = isoBox("moof", payload: Data([0, 0, 0, 3])) + isoBox("mdat", payload: Data([0, 0, 0, 4]))
+        try initBytes.write(to: initialization)
+        try mediaBytes.write(to: media)
+
+        let request = MediaAssemblyRequest(
+            container: .fragmentedMP4,
+            tracks: [MediaAssemblyTrack(
+                kind: .video,
+                container: .fragmentedMP4,
+                initializationSegment: MediaAssemblySegment(
+                    fileURL: initialization,
+                    role: .initialization,
+                    order: 0,
+                    actualByteCount: Int64(initBytes.count)
+                ),
+                mediaSegments: [MediaAssemblySegment(
+                    fileURL: media,
+                    order: 0,
+                    actualByteCount: Int64(mediaBytes.count)
+                )]
+            )],
+            destinationURL: output
+        )
+        let result = try MediaAssembler.assemble(request)
+
+        XCTAssertEqual(result.validation.state, .outputValidated)
+        XCTAssertTrue(result.validation.isStructurallyValid)
+        XCTAssertNotNil(result.validation.validationDetails)
     }
 
     private func isoBox(_ type: String, payload: Data) -> Data {

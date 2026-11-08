@@ -2528,6 +2528,18 @@ public actor StreamingDownloadOrchestrator {
             if isCancelled(transferID: parentID) {
                 throw StreamingDownloadOrchestratorError.cancelled
             }
+
+            // Step 3: Validate the final published output file before completing download
+            let validationReport = MediaIntegrityValidator.validateHLSOutput(fileURL: assemblyOutput.destinationURL)
+            guard validationReport.outcome.isConfirmedValid else {
+                let failureReason = validationReport.outcome.localizedDescription
+                PipelineLogger.shared.log("[HLS Pipeline] Final output validation failed: \(failureReason). Preserving downloaded segments for recovery.")
+                throw StreamingDownloadOrchestratorError.hlsReconstructionFailed(
+                    HLSVODReconstructionError.assemblyFailed(
+                        .finalValidationFailed(reason: failureReason)
+                    )
+                )
+            }
             if let engine = self.downloadEngine {
                 let finalSize = FileManager.default.fileSize(atPath: assemblyOutput.destinationURL.path) ?? 0
                 _ = try await engine.completeStreamingDownload(
@@ -2886,6 +2898,18 @@ public actor StreamingDownloadOrchestrator {
                     try? await engine.cancelDownload(id: parentID)
                 }
                 throw StreamingDownloadOrchestratorError.cancelled
+            }
+
+            // Step 3: Validate the final published output file before completing download
+            let validationReport = MediaIntegrityValidator.validateDASHOutput(fileURL: assemblyOutput.destinationURL)
+            guard validationReport.outcome.isConfirmedValid else {
+                let failureReason = validationReport.outcome.localizedDescription
+                PipelineLogger.shared.log("[DASH Pipeline] Final output validation failed: \(failureReason). Preserving downloaded segments for recovery.")
+                throw StreamingDownloadOrchestratorError.dashReconstructionFailed(
+                    DASHVODReconstructionError.assemblyFailed(
+                        .finalValidationFailed(reason: failureReason)
+                    )
+                )
             }
             if let engine = self.downloadEngine {
                 let finalSize = FileManager.default.fileSize(atPath: assemblyOutput.destinationURL.path) ?? 0

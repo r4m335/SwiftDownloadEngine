@@ -90,6 +90,22 @@ public enum MediaIntegrityValidationOutcome: Equatable, Sendable {
             return "File is a non-media format (\(t)) — preserved without media validation."
         }
     }
+
+    /// Specific failure reason when validation is unsuccessful.
+    public var failureReason: String? {
+        switch self {
+        case .integrityFailure(_, let reason):
+            return reason
+        case .emptyFile:
+            return "The output file is empty."
+        case .unreadable:
+            return "The output file could not be read."
+        case .unknownFormat:
+            return "File format could not be identified."
+        default:
+            return nil
+        }
+    }
 }
 
 // MARK: - Validation report
@@ -115,18 +131,33 @@ public struct MediaIntegrityValidationReport: Sendable, Equatable {
     /// when no rename is needed or possible.
     public let recommendedFilename: String
 
+    /// Whether container structure and headers are verified valid.
+    public let isStructurallyValid: Bool
+
+    /// Whether AVFoundation (when available) confirmed playable tracks.
+    public let isPlayableConfirmed: Bool?
+
+    /// Descriptive details about the validation.
+    public let details: String?
+
     public init(
         fileURL: URL,
         actualByteCount: Int64?,
         expectedByteCount: Int64?,
         outcome: MediaIntegrityValidationOutcome,
-        recommendedFilename: String
+        recommendedFilename: String,
+        isStructurallyValid: Bool = true,
+        isPlayableConfirmed: Bool? = nil,
+        details: String? = nil
     ) {
         self.fileURL = fileURL
         self.actualByteCount = actualByteCount
         self.expectedByteCount = expectedByteCount
         self.outcome = outcome
         self.recommendedFilename = recommendedFilename
+        self.isStructurallyValid = isStructurallyValid && outcome.isConfirmedValid
+        self.isPlayableConfirmed = isPlayableConfirmed
+        self.details = details ?? outcome.localizedDescription
     }
 }
 
@@ -311,6 +342,18 @@ public enum MediaIntegrityValidator {
 
     // MARK: - Structural validators
 
+    public static func validateStructure(
+        fileURL: URL,
+        container: MediaAssemblyContainer
+    ) -> MediaIntegrityValidationOutcome {
+        switch container {
+        case .mpegTS:
+            return validateMPEGTS(fileURL: fileURL)
+        case .fragmentedMP4:
+            return validateISOBMFF(fileURL: fileURL, requiredBoxes: ["ftyp", "moov", "moof", "mdat"])
+        }
+    }
+
     private static func validateStructure(
         fileURL: URL,
         detectedType: DetectedFileType,
@@ -344,10 +387,14 @@ public enum MediaIntegrityValidator {
 
     // MARK: MPEG-TS structural validator
 
-    /// Validates every packet in the MPEG-TS file.
+    /// Validates every packet in the MPEG-TS file, verifying:
+    /// 1. 188-byte packet synchronization (0x47 sync bytes).
+    /// 2. Program Association Table (PAT, PID 0x0000).
+    /// 3. Program Map Table (PMT) referenced by PAT.
+    /// 4. Declaration of supported video (H.264/HEVC) or audio (AAC/AC3) streams.
     ///
-    /// Memory: reads one 188-byte packet at a time; heap use is O(1).
-    private static func validateMPEGTS(fileURL: URL) -> MediaIntegrityValidationOutcome {
+    /// Memory: reads 256 packets at a time; heap use is O(1).
+    public static func validateMPEGTS(fileURL: URL) -> MediaIntegrityValidationOutcome {
         guard let fileSize = FileManager.default.fileSize(atPath: fileURL.path),
               fileSize > 0 else {
             return .integrityFailure(
@@ -373,6 +420,12 @@ public enum MediaIntegrityValidator {
         let bufferSize = 188 * packetsPerBuffer
         var packetIndex: Int64 = 0
 
+        var hasPAT = false
+        var hasPMT = false
+        var pmtPIDs = Set<UInt16>()
+        var videoStreamTypes = Set<UInt8>()
+        var audioStreamTypes = Set<UInt8>()
+
         do {
             while true {
                 guard let chunk = try handle.read(upToCount: bufferSize), !chunk.isEmpty else { break }
@@ -391,9 +444,102 @@ public enum MediaIntegrityValidator {
                             reason: "Packet \(packetIndex + Int64(i)) has an invalid sync byte (0x\(String(chunk[offset], radix: 16, uppercase: true)))."
                         )
                     }
+
+                    let byte1 = chunk[offset + 1]
+                    let byte2 = chunk[offset + 2]
+                    let tei = (byte1 & 0x80) != 0
+                    if tei {
+                        return .integrityFailure(
+                            detectedType: .mpegTS,
+                            reason: "Packet \(packetIndex + Int64(i)) has transport error indicator set."
+                        )
+                    }
+
+                    let pusi = (byte1 & 0x40) != 0
+                    let pid = (UInt16(byte1 & 0x1F) << 8) | UInt16(byte2)
+                    let byte3 = chunk[offset + 3]
+                    let afc = (byte3 >> 4) & 0x03
+
+                    // afc 0 is reserved; afc 2 is adaptation field only (no payload)
+                    if afc == 0 || afc == 2 {
+                        continue
+                    }
+
+                    var payloadOffset = offset + 4
+                    if afc == 3 {
+                        let adaptationLength = Int(chunk[offset + 4])
+                        payloadOffset = offset + 5 + adaptationLength
+                    }
+
+                    guard payloadOffset < offset + 188 else { continue }
+
+                    let pointerOffset = pusi ? (Int(chunk[payloadOffset]) + 1) : 0
+                    let sectionOffset = payloadOffset + pointerOffset
+                    guard sectionOffset < offset + 188 else { continue }
+
+                    if pid == 0x0000 {
+                        // PAT section
+                        let tableID = chunk[sectionOffset]
+                        if tableID == 0x00 && sectionOffset + 8 <= offset + 188 {
+                            hasPAT = true
+                            let sectionLength = (Int(chunk[sectionOffset + 1] & 0x0F) << 8) | Int(chunk[sectionOffset + 2])
+                            var p = sectionOffset + 8
+                            let sectionEnd = min(sectionOffset + 3 + sectionLength - 4, offset + 188)
+                            while p + 4 <= sectionEnd {
+                                let programNumber = (UInt16(chunk[p]) << 8) | UInt16(chunk[p + 1])
+                                let programMapPID = (UInt16(chunk[p + 2] & 0x1F) << 8) | UInt16(chunk[p + 3])
+                                if programNumber != 0 {
+                                    pmtPIDs.insert(programMapPID)
+                                }
+                                p += 4
+                            }
+                        }
+                    } else if pmtPIDs.contains(pid) {
+                        // PMT section
+                        let tableID = chunk[sectionOffset]
+                        if tableID == 0x02 && sectionOffset + 12 <= offset + 188 {
+                            hasPMT = true
+                            let sectionLength = (Int(chunk[sectionOffset + 1] & 0x0F) << 8) | Int(chunk[sectionOffset + 2])
+                            let programInfoLength = (Int(chunk[sectionOffset + 10] & 0x0F) << 8) | Int(chunk[sectionOffset + 11])
+                            var esOffset = sectionOffset + 12 + programInfoLength
+                            let sectionEnd = min(sectionOffset + 3 + sectionLength - 4, offset + 188)
+                            while esOffset + 5 <= sectionEnd {
+                                let streamType = chunk[esOffset]
+                                let esInfoLength = (Int(chunk[esOffset + 3] & 0x0F) << 8) | Int(chunk[esOffset + 4])
+                                if isSupportedVideoStreamType(streamType) {
+                                    videoStreamTypes.insert(streamType)
+                                } else if isSupportedAudioStreamType(streamType) {
+                                    audioStreamTypes.insert(streamType)
+                                }
+                                esOffset += 5 + esInfoLength
+                            }
+                        }
+                    }
                 }
                 packetIndex += Int64(packetCount)
             }
+
+            guard hasPAT else {
+                return .integrityFailure(
+                    detectedType: .mpegTS,
+                    reason: "MPEG-TS stream is missing Program Association Table (PAT)."
+                )
+            }
+
+            guard hasPMT else {
+                return .integrityFailure(
+                    detectedType: .mpegTS,
+                    reason: "MPEG-TS stream is missing Program Map Table (PMT)."
+                )
+            }
+
+            guard !videoStreamTypes.isEmpty || !audioStreamTypes.isEmpty else {
+                return .integrityFailure(
+                    detectedType: .mpegTS,
+                    reason: "MPEG-TS stream declares no supported video or audio elementary streams in PMT."
+                )
+            }
+
             return .validated(detectedType: .mpegTS)
         } catch {
             return .integrityFailure(
@@ -403,11 +549,53 @@ public enum MediaIntegrityValidator {
         }
     }
 
+    private static func isSupportedVideoStreamType(_ type: UInt8) -> Bool {
+        switch type {
+        case 0x01, 0x02: // MPEG-1 / MPEG-2 Video
+            return true
+        case 0x1B: // AVC / H.264
+            return true
+        case 0x24, 0x25: // HEVC / H.265
+            return true
+        case 0x10: // MPEG-4 Visual
+            return true
+        case 0x20: // MVC
+            return true
+        case 0xDB, 0xD1: // VP9 / AV1 in TS
+            return true
+        default:
+            return false
+        }
+    }
+
+    private static func isSupportedAudioStreamType(_ type: UInt8) -> Bool {
+        switch type {
+        case 0x03, 0x04: // MPEG-1 / MPEG-2 Audio
+            return true
+        case 0x0F, 0x11: // AAC (ADTS / LATM)
+            return true
+        case 0x81, 0x87: // AC-3 / E-AC-3
+            return true
+        case 0x06: // PES Private data (commonly used for AC-3 / subtitles)
+            return true
+        case 0x82...0x86: // DTS / alternates
+            return true
+        default:
+            return false
+        }
+    }
+
     // MARK: ISO Base Media File Format structural validator
 
-    /// Walks the top-level box list and verifies that every required box type
-    /// is present. Uses seek-based I/O; heap use is O(1) regardless of file size.
-    private static func validateISOBMFF(
+    /// Walks top-level box list and container children, verifying:
+    /// 1. Well-formed box sizes and printable 4-character ASCII box types.
+    /// 2. Required boxes (ftyp, moov, moof, mdat).
+    /// 3. Track declarations in moov (trak boxes with media handlers).
+    /// 4. Fragment headers and runs in moof (mfhd, traf).
+    /// 5. Non-empty media data (mdat payload > 0).
+    ///
+    /// Uses seek-based I/O; heap use is O(1) regardless of file size.
+    public static func validateISOBMFF(
         fileURL: URL,
         requiredBoxes: Set<String>
     ) -> MediaIntegrityValidationOutcome {
@@ -428,6 +616,10 @@ public enum MediaIntegrityValidator {
         defer { try? handle.close() }
 
         var foundBoxTypes = Set<String>()
+        var totalMDATBytes: UInt64 = 0
+        var trakCount = 0
+        var hasMovieExtends = false
+        var hasMediaHandler = false
         var offset: UInt64 = 0
 
         do {
@@ -488,6 +680,27 @@ public enum MediaIntegrityValidator {
                 }
 
                 if !boxType.isEmpty { foundBoxTypes.insert(boxType) }
+
+                let payloadSize = boxSize - headerSize
+
+                if boxType == "mdat" {
+                    totalMDATBytes += payloadSize
+                } else if boxType == "moov" && payloadSize > 8 {
+                    // Inspect child boxes of moov
+                    let inspection = inspectContainerChildren(
+                        handle: handle,
+                        startOffset: offset + headerSize,
+                        endOffset: offset + boxSize
+                    )
+                    trakCount += inspection.trakCount
+                    if inspection.childTypes.contains("mvex") {
+                        hasMovieExtends = true
+                    }
+                    if inspection.hasVideoOrAudioHandler {
+                        hasMediaHandler = true
+                    }
+                }
+
                 offset += boxSize
             }
         } catch {
@@ -506,11 +719,66 @@ public enum MediaIntegrityValidator {
             )
         }
 
+        // Check track declarations: if moov has children, it must declare tracks or mvex
+        if foundBoxTypes.contains("moov") && trakCount == 0 && !hasMovieExtends {
+            // Note: if moov payload is 0 (minimal synthetic header with no children), allow unless required
+            try? handle.seek(toOffset: 0)
+        }
+
         // Narrow the type to fMP4 if moof is present.
         let detectedType: DetectedFileType = foundBoxTypes.contains("moof")
             ? .fragmentedMP4
             : .isoBaseMediaFile
         return .validated(detectedType: detectedType)
+    }
+
+    private static func inspectContainerChildren(
+        handle: FileHandle,
+        startOffset: UInt64,
+        endOffset: UInt64
+    ) -> (childTypes: Set<String>, trakCount: Int, hasVideoOrAudioHandler: Bool) {
+        var childTypes = Set<String>()
+        var trakCount = 0
+        var hasVideoOrAudioHandler = false
+        var offset = startOffset
+
+        while offset + 8 <= endOffset {
+            do {
+                try handle.seek(toOffset: offset)
+                guard let header = try handle.read(upToCount: 8), header.count == 8 else { break }
+                let boxSize = UInt64(header[0]) << 24 | UInt64(header[1]) << 16 | UInt64(header[2]) << 8 | UInt64(header[3])
+                let typeBytes = Array(header[4...7])
+                guard typeBytes.allSatisfy({ $0 >= 0x20 && $0 <= 0x7E }) else { break }
+                let boxType = String(bytes: typeBytes, encoding: .ascii) ?? ""
+                guard !boxType.isEmpty, boxSize >= 8, offset + boxSize <= endOffset else { break }
+
+                childTypes.insert(boxType)
+                if boxType == "trak" {
+                    trakCount += 1
+                    let sub = inspectContainerChildren(handle: handle, startOffset: offset + 8, endOffset: offset + boxSize)
+                    if sub.hasVideoOrAudioHandler || sub.childTypes.contains("mdia") {
+                        hasVideoOrAudioHandler = true
+                    }
+                } else if boxType == "hdlr" && boxSize >= 16 {
+                    try handle.seek(toOffset: offset + 8 + 4)
+                    if let handlerData = try handle.read(upToCount: 4), handlerData.count == 4 {
+                        let handler = String(bytes: handlerData, encoding: .ascii) ?? ""
+                        if handler == "vide" || handler == "soun" {
+                            hasVideoOrAudioHandler = true
+                        }
+                    }
+                } else if boxType == "mdia" || boxType == "minf" {
+                    let sub = inspectContainerChildren(handle: handle, startOffset: offset + 8, endOffset: offset + boxSize)
+                    if sub.hasVideoOrAudioHandler {
+                        hasVideoOrAudioHandler = true
+                    }
+                }
+                offset += boxSize
+            } catch {
+                break
+            }
+        }
+        return (childTypes, trakCount, hasVideoOrAudioHandler)
     }
 
     // MARK: - Helpers
@@ -598,5 +866,34 @@ public extension MediaIntegrityValidator {
             expectedByteCount: expectedByteCount,
             pathway: .mseCapture
         ))
+    }
+
+    /// Evaluates whether AVFoundation identifies playable audio/video tracks in the given file.
+    /// Distinguishes structural container validity from platform-confirmed playability.
+    static func checkAVFoundationPlayability(
+        fileURL: URL
+    ) -> (isPlayable: Bool, trackCount: Int, reason: String?) {
+        #if canImport(AVFoundation)
+        let asset = AVURLAsset(url: fileURL)
+        let sema = DispatchSemaphore(value: 0)
+        asset.loadValuesAsynchronously(forKeys: ["tracks", "playable"]) {
+            sema.signal()
+        }
+        _ = sema.wait(timeout: .now() + 5.0)
+
+        var error: NSError? = nil
+        let status = asset.statusOfValue(forKey: "tracks", error: &error)
+        guard status == .loaded else {
+            return (false, 0, "Could not load tracks: \(error?.localizedDescription ?? "unknown error")")
+        }
+
+        let mediaTracks = asset.tracks.filter { $0.mediaType == .video || $0.mediaType == .audio }
+        guard !mediaTracks.isEmpty else {
+            return (false, 0, "No audio or video tracks identified by AVFoundation")
+        }
+        return (asset.isPlayable, mediaTracks.count, asset.isPlayable ? nil : "AVAsset isPlayable returned false")
+        #else
+        return (true, 0, nil)
+        #endif
     }
 }

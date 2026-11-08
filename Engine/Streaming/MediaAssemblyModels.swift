@@ -148,25 +148,78 @@ public struct MediaAssemblyRequest: Codable, Sendable, Equatable {
     }
 }
 
+/// Discrete stages of the media reconstruction and assembly pipeline.
+public enum MediaAssemblyState: String, Codable, Sendable, Equatable {
+    /// All required segments exist on disk and have passed pre-assembly validation.
+    case segmentsDownloaded
+    /// Bytes have been combined or muxed into a target container file.
+    case assemblyCompleted
+    /// Container syntax, box hierarchy/packet structure, and media tracks have been verified.
+    case outputValidated
+    /// Output failed post-assembly validation and was quarantined.
+    case validationFailed
+}
+
+/// Metadata recorded when failed assembly or muxing inputs are quarantined.
+public struct MediaQuarantineRecord: Codable, Sendable, Equatable {
+    public let timestamp: String
+    public let reason: String
+    public let destinationURL: String
+    public let container: String
+    public let expectedTrackKinds: [String]
+    public let quarantinedFiles: [String]
+    public let validationDetails: String?
+
+    public init(
+        timestamp: String,
+        reason: String,
+        destinationURL: String,
+        container: String,
+        expectedTrackKinds: [String],
+        quarantinedFiles: [String],
+        validationDetails: String? = nil
+    ) {
+        self.timestamp = timestamp
+        self.reason = reason
+        self.destinationURL = destinationURL
+        self.container = container
+        self.expectedTrackKinds = expectedTrackKinds
+        self.quarantinedFiles = quarantinedFiles
+        self.validationDetails = validationDetails
+    }
+}
+
 public struct MediaAssemblyValidationReport: Codable, Sendable, Equatable {
     public let container: MediaAssemblyContainer
     public let trackCount: Int
     public let mediaSegmentCount: Int
     public let totalInputBytes: Int64?
     public let isReadyForAssembly: Bool
+    public let isStructurallyValid: Bool
+    public let isPlayableConfirmed: Bool?
+    public let validationDetails: String?
+    public let state: MediaAssemblyState
 
     public init(
         container: MediaAssemblyContainer,
         trackCount: Int,
         mediaSegmentCount: Int,
         totalInputBytes: Int64?,
-        isReadyForAssembly: Bool = true
+        isReadyForAssembly: Bool = true,
+        isStructurallyValid: Bool = true,
+        isPlayableConfirmed: Bool? = nil,
+        validationDetails: String? = nil,
+        state: MediaAssemblyState = .assemblyCompleted
     ) {
         self.container = container
         self.trackCount = trackCount
         self.mediaSegmentCount = mediaSegmentCount
         self.totalInputBytes = totalInputBytes
         self.isReadyForAssembly = isReadyForAssembly
+        self.isStructurallyValid = isStructurallyValid
+        self.isPlayableConfirmed = isPlayableConfirmed
+        self.validationDetails = validationDetails
+        self.state = state
     }
 }
 
@@ -224,6 +277,9 @@ public enum MediaAssemblyError: Error, LocalizedError, Equatable, Sendable {
     case invalidPresentationTimestamp(reason: String)
     case mediaAssemblyTimedOut
     case finalValidationFailed(reason: String)
+    case unplayableOutput(reason: String)
+    case noMediaTracksIdentified
+    case incompleteMultiTrackAssembly(expectedTracks: Int, availableTracks: Int)
     case invalidMediaData(MediaAssemblyContainer)
     case fileOperationFailed
 
@@ -284,7 +340,13 @@ public enum MediaAssemblyError: Error, LocalizedError, Equatable, Sendable {
         case .mediaAssemblyTimedOut:
             return "Media assembly timed out."
         case .finalValidationFailed(let reason):
-            return "Final MP4 validation failed: \(reason)"
+            return "Final media validation failed: \(reason)"
+        case .unplayableOutput(let reason):
+            return "Output media cannot be played: \(reason)"
+        case .noMediaTracksIdentified:
+            return "No valid video or audio media tracks were identified in the output file."
+        case .incompleteMultiTrackAssembly(let expected, let available):
+            return "Multi-track assembly was incomplete: expected \(expected) tracks, but only \(available) tracks were produced."
         case .invalidMediaData(let container):
             return "Downloaded media does not contain a valid \(container.rawValue) structure."
         case .fileOperationFailed:

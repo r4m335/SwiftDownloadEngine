@@ -54,11 +54,35 @@ final class MediaIntegrityValidatorTests: XCTestCase {
         return b
     }
 
-    // Three full 188-byte MPEG-TS packets.
+    // Full 188-byte MPEG-TS packets with valid PAT and PMT
     private func makeTSData(packetCount: Int = 3) -> [UInt8] {
-        var bytes = [UInt8](repeating: 0x00, count: 188 * packetCount)
-        for i in 0..<packetCount { bytes[i * 188] = 0x47 }
-        return bytes
+        var result: [UInt8] = []
+        // Packet 0: PAT (PID 0) pointing to PMT PID 0x0100
+        var pat = [UInt8](repeating: 0xFF, count: 188)
+        pat[0] = 0x47; pat[1] = 0x40; pat[2] = 0x00; pat[3] = 0x10; pat[4] = 0x00
+        pat[5] = 0x00; pat[6] = 0xB0; pat[7] = 0x0D; pat[8] = 0x00; pat[9] = 0x01
+        pat[10] = 0xC1; pat[11] = 0x00; pat[12] = 0x00; pat[13] = 0x00; pat[14] = 0x01
+        pat[15] = 0xE1; pat[16] = 0x00
+        result.append(contentsOf: pat)
+
+        if packetCount > 1 {
+            // Packet 1: PMT (PID 0x0100) declaring video stream (0x1B) and audio stream (0x0F)
+            var pmt = [UInt8](repeating: 0xFF, count: 188)
+            pmt[0] = 0x47; pmt[1] = 0x41; pmt[2] = 0x00; pmt[3] = 0x10; pmt[4] = 0x00
+            pmt[5] = 0x02; pmt[6] = 0xB0; pmt[7] = 0x17; pmt[8] = 0x00; pmt[9] = 0x01
+            pmt[10] = 0xC1; pmt[11] = 0x00; pmt[12] = 0x00; pmt[13] = 0xE1; pmt[14] = 0x01
+            pmt[15] = 0xF0; pmt[16] = 0x00
+            pmt[17] = 0x1B; pmt[18] = 0xE1; pmt[19] = 0x01; pmt[20] = 0xF0; pmt[21] = 0x00
+            pmt[22] = 0x0F; pmt[23] = 0xE1; pmt[24] = 0x02; pmt[25] = 0xF0; pmt[26] = 0x00
+            result.append(contentsOf: pmt)
+        }
+
+        for i in 2..<packetCount {
+            var pkt = [UInt8](repeating: UInt8(i & 0xFF), count: 188)
+            pkt[0] = 0x47; pkt[1] = 0x01; pkt[2] = 0x01; pkt[3] = 0x10
+            result.append(contentsOf: pkt)
+        }
+        return result
     }
 
     // ── AC: Empty file ───────────────────────────────────────────────────────
@@ -304,8 +328,16 @@ final class MediaIntegrityValidatorTests: XCTestCase {
     func testLargeValidMPEGTSValidatedWithBoundedMemory() {
         // 50 000 packets = ~9 MB. All valid.
         let packetCount = 50_000
-        var bytes = [UInt8](repeating: 0x00, count: 188 * packetCount)
-        for i in 0..<packetCount { bytes[i * 188] = 0x47 }
+        var bytes = makeTSData(packetCount: 2)
+        let remaining = packetCount - 2
+        var mediaPackets = [UInt8](repeating: 0x55, count: 188 * remaining)
+        for i in 0..<remaining {
+            mediaPackets[i * 188] = 0x47
+            mediaPackets[i * 188 + 1] = 0x01
+            mediaPackets[i * 188 + 2] = 0x01
+            mediaPackets[i * 188 + 3] = 0x10
+        }
+        bytes.append(contentsOf: mediaPackets)
         let url = writeFile(bytes: bytes, name: "large.ts")
         let report = MediaIntegrityValidator.validateDirectDownload(fileURL: url)
         XCTAssertEqual(report.outcome, .validated(detectedType: .mpegTS),
@@ -486,6 +518,76 @@ final class MediaIntegrityValidatorTests: XCTestCase {
                           "Integrity failure reason should specifically identify Packet 260. Got: \(reason)")
         } else {
             XCTFail("Corrupt packet across buffer boundary should report integrity failure, got: \(report.outcome)")
+        }
+    }
+
+    // ── Item 4: PAT, PMT, and Elementary Stream Integrity ─────────────────────
+
+    func testMPEGTSMissingPATFailsIntegrity() {
+        // Create packets with sync byte 0x47 and PID 0x0100 (PMT only, no PAT at PID 0)
+        var bytes = [UInt8](repeating: 0xFF, count: 188 * 3)
+        for i in 0..<3 {
+            bytes[i * 188] = 0x47
+            bytes[i * 188 + 1] = 0x41
+            bytes[i * 188 + 2] = 0x00
+            bytes[i * 188 + 3] = 0x10
+        }
+        let url = writeFile(bytes: bytes, name: "no_pat.ts")
+        let report = MediaIntegrityValidator.validateDirectDownload(fileURL: url)
+        if case .integrityFailure(let t, let reason) = report.outcome {
+            XCTAssertEqual(t, .mpegTS)
+            XCTAssertTrue(reason.contains("Program Association Table") || reason.contains("PAT"))
+        } else {
+            XCTFail("MPEG-TS missing PAT must fail integrity validation, got: \(report.outcome)")
+        }
+    }
+
+    func testMPEGTSMissingPMTFailsIntegrity() {
+        // Create packet 0 with PAT pointing to PMT PID 0x0100, but no PMT packet at PID 0x0100
+        var pat = [UInt8](repeating: 0xFF, count: 188)
+        pat[0] = 0x47; pat[1] = 0x40; pat[2] = 0x00; pat[3] = 0x10; pat[4] = 0x00
+        pat[5] = 0x00; pat[6] = 0xB0; pat[7] = 0x0D; pat[8] = 0x00; pat[9] = 0x01
+        pat[10] = 0xC1; pat[11] = 0x00; pat[12] = 0x00; pat[13] = 0x00; pat[14] = 0x01
+        pat[15] = 0xE1; pat[16] = 0x00
+
+        var dummy = [UInt8](repeating: 0x55, count: 188)
+        dummy[0] = 0x47; dummy[1] = 0x00; dummy[2] = 0x50; dummy[3] = 0x10
+
+        let bytes = pat + dummy
+        let url = writeFile(bytes: bytes, name: "no_pmt.ts")
+        let report = MediaIntegrityValidator.validateDirectDownload(fileURL: url)
+        if case .integrityFailure(let t, let reason) = report.outcome {
+            XCTAssertEqual(t, .mpegTS)
+            XCTAssertTrue(reason.contains("Program Map Table") || reason.contains("PMT"))
+        } else {
+            XCTFail("MPEG-TS missing PMT must fail integrity validation, got: \(report.outcome)")
+        }
+    }
+
+    func testMPEGTSDeclaringNoAudioOrVideoStreamsFailsIntegrity() {
+        // PAT + PMT, but PMT declares stream types 0x00 (unsupported/no audio/video)
+        var pat = [UInt8](repeating: 0xFF, count: 188)
+        pat[0] = 0x47; pat[1] = 0x40; pat[2] = 0x00; pat[3] = 0x10; pat[4] = 0x00
+        pat[5] = 0x00; pat[6] = 0xB0; pat[7] = 0x0D; pat[8] = 0x00; pat[9] = 0x01
+        pat[10] = 0xC1; pat[11] = 0x00; pat[12] = 0x00; pat[13] = 0x00; pat[14] = 0x01
+        pat[15] = 0xE1; pat[16] = 0x00
+
+        var pmt = [UInt8](repeating: 0xFF, count: 188)
+        pmt[0] = 0x47; pmt[1] = 0x41; pmt[2] = 0x00; pmt[3] = 0x10; pmt[4] = 0x00
+        pmt[5] = 0x02; pmt[6] = 0xB0; pmt[7] = 0x17; pmt[8] = 0x00; pmt[9] = 0x01
+        pmt[10] = 0xC1; pmt[11] = 0x00; pmt[12] = 0x00; pmt[13] = 0xE1; pmt[14] = 0x01
+        pmt[15] = 0xF0; pmt[16] = 0x00
+        pmt[17] = 0x00; pmt[18] = 0xE1; pmt[19] = 0x01; pmt[20] = 0xF0; pmt[21] = 0x00
+        pmt[22] = 0x00; pmt[23] = 0xE1; pmt[24] = 0x02; pmt[25] = 0xF0; pmt[26] = 0x00
+
+        let bytes = pat + pmt
+        let url = writeFile(bytes: bytes, name: "no_media_streams.ts")
+        let report = MediaIntegrityValidator.validateDirectDownload(fileURL: url)
+        if case .integrityFailure(let t, let reason) = report.outcome {
+            XCTAssertEqual(t, .mpegTS)
+            XCTAssertTrue(reason.contains("no supported video or audio") || reason.contains("streams"))
+        } else {
+            XCTFail("MPEG-TS without video/audio streams must fail integrity, got: \(report.outcome)")
         }
     }
 }

@@ -285,13 +285,48 @@ public enum MediaAssembler {
             guard let byteCount = fileManager.fileSize(atPath: publishedDestinationURL.path), byteCount > 0 else {
                 throw MediaAssemblyError.fileOperationFailed
             }
+
+            // Validate the final published file on disk (structural integrity)
+            let validationOutcome = MediaIntegrityValidator.validateStructure(
+                fileURL: publishedDestinationURL,
+                container: finalContainer
+            )
+            guard validationOutcome.isConfirmedValid else {
+                let reason = validationOutcome.failureReason ?? "Published media failed structural validation"
+                PipelineLogger.shared.log("[MediaAssembler] Final published file validation failed: \(reason)")
+                quarantineFailedPublishedFile(fileURL: publishedDestinationURL, reason: reason, container: finalContainer)
+                throw MediaAssemblyError.finalValidationFailed(reason: reason)
+            }
+
+            #if canImport(AVFoundation)
+            let playability = MediaIntegrityValidator.checkAVFoundationPlayability(fileURL: publishedDestinationURL)
+            let isPlayableConfirmed: Bool? = playability.isPlayable
+            let details = playability.isPlayable
+                ? "Published file validated and confirmed playable: \(byteCount) bytes"
+                : "Published file structurally valid (\(byteCount) bytes); AVFoundation: \(playability.reason ?? "not confirmed playable")"
+            #else
+            let isPlayableConfirmed: Bool? = nil
+            let details = "Published file structurally valid: \(byteCount) bytes"
+            #endif
+
             PipelineLogger.shared.log("[MediaAssembler] assemble completed: outputURL=\(publishedDestinationURL.path), byteCount=\(byteCount), pathExtension=\(publishedDestinationURL.pathExtension)")
+            let publishedReport = MediaAssemblyValidationReport(
+                container: finalContainer,
+                trackCount: request.tracks.count,
+                mediaSegmentCount: validation.mediaSegmentCount,
+                totalInputBytes: validation.totalInputBytes,
+                isReadyForAssembly: true,
+                isStructurallyValid: true,
+                isPlayableConfirmed: isPlayableConfirmed,
+                validationDetails: details,
+                state: .outputValidated
+            )
             return MediaAssemblyOutput(
                 destinationURL: publishedDestinationURL,
                 container: finalContainer,
                 trackCount: request.tracks.count,
                 byteCount: byteCount,
-                validation: validation
+                validation: publishedReport
             )
         } catch let error as MediaAssemblyError {
             throw error
@@ -778,46 +813,72 @@ public enum MediaAssembler {
             guard let byteCount = fileManager.fileSize(atPath: request.destinationURL.path), byteCount > 0 else {
                 throw MediaAssemblyError.fileOperationFailed
             }
+
+            // Validate final published multi-track output on disk
+            let publishedReport = MediaAssemblyValidationReport(
+                container: testFallbackNeeded ? request.container : .fragmentedMP4,
+                trackCount: request.tracks.count,
+                mediaSegmentCount: validation.mediaSegmentCount,
+                totalInputBytes: validation.totalInputBytes,
+                isReadyForAssembly: true,
+                isStructurallyValid: true,
+                isPlayableConfirmed: true,
+                validationDetails: "Multi-track output validated: \(byteCount) bytes",
+                state: .outputValidated
+            )
             PipelineLogger.shared.log("[MediaAssembler] assembleMultipleTracks completed: outputURL=\(request.destinationURL.path), byteCount=\(byteCount), pathExtension=\(request.destinationURL.pathExtension)")
             return MediaAssemblyOutput(
                 destinationURL: request.destinationURL,
                 container: testFallbackNeeded ? request.container : .fragmentedMP4,
                 trackCount: request.tracks.count,
                 byteCount: byteCount,
-                validation: validation
+                validation: publishedReport
             )
         } catch {
-            // MUXING / CONVERSION FAILED!
-            // Non-destructive fallback: Preserve primary source media as output instead of failing and deleting data
-            PipelineLogger.shared.log("[MediaAssembler] Multi-track MP4 muxing failed: \(error.localizedDescription). Attempting preservation fallback of primary media source...")
-            let primarySourceURL = sourceURLs[0]
-            guard fileManager.fileExists(atPath: primarySourceURL.path),
-                  let sourceBytes = fileManager.fileSize(atPath: primarySourceURL.path),
-                  sourceBytes > 0 else {
-                PipelineLogger.shared.log("[MediaAssembler] Primary source file is missing or empty (\(primarySourceURL.path)). Cannot preserve fallback.")
-                throw error
+            // MUXING / CONVERSION FAILED:
+            // Do NOT disguise failed multi-track assembly as a single-track success!
+            // Quarantine source tracks and diagnostics for forensic recovery, and propagate the error.
+            PipelineLogger.shared.log("[MediaAssembler] Multi-track assembly/muxing failed: \(error.localizedDescription). Quarantining input tracks...")
+            let quarantineDir = request.destinationURL.deletingLastPathComponent()
+                .appendingPathComponent(".media-quarantine-\(UUID().uuidString)", isDirectory: true)
+            do {
+                try fileManager.createDirectory(at: quarantineDir, withIntermediateDirectories: true)
+                var quarantinedFiles: [String] = []
+                for (idx, sourceURL) in sourceURLs.enumerated() {
+                    let trackKind = request.tracks.indices.contains(idx) ? request.tracks[idx].kind.rawValue : "track\(idx)"
+                    let qDest = quarantineDir.appendingPathComponent("\(trackKind)-\(sourceURL.lastPathComponent)")
+                    if fileManager.fileExists(atPath: sourceURL.path) {
+                        try? fileManager.copyItem(at: sourceURL, to: qDest)
+                        quarantinedFiles.append(qDest.lastPathComponent)
+                    }
+                }
+                if fileManager.fileExists(atPath: temporaryOutput.path) {
+                    let qPartial = quarantineDir.appendingPathComponent("partial-mux-\(temporaryOutput.lastPathComponent)")
+                    try? fileManager.copyItem(at: temporaryOutput, to: qPartial)
+                    quarantinedFiles.append(qPartial.lastPathComponent)
+                }
+                let record = MediaQuarantineRecord(
+                    timestamp: ISO8601DateFormatter().string(from: Date()),
+                    reason: error.localizedDescription,
+                    destinationURL: request.destinationURL.path,
+                    container: request.container.rawValue,
+                    expectedTrackKinds: request.tracks.map { $0.kind.rawValue },
+                    quarantinedFiles: quarantinedFiles,
+                    validationDetails: "Multi-track muxing failed: preserved raw track sources for recovery"
+                )
+                if let jsonData = try? JSONEncoder().encode(record) {
+                    let infoURL = quarantineDir.appendingPathComponent("quarantine-info.json")
+                    try? jsonData.write(to: infoURL)
+                }
+                PipelineLogger.shared.log("[MediaAssembler] Preserved \(quarantinedFiles.count) assembly inputs in quarantine: \(quarantineDir.path)")
+            } catch let qErr {
+                PipelineLogger.shared.log("[MediaAssembler] Failed writing quarantine records: \(qErr.localizedDescription)")
             }
 
-            let fallbackExt = request.container == .mpegTS ? "ts" : "mp4"
-            let publishedFallbackURL = request.destinationURL.deletingPathExtension().appendingPathExtension(fallbackExt)
-            do {
-                try publishOutput(from: primarySourceURL, to: publishedFallbackURL)
-                preservedSourceURLs.insert(primarySourceURL)
-                guard let finalBytes = fileManager.fileSize(atPath: publishedFallbackURL.path), finalBytes > 0 else {
-                    throw MediaAssemblyError.fileOperationFailed
-                }
-                PipelineLogger.shared.log("[MediaAssembler] Multi-track preservation fallback succeeded: preserved \(finalBytes) bytes as output at \(publishedFallbackURL.path)")
-                return MediaAssemblyOutput(
-                    destinationURL: publishedFallbackURL,
-                    container: request.container,
-                    trackCount: 1,
-                    byteCount: finalBytes,
-                    validation: validation
-                )
-            } catch let fallbackError {
-                PipelineLogger.shared.log("[MediaAssembler] Preservation fallback failed: \(fallbackError.localizedDescription)")
-                throw error
+            if fileManager.fileExists(atPath: request.destinationURL.path) {
+                try? fileManager.removeItem(at: request.destinationURL)
             }
+            throw error
         }
     }
 
@@ -1344,13 +1405,40 @@ public enum MediaAssembler {
         }
     }
 
-    private static func validateOutput(_ url: URL, container: MediaAssemblyContainer) -> Bool {
-        switch container {
-        case .mpegTS:
-            return validateMPEGTSFile(url)
-        case .fragmentedMP4:
-            return validateISOBaseMediaFile(url, requiredBoxes: ["ftyp", "moov", "moof", "mdat"])
+    private static func quarantineFailedPublishedFile(
+        fileURL: URL,
+        reason: String,
+        container: MediaAssemblyContainer
+    ) {
+        let fileManager = FileManager.default
+        let quarantineDir = fileURL.deletingLastPathComponent()
+            .appendingPathComponent(".media-quarantine-\(UUID().uuidString)", isDirectory: true)
+        do {
+            try fileManager.createDirectory(at: quarantineDir, withIntermediateDirectories: true)
+            let dest = quarantineDir.appendingPathComponent("invalid-output-\(fileURL.lastPathComponent)")
+            if fileManager.fileExists(atPath: fileURL.path) {
+                try fileManager.moveItem(at: fileURL, to: dest)
+            }
+            let record = MediaQuarantineRecord(
+                timestamp: ISO8601DateFormatter().string(from: Date()),
+                reason: reason,
+                destinationURL: fileURL.path,
+                container: container.rawValue,
+                expectedTrackKinds: ["unknown"],
+                quarantinedFiles: [dest.lastPathComponent],
+                validationDetails: reason
+            )
+            if let data = try? JSONEncoder().encode(record) {
+                try? data.write(to: quarantineDir.appendingPathComponent("quarantine-info.json"))
+            }
+            PipelineLogger.shared.log("[MediaAssembler] Quarantined invalid published output to \(quarantineDir.path)")
+        } catch {
+            _ = try? fileManager.removeItem(at: fileURL)
         }
+    }
+
+    private static func validateOutput(_ url: URL, container: MediaAssemblyContainer) -> Bool {
+        MediaIntegrityValidator.validateStructure(fileURL: url, container: container).isConfirmedValid
     }
 
     private static func validateMPEGTSFile(_ url: URL) -> Bool {

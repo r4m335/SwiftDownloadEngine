@@ -222,7 +222,7 @@ final class StreamingDownloadOrchestratorTests: XCTestCase {
         )
 
         XCTAssertEqual(result.container, .mpegTS)
-        XCTAssertEqual(result.byteCount, 188)
+        XCTAssertEqual(result.byteCount, 376)
         XCTAssertTrue(FileManager.default.fileExists(atPath: output.path))
     }
 
@@ -2741,9 +2741,25 @@ private actor WritingSegmentExecutor: StreamingSegmentExecutor {
             at: request.destinationURL.deletingLastPathComponent(),
             withIntermediateDirectories: true
         )
-        var packet = Data([0x47])
-        packet.append(Data(repeating: 0x44, count: 187))
-        try packet.write(to: request.destinationURL)
+        // Write valid MPEG-TS packets (PAT + PMT declaring video and audio)
+        var data = Data()
+        var pat = Data(repeating: 0xFF, count: 188)
+        pat[0] = 0x47; pat[1] = 0x40; pat[2] = 0x00; pat[3] = 0x10; pat[4] = 0x00
+        pat[5] = 0x00; pat[6] = 0xB0; pat[7] = 0x0D; pat[8] = 0x00; pat[9] = 0x01
+        pat[10] = 0xC1; pat[11] = 0x00; pat[12] = 0x00; pat[13] = 0x00; pat[14] = 0x01
+        pat[15] = 0xE1; pat[16] = 0x00
+        data.append(pat)
+
+        var pmt = Data(repeating: 0xFF, count: 188)
+        pmt[0] = 0x47; pmt[1] = 0x41; pmt[2] = 0x00; pmt[3] = 0x10; pmt[4] = 0x00
+        pmt[5] = 0x02; pmt[6] = 0xB0; pmt[7] = 0x17; pmt[8] = 0x00; pmt[9] = 0x01
+        pmt[10] = 0xC1; pmt[11] = 0x00; pmt[12] = 0x00; pmt[13] = 0xE1; pmt[14] = 0x01
+        pmt[15] = 0xF0; pmt[16] = 0x00
+        pmt[17] = 0x1B; pmt[18] = 0xE1; pmt[19] = 0x01; pmt[20] = 0xF0; pmt[21] = 0x00
+        pmt[22] = 0x0F; pmt[23] = 0xE1; pmt[24] = 0x02; pmt[25] = 0xF0; pmt[26] = 0x00
+        data.append(pmt)
+
+        try data.write(to: request.destinationURL)
         progress?(1)
     }
 
