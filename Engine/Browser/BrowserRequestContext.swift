@@ -49,7 +49,12 @@ public struct BrowserCookie: Sendable, Hashable, Codable {
     }
 
     /// Convenience initializer from Foundation `HTTPCookie`.
-    public init?(from httpCookie: HTTPCookie, isHostOnly: Bool? = nil) {
+    public init?(from httpCookie: HTTPCookie) {
+        self.init(from: httpCookie, isHostOnly: nil)
+    }
+
+    /// Explicit initializer from Foundation `HTTPCookie` with optional host-only override.
+    public init?(from httpCookie: HTTPCookie, isHostOnly: Bool?) {
         guard !httpCookie.name.isEmpty else { return nil }
         self.name = httpCookie.name
         self.value = httpCookie.value
