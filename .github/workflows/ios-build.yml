@@ -595,18 +595,11 @@ jobs:
         run: |
           set -o pipefail
           xcodebuild -version
-          SIM_NAME=$(xcrun simctl list devices available | grep -E "iPhone" | head -n 1 | sed -E 's/^[[:space:]]+//; s/ \([A-F0-9-]+\)//')
-          echo "Selected simulator device: ${SIM_NAME:-none}"
-          DESTINATION="generic/platform=iOS Simulator"
-          if [ -n "$SIM_NAME" ]; then
-            DESTINATION="platform=iOS Simulator,name=$SIM_NAME"
-          fi
-          echo "Using destination: $DESTINATION"
           xcodebuild \
             -project SwiftDownloadEngine.xcodeproj \
             -scheme SwiftDownloadEngine \
             -sdk iphonesimulator \
-            -destination "$DESTINATION" \
+            -destination "generic/platform=iOS Simulator" \
             -configuration Debug \
             -derivedDataPath build \
             CODE_SIGNING_ALLOWED=NO \
