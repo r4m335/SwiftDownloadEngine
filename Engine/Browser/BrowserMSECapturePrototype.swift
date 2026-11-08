@@ -64,12 +64,23 @@ public struct BrowserMSECaptureAppendEvent: Sendable, Equatable {
     public let trackIndex: Int
     public let segmentIndex: Int
     public let byteCount: Int64
+    public let timestampOffset: Double?
+    public let appendTimestamp: Double?
 
-    public init(chunkIndex: Int, trackIndex: Int, segmentIndex: Int, byteCount: Int64) {
+    public init(
+        chunkIndex: Int,
+        trackIndex: Int,
+        segmentIndex: Int,
+        byteCount: Int64,
+        timestampOffset: Double? = nil,
+        appendTimestamp: Double? = nil
+    ) {
         self.chunkIndex = chunkIndex
         self.trackIndex = trackIndex
         self.segmentIndex = segmentIndex
         self.byteCount = byteCount
+        self.timestampOffset = timestampOffset
+        self.appendTimestamp = appendTimestamp
     }
 }
 
@@ -450,7 +461,9 @@ public actor BrowserMSECapturePrototypeWriter {
         segmentIndex: Int,
         data: Data,
         sha256: String,
-        isSegmentEnd: Bool
+        isSegmentEnd: Bool,
+        timestampOffset: Double? = nil,
+        appendTimestamp: Double? = nil
     ) throws -> BrowserMSECaptureSnapshot {
         guard var session = sessions[captureID] else {
             throw BrowserMSECapturePrototypeError.unknownCapture
@@ -517,7 +530,9 @@ public actor BrowserMSECapturePrototypeWriter {
                 chunkIndex: chunkIndex,
                 trackIndex: trackIndex,
                 segmentIndex: segmentIndex,
-                byteCount: Int64(data.count)
+                byteCount: Int64(data.count),
+                timestampOffset: timestampOffset,
+                appendTimestamp: appendTimestamp
             ))
 
             if isSegmentEnd {
@@ -646,8 +661,7 @@ public actor BrowserMSECapturePrototypeWriter {
         case .mpegTS:
             return .media
         case .fragmentedMP4, .unsupported:
-            if track.initializationURL == nil,
-               BrowserMSECaptureSegmentInspector.containsBoxes(url, required: ["ftyp", "moov"]) {
+            if BrowserMSECaptureSegmentInspector.containsBoxes(url, required: ["ftyp", "moov"]) {
                 return .initialization
             }
             return .media
@@ -881,6 +895,8 @@ public struct BrowserMSECapturePrototypeMessage: Codable, Sendable, Equatable {
     public let base64: String?
     public let sha256: String?
     public let isSegmentEnd: Bool?
+    public let timestampOffset: Double?
+    public let appendTimestamp: Double?
     public let reason: String?
 
     public init(
@@ -897,6 +913,8 @@ public struct BrowserMSECapturePrototypeMessage: Codable, Sendable, Equatable {
         base64: String? = nil,
         sha256: String? = nil,
         isSegmentEnd: Bool? = nil,
+        timestampOffset: Double? = nil,
+        appendTimestamp: Double? = nil,
         reason: String? = nil
     ) {
         self.kind = kind
@@ -912,13 +930,15 @@ public struct BrowserMSECapturePrototypeMessage: Codable, Sendable, Equatable {
         self.base64 = base64
         self.sha256 = sha256
         self.isSegmentEnd = isSegmentEnd
+        self.timestampOffset = timestampOffset
+        self.appendTimestamp = appendTimestamp
         self.reason = reason
     }
 
     private enum CodingKeys: String, CodingKey {
         case kind, type, captureID, documentID, mediaSourceURL, mimeTypes
         case isPotentiallyProtected, chunkIndex, offset, trackIndex, segmentIndex
-        case base64, sha256, isSegmentEnd, reason
+        case base64, sha256, isSegmentEnd, timestampOffset, appendTimestamp, reason
     }
 
     public init(from decoder: Decoder) throws {
@@ -940,6 +960,8 @@ public struct BrowserMSECapturePrototypeMessage: Codable, Sendable, Equatable {
         base64 = try container.decodeIfPresent(String.self, forKey: .base64)
         sha256 = try container.decodeIfPresent(String.self, forKey: .sha256)
         isSegmentEnd = try container.decodeIfPresent(Bool.self, forKey: .isSegmentEnd)
+        timestampOffset = try container.decodeIfPresent(Double.self, forKey: .timestampOffset)
+        appendTimestamp = try container.decodeIfPresent(Double.self, forKey: .appendTimestamp)
         reason = try container.decodeIfPresent(String.self, forKey: .reason)
     }
 
@@ -958,6 +980,8 @@ public struct BrowserMSECapturePrototypeMessage: Codable, Sendable, Equatable {
         try container.encodeIfPresent(base64, forKey: .base64)
         try container.encodeIfPresent(sha256, forKey: .sha256)
         try container.encodeIfPresent(isSegmentEnd, forKey: .isSegmentEnd)
+        try container.encodeIfPresent(timestampOffset, forKey: .timestampOffset)
+        try container.encodeIfPresent(appendTimestamp, forKey: .appendTimestamp)
         try container.encodeIfPresent(reason, forKey: .reason)
     }
 }
@@ -1065,7 +1089,9 @@ public actor BrowserMSECapturePrototypeReceiver {
                     segmentIndex: segmentIndex,
                     data: data,
                     sha256: checksum,
-                    isSegmentEnd: message.isSegmentEnd == true
+                    isSegmentEnd: message.isSegmentEnd == true,
+                    timestampOffset: message.timestampOffset,
+                    appendTimestamp: message.appendTimestamp
                 )
                 return BrowserMSECapturePrototypeAck(captureID: message.captureID, accepted: true, snapshot: snapshot)
             case .complete:
@@ -1188,8 +1214,14 @@ public enum BrowserMSECapturePrototypeBridge {
         var captures = Object.create(null);
         var mediaSourceURLs = typeof WeakMap === "function" ? new WeakMap() : null;
         var sourceBufferInfo = typeof WeakMap === "function" ? new WeakMap() : null;
+        var mediaSourceBufferList = typeof WeakMap === "function" ? new WeakMap() : null;
         var MAX_CHUNK_BYTES = 262144;
         var protectionObserved = false;
+        var preCaptureLimits = {
+            maxMediaBytesPerTrack: 10 * 1024 * 1024,
+            maxTotalMediaBytes: 20 * 1024 * 1024
+        };
+        var globalAppendCounter = 0;
 
         function post(message) {
             try {
@@ -1226,6 +1258,54 @@ public enum BrowserMSECapturePrototypeBridge {
                 return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
             }
             return new Uint8Array(0);
+        }
+
+        function getBoxTypes(bytes) {
+            var types = [];
+            if (!bytes || bytes.length < 8) { return types; }
+            var offset = 0;
+            var len = bytes.length;
+            while (offset + 8 <= len) {
+                var size = ((bytes[offset] << 24) | (bytes[offset + 1] << 16) | (bytes[offset + 2] << 8) | bytes[offset + 3]) >>> 0;
+                var type = String.fromCharCode(bytes[offset + 4], bytes[offset + 5], bytes[offset + 6], bytes[offset + 7]);
+                types.push(type);
+                if (size === 1) {
+                    if (offset + 16 > len) { break; }
+                    var high = ((bytes[offset + 8] << 24) | (bytes[offset + 9] << 16) | (bytes[offset + 10] << 8) | bytes[offset + 11]) >>> 0;
+                    var low = ((bytes[offset + 12] << 24) | (bytes[offset + 13] << 16) | (bytes[offset + 14] << 8) | bytes[offset + 15]) >>> 0;
+                    var bigSize = high * 4294967296 + low;
+                    if (bigSize <= 16) { break; }
+                    offset += bigSize;
+                } else if (size === 0) {
+                    break;
+                } else if (size < 8) {
+                    break;
+                } else {
+                    offset += size;
+                }
+            }
+            return types;
+        }
+
+        function isInitializationSegment(bytes) {
+            var boxes = getBoxTypes(bytes);
+            return boxes.indexOf("moov") !== -1 && boxes.indexOf("moof") === -1;
+        }
+
+        function areBytesEqual(a, b) {
+            if (!a || !b) { return false; }
+            if (a.length !== b.length) { return false; }
+            for (var i = 0; i < a.length; i++) {
+                if (a[i] !== b[i]) { return false; }
+            }
+            return true;
+        }
+
+        function evictPreCaptureMediaFragments(info) {
+            while (info.totalMediaBytes > preCaptureLimits.maxMediaBytesPerTrack && info.mediaFragments.length > 0) {
+                var evicted = info.mediaFragments.shift();
+                info.totalMediaBytes -= evicted.byteLength;
+            }
         }
 
         function activeCaptureForMediaSourceURL(objectURL) {
@@ -1265,7 +1345,7 @@ public enum BrowserMSECapturePrototypeBridge {
             }
         }
 
-        function enqueueSegment(session, trackIndex, bytes) {
+        function enqueueSegment(session, trackIndex, bytes, timestampOffset) {
             if (!bytes || bytes.length === 0) { return; }
             var segmentIndex = session.nextSegmentIndex[trackIndex] || 0;
             session.nextSegmentIndex[trackIndex] = segmentIndex + 1;
@@ -1276,11 +1356,15 @@ public enum BrowserMSECapturePrototypeBridge {
                     trackIndex: trackIndex,
                     segmentIndex: segmentIndex,
                     bytes: bytes.subarray(offset, end),
-                    isSegmentEnd: end >= bytes.length
+                    isSegmentEnd: end >= bytes.length,
+                    timestampOffset: Number(timestampOffset) || 0,
+                    appendTimestamp: Date.now()
                 });
                 offset = end;
             }
-            pump(session);
+            if (session.metadataAcked) {
+                pump(session);
+            }
         }
 
         function pump(session) {
@@ -1310,7 +1394,9 @@ public enum BrowserMSECapturePrototypeBridge {
                     segmentIndex: item.segmentIndex,
                     base64: bytesToBase64(item.bytes),
                     sha256: checksum,
-                    isSegmentEnd: item.isSegmentEnd === true
+                    isSegmentEnd: item.isSegmentEnd === true,
+                    timestampOffset: item.timestampOffset,
+                    appendTimestamp: item.appendTimestamp
                 });
                 session.awaitingAck = true;
                 session.chunkIndex += 1;
@@ -1331,13 +1417,16 @@ public enum BrowserMSECapturePrototypeBridge {
         function collectMimeTypes(mediaSource) {
             var mimeTypes = [];
             try {
-                var buffers = mediaSource && mediaSource.sourceBuffers;
+                var buffers = (mediaSourceBufferList && mediaSourceBufferList.get(mediaSource)) ||
+                              (mediaSource && mediaSource.sourceBuffers);
                 if (!buffers) { return mimeTypes; }
                 for (var i = 0; i < buffers.length; i++) {
                     var buffer = buffers[i];
                     var info = sourceBufferInfo && sourceBufferInfo.get(buffer);
                     var mime = (info && info.mimeType) || buffer.type || null;
-                    if (mime) { mimeTypes.push(String(mime)); }
+                    if (mime && mimeTypes.indexOf(String(mime)) === -1) {
+                        mimeTypes.push(String(mime));
+                    }
                 }
             } catch (_) {}
             return mimeTypes;
@@ -1373,6 +1462,43 @@ public enum BrowserMSECapturePrototypeBridge {
                 });
                 return;
             }
+
+            for (var m = 0; m < mimeTypes.length; m++) {
+                if (mimeTypes[m].indexOf("webm") !== -1) {
+                    post({
+                        kind: "failure",
+                        captureID: captureID,
+                        reason: "WebM MSE sessions are not reconstructed by this prototype."
+                    });
+                    return;
+                }
+            }
+
+            var buffers = (mediaSourceBufferList && mediaSourceBufferList.get(mediaSource)) ||
+                          (mediaSource && mediaSource.sourceBuffers) || [];
+            for (var b = 0; b < buffers.length; b++) {
+                var sb = buffers[b];
+                var sInfo = sourceBufferInfo && sourceBufferInfo.get(sb);
+                if (sInfo) {
+                    if (sInfo.initChanged) {
+                        post({
+                            kind: "failure",
+                            captureID: captureID,
+                            reason: "Multiple distinct initialization segments detected (codec or representation switch not supported by prototype reconstruction)."
+                        });
+                        return;
+                    }
+                    if (sInfo.appendsCount > 0 && !sInfo.initSegment) {
+                        post({
+                            kind: "failure",
+                            captureID: captureID,
+                            reason: "Missing initialization segment for MediaSource buffer. Playback started before capture without retained initialization data."
+                        });
+                        return;
+                    }
+                }
+            }
+
             var chunkSize = Math.max(1, Math.min(MAX_CHUNK_BYTES, Number(requestedChunkSize) || MAX_CHUNK_BYTES));
             captures[captureID] = {
                 captureID: captureID,
@@ -1392,6 +1518,7 @@ public enum BrowserMSECapturePrototypeBridge {
                 metadataAcked: false
             };
             var session = captures[captureID];
+
             try {
                 mediaSource.addEventListener("sourceended", function() {
                     if (session && !session.completedPosted) {
@@ -1406,6 +1533,53 @@ public enum BrowserMSECapturePrototypeBridge {
                     failCapture(session, "MediaSource error");
                 });
             } catch (_) {}
+
+            // Late-start handoff: retrieve retained initialization segments & media fragments
+            // 1. Enqueue each track's retained init segment as segment 0
+            for (var t = 0; t < mimeTypes.length; t++) {
+                var targetMime = mimeTypes[t];
+                for (var sbIdx = 0; sbIdx < buffers.length; sbIdx++) {
+                    var buf = buffers[sbIdx];
+                    var bInfo = sourceBufferInfo && sourceBufferInfo.get(buf);
+                    if (bInfo && String(bInfo.mimeType) === String(targetMime)) {
+                        if (bInfo.initSegment) {
+                            enqueueSegment(session, t, bInfo.initSegment, 0);
+                        }
+                        break;
+                    }
+                }
+            }
+
+            // 2. Collect all retained media fragments from all buffers, sort by appendOrder
+            var allFragments = [];
+            for (var sbIdx = 0; sbIdx < buffers.length; sbIdx++) {
+                var buf = buffers[sbIdx];
+                var bInfo = sourceBufferInfo && sourceBufferInfo.get(buf);
+                if (bInfo && bInfo.mediaFragments.length > 0) {
+                    var tIdx = 0;
+                    for (var t = 0; t < mimeTypes.length; t++) {
+                        if (String(mimeTypes[t]) === String(bInfo.mimeType)) {
+                            tIdx = t;
+                            break;
+                        }
+                    }
+                    for (var f = 0; f < bInfo.mediaFragments.length; f++) {
+                        var frag = bInfo.mediaFragments[f];
+                        allFragments.push({
+                            trackIndex: tIdx,
+                            bytes: frag.bytes,
+                            appendOrder: frag.appendOrder,
+                            timestampOffset: frag.timestampOffset
+                        });
+                    }
+                }
+            }
+            allFragments.sort(function(a, b) { return a.appendOrder - b.appendOrder; });
+            for (var fIdx = 0; fIdx < allFragments.length; fIdx++) {
+                var item = allFragments[fIdx];
+                enqueueSegment(session, item.trackIndex, item.bytes, item.timestampOffset);
+            }
+
             post({
                 kind: "metadata",
                 captureID: captureID,
@@ -1465,6 +1639,18 @@ public enum BrowserMSECapturePrototypeBridge {
                     return objectURL;
                 };
             }
+            if (window.URL && typeof window.URL.revokeObjectURL === "function") {
+                var originalRevokeObjectURL = window.URL.revokeObjectURL;
+                window.URL.revokeObjectURL = function(url) {
+                    try {
+                        var active = activeCaptureForMediaSourceURL(String(url));
+                        if (active) {
+                            failCapture(active, "MediaSource URL was revoked");
+                        }
+                    } catch (_) {}
+                    return originalRevokeObjectURL.apply(this, arguments);
+                };
+            }
         } catch (_) {}
 
         try {
@@ -1485,12 +1671,25 @@ public enum BrowserMSECapturePrototypeBridge {
                         var buffer = originalAddSourceBuffer.apply(this, arguments);
                         try {
                             var objectURL = mediaSourceURLs ? mediaSourceURLs.get(this) : null;
+                            var sbState = {
+                                mimeType: String(mimeType || ""),
+                                mediaSourceURL: objectURL || null,
+                                mediaSource: this,
+                                initSegment: null,
+                                initBoxTypes: [],
+                                mediaFragments: [],
+                                totalMediaBytes: 0,
+                                hasMultipleInitSegments: false,
+                                initChanged: false,
+                                appendsCount: 0
+                            };
                             if (sourceBufferInfo) {
-                                sourceBufferInfo.set(buffer, {
-                                    mimeType: String(mimeType || ""),
-                                    mediaSourceURL: objectURL || null,
-                                    mediaSource: this
-                                });
+                                sourceBufferInfo.set(buffer, sbState);
+                            }
+                            if (mediaSourceBufferList) {
+                                var list = mediaSourceBufferList.get(this) || [];
+                                list.push(buffer);
+                                mediaSourceBufferList.set(this, list);
                             }
                             buffer.addEventListener("error", function() {
                                 var info = sourceBufferInfo && sourceBufferInfo.get(buffer);
@@ -1499,6 +1698,9 @@ public enum BrowserMSECapturePrototypeBridge {
                                     objectURL ? activeCaptureForMediaSourceURL(objectURL) : null,
                                     "SourceBuffer error"
                                 );
+                            });
+                            buffer.addEventListener("abort", function() {
+                                // Handled if needed
                             });
                             buffer.addEventListener("updateend", function() {
                                 var info = sourceBufferInfo && sourceBufferInfo.get(buffer);
@@ -1529,6 +1731,11 @@ public enum BrowserMSECapturePrototypeBridge {
                             var objectURL = mediaSourceURLs ? mediaSourceURLs.get(this) : null;
                             var session = objectURL ? activeCaptureForMediaSourceURL(objectURL) : null;
                             if (session) { failCapture(session, "SourceBuffer was detached"); }
+                            if (mediaSourceBufferList) {
+                                var list = mediaSourceBufferList.get(this) || [];
+                                var idx = list.indexOf(buffer);
+                                if (idx !== -1) { list.splice(idx, 1); }
+                            }
                         } catch (_) {}
                         return originalRemoveSourceBuffer.apply(this, arguments);
                     };
@@ -1543,23 +1750,60 @@ public enum BrowserMSECapturePrototypeBridge {
                     window.SourceBuffer.prototype.appendBuffer = function(data) {
                         try {
                             var info = sourceBufferInfo && sourceBufferInfo.get(this);
-                            var objectURL = info && info.mediaSourceURL;
-                            var session = objectURL ? activeCaptureForMediaSourceURL(objectURL) : null;
-                            if (session && !protectionObserved) {
+                            if (info) {
                                 var bytes = toUint8Array(data);
-                                // Copy immediately; the page may detach the buffer.
                                 var copy = new Uint8Array(bytes.length);
                                 copy.set(bytes);
-                                var mimeTypes = session.mimeTypes || [];
-                                var trackIndex = 0;
-                                var mime = (info && info.mimeType) || this.type || "";
-                                for (var i = 0; i < mimeTypes.length; i++) {
-                                    if (String(mimeTypes[i]) === String(mime)) {
-                                        trackIndex = i;
-                                        break;
+                                info.appendsCount += 1;
+
+                                var isInit = isInitializationSegment(copy);
+                                if (isInit) {
+                                    if (info.initSegment) {
+                                        if (!areBytesEqual(info.initSegment, copy)) {
+                                            info.hasMultipleInitSegments = true;
+                                            info.initChanged = true;
+                                            var objectURL = info.mediaSourceURL;
+                                            var session = objectURL ? activeCaptureForMediaSourceURL(objectURL) : null;
+                                            if (session) {
+                                                failCapture(session, "Multiple distinct initialization segments detected (codec or representation switch not supported by prototype reconstruction).");
+                                                return originalAppendBuffer.apply(this, arguments);
+                                            }
+                                        }
+                                    } else {
+                                        info.initSegment = copy;
+                                        info.initBoxTypes = getBoxTypes(copy);
                                     }
+                                } else {
+                                    // Bounded media fragments retention
+                                    info.mediaFragments.push({
+                                        bytes: copy,
+                                        byteLength: copy.length,
+                                        timestamp: Date.now(),
+                                        appendOrder: ++globalAppendCounter,
+                                        timestampOffset: Number(this.timestampOffset) || 0
+                                    });
+                                    info.totalMediaBytes += copy.length;
+                                    evictPreCaptureMediaFragments(info);
                                 }
-                                enqueueSegment(session, trackIndex, copy);
+
+                                var objectURL = info.mediaSourceURL;
+                                var session = objectURL ? activeCaptureForMediaSourceURL(objectURL) : null;
+                                if (session && !protectionObserved) {
+                                    if (info.initChanged) {
+                                        failCapture(session, "Multiple distinct initialization segments detected (codec or representation switch not supported by prototype reconstruction).");
+                                        return originalAppendBuffer.apply(this, arguments);
+                                    }
+                                    var mimeTypes = session.mimeTypes || [];
+                                    var trackIndex = 0;
+                                    var mime = info.mimeType || this.type || "";
+                                    for (var i = 0; i < mimeTypes.length; i++) {
+                                        if (String(mimeTypes[i]) === String(mime)) {
+                                            trackIndex = i;
+                                            break;
+                                        }
+                                    }
+                                    enqueueSegment(session, trackIndex, copy, this.timestampOffset || 0);
+                                }
                             }
                         } catch (_) {}
                         return originalAppendBuffer.apply(this, arguments);
@@ -1572,11 +1816,21 @@ public enum BrowserMSECapturePrototypeBridge {
             start: start,
             acknowledge: acknowledge,
             stop: stop,
-            cancel: cancel
+            cancel: cancel,
+            getPreCaptureState: function(sourceBuffer) {
+                return sourceBufferInfo && sourceBufferInfo.get(sourceBuffer);
+            },
+            setPreCaptureLimits: function(trackLimit, totalLimit) {
+                if (typeof trackLimit === "number") { preCaptureLimits.maxMediaBytesPerTrack = trackLimit; }
+                if (typeof totalLimit === "number") { preCaptureLimits.maxTotalMediaBytes = totalLimit; }
+            }
         };
 
         try {
             window.addEventListener("pagehide", function() {
+                cancelAllCaptures("Document navigation interrupted MSE capture");
+            });
+            window.addEventListener("beforeunload", function() {
                 cancelAllCaptures("Document navigation interrupted MSE capture");
             });
         } catch (_) {}
