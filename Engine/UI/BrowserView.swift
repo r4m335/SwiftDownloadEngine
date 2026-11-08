@@ -627,6 +627,27 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         isCapturingBlob = false
     }
 
+    /// Handles unexpected WebContent process termination (crash or memory pressure) for blob captures.
+    /// Preserves the partial staging file for recovery instead of discarding it, and records diagnostics.
+    public func handleBlobProcessTermination(for tabID: UUID) {
+        if let session = tabSessions[tabID] {
+            let service = session.blobCaptureService
+            let tabString = tabID.uuidString
+            Task {
+                _ = await service.handleWebContentProcessTermination(tabID: tabString)
+            }
+        }
+        if activeBlobCaptureTabID == tabID {
+            activeBlobCaptureID = nil
+            activeBlobCaptureTabID = nil
+            activeBlobCaptureOriginalURL = nil
+            activeBlobCaptureMIMEType = nil
+            activeBlobCaptureSuggestedFilename = nil
+            isCapturingBlob = false
+            blobCaptureErrorMessage = "The webpage process was terminated by iOS (likely memory pressure). Partial download preserved for recovery."
+        }
+    }
+
     fileprivate func handleBlobCaptureAcknowledgement(
         _ acknowledgement: BlobCaptureAck,
         tabID: UUID
@@ -3364,8 +3385,7 @@ public final class BrowserWebViewCoordinator: NSObject, WKNavigationDelegate, WK
         )
         DispatchQueue.main.async { [weak self] in
             guard let self, let tabID = self.tabID else { return }
-            self.viewModel?.cancelBlobCapture(for: tabID)
-            self.viewModel?.blobCaptureErrorMessage = "The webpage process was terminated by iOS (likely memory pressure)."
+            self.viewModel?.handleBlobProcessTermination(for: tabID)
         }
         guard webView.url != nil else { return }
         webView.reload()

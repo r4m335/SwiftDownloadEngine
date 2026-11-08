@@ -11,12 +11,14 @@ import WebKit
 /// The conservative classification produced by the prototype inspection step.
 /// A readable stream without a stable size is not exported as a completed blob;
 /// it may be a MediaSource-backed stream and must go through manifest discovery.
+@available(*, deprecated, message: "Use BlobCaptureResourceKind in BrowserBlobCaptureService.swift instead")
 public enum BrowserBlobCaptureResourceKind: String, Codable, Sendable, Equatable {
     case completeBlobCandidate
     case streamOrUnknown
     case unavailable
 }
 
+@available(*, deprecated, message: "Use BlobExportLimits in BrowserBlobCaptureService.swift instead")
 public struct BrowserBlobCaptureLimits: Sendable, Equatable {
     public let maximumBytes: Int64
     public let maximumChunkBytes: Int
@@ -35,6 +37,7 @@ public struct BrowserBlobCaptureLimits: Sendable, Equatable {
     public static let `default` = BrowserBlobCaptureLimits()
 }
 
+@available(*, deprecated, message: "Use BlobCaptureMetadataEnvelope in BrowserBlobCaptureService.swift instead")
 public struct BrowserBlobCaptureMetadata: Codable, Sendable, Equatable {
     public let captureID: String
     public let sourceURL: URL
@@ -63,6 +66,7 @@ public struct BrowserBlobCaptureMetadata: Codable, Sendable, Equatable {
     }
 }
 
+@available(*, deprecated, message: "Use BlobExportSnapshot in BrowserBlobCaptureService.swift instead")
 public struct BrowserBlobCaptureSnapshot: Sendable, Equatable {
     public let captureID: String
     public let bytesWritten: Int64
@@ -91,6 +95,7 @@ public struct BrowserBlobCaptureSnapshot: Sendable, Equatable {
     }
 }
 
+@available(*, deprecated, message: "Use BlobExportError in BrowserBlobCaptureService.swift instead")
 public enum BrowserBlobCapturePrototypeError: Error, LocalizedError, Sendable, Equatable {
     case invalidCaptureID
     case invalidBlobURL
@@ -137,6 +142,7 @@ public enum BrowserBlobCapturePrototypeError: Error, LocalizedError, Sendable, E
 
 /// A deterministic native receiver for the prototype chunk protocol. It owns
 /// only temporary file handles and never creates a download-history record.
+@available(*, deprecated, message: "Use BlobExportWriter in BrowserBlobCaptureService.swift instead")
 public actor BrowserBlobCapturePrototypeWriter {
     private struct Session {
         let metadata: BrowserBlobCaptureMetadata
@@ -375,6 +381,7 @@ public actor BrowserBlobCapturePrototypeWriter {
 
 /// Messages exchanged by the prototype WebKit bridge. Chunk payloads are
 /// Base64 encoded individually; the complete blob is never Base64 encoded.
+@available(*, deprecated, message: "Use BlobCaptureWireMessage in BrowserBlobCaptureService.swift instead")
 public struct BrowserBlobCapturePrototypeMessage: Codable, Sendable, Equatable {
     public enum Kind: String, Codable, Sendable, Equatable {
         case metadata
@@ -472,6 +479,7 @@ public struct BrowserBlobCapturePrototypeMessage: Codable, Sendable, Equatable {
     }
 }
 
+@available(*, deprecated, message: "Use BlobCaptureAck in BrowserBlobCaptureService.swift instead")
 public struct BrowserBlobCapturePrototypeAck: Sendable, Equatable {
     public let captureID: String
     public let accepted: Bool
@@ -493,6 +501,7 @@ public struct BrowserBlobCapturePrototypeAck: Sendable, Equatable {
 
 /// Platform-neutral message receiver used by tests and by the future WKWebView
 /// adapter. It decodes and validates the same envelopes that WebKit emits.
+@available(*, deprecated, message: "Use BrowserBlobCaptureReceiver in BrowserBlobCaptureService.swift instead")
 public actor BrowserBlobCapturePrototypeReceiver {
     private let writer: BrowserBlobCapturePrototypeWriter
     private var expectedDocumentIDs: [String: String] = [:]
@@ -628,6 +637,7 @@ public actor BrowserBlobCapturePrototypeReceiver {
 /// Coordinates the bounded browser-to-file protocol for one WebKit session.
 /// It deliberately exposes the existing receiver/writer instead of owning a
 /// download coordinator or a download-history record.
+@available(*, deprecated, message: "Use BrowserBlobCaptureService in BrowserBlobCaptureService.swift instead")
 public actor BrowserBlobCapturePrototypeService {
     public nonisolated let receiver: BrowserBlobCapturePrototypeReceiver
 
@@ -664,6 +674,7 @@ public actor BrowserBlobCapturePrototypeService {
 /// Thin WKWebView adapter for the prototype. It keeps the WebKit callback
 /// responsible for JavaScript acknowledgement while the actor owns all file
 /// writes and protocol validation.
+@available(*, deprecated, message: "Use BlobCaptureWebKitHandler in BrowserBlobCaptureService.swift instead")
 public final class BrowserBlobCapturePrototypeWebKitHandler: NSObject, WKScriptMessageHandler, @unchecked Sendable {
     public let receiver: BrowserBlobCapturePrototypeReceiver
     public var acknowledgementHandler: ((BrowserBlobCapturePrototypeAck) -> Void)?
@@ -713,6 +724,7 @@ public final class BrowserBlobCapturePrototypeWebKitHandler: NSObject, WKScriptM
 /// The prototype script uses a ReadableStream and waits for a native
 /// acknowledgement after every bounded chunk. It deliberately does not call
 /// `response.blob()`, `FileReader`, or build a whole-file Base64 string.
+@available(*, deprecated, message: "Use BlobCaptureBridge in BrowserBlobCaptureService.swift instead")
 public enum BrowserBlobCapturePrototypeBridge {
     public static let messageName = "browserBlobCapture"
     public static let maximumChunkBytes = 256 * 1024

@@ -10,9 +10,9 @@ final class SharedRequestBudgetHostTests: XCTestCase {
             try await budget.acquire(downloadID: "second", host: "cdn.example")
         }
 
-        for _ in 0..<10 {
+        for _ in 0..<50 {
             if await budget.waitingCount > 0 { break }
-            await Task.yield()
+            try await Task.sleep(nanoseconds: 10_000_000)
         }
         let activeOnFirstHost = await budget.activeCount(forHost: "cdn.example")
         let waitingCount = await budget.waitingCount

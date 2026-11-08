@@ -969,5 +969,317 @@ final class BrowserBlobCaptureServiceTests: XCTestCase {
             XCTAssertEqual(err, .unreadableBlob)
         }
     }
+
+    // MARK: - Phase 1 Item 5 Regression Tests
+
+    func testCheckpointIntervalIsHonored() async throws {
+        let dir = tmpDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let writer = BlobExportWriter(
+            destinationDirectoryURL: dir,
+            limits: BlobExportLimits(
+                maximumBytesPerTransfer: 10_000,
+                maximumChunkBytes: 1024,
+                maximumStagingBytes: 20_000
+            ),
+            checkpointInterval: 4
+        )
+        let auth = makeAuth(transferID: "t-checkpoint")
+        let chunkData = Data(repeating: 0x41, count: 10)
+        let env = makeEnvelope(transferID: "t-checkpoint", size: 100)
+
+        _ = try await writer.begin(authorization: auth, envelope: env, suggestedFilename: "chk.bin")
+        let initialSync = await writer.totalSyncCount
+        XCTAssertEqual(initialSync, 0)
+
+        for i in 0..<10 {
+            _ = try await writer.append(
+                transferID: "t-checkpoint",
+                chunkIndex: i,
+                offset: Int64(i * 10),
+                data: chunkData,
+                sha256: sha(chunkData)
+            )
+            let syncCount = await writer.totalSyncCount
+            if i < 3 {
+                XCTAssertEqual(syncCount, 0, "Chunks 0-2 must not trigger sync")
+            } else if i < 7 {
+                XCTAssertEqual(syncCount, 1, "Chunk 3 (4th chunk) must trigger first sync")
+            } else {
+                XCTAssertEqual(syncCount, 2, "Chunk 7 (8th chunk) must trigger second sync")
+            }
+        }
+        let midSync = await writer.totalSyncCount
+        XCTAssertEqual(midSync, 2)
+
+        _ = try await writer.complete(
+            transferID: "t-checkpoint",
+            finalChunkIndex: 10,
+            finalOffset: 100
+        )
+        let finalSync = await writer.totalSyncCount
+        XCTAssertEqual(finalSync, 3, "Complete must trigger final sync")
+    }
+
+    func testChunkSequenceAndOffsetDiagnosticsAreRecorded() async throws {
+        let dir = tmpDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let writer = makeWriter(dir: dir, maxBytes: 10_000, maxChunk: 1024)
+        let auth = makeAuth(transferID: "t-diag", tabID: "tab-diag", docID: "doc-diag")
+        let chunk1 = Data("hello-".utf8)
+        let chunk2 = Data("world".utf8)
+        let env = makeEnvelope(transferID: "t-diag", docID: "doc-diag", size: 11)
+
+        _ = try await writer.begin(authorization: auth, envelope: env, suggestedFilename: "diag.txt")
+        var diag = await writer.loadDiagnostics(for: "t-diag")
+        XCTAssertNotNil(diag)
+        XCTAssertEqual(diag?.transferID, "t-diag")
+        XCTAssertEqual(diag?.tabID, "tab-diag")
+        XCTAssertEqual(diag?.documentID, "doc-diag")
+        XCTAssertEqual(diag?.expectedBytes, 11)
+        XCTAssertEqual(diag?.receivedBytes, 0)
+        XCTAssertEqual(diag?.chunkSequenceNumber, 0)
+
+        _ = try await writer.append(
+            transferID: "t-diag",
+            chunkIndex: 0,
+            offset: 0,
+            data: chunk1,
+            sha256: sha(chunk1)
+        )
+        diag = await writer.loadDiagnostics(for: "t-diag")
+        XCTAssertEqual(diag?.chunkSequenceNumber, 1)
+        XCTAssertEqual(diag?.byteOffset, 6)
+        XCTAssertEqual(diag?.receivedBytes, 6)
+        XCTAssertEqual(diag?.stagingFileSize, 6)
+
+        _ = try await writer.append(
+            transferID: "t-diag",
+            chunkIndex: 1,
+            offset: 6,
+            data: chunk2,
+            sha256: sha(chunk2)
+        )
+        diag = await writer.loadDiagnostics(for: "t-diag")
+        XCTAssertEqual(diag?.chunkSequenceNumber, 2)
+        XCTAssertEqual(diag?.byteOffset, 11)
+        XCTAssertEqual(diag?.receivedBytes, 11)
+        XCTAssertEqual(diag?.stagingFileSize, 11)
+
+        _ = try await writer.complete(transferID: "t-diag", finalChunkIndex: 2, finalOffset: 11)
+        diag = await writer.loadDiagnostics(for: "t-diag")
+        XCTAssertEqual(diag?.transferState, .completed)
+        XCTAssertEqual(diag?.lastSuccessfulCheckpointOffset, 11)
+    }
+
+    func testAcknowledgementLatencyIsRecorded() async throws {
+        let dir = tmpDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let service = BrowserBlobCaptureService(destinationDirectoryURL: dir)
+        await service.authorize(
+            transferID: "t-latency",
+            tabID: "tab-1",
+            documentID: "doc-1",
+            suggestedFilename: "test.bin"
+        )
+        let chunk = Data("latency test data".utf8)
+        let metaMsg = BlobCaptureWireMessage(
+            version: 2,
+            kind: .metadata,
+            transferID: "t-latency",
+            tabID: "tab-1",
+            documentID: "doc-1",
+            url: "blob:https://example.test/t-latency",
+            mimeType: "video/mp4",
+            size: Int64(chunk.count),
+            readable: true,
+            resourceKind: .completeBlobCandidate
+        )
+        let metaAck = await service.receive(data: try JSONEncoder().encode(metaMsg))
+        XCTAssertTrue(metaAck.accepted)
+
+        let chunkMsg = BlobCaptureWireMessage(
+            version: 2,
+            kind: .chunk,
+            transferID: "t-latency",
+            tabID: "tab-1",
+            documentID: "doc-1",
+            chunkIndex: 0,
+            offset: 0,
+            base64: chunk.base64EncodedString(),
+            sha256: sha(chunk)
+        )
+        let chunkAck = await service.receive(data: try JSONEncoder().encode(chunkMsg))
+        XCTAssertTrue(chunkAck.accepted)
+
+        let diag = await service.loadCrashDiagnostics(for: "t-latency")
+        XCTAssertNotNil(diag)
+        XCTAssertGreaterThan(diag?.lastAcknowledgementLatencyMs ?? 0, 0)
+        XCTAssertGreaterThan(diag?.averageAcknowledgementLatencyMs ?? 0, 0)
+    }
+
+    func testWebContentProcessTerminationPreservesStagingAndDiagnostics() async throws {
+        let dir = tmpDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let writer = makeWriter(dir: dir, maxBytes: 10_000, maxChunk: 1024)
+        let auth = makeAuth(transferID: "t-term", tabID: "tab-crash")
+        let chunk = Data("surviving chunk data".utf8)
+        let env = makeEnvelope(transferID: "t-term", size: 100)
+
+        _ = try await writer.begin(authorization: auth, envelope: env, suggestedFilename: "term.bin")
+        _ = try await writer.append(
+            transferID: "t-term",
+            chunkIndex: 0,
+            offset: 0,
+            data: chunk,
+            sha256: sha(chunk)
+        )
+
+        let stagingPath = dir.appendingPathComponent(".t-term.blob.part").path
+        XCTAssertTrue(FileManager.default.fileExists(atPath: stagingPath))
+
+        // Simulate WebContent process termination
+        let interrupted = await writer.handleWebContentProcessTermination(tabID: "tab-crash")
+        XCTAssertEqual(interrupted.count, 1)
+        let termDiag = try XCTUnwrap(interrupted.first)
+        XCTAssertTrue(termDiag.isInterruptedByProcessTermination)
+        XCTAssertNotNil(termDiag.processTerminationTimestamp)
+        XCTAssertEqual(termDiag.transferState, .interrupted)
+        XCTAssertEqual(termDiag.stagingFileSize, Int64(chunk.count))
+        XCTAssertNotNil(termDiag.failureReason)
+
+        // Staging file MUST be preserved on disk for recovery
+        XCTAssertTrue(FileManager.default.fileExists(atPath: stagingPath))
+
+        // On-disk transfer record must reflect .interrupted
+        let record = await writer.loadRecord(for: "t-term")
+        XCTAssertEqual(record?.state, .interrupted)
+
+        // Diagnostics on disk must survive and be loadable
+        let loadedDiag = await writer.loadDiagnostics(for: "t-term")
+        XCTAssertEqual(loadedDiag?.isInterruptedByProcessTermination, true)
+
+        // recoverIncompleteTransfers must preserve interrupted staging file & record
+        let recovered = await writer.recoverIncompleteTransfers()
+        XCTAssertTrue(recovered.contains { $0.transferID == "t-term" && $0.state == .interrupted })
+        XCTAssertTrue(FileManager.default.fileExists(atPath: stagingPath))
+    }
+
+    func testDiskSpaceExhaustionFailsSafely() async throws {
+        let dir = tmpDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        // Set minimum free disk space reserve impossibly high (e.g. 500 TB)
+        let writer = BlobExportWriter(
+            destinationDirectoryURL: dir,
+            limits: BlobExportLimits(
+                maximumBytesPerTransfer: 10_000,
+                maximumChunkBytes: 1024,
+                minimumFreeDiskSpaceBytes: 500_000_000_000_000
+            )
+        )
+        let auth = makeAuth(transferID: "t-disk-full")
+        let env = makeEnvelope(transferID: "t-disk-full", size: 100)
+
+        do {
+            _ = try await writer.begin(authorization: auth, envelope: env, suggestedFilename: "disk.bin")
+            XCTFail("Must fail when required space plus minimum reserve exceeds available disk space")
+        } catch let err as BlobExportError {
+            switch err {
+            case .storageCriticallyLow(let req, let avail, let res):
+                XCTAssertEqual(req, 100)
+                XCTAssertEqual(res, 500_000_000_000_000)
+                XCTAssertGreaterThan(avail, 0)
+            default:
+                XCTFail("Expected storageCriticallyLow but got \(err)")
+            }
+        }
+        let stagingPath = dir.appendingPathComponent(".t-disk-full.blob.part").path
+        XCTAssertFalse(FileManager.default.fileExists(atPath: stagingPath))
+        let activeCount = await writer.activeSessionCount
+        XCTAssertEqual(activeCount, 0)
+    }
+
+    func testPartialStagingFilesAreNeverPublishedAsComplete() async throws {
+        let dir = tmpDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let writer = makeWriter(dir: dir, maxBytes: 10_000, maxChunk: 1024)
+        let auth = makeAuth(transferID: "t-partial", tabID: "tab-part")
+        let env = makeEnvelope(transferID: "t-partial", size: 500)
+        let chunk = Data(repeating: 0x58, count: 50)
+
+        let snap = try await writer.begin(authorization: auth, envelope: env, suggestedFilename: "published.bin")
+        let expectedFinalURL = dir.appendingPathComponent("published.bin")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: expectedFinalURL.path))
+
+        _ = try await writer.append(
+            transferID: "t-partial",
+            chunkIndex: 0,
+            offset: 0,
+            data: chunk,
+            sha256: sha(chunk)
+        )
+
+        // WebContent process terminates midway
+        _ = await writer.handleWebContentProcessTermination(tabID: "tab-part")
+
+        // Destination final URL must NOT exist
+        XCTAssertFalse(FileManager.default.fileExists(atPath: expectedFinalURL.path))
+        XCTAssertNil(snap.finalURL)
+
+        // Incomplete transfer must never be complete
+        let record = await writer.loadRecord(for: "t-partial")
+        XCTAssertEqual(record?.state, .interrupted)
+        XCTAssertNotEqual(record?.state, .completed)
+    }
+
+    func testRecoveryDoesNotDuplicateOrSkipChunks() async throws {
+        let dir = tmpDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let writer = BlobExportWriter(
+            destinationDirectoryURL: dir,
+            limits: BlobExportLimits(
+                maximumBytesPerTransfer: 10_000,
+                maximumChunkBytes: 1024,
+                maximumStagingBytes: 20_000
+            ),
+            checkpointInterval: 4
+        )
+        let auth = makeAuth(transferID: "t-resume", tabID: "tab-resume")
+        let env = makeEnvelope(transferID: "t-resume", size: 800)
+        let chunkData = Data(repeating: 0x5a, count: 100)
+
+        _ = try await writer.begin(authorization: auth, envelope: env, suggestedFilename: "resume.bin")
+
+        // Write 8 chunks of 100 bytes each -> exactly 2 checkpoints (chunk 4: 400 bytes, chunk 8: 800 bytes)
+        for i in 0..<8 {
+            _ = try await writer.append(
+                transferID: "t-resume",
+                chunkIndex: i,
+                offset: Int64(i * 100),
+                data: chunkData,
+                sha256: sha(chunkData)
+            )
+        }
+
+        let diag = await writer.loadDiagnostics(for: "t-resume")
+        XCTAssertEqual(diag?.lastSuccessfulCheckpointOffset, 800)
+        let record = await writer.loadRecord(for: "t-resume")
+        XCTAssertEqual(record?.lastCheckpointOffset, 800)
+        XCTAssertEqual(record?.bytesWritten, 800)
+        XCTAssertEqual(record?.chunksReceived, 8)
+
+        // WebContent process termination occurs
+        _ = await writer.handleWebContentProcessTermination(tabID: "tab-resume")
+
+        // Reconcile and inspect recovery metadata
+        let recovered = await writer.recoverIncompleteTransfers()
+        let recoveredRecord = try XCTUnwrap(recovered.first { $0.transferID == "t-resume" })
+        XCTAssertEqual(recoveredRecord.lastCheckpointOffset, 800)
+        XCTAssertEqual(recoveredRecord.bytesWritten, 800)
+
+        let recoveredDiag = await writer.loadDiagnostics(for: "t-resume")
+        XCTAssertEqual(recoveredDiag?.lastSuccessfulCheckpointOffset, 800)
+        XCTAssertEqual(recoveredDiag?.stagingFileSize, 800)
+    }
 }
 

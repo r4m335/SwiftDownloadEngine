@@ -29,9 +29,13 @@ public enum BlobTransferState: String, Codable, Sendable, Equatable {
     case cancelling
     case cancelled
     case failed
+    case interrupted
 
     public var isTerminal: Bool {
-        switch self { case .completed, .cancelled, .failed: return true; default: return false }
+        switch self {
+        case .completed, .cancelled, .failed, .interrupted: return true
+        default: return false
+        }
     }
     public var acceptsChunks: Bool { self == .receivingChunks }
     public var acceptsMetadata: Bool { self == .requested || self == .receivingMetadata }
@@ -53,6 +57,7 @@ public struct BlobExportLimits: Sendable, Equatable {
     public let maximumConcurrentTransfers: Int
     public let maximumInFlightBytes: Int64
     public let maximumStagingBytes: Int64
+    public let minimumFreeDiskSpaceBytes: Int64
     public let maximumIdentifierLength: Int
     public let maximumFilenameLength: Int
 
@@ -62,6 +67,7 @@ public struct BlobExportLimits: Sendable, Equatable {
         maximumConcurrentTransfers: Int = 1,
         maximumInFlightBytes: Int64 = 512 * 1024,
         maximumStagingBytes: Int64 = 1024 * 1024 * 1024,
+        minimumFreeDiskSpaceBytes: Int64 = 500 * 1024 * 1024,
         maximumIdentifierLength: Int = 128,
         maximumFilenameLength: Int = 200
     ) {
@@ -70,6 +76,7 @@ public struct BlobExportLimits: Sendable, Equatable {
         self.maximumConcurrentTransfers = max(1, maximumConcurrentTransfers)
         self.maximumInFlightBytes = max(Int64(maximumChunkBytes), maximumInFlightBytes)
         self.maximumStagingBytes = max(1, maximumStagingBytes)
+        self.minimumFreeDiskSpaceBytes = max(0, minimumFreeDiskSpaceBytes)
         self.maximumIdentifierLength = max(1, maximumIdentifierLength)
         self.maximumFilenameLength = max(1, maximumFilenameLength)
     }
@@ -125,6 +132,7 @@ public struct BlobExportTransferRecord: Codable, Sendable, Equatable {
     public var failureReason: String?
     public var sha256: String?
     public var lastCheckpoint: Date
+    public var lastCheckpointOffset: Int64
 
     public init(
         transferID: String,
@@ -138,7 +146,8 @@ public struct BlobExportTransferRecord: Codable, Sendable, Equatable {
         chunksReceived: Int = 0,
         failureReason: String? = nil,
         sha256: String? = nil,
-        lastCheckpoint: Date = Date()
+        lastCheckpoint: Date = Date(),
+        lastCheckpointOffset: Int64 = 0
     ) {
         self.transferID = transferID
         self.tabID = tabID
@@ -152,6 +161,78 @@ public struct BlobExportTransferRecord: Codable, Sendable, Equatable {
         self.failureReason = failureReason
         self.sha256 = sha256
         self.lastCheckpoint = lastCheckpoint
+        self.lastCheckpointOffset = lastCheckpointOffset
+    }
+}
+
+// MARK: - Crash Diagnostics Record
+
+/// Detailed telemetry recorded natively on disk to diagnose WebKit WebContent process
+/// terminations, memory pressure events, and transmission bottlenecks.
+public struct BlobCaptureCrashDiagnostics: Codable, Sendable, Equatable {
+    public let transferID: String
+    public let tabID: String
+    public let documentID: String?
+    public let candidateID: String?
+    public var chunkSequenceNumber: Int
+    public var byteOffset: Int64
+    public var expectedBytes: Int64?
+    public var receivedBytes: Int64
+    public var inFlightMessageCount: Int
+    public var lastAcknowledgementLatencyMs: Double
+    public var averageAcknowledgementLatencyMs: Double
+    public var stagingFileSize: Int64
+    public var lastSuccessfulCheckpointOffset: Int64
+    public var lastSuccessfulCheckpointTimestamp: Date?
+    public var transferState: BlobTransferState
+    public var failureReason: String?
+    public var processTerminationTimestamp: Date?
+    public var isInterruptedByProcessTermination: Bool
+    public var createdAt: Date
+    public var updatedAt: Date
+
+    public init(
+        transferID: String,
+        tabID: String,
+        documentID: String? = nil,
+        candidateID: String? = nil,
+        chunkSequenceNumber: Int = 0,
+        byteOffset: Int64 = 0,
+        expectedBytes: Int64? = nil,
+        receivedBytes: Int64 = 0,
+        inFlightMessageCount: Int = 0,
+        lastAcknowledgementLatencyMs: Double = 0,
+        averageAcknowledgementLatencyMs: Double = 0,
+        stagingFileSize: Int64 = 0,
+        lastSuccessfulCheckpointOffset: Int64 = 0,
+        lastSuccessfulCheckpointTimestamp: Date? = nil,
+        transferState: BlobTransferState = .requested,
+        failureReason: String? = nil,
+        processTerminationTimestamp: Date? = nil,
+        isInterruptedByProcessTermination: Bool = false,
+        createdAt: Date = Date(),
+        updatedAt: Date = Date()
+    ) {
+        self.transferID = transferID
+        self.tabID = tabID
+        self.documentID = documentID
+        self.candidateID = candidateID
+        self.chunkSequenceNumber = chunkSequenceNumber
+        self.byteOffset = byteOffset
+        self.expectedBytes = expectedBytes
+        self.receivedBytes = receivedBytes
+        self.inFlightMessageCount = inFlightMessageCount
+        self.lastAcknowledgementLatencyMs = lastAcknowledgementLatencyMs
+        self.averageAcknowledgementLatencyMs = averageAcknowledgementLatencyMs
+        self.stagingFileSize = stagingFileSize
+        self.lastSuccessfulCheckpointOffset = lastSuccessfulCheckpointOffset
+        self.lastSuccessfulCheckpointTimestamp = lastSuccessfulCheckpointTimestamp
+        self.transferState = transferState
+        self.failureReason = failureReason
+        self.processTerminationTimestamp = processTerminationTimestamp
+        self.isInterruptedByProcessTermination = isInterruptedByProcessTermination
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
     }
 }
 
@@ -288,6 +369,8 @@ public enum BlobExportError: Error, LocalizedError, Codable, Sendable, Equatable
     case writeFailure
     case finalizationFailure
     case diskFull
+    case storageCriticallyLow(requiredBytes: Int64, availableBytes: Int64, minimumReserveBytes: Int64)
+    case processTerminated(reason: String)
     case transferAlreadyTerminal
     case cleanupFailed
 
@@ -327,6 +410,10 @@ public enum BlobExportError: Error, LocalizedError, Codable, Sendable, Equatable
         case .writeFailure: return "A chunk could not be written to the staging file."
         case .finalizationFailure: return "The staging file could not be renamed to its final path."
         case .diskFull: return "The device storage is full."
+        case .storageCriticallyLow(let req, let avail, let res):
+            return "Available storage (\(avail) bytes) is insufficient for required \(req) bytes while maintaining minimum reserve of \(res) bytes."
+        case .processTerminated(let reason):
+            return "WebContent process terminated: \(reason)"
         case .transferAlreadyTerminal: return "The transfer has already completed, failed, or been cancelled."
         case .cleanupFailed: return "The staging file could not be cleaned up."
         }
@@ -514,9 +601,9 @@ public struct EngineSHA256Hasher {
 
 /// Owns all file I/O for active Blob export sessions.
 ///
-/// Durability: append() does not return until the chunk is written and the
-/// staging file is synchronized. Callers must NOT acknowledge the JS bridge
-/// before append() returns successfully.
+/// Durability: chunks are written sequentially to the staging handle and flushed at
+/// configured checkpoint intervals (checkpointInterval chunks) as well as upon completion.
+/// Callers acknowledge the JS bridge once chunk acceptance and writing succeed.
 ///
 /// Memory: at most limits.maximumChunkBytes are held per chunk. No whole-file
 /// buffer is ever created.
@@ -529,11 +616,18 @@ public actor BlobExportWriter {
         var state: BlobTransferState
         var outputHasher: EngineSHA256Hasher
         var reservedStagingBytes: Int64
+        var diagnostics: BlobCaptureCrashDiagnostics
+        var lastCheckpointOffset: Int64
+        var totalLatencySum: Double
+        var latencyCount: Int
     }
 
     private let destinationDirectoryURL: URL
     private let recordDirectoryURL: URL
+    private let diagnosticsDirectoryURL: URL
     private let limits: BlobExportLimits
+    private let checkpointInterval: Int
+    public private(set) var totalSyncCount: Int = 0
     private var sessions: [String: Session] = [:]
     private var totalStagingBytes: Int64 = 0
 
@@ -545,8 +639,25 @@ public actor BlobExportWriter {
         self.destinationDirectoryURL = destinationDirectoryURL
         self.recordDirectoryURL = destinationDirectoryURL
             .appendingPathComponent(".transfer-records", isDirectory: true)
+        self.diagnosticsDirectoryURL = destinationDirectoryURL
+            .appendingPathComponent(".blob-diagnostics", isDirectory: true)
         self.limits = limits
-        _ = checkpointInterval
+        self.checkpointInterval = max(1, checkpointInterval)
+    }
+
+    private func availableDiskSpace(at directory: URL) -> Int64? {
+        #if os(macOS) || os(iOS) || os(tvOS) || os(watchOS)
+        if let values = try? directory.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]),
+           let capacity = values.volumeAvailableCapacityForImportantUsage {
+            return capacity
+        }
+        #endif
+        let path = directory.path
+        if let attributes = try? FileManager.default.attributesOfFileSystem(forPath: path),
+           let freeSize = attributes[.systemFreeSize] as? NSNumber {
+            return freeSize.int64Value
+        }
+        return nil
     }
 
     // MARK: Begin
@@ -588,6 +699,16 @@ public actor BlobExportWriter {
             throw BlobExportError.stagingStorageLimitExceeded
         }
 
+        if let freeSpace = availableDiskSpace(at: destinationDirectoryURL) {
+            if freeSpace < limits.minimumFreeDiskSpaceBytes || (freeSpace - expectedStaging) < limits.minimumFreeDiskSpaceBytes {
+                throw BlobExportError.storageCriticallyLow(
+                    requiredBytes: expectedStaging,
+                    availableBytes: freeSpace,
+                    minimumReserveBytes: limits.minimumFreeDiskSpaceBytes
+                )
+            }
+        }
+
         let safeFilename = try Self.sanitizeFilename(
             suggestedFilename,
             fallback: "blob-export.bin",
@@ -596,6 +717,7 @@ public actor BlobExportWriter {
         do {
             try FileManager.default.createDirectory(at: destinationDirectoryURL, withIntermediateDirectories: true)
             try FileManager.default.createDirectory(at: recordDirectoryURL, withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(at: diagnosticsDirectoryURL, withIntermediateDirectories: true)
         } catch { throw BlobExportError.destinationCreationFailed }
 
         let finalURL = Self.uniqueURL(directory: destinationDirectoryURL, filename: safeFilename)
@@ -613,6 +735,7 @@ public actor BlobExportWriter {
             throw BlobExportError.stagingCreationFailed
         }
 
+        let now = Date()
         let record = BlobExportTransferRecord(
             transferID: authorization.transferID,
             tabID: authorization.tabID,
@@ -620,10 +743,36 @@ public actor BlobExportWriter {
             stagingURL: stagingURL,
             finalURL: finalURL,
             expectedSize: envelope.declaredSize,
-            state: .receivingChunks
+            state: .receivingChunks,
+            lastCheckpoint: now,
+            lastCheckpointOffset: 0
         )
         persistRecord(record)
         totalStagingBytes += expectedStaging
+
+        let diagnostics = BlobCaptureCrashDiagnostics(
+            transferID: authorization.transferID,
+            tabID: authorization.tabID,
+            documentID: authorization.documentID,
+            candidateID: authorization.candidateID,
+            chunkSequenceNumber: 0,
+            byteOffset: 0,
+            expectedBytes: envelope.declaredSize,
+            receivedBytes: 0,
+            inFlightMessageCount: 0,
+            lastAcknowledgementLatencyMs: 0,
+            averageAcknowledgementLatencyMs: 0,
+            stagingFileSize: 0,
+            lastSuccessfulCheckpointOffset: 0,
+            lastSuccessfulCheckpointTimestamp: now,
+            transferState: .receivingChunks,
+            failureReason: nil,
+            processTerminationTimestamp: nil,
+            isInterruptedByProcessTermination: false,
+            createdAt: now,
+            updatedAt: now
+        )
+        persistDiagnostics(diagnostics)
 
         sessions[authorization.transferID] = Session(
             authorization: authorization,
@@ -631,7 +780,11 @@ public actor BlobExportWriter {
             stagingHandle: handle,
             state: .receivingChunks,
             outputHasher: EngineSHA256Hasher(),
-            reservedStagingBytes: expectedStaging
+            reservedStagingBytes: expectedStaging,
+            diagnostics: diagnostics,
+            lastCheckpointOffset: 0,
+            totalLatencySum: 0,
+            latencyCount: 0
         )
         return snapshot(for: record, state: .receivingChunks)
     }
@@ -643,7 +796,9 @@ public actor BlobExportWriter {
         chunkIndex: Int,
         offset: Int64,
         data: Data,
-        sha256: String
+        sha256: String,
+        inFlightCount: Int = 0,
+        acknowledgementLatencyMs: Double = 0
     ) throws -> BlobExportSnapshot {
         guard var session = sessions[transferID] else { throw BlobExportError.unknownTransferID }
         guard session.state == .receivingChunks else {
@@ -660,6 +815,19 @@ public actor BlobExportWriter {
         guard totalStagingBytes + additionalReservation <= limits.maximumStagingBytes else {
             throw BlobExportError.stagingStorageLimitExceeded
         }
+
+        if let freeSpace = availableDiskSpace(at: destinationDirectoryURL) {
+            let required = Int64(data.count)
+            if freeSpace < limits.minimumFreeDiskSpaceBytes || (freeSpace - required) < limits.minimumFreeDiskSpaceBytes {
+                abort(transferID: transferID, reason: "critically low disk space")
+                throw BlobExportError.storageCriticallyLow(
+                    requiredBytes: required,
+                    availableBytes: freeSpace,
+                    minimumReserveBytes: limits.minimumFreeDiskSpaceBytes
+                )
+            }
+        }
+
         guard sha256.count == 64, sha256.allSatisfy(\.isHexDigit) else { throw BlobExportError.invalidChecksum }
         guard EngineSHA256.hash(data: data).caseInsensitiveCompare(sha256) == .orderedSame else {
             abort(transferID: transferID, reason: "chunk \(chunkIndex) SHA-256 mismatch")
@@ -668,7 +836,6 @@ public actor BlobExportWriter {
         do {
             try session.stagingHandle.seek(toOffset: UInt64(offset))
             try session.stagingHandle.write(contentsOf: data)
-            try session.stagingHandle.synchronize()
         } catch {
             abort(transferID: transferID, reason: "write failure at chunk \(chunkIndex)")
             throw BlobExportError.writeFailure
@@ -678,8 +845,40 @@ public actor BlobExportWriter {
         session.record.chunksReceived += 1
         totalStagingBytes += additionalReservation
         session.reservedStagingBytes += additionalReservation
-        session.record.lastCheckpoint = Date()
-        persistRecord(session.record)
+
+        // Update diagnostics
+        let now = Date()
+        session.diagnostics.chunkSequenceNumber = session.record.chunksReceived
+        session.diagnostics.byteOffset = session.record.bytesWritten
+        session.diagnostics.receivedBytes = session.record.bytesWritten
+        session.diagnostics.stagingFileSize = session.record.bytesWritten
+        session.diagnostics.inFlightMessageCount = inFlightCount
+        if acknowledgementLatencyMs > 0 {
+            session.totalLatencySum += acknowledgementLatencyMs
+            session.latencyCount += 1
+            session.diagnostics.lastAcknowledgementLatencyMs = acknowledgementLatencyMs
+            session.diagnostics.averageAcknowledgementLatencyMs = session.totalLatencySum / Double(session.latencyCount)
+        }
+        session.diagnostics.updatedAt = now
+
+        let isCheckpoint = (session.record.chunksReceived % checkpointInterval == 0)
+        if isCheckpoint {
+            do {
+                try session.stagingHandle.synchronize()
+                totalSyncCount += 1
+            } catch {
+                abort(transferID: transferID, reason: "fsync failed at chunk \(chunkIndex)")
+                throw BlobExportError.writeFailure
+            }
+            session.record.lastCheckpoint = now
+            session.record.lastCheckpointOffset = session.record.bytesWritten
+            session.lastCheckpointOffset = session.record.bytesWritten
+            session.diagnostics.lastSuccessfulCheckpointOffset = session.record.bytesWritten
+            session.diagnostics.lastSuccessfulCheckpointTimestamp = now
+            persistRecord(session.record)
+            persistDiagnostics(session.diagnostics)
+        }
+
         sessions[transferID] = session
         return snapshot(for: session.record, state: session.state)
     }
@@ -714,6 +913,7 @@ public actor BlobExportWriter {
         sessions[transferID] = session
         do {
             try session.stagingHandle.synchronize()
+            totalSyncCount += 1
             try session.stagingHandle.close()
         } catch {
             abort(transferID: transferID, reason: "fsync/close failed")
@@ -745,10 +945,20 @@ public actor BlobExportWriter {
             abort(transferID: transferID, reason: "rename failed")
             throw BlobExportError.finalizationFailure
         }
+        let now = Date()
         session.record.state = .completed
         session.record.sha256 = outputDigest
-        session.record.lastCheckpoint = Date()
+        session.record.lastCheckpoint = now
+        session.record.lastCheckpointOffset = session.record.bytesWritten
         persistRecord(session.record)
+
+        session.diagnostics.transferState = .completed
+        session.diagnostics.lastSuccessfulCheckpointOffset = session.record.bytesWritten
+        session.diagnostics.lastSuccessfulCheckpointTimestamp = now
+        session.diagnostics.stagingFileSize = session.record.bytesWritten
+        session.diagnostics.updatedAt = now
+        persistDiagnostics(session.diagnostics)
+
         totalStagingBytes -= session.reservedStagingBytes
         sessions.removeValue(forKey: transferID)
         return BlobExportSnapshot(
@@ -768,6 +978,46 @@ public actor BlobExportWriter {
         abort(transferID: transferID, reason: "cancelled by native side")
     }
 
+    // MARK: Process Termination Handling
+
+    /// Handles unexpected WebContent process termination for active transfers.
+    /// Preserves the staging file and records detailed native crash diagnostics.
+    public func handleWebContentProcessTermination(tabID: String) -> [BlobCaptureCrashDiagnostics] {
+        var interruptedDiagnostics: [BlobCaptureCrashDiagnostics] = []
+        let matchingIDs = sessions.compactMap { (id, session) -> String? in
+            if tabID.isEmpty || session.authorization.tabID == tabID || session.record.tabID == tabID {
+                return id
+            }
+            return nil
+        }
+
+        let now = Date()
+        for transferID in matchingIDs {
+            guard var session = sessions.removeValue(forKey: transferID) else { continue }
+            try? session.stagingHandle.synchronize()
+            totalSyncCount += 1
+            try? session.stagingHandle.close()
+            totalStagingBytes -= session.reservedStagingBytes
+
+            session.record.state = .interrupted
+            session.record.failureReason = "WebContent process terminated unexpectedly (possible memory pressure or crash)."
+            session.record.lastCheckpoint = now
+            persistRecord(session.record)
+
+            session.diagnostics.transferState = .interrupted
+            session.diagnostics.isInterruptedByProcessTermination = true
+            session.diagnostics.processTerminationTimestamp = now
+            session.diagnostics.failureReason = session.record.failureReason
+            let actualSize = FileManager.default.fileSize(atPath: session.record.stagingURL.path) ?? session.record.bytesWritten
+            session.diagnostics.stagingFileSize = actualSize
+            session.diagnostics.updatedAt = now
+            persistDiagnostics(session.diagnostics)
+
+            interruptedDiagnostics.append(session.diagnostics)
+        }
+        return interruptedDiagnostics
+    }
+
     // MARK: Recovery
 
     /// Reconciles on-disk transfer records with staging files at app launch.
@@ -780,6 +1030,11 @@ public actor BlobExportWriter {
             guard let data = try? Data(contentsOf: item),
                   var record = try? JSONDecoder().decode(BlobExportTransferRecord.self, from: data)
             else { continue }
+            if record.state == .interrupted {
+                // Interrupted transfers preserve staging data and records for diagnostics and recovery
+                recovered.append(record)
+                continue
+            }
             guard !record.state.isTerminal else {
                 removeRecord(for: record.transferID); continue
             }
@@ -799,6 +1054,50 @@ public actor BlobExportWriter {
         return recovered
     }
 
+    // MARK: Diagnostics & Records Access
+
+    public func loadRecord(for transferID: String) -> BlobExportTransferRecord? {
+        if let session = sessions[transferID] {
+            return session.record
+        }
+        let url = recordDirectoryURL.appendingPathComponent("\(transferID).json")
+        guard let data = try? Data(contentsOf: url),
+              let record = try? JSONDecoder().decode(BlobExportTransferRecord.self, from: data) else {
+            return nil
+        }
+        return record
+    }
+
+    public func loadDiagnostics(for transferID: String) -> BlobCaptureCrashDiagnostics? {
+        if let session = sessions[transferID] {
+            return session.diagnostics
+        }
+        let url = diagnosticsDirectoryURL.appendingPathComponent("\(transferID).json")
+        guard let data = try? Data(contentsOf: url),
+              let diag = try? JSONDecoder().decode(BlobCaptureCrashDiagnostics.self, from: data) else {
+            return nil
+        }
+        return diag
+    }
+
+    public func allDiagnostics() -> [BlobCaptureCrashDiagnostics] {
+        var results: [String: BlobCaptureCrashDiagnostics] = [:]
+        for (id, session) in sessions {
+            results[id] = session.diagnostics
+        }
+        if let items = try? FileManager.default.contentsOfDirectory(at: diagnosticsDirectoryURL, includingPropertiesForKeys: nil) {
+            for item in items where item.pathExtension == "json" {
+                let id = item.deletingPathExtension().lastPathComponent
+                if results[id] == nil,
+                   let data = try? Data(contentsOf: item),
+                   let diag = try? JSONDecoder().decode(BlobCaptureCrashDiagnostics.self, from: data) {
+                    results[id] = diag
+                }
+            }
+        }
+        return Array(results.values)
+    }
+
     // MARK: Private helpers
 
     private func abort(transferID: String, reason: String) {
@@ -809,12 +1108,23 @@ public actor BlobExportWriter {
             session.record.state = .failed
             session.record.failureReason = reason
             persistRecord(session.record)
+
+            session.diagnostics.transferState = .failed
+            session.diagnostics.failureReason = reason
+            session.diagnostics.updatedAt = Date()
+            persistDiagnostics(session.diagnostics)
         }
     }
 
     private func persistRecord(_ record: BlobExportTransferRecord) {
         guard let data = try? JSONEncoder().encode(record) else { return }
         let url = recordDirectoryURL.appendingPathComponent("\(record.transferID).json")
+        try? data.write(to: url, options: .atomic)
+    }
+
+    private func persistDiagnostics(_ diagnostics: BlobCaptureCrashDiagnostics) {
+        guard let data = try? JSONEncoder().encode(diagnostics) else { return }
+        let url = diagnosticsDirectoryURL.appendingPathComponent("\(diagnostics.transferID).json")
         try? data.write(to: url, options: .atomic)
     }
 
@@ -880,6 +1190,12 @@ public actor BlobExportWriter {
 public actor BrowserBlobCaptureReceiver {
     private let writer: BlobExportWriter
     private var authorizations: [String: BlobCaptureAuthorization] = [:]
+    private var transferStats: [String: TransferTelemetry] = [:]
+
+    private struct TransferTelemetry {
+        var inFlightCount: Int = 0
+        var lastChunkTimestamp: Date?
+    }
 
     public init(writer: BlobExportWriter) {
         self.writer = writer
@@ -899,11 +1215,25 @@ public actor BrowserBlobCaptureReceiver {
             suggestedFilename: suggestedFilename
         )
         authorizations[transferID] = auth
+        transferStats[transferID] = TransferTelemetry()
     }
 
     public func cancel(transferID: String) async {
         authorizations.removeValue(forKey: transferID)
+        transferStats.removeValue(forKey: transferID)
         await writer.cancel(transferID: transferID)
+    }
+
+    public func handleWebContentProcessTermination(tabID: String) async -> [BlobCaptureCrashDiagnostics] {
+        let matchingIDs = authorizations.compactMap { (id, auth) -> String? in
+            if tabID.isEmpty || auth.tabID == tabID { return id }
+            return nil
+        }
+        for id in matchingIDs {
+            authorizations.removeValue(forKey: id)
+            transferStats.removeValue(forKey: id)
+        }
+        return await writer.handleWebContentProcessTermination(tabID: tabID)
     }
 
     public nonisolated func receive(payload: Any) async -> BlobCaptureAck {
@@ -930,21 +1260,25 @@ public actor BrowserBlobCaptureReceiver {
             }
             guard !auth.isExpired else {
                 authorizations.removeValue(forKey: transferID)
+                transferStats.removeValue(forKey: transferID)
                 await writer.cancel(transferID: transferID)
                 return BlobCaptureAck.rejected(transferID: transferID, error: .authorizationExpired)
             }
             if !auth.tabID.isEmpty, message.tabID != auth.tabID {
                 authorizations.removeValue(forKey: transferID)
+                transferStats.removeValue(forKey: transferID)
                 await writer.cancel(transferID: transferID)
                 return BlobCaptureAck.rejected(transferID: transferID, error: .tabMismatch)
             }
             if let authCandidateID = auth.candidateID, message.candidateID != authCandidateID {
                 authorizations.removeValue(forKey: transferID)
+                transferStats.removeValue(forKey: transferID)
                 await writer.cancel(transferID: transferID)
                 return BlobCaptureAck.rejected(transferID: transferID, error: .captureNotAuthorized)
             }
             if let authDocID = auth.documentID, message.documentID != authDocID {
                 authorizations.removeValue(forKey: transferID)
+                transferStats.removeValue(forKey: transferID)
                 await writer.cancel(transferID: transferID)
                 return BlobCaptureAck.rejected(transferID: transferID, error: .documentMismatch)
             }
@@ -971,10 +1305,26 @@ public actor BrowserBlobCaptureReceiver {
                       let chunkData = Data(base64Encoded: b64) else {
                     return BlobCaptureAck.rejected(transferID: transferID, error: .writeFailure)
                 }
+                var stats = transferStats[transferID] ?? TransferTelemetry()
+                stats.inFlightCount += 1
+                let now = Date()
+                let latencyMs: Double
+                if let last = stats.lastChunkTimestamp {
+                    latencyMs = max(0.01, now.timeIntervalSince(last) * 1000.0)
+                } else {
+                    latencyMs = 0.5
+                }
+                stats.lastChunkTimestamp = now
+                transferStats[transferID] = stats
+
                 let snapshot = try await writer.append(
                     transferID: transferID, chunkIndex: index,
-                    offset: offset, data: chunkData, sha256: checksum
+                    offset: offset, data: chunkData, sha256: checksum,
+                    inFlightCount: stats.inFlightCount,
+                    acknowledgementLatencyMs: latencyMs
                 )
+                stats.inFlightCount = max(0, stats.inFlightCount - 1)
+                transferStats[transferID] = stats
                 return BlobCaptureAck(transferID: transferID, accepted: true, snapshot: snapshot)
             case .complete:
                 guard let index = message.chunkIndex, let offset = message.offset else {
@@ -985,21 +1335,25 @@ public actor BrowserBlobCaptureReceiver {
                     finalOffset: offset, declaredFileDigest: message.sha256
                 )
                 authorizations.removeValue(forKey: transferID)
+                transferStats.removeValue(forKey: transferID)
                 return BlobCaptureAck(transferID: transferID, accepted: true, snapshot: snapshot)
             case .failure, .cancel:
                 authorizations.removeValue(forKey: transferID)
+                transferStats.removeValue(forKey: transferID)
                 await writer.cancel(transferID: transferID)
                 return BlobCaptureAck(transferID: transferID, accepted: true)
             }
         } catch let error as BlobExportError {
             if !transferID.isEmpty {
                 authorizations.removeValue(forKey: transferID)
+                transferStats.removeValue(forKey: transferID)
                 await writer.cancel(transferID: transferID)
             }
             return BlobCaptureAck.rejected(transferID: transferID, error: error)
         } catch {
             if !transferID.isEmpty {
                 authorizations.removeValue(forKey: transferID)
+                transferStats.removeValue(forKey: transferID)
                 await writer.cancel(transferID: transferID)
             }
             return BlobCaptureAck.rejected(transferID: transferID, error: .writeFailure)
@@ -1027,8 +1381,16 @@ public actor BrowserBlobCaptureService {
     public nonisolated let receiver: BrowserBlobCaptureReceiver
     private let writer: BlobExportWriter
 
-    public init(destinationDirectoryURL: URL, limits: BlobExportLimits = .default) {
-        let w = BlobExportWriter(destinationDirectoryURL: destinationDirectoryURL, limits: limits)
+    public init(
+        destinationDirectoryURL: URL,
+        limits: BlobExportLimits = .default,
+        checkpointInterval: Int = 8
+    ) {
+        let w = BlobExportWriter(
+            destinationDirectoryURL: destinationDirectoryURL,
+            limits: limits,
+            checkpointInterval: checkpointInterval
+        )
         self.writer = w
         self.receiver = BrowserBlobCaptureReceiver(writer: w)
     }
@@ -1068,6 +1430,22 @@ public actor BrowserBlobCaptureService {
 
     public func recoverIncompleteTransfers() async -> [BlobExportTransferRecord] {
         await writer.recoverIncompleteTransfers()
+    }
+
+    public func handleWebContentProcessTermination(tabID: String) async -> [BlobCaptureCrashDiagnostics] {
+        await receiver.handleWebContentProcessTermination(tabID: tabID)
+    }
+
+    public func loadCrashDiagnostics(for transferID: String) async -> BlobCaptureCrashDiagnostics? {
+        await writer.loadDiagnostics(for: transferID)
+    }
+
+    public func allCrashDiagnostics() async -> [BlobCaptureCrashDiagnostics] {
+        await writer.allDiagnostics()
+    }
+
+    public func loadTransferRecord(for transferID: String) async -> BlobExportTransferRecord? {
+        await writer.loadRecord(for: transferID)
     }
 }
 
