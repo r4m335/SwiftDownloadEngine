@@ -339,8 +339,21 @@ public enum BrowserMediaCandidateClassifier {
             let isMediaSource = mime == "application/x-mediasource" || resource.isMediaSourceBlob || (isGenericOrMissingMIME && (resource.suggestedFilename.hasSuffix(".bin") || resource.suggestedFilename.hasPrefix("blob_stream") || resource.resourceType == .other))
             if isMediaSource {
                 kind = .mediaSource
-                availability = .metadataOnly
-                evidence = ["MediaSource streaming buffer observed (empty or generic MIME type; not a downloadable standalone Blob)"]
+                let support = BrowserMSECaptureSupportClassifier.evaluate(
+                    mimeType: mime,
+                    isPotentiallyProtected: false
+                )
+                switch support.status {
+                case .capturable:
+                    availability = .captureCandidate
+                    evidence = [support.reason, "Clear MediaSource stream eligible for capture"]
+                case .protectedMedia:
+                    availability = .unsupported
+                    evidence = [support.reason]
+                case .unsupported:
+                    availability = mime == nil ? .metadataOnly : .unsupported
+                    evidence = [support.reason]
+                }
                 blobKind = .mediaSource
             } else {
                 kind = .completeBlob
@@ -626,6 +639,25 @@ public struct BrowserMediaCandidateCatalog: Sendable, Equatable {
             associatedManifestURL = values.values.first(where: { $0.kind == .hlsManifest || $0.kind == .dashManifest })?.url
         }
 
+        let mergedAvailability: BrowserMediaCandidateAvailability = {
+            if isMediaSource {
+                let effectiveMIME = existing.mimeType ?? candidate.mimeType
+                let support = BrowserMSECaptureSupportClassifier.evaluate(
+                    mimeType: effectiveMIME,
+                    isPotentiallyProtected: false
+                )
+                switch support.status {
+                case .capturable:
+                    return .captureCandidate
+                case .protectedMedia:
+                    return .unsupported
+                case .unsupported:
+                    return effectiveMIME == nil ? .metadataOnly : .unsupported
+                }
+            }
+            return preferredAvailability(existing.availability, candidate.availability)
+        }()
+
         let merged = BrowserMediaCandidate(
             id: existing.id,
             url: existing.url ?? candidate.url,
@@ -636,7 +668,7 @@ public struct BrowserMediaCandidateCatalog: Sendable, Equatable {
             mimeType: existing.mimeType ?? candidate.mimeType,
             suggestedFilename: existing.suggestedFilename == "browser_blob.bin" ? candidate.suggestedFilename : existing.suggestedFilename,
             estimatedSize: candidate.estimatedSize ?? existing.estimatedSize,
-            availability: isMediaSource ? .metadataOnly : preferredAvailability(existing.availability, candidate.availability),
+            availability: mergedAvailability,
             evidence: uniqueEvidence,
             documentID: candidate.documentID ?? existing.documentID,
             requestContext: existing.requestContext ?? candidate.requestContext,

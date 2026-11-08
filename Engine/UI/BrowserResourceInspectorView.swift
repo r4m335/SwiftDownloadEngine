@@ -77,9 +77,9 @@ public struct BrowserResourceInspectorSheet: View {
             if isChunk && (hasStreamingManifest || !showsAllResources) {
                 continue
             }
-            // Discard unplayable MediaSource stream buffer blobs when an .m3u8/.mpd manifest is present
-            // or in standard media view, guiding the user to download the actual manifest instead.
-            if res.isMediaSourceBlob && (hasStreamingManifest || !showsAllResources) {
+            // Discard redundant MediaSource stream buffer blobs when an .m3u8/.mpd manifest is present
+            // in standard media view, guiding the user to download the actual manifest instead.
+            if res.isMediaSourceBlob && hasStreamingManifest && !showsAllResources {
                 continue
             }
             // Discard raw child playlist URLs discovered separately without metadata
@@ -116,8 +116,9 @@ public struct BrowserResourceInspectorSheet: View {
     public var filteredResources: [WebpageResource] {
         let resources = eligibleResources.filter { res in
             let matchesCategory = selectedCategory == nil || res.resourceType == selectedCategory
+            let hasStreamingManifest = eligibleResources.contains(where: { $0.isStreamingManifest })
             let matchesDefaultMedia = showsAllResources ||
-                (res.resourceType == .video && !res.isMediaSourceBlob) ||
+                (res.resourceType == .video && (!res.isMediaSourceBlob || !hasStreamingManifest)) ||
                 res.resourceType == .audio
             let matchesSearch = searchText.isEmpty ||
                 res.title.localizedCaseInsensitiveContains(searchText) ||
@@ -582,7 +583,7 @@ public struct ResourceRowView: View {
     public var body: some View {
         HStack(alignment: .top, spacing: 12) {
             // Selection Checkbox (if supported and downloadable)
-            if (resource.isSupported || resource.isStreamingManifest) && (!isMediaSourceBlob || hasManifest) {
+            if (resource.isSupported || resource.isStreamingManifest || isMediaSourceBlob) && !resource.isSegmentChunk {
                 Button(action: onToggleSelect) {
                     Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
                         .foregroundColor(isSelected ? .blue : .secondary)
@@ -650,8 +651,9 @@ public struct ResourceRowView: View {
                             .background(Color.blue.opacity(0.15))
                             .cornerRadius(4)
                     } else if isMediaSourceBlob {
+                        let isDash = resource.url.pathExtension.lowercased() == "mpd" || (hasManifest && candidate?.associatedManifestURL?.pathExtension.lowercased() == "mpd")
                         if hasManifest {
-                            Text("Streaming · Segment download")
+                            Text(isDash ? "Ready for DASH Download" : "Ready for HLS Download")
                                 .font(.system(size: 10, weight: .bold))
                                 .foregroundColor(.blue)
                                 .padding(.horizontal, 6)
@@ -659,16 +661,16 @@ public struct ResourceRowView: View {
                                 .background(Color.blue.opacity(0.15))
                                 .cornerRadius(4)
                         } else {
-                            Text("Stream Buffer (Unplayable)")
+                            Text("Ready for MSE Capture")
                                 .font(.system(size: 10, weight: .bold))
-                                .foregroundColor(.orange)
+                                .foregroundColor(.purple)
                                 .padding(.horizontal, 6)
                                 .padding(.vertical, 2)
-                                .background(Color.orange.opacity(0.15))
+                                .background(Color.purple.opacity(0.15))
                                 .cornerRadius(4)
                         }
                     } else if resource.url.scheme?.lowercased() == "blob" {
-                        Text("Ready to download")
+                        Text("Ready for Blob Export")
                             .font(.system(size: 10, weight: .bold))
                             .foregroundColor(.green)
                             .padding(.horizontal, 6)
@@ -685,15 +687,15 @@ public struct ResourceRowView: View {
                     }
                 }
 
-                // Unsupported Warning Badge
+                // Info / Warning Badge
                 if isMediaSourceBlob && !hasManifest {
                     HStack(alignment: .top, spacing: 4) {
-                        Image(systemName: "info.circle")
+                        Image(systemName: "video.badge.waveform")
                             .font(.system(size: 10))
-                        Text("This site uses MediaSource streaming. You must download the manifest (.m3u8 or .mpd) instead.")
+                        Text("Clear fragmented-MP4 stream. Click download to capture.")
                             .font(.system(size: 10))
                     }
-                    .foregroundColor(.orange)
+                    .foregroundColor(.purple)
                     .padding(.top, 2)
                 } else if !resource.isSupported && !resource.isStreamingManifest, let reason = resource.unsupportedReason {
                     HStack(alignment: .top, spacing: 4) {
@@ -718,7 +720,7 @@ public struct ResourceRowView: View {
                 resource.url.pathExtension.lowercased() != "mpd"
             let canPreview = onPreview != nil && (isHLSManifest || isPlayableDirectMedia)
             let canDownload = (resource.isSupported || resource.isStreamingManifest ||
-                resource.url.scheme?.lowercased() == "blob") && (!isMediaSourceBlob || hasManifest) && !resource.isSegmentChunk
+                resource.url.scheme?.lowercased() == "blob" || isMediaSourceBlob) && !resource.isSegmentChunk
 
             HStack(spacing: 8) {
                 if canPreview {
@@ -737,11 +739,6 @@ public struct ResourceRowView: View {
                             .foregroundColor(.blue)
                     }
                     .buttonStyle(PlainButtonStyle())
-                } else if isMediaSourceBlob && !hasManifest {
-                    Image(systemName: "clock.arrow.circlepath")
-                        .font(.system(size: 20))
-                        .foregroundColor(.secondary)
-                        .padding(.top, 4)
                 }
             }
         }

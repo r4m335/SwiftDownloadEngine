@@ -298,11 +298,8 @@ public struct WebpageResourceExtractor {
             .lowercased()
 
         if scheme == "blob" || lowerRaw.hasPrefix("blob:") {
-            if normalizedMIME == "application/x-mediasource" {
-                return (false, "This site uses MediaSource streaming. You must download the manifest (.m3u8 or .mpd) instead.")
-            }
-            // Blob URLs are memory-backed in the active browser session and are supported
-            // through the bounded in-page Blob capture pipeline.
+            // Blob and MediaSource URLs are memory-backed in the active browser session and are supported
+            // through bounded in-page Blob capture or native MSE capture.
             return (true, nil)
         }
 

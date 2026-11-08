@@ -739,7 +739,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
     /// Observation remains metadata-only until this method runs.
     public func startMSECapture(_ candidate: BrowserMediaCandidate) {
         guard candidate.kind == .mediaSource,
-              candidate.availability == .captureCandidate,
+              candidate.availability == .captureCandidate || candidate.availability == .uncertain,
               candidate.rawURL.lowercased().hasPrefix("blob:"),
               let tabID = activeTabID,
               let session = tabSessions[tabID] else {
@@ -929,76 +929,47 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         isShowingResourceInspector = false
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
             guard let self = self else { return }
-            if resource.isStreamingManifest || resource.url.pathExtension.lowercased() == "m3u8" || resource.url.pathExtension.lowercased() == "mpd" {
-                self.promptStreamingDownload(for: resource)
-                return
-            }
-            let sequentialChunkIDs = WebpageResourceExtractor.detectSequentialSegmentChunks(in: self.discoveredResources)
-            if resource.isSegmentChunk || sequentialChunkIDs.contains(resource.id) {
-                self.blobCaptureErrorMessage = "This is a streaming segment chunk. Download the playlist manifest (.m3u8 or .mpd) instead."
-                return
-            }
-            let candidate = BrowserMediaCandidateClassifier.classify(resource: resource)
-            if candidate.kind == .hlsManifest || candidate.kind == .dashManifest {
-                self.promptStreamingDownload(for: resource)
-                return
-            }
-            if candidate.kind == .completeBlob || candidate.kind == .mediaSource || resource.url.scheme?.lowercased() == "blob" {
-                let discoveredCandidate = self.mediaCandidates.first {
-                    $0.rawURL.caseInsensitiveCompare(resource.url.absoluteString) == .orderedSame
-                }
-                let effectiveMIME = (discoveredCandidate?.mimeType ?? candidate.mimeType ?? resource.mimeType)?.lowercased()
-                let isMediaSourceMIME = effectiveMIME == "application/x-mediasource"
-                let isGenericMIME = effectiveMIME == nil || effectiveMIME?.isEmpty == true || effectiveMIME == "application/octet-stream"
-                let isBinOrStreamName = resource.suggestedFilename.lowercased().hasSuffix(".bin") || resource.suggestedFilename.lowercased().hasPrefix("blob_stream")
-                let isMediaSource = candidate.blobKind == .mediaSource ||
-                    candidate.kind == .mediaSource ||
-                    discoveredCandidate?.blobKind == .mediaSource ||
-                    discoveredCandidate?.kind == .mediaSource ||
-                    resource.isMediaSourceBlob ||
-                    isMediaSourceMIME ||
-                    (isGenericMIME && isBinOrStreamName)
-                if isMediaSource {
-                    if let manifestRes = self.discoveredResources.first(where: { $0.isStreamingManifest }) {
-                        self.promptStreamingDownload(for: manifestRes)
-                    } else if let manifest = discoveredCandidate?.associatedManifestURL ?? candidate.associatedManifestURL {
-                        self.promptStreamingDownload(for: WebpageResource(
-                            url: manifest,
-                            title: resource.title,
-                            suggestedFilename: resource.suggestedFilename.isEmpty ? "stream.mp4" : resource.suggestedFilename,
-                            resourceType: .video,
-                            manifestText: candidate.cachedManifestText ?? discoveredCandidate?.cachedManifestText
-                        ))
-                    } else {
-                        self.blobCaptureErrorMessage = "This site uses MediaSource streaming. You must download the manifest (.m3u8 or .mpd) instead."
-                    }
-                    return
-                }
-                var targetCandidate = candidate
-                if let discoveredCandidate {
-                    targetCandidate = BrowserMediaCandidate(
-                        id: targetCandidate.id,
-                        url: targetCandidate.url,
-                        rawURL: targetCandidate.rawURL,
-                        finalURL: targetCandidate.finalURL,
-                        kind: targetCandidate.kind,
-                        mimeType: discoveredCandidate.mimeType ?? targetCandidate.mimeType,
-                        suggestedFilename: resource.suggestedFilename.isEmpty ? targetCandidate.suggestedFilename : resource.suggestedFilename,
-                        estimatedSize: discoveredCandidate.estimatedSize ?? targetCandidate.estimatedSize,
-                        availability: .captureCandidate,
-                        evidence: targetCandidate.evidence + discoveredCandidate.evidence,
-                        documentID: discoveredCandidate.documentID ?? targetCandidate.documentID,
-                        requestContext: discoveredCandidate.requestContext ?? targetCandidate.requestContext,
-                        associatedManifestID: discoveredCandidate.associatedManifestID ?? targetCandidate.associatedManifestID,
-                        lastObserved: targetCandidate.lastObserved
-                    )
-                }
-                self.exportBlobCandidate(targetCandidate)
-                return
-            }
-            if candidate.kind == .directMedia {
+            let decision = BrowserDownloadDecisionPipeline.decide(
+                resource: resource,
+                availableResources: self.discoveredResources,
+                availableCandidates: self.mediaCandidates,
+                preferManifestIfAvailable: true
+            )
+            self.executeDecision(decision)
+        }
+    }
+
+    public func executeDecision(_ decision: BrowserDownloadDecision) {
+        switch decision.action {
+        case .streaming(let manifestURL, _, let suggestedFilename, let cachedText, let requestContext):
+            let res = WebpageResource(
+                url: manifestURL,
+                title: decision.candidate.suggestedFilename.isEmpty ? suggestedFilename : decision.candidate.suggestedFilename,
+                suggestedFilename: suggestedFilename,
+                resourceType: .video,
+                requestContext: requestContext ?? decision.candidate.requestContext,
+                manifestText: cachedText
+            )
+            self.promptStreamingDownload(for: res)
+
+        case .mseCapture(let candidate):
+            #if canImport(WebKit)
+            self.startMSECapture(candidate)
+            #else
+            self.mseCaptureErrorMessage = "MSE capture requires WebKit."
+            #endif
+
+        case .blobExport(let candidate):
+            #if canImport(WebKit)
+            self.exportBlobCandidate(candidate)
+            #else
+            self.blobCaptureErrorMessage = "Blob export requires WebKit."
+            #endif
+
+        case .direct(let url, let suggestedFilename, _, _, let requestContext):
+            if decision.candidate.kind == .directMedia {
                 do {
-                    let plan = try DirectMediaTransferPlanner.makePlan(candidate: candidate)
+                    let plan = try DirectMediaTransferPlanner.makePlan(candidate: decision.candidate)
                     self.promptDownload(
                         for: plan.transferURL,
                         suggestedFilename: plan.filename,
@@ -1007,14 +978,23 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                 } catch {
                     self.resourceScanError = error.localizedDescription
                 }
-                return
+            } else {
+                self.promptDownload(
+                    for: url,
+                    suggestedFilename: suggestedFilename,
+                    requestContext: requestContext
+                )
             }
 
-            self.promptDownload(
-                for: resource.url,
-                suggestedFilename: resource.suggestedFilename,
-                requestContext: resource.requestContext
-            )
+        case .protectedMedia(let reason):
+            self.streamingErrorMessage = reason
+            self.blobCaptureErrorMessage = reason
+            self.mseCaptureErrorMessage = reason
+
+        case .unsupported(let reason):
+            self.streamingErrorMessage = reason
+            self.blobCaptureErrorMessage = reason
+            self.mseCaptureErrorMessage = reason
         }
     }
 
@@ -1651,129 +1631,80 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         #endif
 
         for resource in targets {
-            let url = resource.url
-            let scheme = url.scheme?.lowercased() ?? ""
+            let decision = BrowserDownloadDecisionPipeline.decide(
+                resource: resource,
+                availableResources: self.discoveredResources,
+                availableCandidates: self.mediaCandidates,
+                preferManifestIfAvailable: true
+            )
 
-            // 1. Intercept streaming playlist manifests upfront
-            if resource.isStreamingManifest || url.pathExtension.lowercased() == "m3u8" || url.pathExtension.lowercased() == "mpd" {
+            switch decision.action {
+            case .streaming(let manifestURL, _, let suggestedFilename, let cachedText, let requestContext):
                 if streamingOrchestrator == nil && StreamingDownloadOrchestrator.shared == nil {
                     let errorMsg = "Streaming downloads are unavailable: StreamingDownloadOrchestrator is nil."
-                    print("[HLS Pipeline] \(errorMsg)")
                     blobCaptureErrorMessage = errorMsg
                     streamingErrorMessage = errorMsg
                     return
                 }
-                promptStreamingDownload(for: resource)
-                continue
-            }
+                let res = WebpageResource(
+                    url: manifestURL,
+                    title: decision.candidate.suggestedFilename.isEmpty ? suggestedFilename : decision.candidate.suggestedFilename,
+                    suggestedFilename: suggestedFilename,
+                    resourceType: .video,
+                    requestContext: requestContext ?? decision.candidate.requestContext,
+                    manifestText: cachedText
+                )
+                promptStreamingDownload(for: res)
 
-            // 2. Intercept individual streaming segment chunks
-            let sequentialChunkIDs = WebpageResourceExtractor.detectSequentialSegmentChunks(in: self.discoveredResources)
-            if resource.isSegmentChunk || sequentialChunkIDs.contains(resource.id) {
-                blobCaptureErrorMessage = "This is a streaming segment chunk. Download the playlist manifest (.m3u8 or .mpd) instead."
-                continue
-            }
+            case .blobExport(let candidate):
+                #if canImport(WebKit)
+                exportBlobCandidate(candidate)
+                #endif
 
-            // 3. Ensure scheme is valid
-            guard scheme == "http" || scheme == "https" || scheme == "blob" else {
-                blobCaptureErrorMessage = "Unsupported link type: \(scheme.isEmpty ? "unknown" : scheme). Cannot download directly."
-                continue
-            }
+            case .mseCapture(let candidate):
+                #if canImport(WebKit)
+                startMSECapture(candidate)
+                #endif
 
-            if scheme == "blob" {
-                let candidate = BrowserMediaCandidateClassifier.classify(resource: resource)
-                let discoveredCandidate = self.mediaCandidates.first {
-                    $0.rawURL.caseInsensitiveCompare(resource.url.absoluteString) == .orderedSame
-                }
-                let effectiveMIME = (discoveredCandidate?.mimeType ?? candidate.mimeType ?? resource.mimeType)?.lowercased()
-                let isMediaSourceMIME = effectiveMIME == "application/x-mediasource"
-                let isGenericMIME = effectiveMIME == nil || effectiveMIME?.isEmpty == true || effectiveMIME == "application/octet-stream"
-                let isBinOrStreamName = resource.suggestedFilename.lowercased().hasSuffix(".bin") || resource.suggestedFilename.lowercased().hasPrefix("blob_stream")
-                let isMediaSource = candidate.blobKind == .mediaSource ||
-                    candidate.kind == .mediaSource ||
-                    discoveredCandidate?.blobKind == .mediaSource ||
-                    discoveredCandidate?.kind == .mediaSource ||
-                    resource.isMediaSourceBlob ||
-                    isMediaSourceMIME ||
-                    (isGenericMIME && isBinOrStreamName)
-                if isMediaSource {
-                    if let manifest = discoveredCandidate?.associatedManifestURL ?? candidate.associatedManifestURL ?? self.discoveredResources.first(where: { $0.isStreamingManifest })?.url {
-                        promptStreamingDownload(for: WebpageResource(
-                            url: manifest,
-                            title: resource.title,
-                            suggestedFilename: resource.suggestedFilename.isEmpty ? "stream.mp4" : resource.suggestedFilename,
-                            resourceType: .video
-                        ))
-                    } else {
-                        blobCaptureErrorMessage = "This site uses MediaSource streaming. You must download the manifest (.m3u8 or .mpd) instead."
+            case .direct(let url, let suggestedFilename, _, _, let requestContext):
+                do {
+                    if decision.candidate.kind == .directMedia {
+                        let plan = try DirectMediaTransferPlanner.makePlan(candidate: decision.candidate)
+                        let headers = useBrowserCredentials
+                            ? (plan.requestHeaders.isEmpty ? nil : plan.requestHeaders)
+                            : nil
+                        try await downloadDelegate?.handleDownloadRequest(
+                            url: plan.transferURL,
+                            filename: plan.filename.isEmpty ? nil : plan.filename,
+                            threadCount: 6,
+                            speedLimitBytesPerSecond: nil,
+                            headers: headers
+                        )
+                        continue
                     }
-                    continue
-                }
-                var targetCandidate = candidate
-                if let discoveredCandidate {
-                    targetCandidate = BrowserMediaCandidate(
-                        id: targetCandidate.id,
-                        url: targetCandidate.url,
-                        rawURL: targetCandidate.rawURL,
-                        finalURL: targetCandidate.finalURL,
-                        kind: targetCandidate.kind,
-                        blobKind: targetCandidate.blobKind ?? discoveredCandidate.blobKind,
-                        mimeType: discoveredCandidate.mimeType ?? targetCandidate.mimeType,
-                        suggestedFilename: resource.suggestedFilename.isEmpty ? targetCandidate.suggestedFilename : resource.suggestedFilename,
-                        estimatedSize: discoveredCandidate.estimatedSize ?? targetCandidate.estimatedSize,
-                        availability: .captureCandidate,
-                        evidence: targetCandidate.evidence + discoveredCandidate.evidence,
-                        documentID: discoveredCandidate.documentID ?? targetCandidate.documentID,
-                        requestContext: discoveredCandidate.requestContext ?? targetCandidate.requestContext,
-                        associatedManifestID: discoveredCandidate.associatedManifestID ?? targetCandidate.associatedManifestID,
-                        lastObserved: targetCandidate.lastObserved
-                    )
-                }
-                self.exportBlobCandidate(targetCandidate)
-                continue
-            }
-            if resource.isStreamingManifest {
-                promptStreamingDownload(for: resource)
-                continue
-            }
-            let candidate = BrowserMediaCandidateClassifier.classify(resource: resource)
-            if candidate.kind == .hlsManifest || candidate.kind == .dashManifest {
-                promptStreamingDownload(for: resource)
-                continue
-            }
-            do {
-                if candidate.kind == .directMedia {
-                    let plan = try DirectMediaTransferPlanner.makePlan(candidate: candidate)
-                    let headers = useBrowserCredentials
-                        ? (plan.requestHeaders.isEmpty ? nil : plan.requestHeaders)
-                        : nil
                     try await downloadDelegate?.handleDownloadRequest(
-                        url: plan.transferURL,
-                        filename: plan.filename.isEmpty ? nil : plan.filename,
+                        url: url,
+                        filename: suggestedFilename.isEmpty ? nil : suggestedFilename,
                         threadCount: 6,
                         speedLimitBytesPerSecond: nil,
-                        headers: headers
+                        headers: requestContext?.effectiveHeaders(
+                            for: url,
+                            includeCredentials: useBrowserCredentials
+                        )
                     )
-                    continue
+                } catch {
+                    blobCaptureErrorMessage = "Engine error: \(error.localizedDescription)"
                 }
-                try await downloadDelegate?.handleDownloadRequest(
-                    url: resource.url,
-                    filename: resource.suggestedFilename.isEmpty ? nil : resource.suggestedFilename,
-                    threadCount: 6,
-                    speedLimitBytesPerSecond: nil,
-                    headers: resource.requestContext?.effectiveHeaders(
-                        for: resource.url,
-                        includeCredentials: useBrowserCredentials
-                    )
-                )
-            } catch {
-                blobCaptureErrorMessage = "Engine error: \(error.localizedDescription)"
+
+            case .protectedMedia(let reason), .unsupported(let reason):
+                blobCaptureErrorMessage = reason
+                streamingErrorMessage = reason
             }
         }
 
         selectedResourceIDs = []
         isShowingResourceInspector = false
-        downloadSuccessNotification = "\\(targets.count) download(s) queued successfully."
+        downloadSuccessNotification = "\(targets.count) download(s) queued successfully."
         onDownloadInitiated?()
     }
 
@@ -2250,6 +2181,85 @@ public struct BrowserView: View {
         }
         .overlay(alignment: .top) {
             VStack(spacing: 8) {
+                if viewModel.isCapturingMSE {
+                    HStack(spacing: 8) {
+                        ProgressView()
+                            .scaleEffect(0.8)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Capturing MediaSource stream...")
+                                .font(.caption.bold())
+                                .foregroundColor(.primary)
+                            if let snapshot = viewModel.mseCaptureSnapshot {
+                                Text("\(ByteCountFormatter.string(fromByteCount: snapshot.bytesCaptured, countStyle: .file)) captured (\(snapshot.segmentCount) segments)")
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+                        Spacer()
+                        Button {
+                            viewModel.stopMSECapture()
+                        } label: {
+                            Text("Save")
+                                .font(.caption.bold())
+                                .foregroundColor(.white)
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 4)
+                                .background(Color.blue)
+                                .cornerRadius(6)
+                        }
+                        Button {
+                            viewModel.cancelMSECapture()
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 10)
+                    #if canImport(UIKit)
+                    .background(RoundedRectangle(cornerRadius: 12).fill(Color(UIColor.secondarySystemBackground)))
+                    #else
+                    .background(RoundedRectangle(cornerRadius: 12).fill(Color.secondary.opacity(0.2)))
+                    #endif
+                    .shadow(radius: 4)
+                    .padding(.horizontal, 16)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+                }
+
+                if viewModel.isCapturingBlob {
+                    HStack(spacing: 8) {
+                        ProgressView()
+                            .scaleEffect(0.8)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Exporting in-memory Blob...")
+                                .font(.caption.bold())
+                                .foregroundColor(.primary)
+                            if let snapshot = viewModel.blobCaptureSnapshot {
+                                Text("\(ByteCountFormatter.string(fromByteCount: snapshot.bytesWritten, countStyle: .file)) written")
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+                        Spacer()
+                        Button {
+                            viewModel.cancelBlobCapture()
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 10)
+                    #if canImport(UIKit)
+                    .background(RoundedRectangle(cornerRadius: 12).fill(Color(UIColor.secondarySystemBackground)))
+                    #else
+                    .background(RoundedRectangle(cornerRadius: 12).fill(Color.secondary.opacity(0.2)))
+                    #endif
+                    .shadow(radius: 4)
+                    .padding(.horizontal, 16)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+                }
+
                 if let notification = viewModel.downloadSuccessNotification {
                     HStack(spacing: 8) {
                         Image(systemName: "checkmark.circle.fill")
@@ -2275,7 +2285,7 @@ public struct BrowserView: View {
                         }
                     }
                 }
-                if let error = viewModel.blobCaptureErrorMessage {
+                if let error = viewModel.blobCaptureErrorMessage ?? viewModel.mseCaptureErrorMessage ?? viewModel.streamingErrorMessage {
                     HStack(spacing: 8) {
                         Image(systemName: "exclamationmark.triangle.fill")
                             .foregroundColor(.red)
@@ -2295,7 +2305,11 @@ public struct BrowserView: View {
                                 .cornerRadius(6)
                         }
                         Button {
-                            withAnimation { viewModel.blobCaptureErrorMessage = nil }
+                            withAnimation {
+                                viewModel.blobCaptureErrorMessage = nil
+                                viewModel.mseCaptureErrorMessage = nil
+                                viewModel.streamingErrorMessage = nil
+                            }
                         } label: {
                             Image(systemName: "xmark.circle.fill")
                                 .foregroundColor(.secondary)
@@ -2316,6 +2330,10 @@ public struct BrowserView: View {
             .padding(.top, 8)
             .animation(.easeInOut, value: viewModel.downloadSuccessNotification)
             .animation(.easeInOut, value: viewModel.blobCaptureErrorMessage)
+            .animation(.easeInOut, value: viewModel.mseCaptureErrorMessage)
+            .animation(.easeInOut, value: viewModel.streamingErrorMessage)
+            .animation(.easeInOut, value: viewModel.isCapturingMSE)
+            .animation(.easeInOut, value: viewModel.isCapturingBlob)
         }
         #if canImport(UIKit)
         .background(Color(UIColor.systemBackground))
