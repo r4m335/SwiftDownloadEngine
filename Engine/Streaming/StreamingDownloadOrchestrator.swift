@@ -1182,10 +1182,17 @@ public actor StreamingDownloadOrchestrator {
                 throw StreamingManifestLoadError.failed("Server blocked request. Returned HTML instead of manifest.")
             }
             return response
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch let error as StreamingDownloadOrchestratorError {
+            throw error
         } catch let error as ManifestParserError {
             PipelineLogger.shared.log("[HLS Pipeline] Error: Manifest parser failed: \(error.localizedDescription)")
             throw error
         } catch {
+            guard !Task.isCancelled else {
+                throw CancellationError()
+            }
             let status = manifestStatusDescription(for: error)
             PipelineLogger.shared.log("[HLS Pipeline] Step 1: URLSession manifest fetch (status: \(status))")
             if let resolver = self.urlResolver {
@@ -1215,6 +1222,8 @@ public actor StreamingDownloadOrchestrator {
                         mimeType: candidate.mimeType,
                         statusCode: 200
                     )
+                } catch is CancellationError {
+                    throw CancellationError()
                 } catch let parserErr as ManifestParserError {
                     PipelineLogger.shared.log("[HLS Pipeline] Error: Manifest size limit reached on JS fetch fallback: \(parserErr.localizedDescription)")
                     throw parserErr
@@ -1228,6 +1237,9 @@ public actor StreamingDownloadOrchestrator {
                     PipelineLogger.shared.log("[HLS Pipeline] Error: \(combinedMessage)")
                     throw StreamingManifestLoadError.failed(combinedMessage)
                 } catch {
+                    guard !Task.isCancelled else {
+                        throw CancellationError()
+                    }
                     let jsReason = browserFetchErrorReason(for: error)
                     PipelineLogger.shared.log("[HLS Pipeline] Step 1b: JS fetch fallback (status: \(jsReason))")
                     let combinedMessage = "Manifest \(status); browser fetch failed: \(jsReason)"

@@ -817,6 +817,237 @@ final class StreamingDownloadOrchestratorTests: XCTestCase {
         XCTAssertEqual(proposal.resources.first?.url.lastPathComponent, "segment-auth.ts")
     }
 
+    func testCancellationInURLSessionNeverTriggersJSFallback() async throws {
+        actor SequenceTracker {
+            enum Step: Equatable {
+                case urlSession(URL)
+                case jsFallback(URL)
+            }
+            var steps: [Step] = []
+            func record(_ step: Step) { steps.append(step) }
+        }
+
+        let tracker = SequenceTracker()
+        let manifestURL = URL(string: "https://video.example/cancelled.m3u8")!
+
+        struct CancelledLoader: StreamingManifestLoader {
+            let tracker: SequenceTracker
+            func load(
+                candidate: StreamingManifestCandidate,
+                headers: [String: String],
+                limits: ManifestParsingLimits
+            ) async throws -> StreamingManifestResponse {
+                await tracker.record(.urlSession(candidate.url))
+                throw CancellationError()
+            }
+        }
+
+        final class AssertNeverCalledResolver: BrowserMediaURLResolver {
+            let tracker: SequenceTracker
+            init(tracker: SequenceTracker) { self.tracker = tracker }
+            @MainActor func resolveMediaURL(_ rawURL: URL) async throws -> URL { rawURL }
+            @MainActor func fetchManifestText(from url: URL) async throws -> String {
+                Task { await self.tracker.record(.jsFallback(url)) }
+                XCTFail("JS fallback must NEVER be triggered when URLSession is cancelled")
+                throw StreamingManifestLoadError.browserFetchUnavailable
+            }
+        }
+
+        let orchestrator = StreamingDownloadOrchestrator(
+            manifestLoader: CancelledLoader(tracker: tracker),
+            segmentExecutor: RecordingSegmentExecutor(),
+            urlResolver: AssertNeverCalledResolver(tracker: tracker)
+        )
+
+        let candidate = try StreamingManifestCandidate(url: manifestURL)
+        do {
+            _ = try await orchestrator.prepare(candidate: candidate)
+            XCTFail("Expected CancellationError")
+        } catch is CancellationError {
+            // Expected
+        } catch {
+            XCTFail("Expected CancellationError but got \(error)")
+        }
+
+        let steps = await tracker.steps
+        XCTAssertEqual(steps, [.urlSession(manifestURL)], "Only URLSession must be recorded; JS fallback must not be entered")
+    }
+
+    func testSemanticErrorInURLSessionNeverTriggersJSFallback() async throws {
+        actor SequenceTracker {
+            enum Step: Equatable {
+                case urlSession(URL)
+                case jsFallback(URL)
+            }
+            var steps: [Step] = []
+            func record(_ step: Step) { steps.append(step) }
+        }
+
+        let tracker = SequenceTracker()
+        let manifestURL = URL(string: "https://video.example/semantic-fail.m3u8")!
+
+        struct SemanticErrorLoader: StreamingManifestLoader {
+            let tracker: SequenceTracker
+            func load(
+                candidate: StreamingManifestCandidate,
+                headers: [String: String],
+                limits: ManifestParsingLimits
+            ) async throws -> StreamingManifestResponse {
+                await tracker.record(.urlSession(candidate.url))
+                throw StreamingDownloadOrchestratorError.unsupportedEncryption
+            }
+        }
+
+        final class AssertNeverCalledResolver: BrowserMediaURLResolver {
+            let tracker: SequenceTracker
+            init(tracker: SequenceTracker) { self.tracker = tracker }
+            @MainActor func resolveMediaURL(_ rawURL: URL) async throws -> URL { rawURL }
+            @MainActor func fetchManifestText(from url: URL) async throws -> String {
+                Task { await self.tracker.record(.jsFallback(url)) }
+                XCTFail("JS fallback must NEVER be called when URLSession produces a semantic orchestrator error")
+                throw StreamingManifestLoadError.browserFetchUnavailable
+            }
+        }
+
+        let orchestrator = StreamingDownloadOrchestrator(
+            manifestLoader: SemanticErrorLoader(tracker: tracker),
+            segmentExecutor: RecordingSegmentExecutor(),
+            urlResolver: AssertNeverCalledResolver(tracker: tracker)
+        )
+
+        let candidate = try StreamingManifestCandidate(url: manifestURL)
+        do {
+            _ = try await orchestrator.prepare(candidate: candidate)
+            XCTFail("Expected unsupportedEncryption error")
+        } catch let error as StreamingDownloadOrchestratorError {
+            XCTAssertEqual(error, .unsupportedEncryption)
+        }
+
+        let steps = await tracker.steps
+        XCTAssertEqual(steps, [.urlSession(manifestURL)], "Semantic errors must propagate directly without JS fallback")
+    }
+
+    func testCompleteRequestSequenceOnURLSession403WithSuccessfulJSFallback() async throws {
+        actor SequenceTracker {
+            enum Step: Equatable {
+                case urlSession(URL)
+                case jsFallback(URL)
+            }
+            var steps: [Step] = []
+            func record(_ step: Step) { steps.append(step) }
+        }
+
+        let tracker = SequenceTracker()
+        let manifestURL = URL(string: "https://auth.example.com/protected.m3u8")!
+
+        struct Failing403Loader: StreamingManifestLoader {
+            let tracker: SequenceTracker
+            func load(
+                candidate: StreamingManifestCandidate,
+                headers: [String: String],
+                limits: ManifestParsingLimits
+            ) async throws -> StreamingManifestResponse {
+                await tracker.record(.urlSession(candidate.url))
+                throw StreamingManifestLoadError.unexpectedStatus(403)
+            }
+        }
+
+        final class SuccessfulJSResolver: BrowserMediaURLResolver {
+            let tracker: SequenceTracker
+            let manifestText: String
+            init(tracker: SequenceTracker, manifestText: String) {
+                self.tracker = tracker
+                self.manifestText = manifestText
+            }
+            @MainActor func resolveMediaURL(_ rawURL: URL) async throws -> URL { rawURL }
+            @MainActor func fetchManifestText(from url: URL) async throws -> String {
+                Task { await self.tracker.record(.jsFallback(url)) }
+                return manifestText
+            }
+        }
+
+        let validM3U8 = """
+        #EXTM3U
+        #EXT-X-VERSION:3
+        #EXT-X-TARGETDURATION:4
+        #EXTINF:4.0,
+        segment-recovered.ts
+        #EXT-X-ENDLIST
+        """
+
+        let orchestrator = StreamingDownloadOrchestrator(
+            manifestLoader: Failing403Loader(tracker: tracker),
+            segmentExecutor: RecordingSegmentExecutor(),
+            urlResolver: SuccessfulJSResolver(tracker: tracker, manifestText: validM3U8)
+        )
+
+        let candidate = try StreamingManifestCandidate(url: manifestURL)
+        let proposal = try await orchestrator.prepare(candidate: candidate)
+
+        XCTAssertEqual(proposal.manifest.kind, .hls)
+        XCTAssertEqual(proposal.resources.first?.url.lastPathComponent, "segment-recovered.ts")
+
+        let steps = await tracker.steps
+        XCTAssertEqual(steps, [.urlSession(manifestURL), .jsFallback(manifestURL)], "Exact sequence: URLSession 403 followed by JS fallback")
+    }
+
+    func testCompleteRequestSequenceWhenBothURLSessionAndJSFallbackFail() async throws {
+        actor SequenceTracker {
+            enum Step: Equatable {
+                case urlSession(URL)
+                case jsFallback(URL)
+            }
+            var steps: [Step] = []
+            func record(_ step: Step) { steps.append(step) }
+        }
+
+        let tracker = SequenceTracker()
+        let manifestURL = URL(string: "https://auth.example.com/total-failure.m3u8")!
+
+        struct FailingAuthLoader: StreamingManifestLoader {
+            let tracker: SequenceTracker
+            func load(
+                candidate: StreamingManifestCandidate,
+                headers: [String: String],
+                limits: ManifestParsingLimits
+            ) async throws -> StreamingManifestResponse {
+                await tracker.record(.urlSession(candidate.url))
+                throw StreamingManifestLoadError.authenticationRequired
+            }
+        }
+
+        final class FailingJSResolver: BrowserMediaURLResolver {
+            let tracker: SequenceTracker
+            init(tracker: SequenceTracker) { self.tracker = tracker }
+            @MainActor func resolveMediaURL(_ rawURL: URL) async throws -> URL { rawURL }
+            @MainActor func fetchManifestText(from url: URL) async throws -> String {
+                Task { await self.tracker.record(.jsFallback(url)) }
+                throw StreamingManifestLoadError.browserFetchUnavailable
+            }
+        }
+
+        let orchestrator = StreamingDownloadOrchestrator(
+            manifestLoader: FailingAuthLoader(tracker: tracker),
+            segmentExecutor: RecordingSegmentExecutor(),
+            urlResolver: FailingJSResolver(tracker: tracker)
+        )
+
+        let candidate = try StreamingManifestCandidate(url: manifestURL)
+        do {
+            _ = try await orchestrator.prepare(candidate: candidate)
+            XCTFail("Expected combined failure")
+        } catch let error as StreamingManifestLoadError {
+            if case let .failed(msg) = error {
+                XCTAssertTrue(msg.contains("browser fetch failed"))
+            } else {
+                XCTFail("Unexpected load error: \(error)")
+            }
+        }
+
+        let steps = await tracker.steps
+        XCTAssertEqual(steps, [.urlSession(manifestURL), .jsFallback(manifestURL)], "Sequence verified: both attempts recorded before terminal failure")
+    }
+
     func testPipelineLogger_RedactsSensitiveDataAndMaintainsBoundedBuffer() {
         let logger = PipelineLogger()
         logger.clear()
