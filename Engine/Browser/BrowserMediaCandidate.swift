@@ -339,20 +339,26 @@ public enum BrowserMediaCandidateClassifier {
             let isMediaSource = mime == "application/x-mediasource" || resource.isMediaSourceBlob || (isGenericOrMissingMIME && (resource.suggestedFilename.hasSuffix(".bin") || resource.suggestedFilename.hasPrefix("blob_stream") || resource.resourceType == .other))
             if isMediaSource {
                 kind = .mediaSource
-                let support = BrowserMSECaptureSupportClassifier.evaluate(
-                    mimeType: mime,
-                    isPotentiallyProtected: false
-                )
-                switch support.status {
-                case .capturable:
-                    availability = .captureCandidate
-                    evidence = [support.reason, "Clear MediaSource stream eligible for capture"]
-                case .protectedMedia:
-                    availability = .unsupported
-                    evidence = [support.reason]
-                case .unsupported:
-                    availability = mime == nil ? .metadataOnly : .unsupported
-                    evidence = [support.reason]
+                let isGenericOrMediaSourceMIME = mime == nil || mime?.isEmpty == true || mime == "application/x-mediasource" || mime == "application/octet-stream"
+                if isGenericOrMediaSourceMIME {
+                    availability = .metadataOnly
+                    evidence = ["MediaSource streaming buffer observed (empty or generic MIME type; not a downloadable standalone Blob)"]
+                } else {
+                    let support = BrowserMSECaptureSupportClassifier.evaluate(
+                        mimeType: mime,
+                        isPotentiallyProtected: false
+                    )
+                    switch support.status {
+                    case .capturable:
+                        availability = .captureCandidate
+                        evidence = [support.reason, "Clear MediaSource stream eligible for capture"]
+                    case .protectedMedia:
+                        availability = .unsupported
+                        evidence = [support.reason]
+                    case .unsupported:
+                        availability = .unsupported
+                        evidence = [support.reason]
+                    }
                 }
                 blobKind = .mediaSource
             } else {
