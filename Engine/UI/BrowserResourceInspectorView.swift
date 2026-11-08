@@ -1,6 +1,41 @@
 #if canImport(SwiftUI)
 import Foundation
 import SwiftUI
+#if canImport(AVKit)
+import AVKit
+#endif
+
+public struct MediaPreviewItem: Identifiable {
+    public let id = UUID()
+    public let url: URL
+    public let title: String
+
+    public init(url: URL, title: String) {
+        self.url = url
+        self.title = title
+    }
+}
+
+#if canImport(AVKit) && canImport(UIKit) && (os(iOS) || os(tvOS) || targetEnvironment(macCatalyst))
+public struct AVPlayerViewRepresentable: UIViewControllerRepresentable {
+    public let url: URL
+
+    public init(url: URL) {
+        self.url = url
+    }
+
+    public func makeUIViewController(context: Context) -> AVPlayerViewController {
+        let controller = AVPlayerViewController()
+        let player = AVPlayer(url: url)
+        controller.player = player
+        controller.showsPlaybackControls = true
+        player.play()
+        return controller
+    }
+
+    public func updateUIViewController(_ uiViewController: AVPlayerViewController, context: Context) {}
+}
+#endif
 
 /// Sheet displaying media assets, documents, and downloadable files discovered inside the active webpage.
 public struct BrowserResourceInspectorSheet: View {
@@ -12,6 +47,7 @@ public struct BrowserResourceInspectorSheet: View {
     @State private var searchText: String = ""
     @State private var isDownloadingBatch: Bool = false
     @State private var batchErrorMessage: String? = nil
+    @State private var previewItem: MediaPreviewItem? = nil
 
     public init(viewModel: BrowserViewModel) {
         self.viewModel = viewModel
@@ -163,6 +199,39 @@ public struct BrowserResourceInspectorSheet: View {
                    let manifest = filteredResources.first(where: { $0.isStreamingManifest }) {
                     viewModel.selectedResourceIDs.insert(manifest.id)
                 }
+            }
+            .sheet(item: $previewItem) { item in
+                #if canImport(AVKit) && canImport(UIKit) && (os(iOS) || os(tvOS) || targetEnvironment(macCatalyst))
+                NavigationView {
+                    AVPlayerViewRepresentable(url: item.url)
+                        .edgesIgnoringSafeArea(.all)
+                        .navigationTitle(item.title)
+                        .navigationBarTitleDisplayMode(.inline)
+                        .toolbar {
+                            ToolbarItem(placement: .cancellationAction) {
+                                Button("Done") {
+                                    previewItem = nil
+                                }
+                            }
+                        }
+                }
+                #else
+                VStack(spacing: 16) {
+                    Text("Media Preview")
+                        .font(.headline)
+                    Text(item.title)
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+                    Text(item.url.absoluteString)
+                        .font(.caption)
+                        .lineLimit(2)
+                    Button("Close") {
+                        previewItem = nil
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+                .padding()
+                #endif
             }
         }
     }
@@ -327,7 +396,7 @@ public struct BrowserResourceInspectorSheet: View {
                 }
             },
             onPreview: {
-                viewModel.playInlineMedia(resource.url, title: resource.title)
+                previewItem = MediaPreviewItem(url: resource.url, title: resource.title)
             }
         )
     }
