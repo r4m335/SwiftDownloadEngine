@@ -1333,6 +1333,183 @@ final class StreamingDownloadOrchestratorTests: XCTestCase {
         XCTAssertTrue(logs.contains("Cached manifest text not recognized as valid manifest") || logs.contains("Cached manifest text failed to parse"))
     }
 
+    func testCachedManifestWithUnsupportedEncryptionThrowsImmediatelyWithoutNetworkFetch() async throws {
+        PipelineLogger.shared.clear()
+        let manifestURL = URL(string: "https://video.example/encrypted.m3u8")!
+        let encryptedCachedM3U8 = """
+        #EXTM3U
+        #EXT-X-VERSION:3
+        #EXT-X-PLAYLIST-TYPE:VOD
+        #EXT-X-KEY:METHOD=SAMPLE-AES,URI="https://video.example/key.bin"
+        #EXTINF:5.0,
+        segment1.ts
+        #EXT-X-ENDLIST
+        """
+
+        struct AssertNoNetworkLoader: StreamingManifestLoader {
+            func load(
+                candidate: StreamingManifestCandidate,
+                headers: [String: String],
+                limits: ManifestParsingLimits
+            ) async throws -> StreamingManifestResponse {
+                XCTFail("Network loader must NEVER be called when cached manifest has unsupported encryption")
+                throw StreamingManifestLoadError.failed("Should not be called")
+            }
+        }
+
+        let resource = WebpageResource(
+            url: manifestURL,
+            title: "Encrypted Cached Stream",
+            suggestedFilename: "encrypted.mp4",
+            resourceType: .video,
+            manifestText: encryptedCachedM3U8
+        )
+        let candidate = try StreamingManifestCandidate(resource: resource)
+        let orchestrator = StreamingDownloadOrchestrator(
+            manifestLoader: AssertNoNetworkLoader(),
+            segmentExecutor: RecordingSegmentExecutor()
+        )
+
+        do {
+            _ = try await orchestrator.prepare(candidate: candidate)
+            XCTFail("Expected unsupportedEncryption error")
+        } catch let error as StreamingDownloadOrchestratorError {
+            XCTAssertEqual(error, .unsupportedEncryption)
+        }
+
+        let logs = PipelineLogger.shared.formattedLogText()
+        XCTAssertFalse(logs.contains("Falling back to network loader"), "Must not fall back to network loader on semantic planning error")
+    }
+
+    func testCachedMasterManifestWithFailingChildPlaylistPropagatesErrorWithoutFallback() async throws {
+        PipelineLogger.shared.clear()
+        let masterURL = URL(string: "https://video.example/master.m3u8")!
+        let masterCachedM3U8 = """
+        #EXTM3U
+        #EXT-X-STREAM-INF:BANDWIDTH=800000,RESOLUTION=1280x720
+        variant.m3u8
+        """
+
+        actor ChildPlaylistFailingLoader: StreamingManifestLoader {
+            var calls: [URL] = []
+
+            func load(
+                candidate: StreamingManifestCandidate,
+                headers: [String: String],
+                limits: ManifestParsingLimits
+            ) async throws -> StreamingManifestResponse {
+                calls.append(candidate.url)
+                if candidate.url.lastPathComponent == "variant.m3u8" {
+                    throw StreamingManifestLoadError.failed("HTTP 403 Forbidden on child playlist")
+                }
+                XCTFail("Root master manifest must NOT be reloaded from network on child playlist failure")
+                throw StreamingManifestLoadError.failed("Unexpected master reload")
+            }
+        }
+
+        let resource = WebpageResource(
+            url: masterURL,
+            title: "Master Cached Stream",
+            suggestedFilename: "master.mp4",
+            resourceType: .video,
+            manifestText: masterCachedM3U8
+        )
+        let candidate = try StreamingManifestCandidate(resource: resource)
+        let loader = ChildPlaylistFailingLoader()
+        let orchestrator = StreamingDownloadOrchestrator(
+            manifestLoader: loader,
+            segmentExecutor: RecordingSegmentExecutor()
+        )
+
+        do {
+            _ = try await orchestrator.prepare(candidate: candidate)
+            XCTFail("Expected child playlist load failure")
+        } catch let error as StreamingManifestLoadError {
+            if case let .failed(msg) = error {
+                XCTAssertTrue(msg.contains("HTTP 403 Forbidden on child playlist"))
+            } else {
+                XCTFail("Unexpected load error: \(error)")
+            }
+        }
+
+        let recordedCalls = await loader.calls
+        XCTAssertEqual(recordedCalls.count, 1, "Only child playlist should be requested, not root master")
+        XCTAssertEqual(recordedCalls.first?.lastPathComponent, "variant.m3u8")
+
+        let logs = PipelineLogger.shared.formattedLogText()
+        XCTAssertFalse(logs.contains("Falling back to network loader"), "Must not fall back to network loader when child playlist fails")
+    }
+
+    func testCachedMasterManifestWithValidChildPlaylistSucceedsCleanly() async throws {
+        PipelineLogger.shared.clear()
+        let masterURL = URL(string: "https://video.example/master.m3u8")!
+        let masterCachedM3U8 = """
+        #EXTM3U
+        #EXT-X-STREAM-INF:BANDWIDTH=800000,RESOLUTION=1280x720
+        variant.m3u8
+        """
+
+        let childM3U8 = """
+        #EXTM3U
+        #EXT-X-VERSION:3
+        #EXT-X-PLAYLIST-TYPE:VOD
+        #EXT-X-TARGETDURATION:5
+        #EXTINF:5.0,
+        variant_seg_01.ts
+        #EXT-X-ENDLIST
+        """
+
+        actor ChildOnlyLoader: StreamingManifestLoader {
+            let childPayload: String
+            var loadedURLs: [URL] = []
+
+            init(childPayload: String) {
+                self.childPayload = childPayload
+            }
+
+            func load(
+                candidate: StreamingManifestCandidate,
+                headers: [String: String],
+                limits: ManifestParsingLimits
+            ) async throws -> StreamingManifestResponse {
+                loadedURLs.append(candidate.url)
+                if candidate.url.lastPathComponent == "variant.m3u8" {
+                    return StreamingManifestResponse(
+                        data: Data(childPayload.utf8),
+                        finalURL: candidate.url,
+                        mimeType: "application/vnd.apple.mpegurl",
+                        statusCode: 200
+                    )
+                }
+                XCTFail("Master manifest must not be loaded from network when present in cache")
+                throw StreamingManifestLoadError.failed("Unexpected load")
+            }
+        }
+
+        let resource = WebpageResource(
+            url: masterURL,
+            title: "Master Cached Stream",
+            suggestedFilename: "master.mp4",
+            resourceType: .video,
+            manifestText: masterCachedM3U8
+        )
+        let candidate = try StreamingManifestCandidate(resource: resource)
+        let loader = ChildOnlyLoader(childPayload: childM3U8)
+        let orchestrator = StreamingDownloadOrchestrator(
+            manifestLoader: loader,
+            segmentExecutor: RecordingSegmentExecutor()
+        )
+
+        let proposal = try await orchestrator.prepare(candidate: candidate)
+        XCTAssertEqual(proposal.manifest.kind, .hls)
+        XCTAssertEqual(proposal.resources.count, 1)
+        XCTAssertEqual(proposal.resources.first?.url.lastPathComponent, "variant_seg_01.ts")
+
+        let urls = await loader.loadedURLs
+        XCTAssertEqual(urls.count, 1)
+        XCTAssertEqual(urls.first?.lastPathComponent, "variant.m3u8")
+    }
+
     func testFilesystemErrorDoesNotTriggerManifestTokenRefresh() async throws {
         let manifestURL = URL(string: "https://video.example/fs-error.m3u8")!
         let playlist = """

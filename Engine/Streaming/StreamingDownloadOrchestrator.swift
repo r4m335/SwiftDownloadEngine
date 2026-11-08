@@ -1293,8 +1293,29 @@ public actor StreamingDownloadOrchestrator {
                         )
                         parsedManifest = manifest
                         manifestData = cachedData
-                    } catch {
+                    } catch is CancellationError {
+                        throw CancellationError()
+                    } catch let error as StreamingDownloadOrchestratorError {
+                        throw error
+                    } catch let error as HLSVODTransferPlanError {
+                        if case .unsupportedEncryption = error {
+                            throw StreamingDownloadOrchestratorError.unsupportedEncryption
+                        }
+                        throw StreamingDownloadOrchestratorError.hlsPlanningFailed(error)
+                    } catch let error as DASHVODTransferPlanError {
+                        if case .drmProtectedRepresentation = error {
+                            throw StreamingDownloadOrchestratorError.unsupportedEncryption
+                        }
+                        throw StreamingDownloadOrchestratorError.dashPlanningFailed(error)
+                    } catch let error as StreamingManifestLoadError {
+                        throw error
+                    } catch let error as URLError {
+                        throw error
+                    } catch let error as ManifestParserError {
                         PipelineLogger.shared.log("[Streaming Pipeline] Cached manifest text failed to parse (\(error.localizedDescription)). Falling back to network loader.")
+                    } catch {
+                        PipelineLogger.shared.log("[Streaming Pipeline] Error during cached manifest processing: \(error.localizedDescription)")
+                        throw error
                     }
                 } else {
                     PipelineLogger.shared.log("[Streaming Pipeline] Cached manifest text not recognized as valid manifest. Falling back to network loader.")
@@ -1476,11 +1497,16 @@ public actor StreamingDownloadOrchestrator {
                     headers: manifestHeaders(for: variantCandidate)
                 )
                 currentURL = subResponse.finalURL
-                parsed = try HLSManifestParser.parse(
-                    subResponse.data,
-                    baseURL: currentURL,
-                    limits: parsingLimits
-                )
+                do {
+                    parsed = try HLSManifestParser.parse(
+                        subResponse.data,
+                        baseURL: currentURL,
+                        limits: parsingLimits
+                    )
+                } catch let error as ManifestParserError {
+                    PipelineLogger.shared.log("[HLS Pipeline] Child variant playlist failed to parse: \(error.localizedDescription)")
+                    throw StreamingDownloadOrchestratorError.manifestParseFailed(error)
+                }
                 PipelineLogger.shared.log("[HLS Pipeline] 2. Sub-playlist parsed: playlistType=\(parsed.playlistType), segments=\(parsed.segments.count)")
             }
             guard parsed.playlistType == .media else {
@@ -1489,10 +1515,18 @@ public actor StreamingDownloadOrchestrator {
             }
             PipelineLogger.shared.log("[HLS Pipeline] 2. Final media playlist confirmed. Segments found: \(parsed.segments.count)")
 
-            let videoPlan = try HLSTransferPlanner.makeVODPlan(
-                from: parsed,
-                browserRequestContext: candidate.browserRequestContext
-            )
+            let videoPlan: HLSVODTransferPlan
+            do {
+                videoPlan = try HLSTransferPlanner.makeVODPlan(
+                    from: parsed,
+                    browserRequestContext: candidate.browserRequestContext
+                )
+            } catch let error as HLSVODTransferPlanError {
+                if case .unsupportedEncryption = error {
+                    throw StreamingDownloadOrchestratorError.unsupportedEncryption
+                }
+                throw StreamingDownloadOrchestratorError.hlsPlanningFailed(error)
+            }
             PipelineLogger.shared.log("[HLS Pipeline] 3. HLSTransferPlanner generated video transfer plan with \(videoPlan.resources.count) segments (estimated bytes: \(videoPlan.estimatedTransferBytes ?? 0)).")
             let audioPlan: [HLSPlannedResource]?
             if let audioURI = selectedAudioRendition?.uri {
@@ -1517,19 +1551,33 @@ public actor StreamingDownloadOrchestrator {
                     candidate: audioCandidate,
                     headers: manifestHeaders(for: audioCandidate)
                 )
-                let parsedAudio = try HLSManifestParser.parse(
-                    audioResponse.data,
-                    baseURL: audioResponse.finalURL,
-                    limits: parsingLimits
-                )
+                let parsedAudio: HLSManifest
+                do {
+                    parsedAudio = try HLSManifestParser.parse(
+                        audioResponse.data,
+                        baseURL: audioResponse.finalURL,
+                        limits: parsingLimits
+                    )
+                } catch let error as ManifestParserError {
+                    PipelineLogger.shared.log("[HLS Pipeline] Child audio playlist failed to parse: \(error.localizedDescription)")
+                    throw StreamingDownloadOrchestratorError.manifestParseFailed(error)
+                }
                 guard parsedAudio.playlistType == .media else {
                     PipelineLogger.shared.log("[HLS Pipeline] Audio playlist did not resolve to media segments.")
                     throw StreamingDownloadOrchestratorError.manifestNotRecognized
                 }
-                let parsedAudioPlan = try HLSTransferPlanner.makeVODPlan(
-                    from: parsedAudio,
-                    browserRequestContext: candidate.browserRequestContext
-                )
+                let parsedAudioPlan: HLSVODTransferPlan
+                do {
+                    parsedAudioPlan = try HLSTransferPlanner.makeVODPlan(
+                        from: parsedAudio,
+                        browserRequestContext: candidate.browserRequestContext
+                    )
+                } catch let error as HLSVODTransferPlanError {
+                    if case .unsupportedEncryption = error {
+                        throw StreamingDownloadOrchestratorError.unsupportedEncryption
+                    }
+                    throw StreamingDownloadOrchestratorError.hlsPlanningFailed(error)
+                }
                 audioPlan = parsedAudioPlan.resources
                 PipelineLogger.shared.log("[HLS Pipeline] Audio plan generated with \(parsedAudioPlan.resources.count) audio segments.")
             } else {
@@ -1573,10 +1621,18 @@ public actor StreamingDownloadOrchestrator {
                 baseURL: finalURL,
                 limits: parsingLimits
             )
-            let plan = try DASHTransferPlanner.makeVODPlan(
-                from: parsed,
-                browserRequestContext: candidate.browserRequestContext
-            )
+            let plan: DASHVODTransferPlan
+            do {
+                plan = try DASHTransferPlanner.makeVODPlan(
+                    from: parsed,
+                    browserRequestContext: candidate.browserRequestContext
+                )
+            } catch let error as DASHVODTransferPlanError {
+                if case .drmProtectedRepresentation = error {
+                    throw StreamingDownloadOrchestratorError.unsupportedEncryption
+                }
+                throw StreamingDownloadOrchestratorError.dashPlanningFailed(error)
+            }
             return .dash(plan)
         case .unknown, .unsupported:
             throw StreamingDownloadOrchestratorError.manifestNotRecognized
