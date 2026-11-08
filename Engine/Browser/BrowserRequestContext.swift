@@ -387,8 +387,9 @@ public struct BrowserHeaderFilter {
 
     /// Strips session cookies and authorization credentials when an HTTP redirect crosses origins.
     ///
-    /// Per RFC 7235 and modern browser security standards, sensitive credentials must never be
-    /// forwarded to an untrusted or unrelated domain during redirect resolution.
+    /// Per RFC 7235 §2.2, RFC 9110 §15.4, and modern browser security standards, sensitive credentials
+    /// (such as Authorization) must NEVER be forwarded across origins, and cookies are restricted
+    /// to schemeful same-site boundaries.
     public static func stripCredentialsOnRedirect(
         headers: [String: String],
         from originalURL: URL,
@@ -398,33 +399,36 @@ public struct BrowserHeaderFilter {
             return headers
         }
 
+        let isSameOrigin = sameOrigin(originalURL, redirectURL)
+        let isSameSite = isSchemefulSameSite(originalURL, redirectURL)
         let isOriginalHTTPS = originalURL.scheme?.lowercased() == "https"
         let isRedirectHTTP = redirectURL.scheme?.lowercased() == "http"
         let isDowngrade = isOriginalHTTPS && isRedirectHTTP
 
-        let sameSite = isSameSiteOrSubdomain(originalURL, redirectURL)
         var stripped: [String: String] = [:]
         for (k, v) in headers {
             let lower = k.trimmingCharacters(in: .whitespaces).lowercased()
-            // Retain domain-scoped cookies when redirecting to a same-site/subdomain host,
-            // UNLESS redirecting across an insecure HTTPS -> HTTP protocol downgrade (RFC 6265 §5.4).
+            // 1. Authorization & Proxy-Authorization are NEVER forwarded across origins (RFC 7235 §2.2 / RFC 9110 §15.4)
+            if !isSameOrigin && (lower == "authorization" || lower == "proxy-authorization") {
+                continue
+            }
+            // 2. Retain domain-scoped cookies when redirecting to a schemeful same-site host without downgrade
             if lower == "cookie" {
-                if sameSite && !isDowngrade {
+                if isSameSite && !isDowngrade {
                     stripped[k] = v
                 }
                 continue
             }
-            if isSensitiveHeader(lower) {
+            // 3. Sensitive custom tokens / secrets are stripped across origins
+            if !isSameOrigin && isSensitiveHeader(lower) {
                 continue
             }
-            // RFC 7231 §5.5.2: Omit Referer on HTTPS -> HTTP downgrade.
-            // The captured page URL can contain private paths or query values;
-            // do not carry it across an origin boundary unless same-site.
-            if lower == "referer" && (!sameSite || isDowngrade) {
+            // 4. Omit Referer on HTTPS -> HTTP downgrade or cross-site redirect (RFC 7231 §5.5.2)
+            if lower == "referer" && (!isSameSite || isDowngrade) {
                 continue
             }
-            // Suppress secure Origin on insecure downgrade
-            if lower == "origin" && isDowngrade {
+            // 5. Suppress secure Origin on downgrade or cross-site redirect
+            if lower == "origin" && (!isSameSite || isDowngrade) {
                 continue
             }
             stripped[k] = v
@@ -433,26 +437,37 @@ public struct BrowserHeaderFilter {
         return stripped
     }
 
-    public static func isSameSiteOrSubdomain(_ lhs: URL, _ rhs: URL) -> Bool {
+    /// Evaluates whether two URLs belong to the same schemeful site (same scheme and registrable domain).
+    ///
+    /// Uses Public Suffix List logic to distinguish multi-part public suffixes such as `.co.uk`,
+    /// `.com.au`, and `.github.io` from registrable domains.
+    public static func isSchemefulSameSite(_ lhs: URL, _ rhs: URL) -> Bool {
+        guard let lhsScheme = lhs.scheme?.lowercased(),
+              let rhsScheme = rhs.scheme?.lowercased(),
+              lhsScheme == rhsScheme else {
+            return false
+        }
+        return isSameRegistrableDomain(lhs, rhs)
+    }
+
+    /// Evaluates whether two URLs share the same registrable domain (eTLD+1), ignoring scheme.
+    public static func isSameRegistrableDomain(_ lhs: URL, _ rhs: URL) -> Bool {
         guard let lhsHost = lhs.host?.lowercased(),
               let rhsHost = rhs.host?.lowercased(),
               !lhsHost.isEmpty, !rhsHost.isEmpty else {
             return false
         }
         if lhsHost == rhsHost { return true }
-        if lhsHost.hasSuffix("." + rhsHost) || rhsHost.hasSuffix("." + lhsHost) {
-            return true
+        guard let lhsDomain = PublicSuffixList.registrableDomain(for: lhsHost),
+              let rhsDomain = PublicSuffixList.registrableDomain(for: rhsHost) else {
+            return false
         }
-        let lhsParts = lhsHost.split(separator: ".")
-        let rhsParts = rhsHost.split(separator: ".")
-        if lhsParts.count >= 2 && rhsParts.count >= 2 {
-            let lhsRoot = lhsParts.suffix(2).joined(separator: ".")
-            let rhsRoot = rhsParts.suffix(2).joined(separator: ".")
-            if lhsRoot == rhsRoot {
-                return true
-            }
-        }
-        return false
+        return lhsDomain == rhsDomain
+    }
+
+    /// Backwards-compatible alias for schemeful same-site evaluation.
+    public static func isSameSiteOrSubdomain(_ lhs: URL, _ rhs: URL) -> Bool {
+        isSchemefulSameSite(lhs, rhs)
     }
 
     public static func sameOrigin(_ lhs: URL, _ rhs: URL) -> Bool {

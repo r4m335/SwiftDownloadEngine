@@ -344,6 +344,83 @@ final class BrowserTests: XCTestCase {
         XCTAssertEqual(subdomainStripped["X-Trace-ID"], "trace-downgrade")
     }
 
+    func testPublicSuffixAndSchemefulSameSiteRedirectSecurity() {
+        // 1. site1.co.uk → site2.co.uk: unrelated (ccTLD multi-part public suffix)
+        let coUkSite1 = URL(string: "https://site1.co.uk/media")!
+        let coUkSite2 = URL(string: "https://site2.co.uk/media")!
+        XCTAssertFalse(BrowserHeaderFilter.isSchemefulSameSite(coUkSite1, coUkSite2))
+        XCTAssertFalse(BrowserHeaderFilter.isSameSiteOrSubdomain(coUkSite1, coUkSite2))
+
+        // 2. site1.com.au → site2.com.au: unrelated
+        let comAuSite1 = URL(string: "https://site1.com.au/video")!
+        let comAuSite2 = URL(string: "https://site2.com.au/video")!
+        XCTAssertFalse(BrowserHeaderFilter.isSchemefulSameSite(comAuSite1, comAuSite2))
+        XCTAssertFalse(BrowserHeaderFilter.isSameSiteOrSubdomain(comAuSite1, comAuSite2))
+
+        // 3. user.github.io → attacker.github.io: unrelated (multi-part platform public suffix)
+        let githubUser = URL(string: "https://user.github.io/app")!
+        let githubAttacker = URL(string: "https://attacker.github.io/exploit")!
+        XCTAssertFalse(BrowserHeaderFilter.isSchemefulSameSite(githubUser, githubAttacker))
+        XCTAssertFalse(BrowserHeaderFilter.isSameSiteOrSubdomain(githubUser, githubAttacker))
+
+        // 4. video.example.com → cdn.example.com: same registrable domain
+        let exampleVideo = URL(string: "https://video.example.com/stream.m3u8")!
+        let exampleCDN = URL(string: "https://cdn.example.com/stream.m3u8")!
+        XCTAssertTrue(BrowserHeaderFilter.isSchemefulSameSite(exampleVideo, exampleCDN))
+        XCTAssertTrue(BrowserHeaderFilter.isSameSiteOrSubdomain(exampleVideo, exampleCDN))
+
+        // 5. https://example.com → http://example.com: schemeful cross-site (scheme difference)
+        let httpsExample = URL(string: "https://example.com/asset.mp4")!
+        let httpExample = URL(string: "http://example.com/asset.mp4")!
+        XCTAssertFalse(BrowserHeaderFilter.isSchemefulSameSite(httpsExample, httpExample))
+        XCTAssertFalse(BrowserHeaderFilter.isSameSiteOrSubdomain(httpsExample, httpExample))
+
+        // 6. Cross-origin redirect: no leaked Authorization header
+        let authHeaders = [
+            "Authorization": "Bearer secret-token",
+            "Cookie": "session=abc",
+            "User-Agent": "LID/1.0"
+        ]
+        let stripped = BrowserHeaderFilter.stripCredentialsOnRedirect(
+            headers: authHeaders,
+            from: exampleVideo,
+            to: exampleCDN
+        )
+        XCTAssertNil(stripped["Authorization"], "Authorization must NEVER be forwarded across origins (RFC 7235 §2.2)")
+        // Same-site retains raw Cookie in header dict, but Authorization is stripped
+        XCTAssertEqual(stripped["Cookie"], "session=abc")
+        XCTAssertEqual(stripped["User-Agent"], "LID/1.0")
+
+        // Cross-site redirect: both Authorization and Cookie must be stripped
+        let crossSiteStripped = BrowserHeaderFilter.stripCredentialsOnRedirect(
+            headers: authHeaders,
+            from: coUkSite1,
+            to: coUkSite2
+        )
+        XCTAssertNil(crossSiteStripped["Authorization"])
+        XCTAssertNil(crossSiteStripped["Cookie"])
+
+        // 7. Valid parent-domain cookie: still eligible for a matching subdomain
+        let parentCookie = BrowserCookie(
+            name: "cdn_auth",
+            value: "valid_token",
+            domain: ".example.com",
+            path: "/"
+        )
+        XCTAssertTrue(parentCookie.matches(url: exampleCDN))
+        XCTAssertTrue(parentCookie.matches(url: exampleVideo))
+
+        // Host-only cookie: not eligible for a different subdomain
+        let hostOnlyCookie = BrowserCookie(
+            name: "host_session",
+            value: "host_only",
+            domain: "video.example.com",
+            path: "/"
+        )
+        XCTAssertTrue(hostOnlyCookie.matches(url: exampleVideo))
+        XCTAssertFalse(hostOnlyCookie.matches(url: exampleCDN))
+    }
+
     func testBrowserRequestContextSuppressesRefererAndOriginOnHTTPDowngrade() {
         let securePage = URL(string: "https://example.com/watch")!
         let context = BrowserRequestContext(

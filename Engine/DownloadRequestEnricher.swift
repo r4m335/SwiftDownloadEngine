@@ -334,14 +334,15 @@ public enum DownloadRequestEnricher {
         task: URLSessionTask,
         response: HTTPURLResponse,
         newRequest: URLRequest,
-        snapshot: BrowserSessionSnapshot? = nil
+        snapshot: BrowserSessionSnapshot? = nil,
+        context: BrowserRequestContext? = nil
     ) -> URLRequest {
         var req = newRequest
         let sourceURL = response.url ?? task.currentRequest?.url ?? task.originalRequest?.url
 
         if let sourceURL, let targetURL = req.url {
             let isSameOrigin = BrowserHeaderFilter.sameOrigin(sourceURL, targetURL)
-            let isSameSite = BrowserHeaderFilter.isSameSiteOrSubdomain(sourceURL, targetURL)
+            let isSameSite = BrowserHeaderFilter.isSchemefulSameSite(sourceURL, targetURL)
 
             // 1. Cross-origin credential stripping (RFC 7235 §2.2 / RFC 9110 §15.4)
             if !isSameOrigin {
@@ -354,23 +355,28 @@ public enum DownloadRequestEnricher {
                         }
                     }
                 }
-            }
-
-            // 2. Cookie isolation across domains (RFC 6265 §5.4):
-            // If redirecting cross-site, clear stale/sensitive origin cookies so target domain cookies can be applied.
-            if !isSameSite {
+                // Clear origin-specific raw Cookie header so destination cookies are freshly recalculated per RFC 6265
+                req.setValue(nil, forHTTPHeaderField: "Cookie")
+            } else if !isSameSite {
                 req.setValue(nil, forHTTPHeaderField: "Cookie")
             }
 
-            // 3. Referer security: strip on HTTPS -> HTTP downgrade or cross-site redirect (RFC 7231 §5.5.2)
+            // 2. Referer security: strip on HTTPS -> HTTP downgrade or cross-site redirect (RFC 7231 §5.5.2)
             if let srcScheme = sourceURL.scheme?.lowercased(),
                let dstScheme = targetURL.scheme?.lowercased(),
                (srcScheme == "https" && dstScheme == "http") || !isSameSite {
                 req.setValue(nil, forHTTPHeaderField: "Referer")
             }
+
+            // 3. Origin security: strip on downgrade or cross-site redirect
+            if let srcScheme = sourceURL.scheme?.lowercased(),
+               let dstScheme = targetURL.scheme?.lowercased(),
+               (srcScheme == "https" && dstScheme == "http") || !isSameSite {
+                req.setValue(nil, forHTTPHeaderField: "Origin")
+            }
         }
 
-        var enriched = enrich(req, snapshot: snapshot)
+        var enriched = enrich(req, snapshot: snapshot, context: context)
 
         // Preserve Range across redirect if present on the original request
         if let originalRange = task.originalRequest?.value(forHTTPHeaderField: "Range"),
