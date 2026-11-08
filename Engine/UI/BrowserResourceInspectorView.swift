@@ -1,41 +1,6 @@
 #if canImport(SwiftUI)
 import Foundation
 import SwiftUI
-#if canImport(AVKit)
-import AVKit
-#endif
-
-public struct MediaPreviewItem: Identifiable {
-    public let id = UUID()
-    public let url: URL
-    public let title: String
-
-    public init(url: URL, title: String) {
-        self.url = url
-        self.title = title
-    }
-}
-
-#if canImport(AVKit) && (os(iOS) || os(tvOS) || targetEnvironment(macCatalyst))
-public struct AVPlayerViewRepresentable: UIViewControllerRepresentable {
-    public let url: URL
-
-    public init(url: URL) {
-        self.url = url
-    }
-
-    public func makeUIViewController(context: Context) -> AVPlayerViewController {
-        let controller = AVPlayerViewController()
-        let player = AVPlayer(url: url)
-        controller.player = player
-        controller.showsPlaybackControls = true
-        player.play()
-        return controller
-    }
-
-    public func updateUIViewController(_ uiViewController: AVPlayerViewController, context: Context) {}
-}
-#endif
 
 /// Sheet displaying media assets, documents, and downloadable files discovered inside the active webpage.
 public struct BrowserResourceInspectorSheet: View {
@@ -47,29 +12,69 @@ public struct BrowserResourceInspectorSheet: View {
     @State private var searchText: String = ""
     @State private var isDownloadingBatch: Bool = false
     @State private var batchErrorMessage: String? = nil
-    @State private var previewItem: MediaPreviewItem? = nil
 
     public init(viewModel: BrowserViewModel) {
         self.viewModel = viewModel
     }
 
+    private var variantMetadataMap: [String: HLSVariantStreamItem] {
+        var map: [String: HLSVariantStreamItem] = [:]
+        for res in viewModel.discoveredResources {
+            let items = HLSResourceGrouping.extractVariantStreamItems(for: res)
+            for item in items {
+                map[item.id] = item
+            }
+        }
+        return map
+    }
+
     private var eligibleResources: [WebpageResource] {
         let hasStreamingManifest = viewModel.discoveredResources.contains(where: { $0.isStreamingManifest })
         let sequentialChunkIDs = WebpageResourceExtractor.detectSequentialSegmentChunks(in: viewModel.discoveredResources)
-        return viewModel.discoveredResources.filter { res in
+        let variantURLs = knownHLSVariantURLs
+        var expanded: [WebpageResource] = []
+
+        for res in viewModel.discoveredResources {
             let isChunk = res.isSegmentChunk || sequentialChunkIDs.contains(res.id)
             // Discard raw .ts/.m4s/.m4a segment chunks when an .m3u8/.mpd manifest is present or in standard media view,
             // as they are internal segment chunks that cannot be played standalone.
             if isChunk && (hasStreamingManifest || !showsAllResources) {
-                return false
+                continue
             }
             // Discard unplayable MediaSource stream buffer blobs when an .m3u8/.mpd manifest is present
             // or in standard media view, guiding the user to download the actual manifest instead.
             if res.isMediaSourceBlob && (hasStreamingManifest || !showsAllResources) {
-                return false
+                continue
             }
-            return true
+            // Discard raw child playlist URLs discovered separately without metadata
+            if variantURLs.contains(res.url.absoluteString.lowercased()) && res.hlsVariantPreferences == nil {
+                continue
+            }
+
+            // Expand master playlist into individual resolution videos like 1DM!
+            if res.isStreamingManifest, res.url.pathExtension.lowercased() == "m3u8",
+               let text = res.manifestText,
+               let manifest = try? HLSManifestParser.parse(text, baseURL: res.url),
+               manifest.playlistType == .master,
+               !manifest.variants.isEmpty {
+                let variants = HLSResourceGrouping.extractVariantResources(from: res)
+                expanded.append(contentsOf: variants)
+            } else {
+                expanded.append(res)
+            }
         }
+        return expanded
+    }
+
+    private var hlsMasterQualitySummaries: [String: String] {
+        Dictionary(uniqueKeysWithValues: viewModel.discoveredResources.compactMap {
+            guard let summary = HLSResourceGrouping.qualitySummary(for: $0) else { return nil }
+            return ($0.id, summary)
+        })
+    }
+
+    private var knownHLSVariantURLs: Set<String> {
+        HLSResourceGrouping.variantURLs(in: viewModel.discoveredResources)
     }
 
     public var filteredResources: [WebpageResource] {
@@ -158,39 +163,6 @@ public struct BrowserResourceInspectorSheet: View {
                    let manifest = filteredResources.first(where: { $0.isStreamingManifest }) {
                     viewModel.selectedResourceIDs.insert(manifest.id)
                 }
-            }
-            .sheet(item: $previewItem) { item in
-                #if canImport(AVKit) && (os(iOS) || os(tvOS) || targetEnvironment(macCatalyst))
-                NavigationView {
-                    AVPlayerViewRepresentable(url: item.url)
-                        .edgesIgnoringSafeArea(.all)
-                        .navigationTitle(item.title)
-                        .navigationBarTitleDisplayMode(.inline)
-                        .toolbar {
-                            ToolbarItem(placement: .cancellationAction) {
-                                Button("Done") {
-                                    previewItem = nil
-                                }
-                            }
-                        }
-                }
-                #else
-                VStack(spacing: 16) {
-                    Text("Media Preview")
-                        .font(.headline)
-                    Text(item.title)
-                        .font(.subheadline)
-                        .foregroundColor(.secondary)
-                    Text(item.url.absoluteString)
-                        .font(.caption)
-                        .lineLimit(2)
-                    Button("Close") {
-                        previewItem = nil
-                    }
-                    .buttonStyle(.borderedProminent)
-                }
-                .padding()
-                #endif
             }
         }
     }
@@ -320,6 +292,8 @@ public struct BrowserResourceInspectorSheet: View {
                     candidate: viewModel.mediaCandidates.first {
                         $0.rawURL.caseInsensitiveCompare(resource.url.absoluteString) == .orderedSame
                     },
+                    qualitySummary: hlsMasterQualitySummaries[resource.id],
+                    variantItem: variantMetadataMap[resource.id],
                     isSelected: viewModel.selectedResourceIDs.contains(resource.id),
                     onToggleSelect: {
                         if viewModel.selectedResourceIDs.contains(resource.id) {
@@ -338,7 +312,7 @@ public struct BrowserResourceInspectorSheet: View {
                         }
                     },
                     onPreview: {
-                        previewItem = MediaPreviewItem(url: resource.url, title: resource.title)
+                        viewModel.playInlineMedia(resource.url, title: resource.title)
                     }
                 )
             }
@@ -489,6 +463,8 @@ public struct BrowserResourceInspectorSheet: View {
 public struct ResourceRowView: View {
     public let resource: WebpageResource
     public let candidate: BrowserMediaCandidate?
+    public let qualitySummary: String?
+    public let variantItem: HLSVariantStreamItem?
     public let isSelected: Bool
     public let onToggleSelect: () -> Void
     public let onDownload: () -> Void
@@ -497,6 +473,8 @@ public struct ResourceRowView: View {
     public init(
         resource: WebpageResource,
         candidate: BrowserMediaCandidate? = nil,
+        qualitySummary: String? = nil,
+        variantItem: HLSVariantStreamItem? = nil,
         isSelected: Bool,
         onToggleSelect: @escaping () -> Void,
         onDownload: @escaping () -> Void,
@@ -504,6 +482,8 @@ public struct ResourceRowView: View {
     ) {
         self.resource = resource
         self.candidate = candidate
+        self.qualitySummary = qualitySummary
+        self.variantItem = variantItem
         self.isSelected = isSelected
         self.onToggleSelect = onToggleSelect
         self.onDownload = onDownload
@@ -555,6 +535,96 @@ public struct ResourceRowView: View {
                     .font(.caption2)
                     .foregroundColor(.secondary)
                     .lineLimit(1)
+
+                if let variant = variantItem {
+                    // Quality, Audio, Subtitle & Codec Badges (1DM style)
+                    HStack(spacing: 5) {
+                        // Quality badge
+                        Text(variant.qualityLabel)
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Color.blue)
+                            .cornerRadius(4)
+
+                        // Resolution badge
+                        if let resText = variant.resolutionText {
+                            Text(resText)
+                                .font(.system(size: 10, weight: .medium))
+                                .foregroundColor(.secondary)
+                                .padding(.horizontal, 5)
+                                .padding(.vertical, 2)
+                                #if canImport(UIKit)
+                                .background(Color(UIColor.tertiarySystemBackground))
+                                #else
+                                .background(Color.secondary.opacity(0.15))
+                                #endif
+                                .cornerRadius(4)
+                        }
+
+                        // Bitrate badge
+                        Text(variant.bitrateText)
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundColor(.secondary)
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 2)
+                            #if canImport(UIKit)
+                            .background(Color(UIColor.tertiarySystemBackground))
+                            #else
+                            .background(Color.secondary.opacity(0.15))
+                            #endif
+                            .cornerRadius(4)
+
+                        // Audio badge
+                        HStack(spacing: 2) {
+                            Image(systemName: variant.hasAudio ? "speaker.wave.2.fill" : "speaker.slash")
+                                .font(.system(size: 8))
+                            Text(variant.hasAudio ? "Audio" : "No Audio")
+                                .font(.system(size: 10, weight: .semibold))
+                        }
+                        .foregroundColor(variant.hasAudio ? .green : .secondary)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 2)
+                        .background(variant.hasAudio ? Color.green.opacity(0.15) : Color.secondary.opacity(0.15))
+                        .cornerRadius(4)
+
+                        // Subtitle badge
+                        if variant.hasSubtitles {
+                            HStack(spacing: 2) {
+                                Image(systemName: "captions.bubble.fill")
+                                    .font(.system(size: 8))
+                                Text("Subtitles")
+                                    .font(.system(size: 10, weight: .semibold))
+                            }
+                            .foregroundColor(.purple)
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 2)
+                            .background(Color.purple.opacity(0.15))
+                            .cornerRadius(4)
+                        }
+
+                        // Codec badge
+                        if let vCodec = variant.videoCodec {
+                            Text(vCodec)
+                                .font(.system(size: 10, weight: .medium))
+                                .foregroundColor(.secondary)
+                                .padding(.horizontal, 5)
+                                .padding(.vertical, 2)
+                                #if canImport(UIKit)
+                                .background(Color(UIColor.tertiarySystemBackground))
+                                #else
+                                .background(Color.secondary.opacity(0.15))
+                                #endif
+                                .cornerRadius(4)
+                        }
+                    }
+                } else if let qualitySummary {
+                    Text("Available qualities: \(qualitySummary)")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+                }
 
                 // URL & Type Badges
                 HStack(spacing: 6) {

@@ -2229,6 +2229,387 @@ final class StreamingDownloadOrchestratorTests: XCTestCase {
 
         XCTAssertFalse(FileManager.default.fileExists(atPath: destinationVTT.path))
     }
+
+    // MARK: - Phase 1 Item 3: Capability-Aware HLS Variant Selection Tests
+
+    func testHighestQualitySampleAESFallsBackToClearVariant() async throws {
+        let masterURL = URL(string: "https://video.example/master.m3u8")!
+        let highURL = URL(string: "https://video.example/1080p.m3u8")!
+        let lowURL = URL(string: "https://video.example/720p.m3u8")!
+
+        let masterPlaylist = """
+        #EXTM3U
+        #EXT-X-STREAM-INF:BANDWIDTH=5000000,RESOLUTION=1920x1080
+        1080p.m3u8
+        #EXT-X-STREAM-INF:BANDWIDTH=2500000,RESOLUTION=1280x720
+        720p.m3u8
+        """
+
+        let highPlaylist = """
+        #EXTM3U
+        #EXT-X-PLAYLIST-TYPE:VOD
+        #EXT-X-KEY:METHOD=SAMPLE-AES,URI="key.bin"
+        #EXTINF:2.0,
+        segment-1080.ts
+        #EXT-X-ENDLIST
+        """
+
+        let lowPlaylist = """
+        #EXTM3U
+        #EXT-X-PLAYLIST-TYPE:VOD
+        #EXTINF:2.0,
+        segment-720.ts
+        #EXT-X-ENDLIST
+        """
+
+        let loader = VariantManifestLoader(responses: [
+            masterURL: StreamingManifestResponse(data: Data(masterPlaylist.utf8), finalURL: masterURL, mimeType: "application/vnd.apple.mpegurl"),
+            highURL: StreamingManifestResponse(data: Data(highPlaylist.utf8), finalURL: highURL, mimeType: "application/vnd.apple.mpegurl"),
+            lowURL: StreamingManifestResponse(data: Data(lowPlaylist.utf8), finalURL: lowURL, mimeType: "application/vnd.apple.mpegurl")
+        ])
+
+        let orchestrator = StreamingDownloadOrchestrator(manifestLoader: loader, segmentExecutor: RecordingSegmentExecutor())
+        let candidate = try StreamingManifestCandidate(url: masterURL)
+        let proposal = try await orchestrator.prepare(candidate: candidate)
+
+        // Verifies fallback bypassed unsupported 1080p SAMPLE-AES and selected clear 720p
+        XCTAssertEqual(proposal.resources.count, 1)
+        XCTAssertEqual(proposal.resources.first?.url, URL(string: "https://video.example/segment-720.ts")!)
+    }
+
+    func testHighestQualityUnsupportedFallsBackToAES128Variant() async throws {
+        let masterURL = URL(string: "https://video.example/master.m3u8")!
+        let highURL = URL(string: "https://video.example/1080p.m3u8")!
+        let lowURL = URL(string: "https://video.example/720p.m3u8")!
+
+        let masterPlaylist = """
+        #EXTM3U
+        #EXT-X-STREAM-INF:BANDWIDTH=5000000,RESOLUTION=1920x1080
+        1080p.m3u8
+        #EXT-X-STREAM-INF:BANDWIDTH=2500000,RESOLUTION=1280x720
+        720p.m3u8
+        """
+
+        let highPlaylist = """
+        #EXTM3U
+        #EXT-X-PLAYLIST-TYPE:VOD
+        #EXT-X-KEY:METHOD=SAMPLE-AES,URI="key.bin"
+        #EXTINF:2.0,
+        segment-1080.ts
+        #EXT-X-ENDLIST
+        """
+
+        let lowPlaylist = """
+        #EXTM3U
+        #EXT-X-PLAYLIST-TYPE:VOD
+        #EXT-X-KEY:METHOD=AES-128,URI="key-720.bin"
+        #EXTINF:2.0,
+        segment-720.ts
+        #EXT-X-ENDLIST
+        """
+
+        let loader = VariantManifestLoader(responses: [
+            masterURL: StreamingManifestResponse(data: Data(masterPlaylist.utf8), finalURL: masterURL, mimeType: "application/vnd.apple.mpegurl"),
+            highURL: StreamingManifestResponse(data: Data(highPlaylist.utf8), finalURL: highURL, mimeType: "application/vnd.apple.mpegurl"),
+            lowURL: StreamingManifestResponse(data: Data(lowPlaylist.utf8), finalURL: lowURL, mimeType: "application/vnd.apple.mpegurl")
+        ])
+
+        let orchestrator = StreamingDownloadOrchestrator(manifestLoader: loader, segmentExecutor: RecordingSegmentExecutor())
+        let candidate = try StreamingManifestCandidate(url: masterURL)
+        let proposal = try await orchestrator.prepare(candidate: candidate)
+
+        // Verifies fallback selected supported AES-128 720p with its key and segment
+        XCTAssertEqual(proposal.resources.count, 2)
+        XCTAssertEqual(proposal.resources[0].url, URL(string: "https://video.example/key-720.bin")!)
+        XCTAssertEqual(proposal.resources[1].url, URL(string: "https://video.example/segment-720.ts")!)
+    }
+
+    func testAllVariantsUnsupportedThrowsExplicitUnsupportedEncryptionError() async throws {
+        let masterURL = URL(string: "https://video.example/master.m3u8")!
+        let highURL = URL(string: "https://video.example/1080p.m3u8")!
+        let lowURL = URL(string: "https://video.example/720p.m3u8")!
+
+        let masterPlaylist = """
+        #EXTM3U
+        #EXT-X-STREAM-INF:BANDWIDTH=5000000,RESOLUTION=1920x1080
+        1080p.m3u8
+        #EXT-X-STREAM-INF:BANDWIDTH=2500000,RESOLUTION=1280x720
+        720p.m3u8
+        """
+
+        let highPlaylist = """
+        #EXTM3U
+        #EXT-X-PLAYLIST-TYPE:VOD
+        #EXT-X-KEY:METHOD=SAMPLE-AES,URI="key1.bin"
+        #EXTINF:2.0,
+        segment-1080.ts
+        #EXT-X-ENDLIST
+        """
+
+        let lowPlaylist = """
+        #EXTM3U
+        #EXT-X-PLAYLIST-TYPE:VOD
+        #EXT-X-KEY:METHOD=SAMPLE-AES,URI="key2.bin"
+        #EXTINF:2.0,
+        segment-720.ts
+        #EXT-X-ENDLIST
+        """
+
+        let loader = VariantManifestLoader(responses: [
+            masterURL: StreamingManifestResponse(data: Data(masterPlaylist.utf8), finalURL: masterURL, mimeType: "application/vnd.apple.mpegurl"),
+            highURL: StreamingManifestResponse(data: Data(highPlaylist.utf8), finalURL: highURL, mimeType: "application/vnd.apple.mpegurl"),
+            lowURL: StreamingManifestResponse(data: Data(lowPlaylist.utf8), finalURL: lowURL, mimeType: "application/vnd.apple.mpegurl")
+        ])
+
+        let orchestrator = StreamingDownloadOrchestrator(manifestLoader: loader, segmentExecutor: RecordingSegmentExecutor())
+        let candidate = try StreamingManifestCandidate(url: masterURL)
+
+        do {
+            _ = try await orchestrator.prepare(candidate: candidate)
+            XCTFail("Expected unsupported encryption error when all variants use unsupported encryption")
+        } catch let error as StreamingDownloadOrchestratorError {
+            XCTAssertEqual(error, .unsupportedEncryption)
+        }
+    }
+
+    func testHighestQualityHTTP403PropagatesAuthenticationErrorWithoutDowngrade() async throws {
+        let masterURL = URL(string: "https://video.example/master.m3u8")!
+        let highURL = URL(string: "https://video.example/1080p.m3u8")!
+        let lowURL = URL(string: "https://video.example/720p.m3u8")!
+
+        let masterPlaylist = """
+        #EXTM3U
+        #EXT-X-STREAM-INF:BANDWIDTH=5000000,RESOLUTION=1920x1080
+        1080p.m3u8
+        #EXT-X-STREAM-INF:BANDWIDTH=2500000,RESOLUTION=1280x720
+        720p.m3u8
+        """
+
+        let lowPlaylist = """
+        #EXTM3U
+        #EXT-X-PLAYLIST-TYPE:VOD
+        #EXTINF:2.0,
+        segment-720.ts
+        #EXT-X-ENDLIST
+        """
+
+        let loader = VariantManifestLoader(
+            responses: [
+                masterURL: StreamingManifestResponse(data: Data(masterPlaylist.utf8), finalURL: masterURL, mimeType: "application/vnd.apple.mpegurl"),
+                lowURL: StreamingManifestResponse(data: Data(lowPlaylist.utf8), finalURL: lowURL, mimeType: "application/vnd.apple.mpegurl")
+            ],
+            errors: [
+                highURL: StreamingManifestLoadError.authenticationRequired
+            ]
+        )
+
+        let orchestrator = StreamingDownloadOrchestrator(manifestLoader: loader, segmentExecutor: RecordingSegmentExecutor())
+        let candidate = try StreamingManifestCandidate(url: masterURL)
+
+        do {
+            _ = try await orchestrator.prepare(candidate: candidate)
+            XCTFail("Expected HTTP 401/403 to propagate immediately without downgrade")
+        } catch let error as StreamingManifestLoadError {
+            XCTAssertEqual(error, .authenticationRequired)
+        }
+
+        // Assert 720p was NEVER requested because auth error must immediately halt
+        let requested = await loader.requestedURLs
+        XCTAssertTrue(requested.contains(highURL))
+        XCTAssertFalse(requested.contains(lowURL))
+    }
+
+    func testUserBandwidthPreferenceExcludesHighestVariant() async throws {
+        let masterURL = URL(string: "https://video.example/master.m3u8")!
+        let highURL = URL(string: "https://video.example/1080p.m3u8")!
+        let lowURL = URL(string: "https://video.example/720p.m3u8")!
+
+        let masterPlaylist = """
+        #EXTM3U
+        #EXT-X-STREAM-INF:BANDWIDTH=5000000,RESOLUTION=1920x1080
+        1080p.m3u8
+        #EXT-X-STREAM-INF:BANDWIDTH=2000000,RESOLUTION=1280x720
+        720p.m3u8
+        """
+
+        let highPlaylist = """
+        #EXTM3U
+        #EXT-X-PLAYLIST-TYPE:VOD
+        #EXTINF:2.0,
+        segment-1080.ts
+        #EXT-X-ENDLIST
+        """
+
+        let lowPlaylist = """
+        #EXTM3U
+        #EXT-X-PLAYLIST-TYPE:VOD
+        #EXTINF:2.0,
+        segment-720.ts
+        #EXT-X-ENDLIST
+        """
+
+        let loader = VariantManifestLoader(responses: [
+            masterURL: StreamingManifestResponse(data: Data(masterPlaylist.utf8), finalURL: masterURL, mimeType: "application/vnd.apple.mpegurl"),
+            highURL: StreamingManifestResponse(data: Data(highPlaylist.utf8), finalURL: highURL, mimeType: "application/vnd.apple.mpegurl"),
+            lowURL: StreamingManifestResponse(data: Data(lowPlaylist.utf8), finalURL: lowURL, mimeType: "application/vnd.apple.mpegurl")
+        ])
+
+        let orchestrator = StreamingDownloadOrchestrator(manifestLoader: loader, segmentExecutor: RecordingSegmentExecutor())
+        // User prefers maximum bandwidth of 3,000,000 bps
+        let candidate = try StreamingManifestCandidate(
+            url: masterURL,
+            hlsVariantPreferences: HLSVariantSelectionPreferences(maximumBandwidth: 3_000_000)
+        )
+        let proposal = try await orchestrator.prepare(candidate: candidate)
+
+        // Verifies 720p was selected directly matching user preference
+        XCTAssertEqual(proposal.resources.first?.url, URL(string: "https://video.example/segment-720.ts")!)
+        let requested = await loader.requestedURLs
+        XCTAssertFalse(requested.contains(highURL))
+        XCTAssertTrue(requested.contains(lowURL))
+    }
+
+    func testCancellationDuringVariantFetchStopsImmediately() async throws {
+        let masterURL = URL(string: "https://video.example/master.m3u8")!
+        let highURL = URL(string: "https://video.example/1080p.m3u8")!
+        let lowURL = URL(string: "https://video.example/720p.m3u8")!
+
+        let masterPlaylist = """
+        #EXTM3U
+        #EXT-X-STREAM-INF:BANDWIDTH=5000000,RESOLUTION=1920x1080
+        1080p.m3u8
+        #EXT-X-STREAM-INF:BANDWIDTH=2000000,RESOLUTION=1280x720
+        720p.m3u8
+        """
+
+        let lowPlaylist = """
+        #EXTM3U
+        #EXT-X-PLAYLIST-TYPE:VOD
+        #EXTINF:2.0,
+        segment-720.ts
+        #EXT-X-ENDLIST
+        """
+
+        let loader = VariantManifestLoader(
+            responses: [
+                masterURL: StreamingManifestResponse(data: Data(masterPlaylist.utf8), finalURL: masterURL, mimeType: "application/vnd.apple.mpegurl"),
+                lowURL: StreamingManifestResponse(data: Data(lowPlaylist.utf8), finalURL: lowURL, mimeType: "application/vnd.apple.mpegurl")
+            ],
+            errors: [
+                highURL: CancellationError()
+            ]
+        )
+
+        let orchestrator = StreamingDownloadOrchestrator(manifestLoader: loader, segmentExecutor: RecordingSegmentExecutor())
+        let candidate = try StreamingManifestCandidate(url: masterURL)
+
+        do {
+            _ = try await orchestrator.prepare(candidate: candidate)
+            XCTFail("Expected cancellation to stop immediately")
+        } catch is CancellationError {
+            // Expected
+        }
+
+        let requested = await loader.requestedURLs
+        XCTAssertTrue(requested.contains(highURL))
+        XCTAssertFalse(requested.contains(lowURL))
+    }
+
+    func testSignedQueryParametersPreservedOnChildVariant() async throws {
+        let masterURL = URL(string: "https://video.example/master.m3u8?token=secretSigned123")!
+        let childURLWithQuery = URL(string: "https://video.example/child.m3u8?token=secretSigned123")!
+
+        let masterPlaylist = """
+        #EXTM3U
+        #EXT-X-STREAM-INF:BANDWIDTH=3000000,RESOLUTION=1280x720
+        child.m3u8
+        """
+
+        let childPlaylist = """
+        #EXTM3U
+        #EXT-X-PLAYLIST-TYPE:VOD
+        #EXTINF:2.0,
+        segment.ts
+        #EXT-X-ENDLIST
+        """
+
+        let loader = VariantManifestLoader(responses: [
+            masterURL: StreamingManifestResponse(data: Data(masterPlaylist.utf8), finalURL: masterURL, mimeType: "application/vnd.apple.mpegurl"),
+            childURLWithQuery: StreamingManifestResponse(data: Data(childPlaylist.utf8), finalURL: childURLWithQuery, mimeType: "application/vnd.apple.mpegurl")
+        ])
+
+        let orchestrator = StreamingDownloadOrchestrator(manifestLoader: loader, segmentExecutor: RecordingSegmentExecutor())
+        let candidate = try StreamingManifestCandidate(url: masterURL)
+        let proposal = try await orchestrator.prepare(candidate: candidate)
+
+        XCTAssertEqual(proposal.resources.count, 1)
+        let requested = await loader.requestedURLs
+        XCTAssertTrue(requested.contains(childURLWithQuery))
+    }
+
+    func testMultipleMasterPlaylistLevelsAppliesCompatibilitySelectionAtEachLevel() async throws {
+        let rootURL = URL(string: "https://video.example/root.m3u8")!
+        let subMaster1URL = URL(string: "https://video.example/sub1.m3u8")!
+        let subMaster2URL = URL(string: "https://video.example/sub2.m3u8")!
+        let sub1MediaURL = URL(string: "https://video.example/sub1_media.m3u8")!
+        let sub2MediaURL = URL(string: "https://video.example/sub2_media.m3u8")!
+
+        // Root master playlist has 2 variant streams that point to sub-masters
+        let rootPlaylist = """
+        #EXTM3U
+        #EXT-X-STREAM-INF:BANDWIDTH=8000000
+        sub1.m3u8
+        #EXT-X-STREAM-INF:BANDWIDTH=3000000
+        sub2.m3u8
+        """
+
+        // Sub-master 1 points to SAMPLE-AES (unsupported)
+        let sub1Playlist = """
+        #EXTM3U
+        #EXT-X-STREAM-INF:BANDWIDTH=8000000,RESOLUTION=1920x1080
+        sub1_media.m3u8
+        """
+
+        let sub1MediaPlaylist = """
+        #EXTM3U
+        #EXT-X-PLAYLIST-TYPE:VOD
+        #EXT-X-KEY:METHOD=SAMPLE-AES,URI="key.bin"
+        #EXTINF:2.0,
+        sub1_seg.ts
+        #EXT-X-ENDLIST
+        """
+
+        // Sub-master 2 points to Clear (supported)
+        let sub2Playlist = """
+        #EXTM3U
+        #EXT-X-STREAM-INF:BANDWIDTH=3000000,RESOLUTION=1280x720
+        sub2_media.m3u8
+        """
+
+        let sub2MediaPlaylist = """
+        #EXTM3U
+        #EXT-X-PLAYLIST-TYPE:VOD
+        #EXTINF:2.0,
+        sub2_seg.ts
+        #EXT-X-ENDLIST
+        """
+
+        let loader = VariantManifestLoader(responses: [
+            rootURL: StreamingManifestResponse(data: Data(rootPlaylist.utf8), finalURL: rootURL, mimeType: "application/vnd.apple.mpegurl"),
+            subMaster1URL: StreamingManifestResponse(data: Data(sub1Playlist.utf8), finalURL: subMaster1URL, mimeType: "application/vnd.apple.mpegurl"),
+            sub1MediaURL: StreamingManifestResponse(data: Data(sub1MediaPlaylist.utf8), finalURL: sub1MediaURL, mimeType: "application/vnd.apple.mpegurl"),
+            subMaster2URL: StreamingManifestResponse(data: Data(sub2Playlist.utf8), finalURL: subMaster2URL, mimeType: "application/vnd.apple.mpegurl"),
+            sub2MediaURL: StreamingManifestResponse(data: Data(sub2MediaPlaylist.utf8), finalURL: sub2MediaURL, mimeType: "application/vnd.apple.mpegurl")
+        ])
+
+        let orchestrator = StreamingDownloadOrchestrator(manifestLoader: loader, segmentExecutor: RecordingSegmentExecutor())
+        let candidate = try StreamingManifestCandidate(url: rootURL)
+        let proposal = try await orchestrator.prepare(candidate: candidate)
+
+        // Verifies Sub-master 1 (SAMPLE-AES) was rejected and Sub-master 2 (Clear) was selected
+        XCTAssertEqual(proposal.resources.count, 1)
+        XCTAssertEqual(proposal.resources.first?.url, URL(string: "https://video.example/sub2_seg.ts")!)
+    }
 }
 
 private final class DummyAuthSender: NSObject, URLAuthenticationChallengeSender {
@@ -2322,10 +2703,16 @@ private actor RecordingSegmentExecutor: StreamingSegmentExecutor {
 
 private actor VariantManifestLoader: StreamingManifestLoader {
     let responses: [URL: StreamingManifestResponse]
+    let errors: [URL: Error]
     private(set) var loadCount = 0
+    private(set) var requestedURLs: [URL] = []
 
-    init(responses: [URL: StreamingManifestResponse]) {
+    init(
+        responses: [URL: StreamingManifestResponse] = [:],
+        errors: [URL: Error] = [:]
+    ) {
         self.responses = responses
+        self.errors = errors
     }
 
     func load(
@@ -2334,6 +2721,10 @@ private actor VariantManifestLoader: StreamingManifestLoader {
         limits: ManifestParsingLimits
     ) async throws -> StreamingManifestResponse {
         loadCount += 1
+        requestedURLs.append(candidate.url)
+        if let error = errors[candidate.url] {
+            throw error
+        }
         guard let response = responses[candidate.url] else {
             throw StreamingManifestLoadError.expiredOrMissing
         }

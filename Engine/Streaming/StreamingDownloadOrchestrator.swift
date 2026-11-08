@@ -56,7 +56,7 @@ public struct StreamingManifestCandidate: Sendable, Equatable {
             mimeType: resource.mimeType,
             browserRequestContext: resource.requestContext,
             browserSessionSnapshot: browserSessionSnapshot,
-            hlsVariantPreferences: HLSVariantSelectionPreferences(),
+            hlsVariantPreferences: resource.hlsVariantPreferences ?? HLSVariantSelectionPreferences(),
             cachedManifestText: resource.manifestText
         )
     }
@@ -1428,109 +1428,31 @@ public actor StreamingDownloadOrchestrator {
         return proposal
     }
 
-    private func parseManifest(
-        data: Data,
-        finalURL: URL,
-        mimeType: String?,
+    private struct ResolvedHLSSelection {
+        let mediaPlaylist: HLSManifest
+        let mediaURL: URL
+        let selectedVariant: HLSVariant?
+        let selectedVariantBandwidth: Int?
+        let videoPlan: HLSVODTransferPlan
+        let audioPlan: [HLSPlannedResource]?
+        let selectedSubtitleRendition: HLSRendition?
+    }
+
+    private func resolveCompatibleHLSVariant(
+        manifest: HLSManifest,
+        baseURL: URL,
         candidate: StreamingManifestCandidate,
-        classification: StreamingManifestClassification
-    ) async throws -> StreamingTransferManifest {
-        switch classification.kind {
-        case .hls:
-            PipelineLogger.shared.log("[HLS Pipeline] 1. Manifest fetched from \(finalURL.absoluteString) (\(data.count) bytes). Parsing with HLSManifestParser...")
-            var parsed = try HLSManifestParser.parse(
-                data,
-                baseURL: finalURL,
-                limits: parsingLimits
-            )
-            PipelineLogger.shared.log("[HLS Pipeline] 2. HLSManifestParser initial parse completed: playlistType=\(parsed.playlistType), variants=\(parsed.variants.count), segments=\(parsed.segments.count)")
-
-            var selectedAudioRendition: HLSRendition?
-            var selectedSubtitleRendition: HLSRendition?
-            var selectedVariantBandwidth: Int? = nil
-            var currentURL = finalURL
-            var resolutionDepth = 0
-            while parsed.playlistType == .master && resolutionDepth < 5 {
-                resolutionDepth += 1
-                let variant: HLSVariant
-                do {
-                    variant = try HLSVariantSelector.select(
-                        from: parsed,
-                        preferences: candidate.hlsVariantPreferences
-                    )
-                    selectedVariantBandwidth = variant.bandwidth
-                    try HLSVariantSelector.validateAudioLayout(
-                        selectedVariant: variant,
-                        master: parsed
-                    )
-                    if selectedAudioRendition == nil {
-                        selectedAudioRendition = HLSVariantSelector.selectAudioRendition(
-                            for: variant,
-                            master: parsed
-                        )
-                    }
-                    if selectedSubtitleRendition == nil {
-                        if let subGroup = variant.subtitlesGroup {
-                            selectedSubtitleRendition = parsed.renditions.first {
-                                $0.type.uppercased() == "SUBTITLES" && $0.groupID == subGroup && $0.uri != nil
-                            }
-                        }
-                        if selectedSubtitleRendition == nil {
-                            selectedSubtitleRendition = parsed.renditions.first {
-                                $0.type.uppercased() == "SUBTITLES" && $0.uri != nil
-                            }
-                        }
-                    }
-                } catch let error as HLSVariantSelectionError {
-                    PipelineLogger.shared.log("[HLS Pipeline] Error during variant selection: \(error.localizedDescription)")
-                    throw StreamingDownloadOrchestratorError.hlsVariantSelectionFailed(error)
-                }
-                PipelineLogger.shared.log("[HLS Pipeline] Master playlist detected. Selected highest quality variant [depth=\(resolutionDepth)]: \(variant.uri.absoluteString), bandwidth=\(variant.bandwidth)")
-                let variantURI: URL
-                if (variant.uri.query == nil || variant.uri.query?.isEmpty == true),
-                   let parentQuery = currentURL.query ?? candidate.url.query, !parentQuery.isEmpty,
-                   var components = URLComponents(url: variant.uri, resolvingAgainstBaseURL: false) {
-                    components.query = parentQuery
-                    variantURI = components.url ?? variant.uri
-                } else {
-                    variantURI = variant.uri
-                }
-                let variantCachedText = cachedManifestTextsByURL[variantURI.absoluteString] ?? cachedManifestTextsByURL[variantURI.absoluteString.lowercased()]
-                let variantCandidate = try StreamingManifestCandidate(
-                    url: variantURI,
-                    mimeType: "application/vnd.apple.mpegurl",
-                    browserRequestContext: candidate.browserRequestContext,
-                    browserSessionSnapshot: candidate.browserSessionSnapshot,
-                    hlsVariantPreferences: candidate.hlsVariantPreferences,
-                    cachedManifestText: variantCachedText
-                )
-                let subResponse = try await loadManifestResponse(
-                    candidate: variantCandidate,
-                    headers: manifestHeaders(for: variantCandidate)
-                )
-                currentURL = subResponse.finalURL
-                do {
-                    parsed = try HLSManifestParser.parse(
-                        subResponse.data,
-                        baseURL: currentURL,
-                        limits: parsingLimits
-                    )
-                } catch let error as ManifestParserError {
-                    PipelineLogger.shared.log("[HLS Pipeline] Child variant playlist failed to parse: \(error.localizedDescription)")
-                    throw StreamingDownloadOrchestratorError.manifestParseFailed(error)
-                }
-                PipelineLogger.shared.log("[HLS Pipeline] 2. Sub-playlist parsed: playlistType=\(parsed.playlistType), segments=\(parsed.segments.count)")
-            }
-            guard parsed.playlistType == .media else {
-                PipelineLogger.shared.log("[HLS Pipeline] Error: Expected media playlist with segments, but got: \(parsed.playlistType)")
-                throw StreamingDownloadOrchestratorError.playlistRequiresVariantSelection
-            }
-            PipelineLogger.shared.log("[HLS Pipeline] 2. Final media playlist confirmed. Segments found: \(parsed.segments.count)")
-
+        depth: Int = 0
+    ) async throws -> ResolvedHLSSelection {
+        guard depth < 5 else {
+            throw StreamingDownloadOrchestratorError.playlistRequiresVariantSelection
+        }
+        guard manifest.playlistType == .master else {
+            // Already a media playlist: validate directly
             let videoPlan: HLSVODTransferPlan
             do {
                 videoPlan = try HLSTransferPlanner.makeVODPlan(
-                    from: parsed,
+                    from: manifest,
                     browserRequestContext: candidate.browserRequestContext
                 )
             } catch let error as HLSVODTransferPlanError {
@@ -1539,13 +1461,202 @@ public actor StreamingDownloadOrchestrator {
                 }
                 throw StreamingDownloadOrchestratorError.hlsPlanningFailed(error)
             }
-            PipelineLogger.shared.log("[HLS Pipeline] 3. HLSTransferPlanner generated video transfer plan with \(videoPlan.resources.count) segments (estimated bytes: \(videoPlan.estimatedTransferBytes ?? 0)).")
-            let audioPlan: [HLSPlannedResource]?
+            return ResolvedHLSSelection(
+                mediaPlaylist: manifest,
+                mediaURL: baseURL,
+                selectedVariant: nil,
+                selectedVariantBandwidth: nil,
+                videoPlan: videoPlan,
+                audioPlan: nil,
+                selectedSubtitleRendition: nil
+            )
+        }
+
+        let rankedVariants: [HLSVariant]
+        do {
+            rankedVariants = try HLSVariantSelector.rank(
+                from: manifest,
+                preferences: candidate.hlsVariantPreferences
+            )
+        } catch let error as HLSVariantSelectionError {
+            PipelineLogger.shared.log("[HLS Pipeline] Error during variant ranking: \(error.localizedDescription)")
+            throw StreamingDownloadOrchestratorError.hlsVariantSelectionFailed(error)
+        }
+
+        PipelineLogger.shared.log("[HLS Pipeline] Master playlist detected [depth=\(depth)]. Discovered \(manifest.variants.count) variants; \(rankedVariants.count) eligible variants ranked by preference.")
+        BrowserDiagnosticLogger.shared.log(
+            category: .policy,
+            message: "HLS variants discovered and ranked",
+            url: baseURL,
+            details: [
+                "discoveredVariants": "\(manifest.variants.count)",
+                "rankedVariants": "\(rankedVariants.count)",
+                "depth": "\(depth)"
+            ]
+        )
+
+        var sawUnsupportedEncryption = false
+        var lastPlanningError: Error? = nil
+
+        for (index, variant) in rankedVariants.enumerated() {
+            guard !Task.isCancelled else {
+                throw CancellationError()
+            }
+            let variantResolution = variant.resolution.map { "\($0.width)x\($0.height)" } ?? "unknown"
+            let variantDesc = "Variant #\(index + 1)/\(rankedVariants.count) [bw=\(variant.bandwidth), res=\(variantResolution), codecs=\(variant.codecs ?? "none")]"
+            PipelineLogger.shared.log("[HLS Pipeline] Evaluating \(variantDesc) at \(variant.uri.absoluteString)...")
+
+            do {
+                try HLSVariantSelector.validateAudioLayout(
+                    selectedVariant: variant,
+                    master: manifest
+                )
+            } catch {
+                PipelineLogger.shared.log("[HLS Pipeline] Audio layout validation failed for \(variantDesc): \(error.localizedDescription)")
+                continue
+            }
+
+            let selectedAudioRendition = HLSVariantSelector.selectAudioRendition(
+                for: variant,
+                master: manifest
+            )
+            var selectedSubtitleRendition: HLSRendition? = nil
+            if let subGroup = variant.subtitlesGroup {
+                selectedSubtitleRendition = manifest.renditions.first {
+                    $0.type.uppercased() == "SUBTITLES" && $0.groupID == subGroup && $0.uri != nil
+                }
+            }
+            if selectedSubtitleRendition == nil {
+                selectedSubtitleRendition = manifest.renditions.first {
+                    $0.type.uppercased() == "SUBTITLES" && $0.uri != nil
+                }
+            }
+
+            let variantURI: URL
+            if (variant.uri.query == nil || variant.uri.query?.isEmpty == true),
+               let parentQuery = baseURL.query ?? candidate.url.query, !parentQuery.isEmpty,
+               var components = URLComponents(url: variant.uri, resolvingAgainstBaseURL: false) {
+                components.query = parentQuery
+                variantURI = components.url ?? variant.uri
+            } else {
+                variantURI = variant.uri
+            }
+
+            let variantCachedText = cachedManifestTextsByURL[variantURI.absoluteString] ?? cachedManifestTextsByURL[variantURI.absoluteString.lowercased()]
+            let variantCandidate = try StreamingManifestCandidate(
+                url: variantURI,
+                mimeType: "application/vnd.apple.mpegurl",
+                browserRequestContext: candidate.browserRequestContext,
+                browserSessionSnapshot: candidate.browserSessionSnapshot,
+                hlsVariantPreferences: candidate.hlsVariantPreferences,
+                cachedManifestText: variantCachedText
+            )
+
+            let subResponse: StreamingManifestResponse
+            do {
+                subResponse = try await loadManifestResponse(
+                    candidate: variantCandidate,
+                    headers: manifestHeaders(for: variantCandidate)
+                )
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch let error as StreamingManifestLoadError {
+                // Do not downgrade on HTTP 401/403 authentication, 404/410, or network load errors!
+                PipelineLogger.shared.log("[HLS Pipeline] Network/Auth error loading variant playlist: \(error.localizedDescription). Aborting without downgrade.")
+                throw error
+            } catch let error as URLError {
+                PipelineLogger.shared.log("[HLS Pipeline] URLError loading variant playlist: \(error.localizedDescription). Aborting without downgrade.")
+                throw error
+            } catch {
+                PipelineLogger.shared.log("[HLS Pipeline] Unexpected error loading variant playlist: \(error.localizedDescription). Aborting without downgrade.")
+                throw error
+            }
+
+            let parsedChild: HLSManifest
+            do {
+                parsedChild = try HLSManifestParser.parse(
+                    subResponse.data,
+                    baseURL: subResponse.finalURL,
+                    limits: parsingLimits
+                )
+            } catch let error as ManifestParserError {
+                PipelineLogger.shared.log("[HLS Pipeline] Child variant playlist failed to parse: \(error.localizedDescription). Aborting without downgrade.")
+                throw StreamingDownloadOrchestratorError.manifestParseFailed(error)
+            }
+
+            if parsedChild.playlistType == .master {
+                // Nested master playlist: recursively evaluate compatible variant
+                do {
+                    return try await resolveCompatibleHLSVariant(
+                        manifest: parsedChild,
+                        baseURL: subResponse.finalURL,
+                        candidate: variantCandidate,
+                        depth: depth + 1
+                    )
+                } catch StreamingDownloadOrchestratorError.unsupportedEncryption {
+                    sawUnsupportedEncryption = true
+                    PipelineLogger.shared.log("[HLS Pipeline] Nested master playlist rejected due to unsupported encryption. Trying next variant...")
+                    BrowserDiagnosticLogger.shared.log(
+                        category: .policy,
+                        message: "Nested HLS master playlist rejected due to unsupported encryption",
+                        url: variantURI,
+                        details: [
+                            "bandwidth": "\(variant.bandwidth)",
+                            "resolution": variantResolution,
+                            "decision": "rejected",
+                            "reason": "Unsupported encryption in nested master"
+                        ]
+                    )
+                    continue
+                } catch {
+                    throw error
+                }
+            }
+
+            guard parsedChild.playlistType == .media else {
+                PipelineLogger.shared.log("[HLS Pipeline] Expected media playlist for variant but got \(parsedChild.playlistType). Trying next variant...")
+                continue
+            }
+
+            // Evaluate download compatibility with HLSTransferPlanner
+            let videoPlan: HLSVODTransferPlan
+            do {
+                videoPlan = try HLSTransferPlanner.makeVODPlan(
+                    from: parsedChild,
+                    browserRequestContext: candidate.browserRequestContext
+                )
+            } catch let error as HLSVODTransferPlanError {
+                if case .unsupportedEncryption(let classification) = error {
+                    sawUnsupportedEncryption = true
+                    let reason = "Unsupported video encryption: \(classification.rawValue)"
+                    PipelineLogger.shared.log("[HLS Pipeline] \(variantDesc) rejected: \(reason). Trying next variant...")
+                    BrowserDiagnosticLogger.shared.log(
+                        category: .policy,
+                        message: "HLS variant rejected: \(reason)",
+                        url: variantURI,
+                        details: [
+                            "bandwidth": "\(variant.bandwidth)",
+                            "resolution": variantResolution,
+                            "encryption": classification.rawValue,
+                            "decision": "rejected",
+                            "reason": reason
+                        ]
+                    )
+                    continue
+                }
+                lastPlanningError = error
+                PipelineLogger.shared.log("[HLS Pipeline] \(variantDesc) planning failed: \(error.localizedDescription). Trying next variant...")
+                continue
+            }
+
+            // Evaluate audio rendition compatibility if present
+            var audioPlan: [HLSPlannedResource]? = nil
+            var audioFailedUnsupported = false
             if let audioURI = selectedAudioRendition?.uri {
-                PipelineLogger.shared.log("[HLS Pipeline] Separate audio rendition detected: \(audioURI.absoluteString). Fetching audio manifest...")
+                PipelineLogger.shared.log("[HLS Pipeline] Separate audio rendition detected for \(variantDesc): \(audioURI.absoluteString). Fetching audio manifest...")
                 let audioFinalURI: URL
                 if (audioURI.query == nil || audioURI.query?.isEmpty == true),
-                   let parentQuery = currentURL.query ?? candidate.url.query, !parentQuery.isEmpty,
+                   let parentQuery = subResponse.finalURL.query ?? candidate.url.query, !parentQuery.isEmpty,
                    var components = URLComponents(url: audioURI, resolvingAgainstBaseURL: false) {
                     components.query = parentQuery
                     audioFinalURI = components.url ?? audioURI
@@ -1559,10 +1670,22 @@ public actor StreamingDownloadOrchestrator {
                     browserSessionSnapshot: candidate.browserSessionSnapshot,
                     hlsVariantPreferences: candidate.hlsVariantPreferences
                 )
-                let audioResponse = try await loadManifestResponse(
-                    candidate: audioCandidate,
-                    headers: manifestHeaders(for: audioCandidate)
-                )
+                let audioResponse: StreamingManifestResponse
+                do {
+                    audioResponse = try await loadManifestResponse(
+                        candidate: audioCandidate,
+                        headers: manifestHeaders(for: audioCandidate)
+                    )
+                } catch is CancellationError {
+                    throw CancellationError()
+                } catch let error as StreamingManifestLoadError {
+                    throw error
+                } catch let error as URLError {
+                    throw error
+                } catch {
+                    throw error
+                }
+
                 let parsedAudio: HLSManifest
                 do {
                     parsedAudio = try HLSManifestParser.parse(
@@ -1571,59 +1694,139 @@ public actor StreamingDownloadOrchestrator {
                         limits: parsingLimits
                     )
                 } catch let error as ManifestParserError {
-                    PipelineLogger.shared.log("[HLS Pipeline] Child audio playlist failed to parse: \(error.localizedDescription)")
                     throw StreamingDownloadOrchestratorError.manifestParseFailed(error)
                 }
+
                 guard parsedAudio.playlistType == .media else {
-                    PipelineLogger.shared.log("[HLS Pipeline] Audio playlist did not resolve to media segments.")
-                    throw StreamingDownloadOrchestratorError.manifestNotRecognized
+                    PipelineLogger.shared.log("[HLS Pipeline] Separate audio playlist is not a media playlist. Trying next variant...")
+                    continue
                 }
-                let parsedAudioPlan: HLSVODTransferPlan
+
                 do {
-                    parsedAudioPlan = try HLSTransferPlanner.makeVODPlan(
+                    let parsedAudioPlan = try HLSTransferPlanner.makeVODPlan(
                         from: parsedAudio,
                         browserRequestContext: candidate.browserRequestContext
                     )
+                    audioPlan = parsedAudioPlan.resources
                 } catch let error as HLSVODTransferPlanError {
-                    if case .unsupportedEncryption = error {
-                        throw StreamingDownloadOrchestratorError.unsupportedEncryption
+                    if case .unsupportedEncryption(let classification) = error {
+                        sawUnsupportedEncryption = true
+                        audioFailedUnsupported = true
+                        let reason = "Unsupported audio encryption: \(classification.rawValue)"
+                        PipelineLogger.shared.log("[HLS Pipeline] \(variantDesc) rejected: \(reason). Trying next variant...")
+                        BrowserDiagnosticLogger.shared.log(
+                            category: .policy,
+                            message: "HLS variant rejected: \(reason)",
+                            url: variantURI,
+                            details: [
+                                "bandwidth": "\(variant.bandwidth)",
+                                "resolution": variantResolution,
+                                "encryption": classification.rawValue,
+                                "decision": "rejected",
+                                "reason": reason
+                            ]
+                        )
+                    } else {
+                        lastPlanningError = error
                     }
-                    throw StreamingDownloadOrchestratorError.hlsPlanningFailed(error)
                 }
-                audioPlan = parsedAudioPlan.resources
-                PipelineLogger.shared.log("[HLS Pipeline] Audio plan generated with \(parsedAudioPlan.resources.count) audio segments.")
-            } else {
-                audioPlan = nil
             }
+
+            if audioFailedUnsupported {
+                continue
+            }
+
+            // Both video (and separate audio, if present) are compatible!
+            let encryptionType = parsedChild.segments.first?.encryption?.classification.rawValue ?? "Clear"
+            PipelineLogger.shared.log("[HLS Pipeline] Successfully selected compatible \(variantDesc) [encryption=\(encryptionType)].")
+            BrowserDiagnosticLogger.shared.log(
+                category: .policy,
+                message: "HLS compatible variant selected",
+                url: variantURI,
+                details: [
+                    "bandwidth": "\(variant.bandwidth)",
+                    "resolution": variantResolution,
+                    "encryption": encryptionType,
+                    "decision": "accepted",
+                    "selectedVariant": variantURI.absoluteString
+                ]
+            )
+
+            return ResolvedHLSSelection(
+                mediaPlaylist: parsedChild,
+                mediaURL: subResponse.finalURL,
+                selectedVariant: variant,
+                selectedVariantBandwidth: variant.bandwidth,
+                videoPlan: videoPlan,
+                audioPlan: audioPlan,
+                selectedSubtitleRendition: selectedSubtitleRendition
+            )
+        }
+
+        if sawUnsupportedEncryption {
+            PipelineLogger.shared.log("[HLS Pipeline] All evaluated variants use unsupported encryption.")
+            throw StreamingDownloadOrchestratorError.unsupportedEncryption
+        }
+        if let planErr = lastPlanningError as? HLSVODTransferPlanError {
+            throw StreamingDownloadOrchestratorError.hlsPlanningFailed(planErr)
+        }
+        throw StreamingDownloadOrchestratorError.playlistRequiresVariantSelection
+    }
+
+    private func parseManifest(
+        data: Data,
+        finalURL: URL,
+        mimeType: String?,
+        candidate: StreamingManifestCandidate,
+        classification: StreamingManifestClassification
+    ) async throws -> StreamingTransferManifest {
+        switch classification.kind {
+        case .hls:
+            PipelineLogger.shared.log("[HLS Pipeline] 1. Manifest fetched from \(finalURL.absoluteString) (\(data.count) bytes). Parsing with HLSManifestParser...")
+            let initialParsed = try HLSManifestParser.parse(
+                data,
+                baseURL: finalURL,
+                limits: parsingLimits
+            )
+            PipelineLogger.shared.log("[HLS Pipeline] 2. HLSManifestParser initial parse completed: playlistType=\(initialParsed.playlistType), variants=\(initialParsed.variants.count), segments=\(initialParsed.segments.count)")
+
+            let resolved = try await resolveCompatibleHLSVariant(
+                manifest: initialParsed,
+                baseURL: finalURL,
+                candidate: candidate
+            )
+
             let totalEstimatedBytes: Int64?
-            if let videoBytes = videoPlan.estimatedTransferBytes {
-                let audioBytes = audioPlan?.reduce(Int64(0)) { $0 + ($1.byteRange?.length ?? 0) } ?? 0
+            if let videoBytes = resolved.videoPlan.estimatedTransferBytes {
+                let audioBytes = resolved.audioPlan?.reduce(Int64(0)) { $0 + ($1.byteRange?.length ?? 0) } ?? 0
                 totalEstimatedBytes = videoBytes + audioBytes
-            } else if let bw = selectedVariantBandwidth, bw > 0 {
-                let totalDuration = parsed.segments.reduce(0.0) { $0 + $1.duration }
-                let effectiveDuration = totalDuration > 0 ? totalDuration : (Double(parsed.segments.count) * 6.0)
+            } else if let bw = resolved.selectedVariantBandwidth, bw > 0 {
+                let totalDuration = resolved.mediaPlaylist.segments.reduce(0.0) { $0 + $1.duration }
+                let effectiveDuration = totalDuration > 0 ? totalDuration : (Double(resolved.mediaPlaylist.segments.count) * 6.0)
                 let videoBytes = Int64(Double(bw) / 8.0 * effectiveDuration)
-                let audioBytes = audioPlan?.reduce(Int64(0)) { $0 + ($1.byteRange?.length ?? 0) } ?? 0
+                let audioBytes = resolved.audioPlan?.reduce(Int64(0)) { $0 + ($1.byteRange?.length ?? 0) } ?? 0
                 totalEstimatedBytes = videoBytes + audioBytes
             } else {
                 totalEstimatedBytes = nil
             }
-            var resolvedSubtitleURL: URL? = selectedSubtitleRendition?.uri
+
+            var resolvedSubtitleURL: URL? = resolved.selectedSubtitleRendition?.uri
             if let subURI = resolvedSubtitleURL {
                 if (subURI.query == nil || subURI.query?.isEmpty == true),
-                   let parentQuery = currentURL.query ?? candidate.url.query, !parentQuery.isEmpty,
+                   let parentQuery = resolved.mediaURL.query ?? candidate.url.query, !parentQuery.isEmpty,
                    var components = URLComponents(url: subURI, resolvingAgainstBaseURL: false) {
                     components.query = parentQuery
                     resolvedSubtitleURL = components.url ?? subURI
                 }
                 PipelineLogger.shared.log("[HLS Pipeline] Subtitle stream detected: \(resolvedSubtitleURL?.absoluteString ?? "")")
             }
+
             let plan = HLSVODTransferPlan(
-                manifestURL: videoPlan.manifestURL,
-                resources: videoPlan.resources,
+                manifestURL: resolved.videoPlan.manifestURL,
+                resources: resolved.videoPlan.resources,
                 browserRequestContext: candidate.browserRequestContext,
                 estimatedTransferBytes: totalEstimatedBytes,
-                audioPlan: audioPlan,
+                audioPlan: resolved.audioPlan,
                 subtitleURL: resolvedSubtitleURL
             )
             return .hls(plan)

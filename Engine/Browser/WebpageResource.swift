@@ -39,6 +39,8 @@ public struct WebpageResource: Identifiable, Hashable, Sendable {
     public let requestContext: BrowserRequestContext?
     /// Raw manifest body text captured from in-page network discovery (XHR/Fetch hook).
     public let manifestText: String?
+    /// Optional variant selection preferences for multi-variant streaming manifests (e.g. 1080p, 720p).
+    public let hlsVariantPreferences: HLSVariantSelectionPreferences?
 
     /// Manifest candidates are intentionally kept outside the ordinary
     /// `isSupported` download path. They require planning and coordinator-
@@ -138,7 +140,8 @@ public struct WebpageResource: Identifiable, Hashable, Sendable {
         isSupported: Bool = true,
         unsupportedReason: String? = nil,
         requestContext: BrowserRequestContext? = nil,
-        manifestText: String? = nil
+        manifestText: String? = nil,
+        hlsVariantPreferences: HLSVariantSelectionPreferences? = nil
     ) {
         self.id = id
         self.url = url
@@ -151,6 +154,7 @@ public struct WebpageResource: Identifiable, Hashable, Sendable {
         self.unsupportedReason = unsupportedReason
         self.requestContext = requestContext
         self.manifestText = manifestText
+        self.hlsVariantPreferences = hlsVariantPreferences
     }
 }
 

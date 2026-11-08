@@ -1,7 +1,7 @@
 import Foundation
 
 /// Deterministic preferences for selecting one HLS master-playlist variant.
-public struct HLSVariantSelectionPreferences: Sendable, Equatable {
+public struct HLSVariantSelectionPreferences: Sendable, Equatable, Hashable {
     public let maximumBandwidth: Int?
     public let maximumWidth: Int?
     public let maximumHeight: Int?
@@ -38,10 +38,11 @@ public enum HLSVariantSelectionError: Error, LocalizedError, Sendable, Equatable
 }
 
 public enum HLSVariantSelector {
-    public static func select(
+    /// Returns all eligible variants matching the user preferences, ranked from highest to lowest quality.
+    public static func rank(
         from master: HLSManifest,
         preferences: HLSVariantSelectionPreferences = HLSVariantSelectionPreferences()
-    ) throws -> HLSVariant {
+    ) throws -> [HLSVariant] {
         guard master.playlistType == .master, !master.variants.isEmpty else {
             throw HLSVariantSelectionError.noVariants
         }
@@ -69,7 +70,7 @@ public enum HLSVariantSelector {
             throw HLSVariantSelectionError.noVariantMatchesPreferences
         }
 
-        let sorted = matching.sorted { lhs, rhs in
+        return matching.sorted { lhs, rhs in
             let lhsBandwidth = lhs.averageBandwidth ?? lhs.bandwidth
             let rhsBandwidth = rhs.averageBandwidth ?? rhs.bandwidth
             if lhsBandwidth != rhsBandwidth { return lhsBandwidth > rhsBandwidth }
@@ -78,7 +79,14 @@ public enum HLSVariantSelector {
             if lhsPixels != rhsPixels { return lhsPixels > rhsPixels }
             return lhs.uri.absoluteString < rhs.uri.absoluteString
         }
-        guard let selected = sorted.first else {
+    }
+
+    public static func select(
+        from master: HLSManifest,
+        preferences: HLSVariantSelectionPreferences = HLSVariantSelectionPreferences()
+    ) throws -> HLSVariant {
+        let ranked = try rank(from: master, preferences: preferences)
+        guard let selected = ranked.first else {
             throw HLSVariantSelectionError.noVariantMatchesPreferences
         }
         return selected
