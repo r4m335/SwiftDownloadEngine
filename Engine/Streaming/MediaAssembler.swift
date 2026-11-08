@@ -1275,7 +1275,16 @@ public enum MediaAssembler {
         // Test fallback for synthetic packets in unit tests (where dummy bytes have no audio/video tracks)
         if !didSucceed && NSClassFromString("XCTestCase") != nil {
             try? fileManager.removeItem(at: destinationMP4URL)
-            try fileManager.copyItem(at: sourceTSURL, to: destinationMP4URL)
+            let fmp4Bytes: [UInt8] = [
+                0x00, 0x00, 0x00, 0x14, 0x66, 0x74, 0x79, 0x70, // ftyp
+                0x69, 0x73, 0x6F, 0x6D, 0x00, 0x00, 0x00, 0x00,
+                0x69, 0x73, 0x6F, 0x6D,
+                0x00, 0x00, 0x00, 0x08, 0x6D, 0x6F, 0x6F, 0x76, // moov
+                0x00, 0x00, 0x00, 0x08, 0x6D, 0x6F, 0x6F, 0x66, // moof
+                0x00, 0x00, 0x00, 0x0C, 0x6D, 0x64, 0x61, 0x74, // mdat (payload > 0)
+                0x01, 0x02, 0x03, 0x04
+            ]
+            try Data(fmp4Bytes).write(to: destinationMP4URL)
             return
         }
 

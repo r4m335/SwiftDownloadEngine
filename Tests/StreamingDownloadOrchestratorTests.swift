@@ -961,7 +961,7 @@ final class StreamingDownloadOrchestratorTests: XCTestCase {
             }
             @MainActor func resolveMediaURL(_ rawURL: URL) async throws -> URL { rawURL }
             @MainActor func fetchManifestText(from url: URL) async throws -> String {
-                Task { await self.tracker.record(.jsFallback(url)) }
+                await self.tracker.record(.jsFallback(url))
                 return manifestText
             }
         }
@@ -1021,7 +1021,7 @@ final class StreamingDownloadOrchestratorTests: XCTestCase {
             init(tracker: SequenceTracker) { self.tracker = tracker }
             @MainActor func resolveMediaURL(_ rawURL: URL) async throws -> URL { rawURL }
             @MainActor func fetchManifestText(from url: URL) async throws -> String {
-                Task { await self.tracker.record(.jsFallback(url)) }
+                await self.tracker.record(.jsFallback(url))
                 throw StreamingManifestLoadError.browserFetchUnavailable
             }
         }
