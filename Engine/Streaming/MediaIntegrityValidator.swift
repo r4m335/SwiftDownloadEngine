@@ -1,5 +1,9 @@
 import Foundation
 
+#if canImport(AVFoundation)
+import AVFoundation
+#endif
+
 // MARK: - Validation result model
 
 /// The discrete outcome of a post-transfer integrity validation.
@@ -619,7 +623,6 @@ public enum MediaIntegrityValidator {
         var totalMDATBytes: UInt64 = 0
         var trakCount = 0
         var hasMovieExtends = false
-        var hasMediaHandler = false
         var offset: UInt64 = 0
 
         do {
@@ -695,9 +698,6 @@ public enum MediaIntegrityValidator {
                     trakCount += inspection.trakCount
                     if inspection.childTypes.contains("mvex") {
                         hasMovieExtends = true
-                    }
-                    if inspection.hasVideoOrAudioHandler {
-                        hasMediaHandler = true
                     }
                 }
 
@@ -887,11 +887,15 @@ public extension MediaIntegrityValidator {
             return (false, 0, "Could not load tracks: \(error?.localizedDescription ?? "unknown error")")
         }
 
-        let mediaTracks = asset.tracks.filter { $0.mediaType == .video || $0.mediaType == .audio }
-        guard !mediaTracks.isEmpty else {
+        let tracks = asset.tracks
+        let videoTracks = tracks.filter { $0.mediaType == AVMediaType.video }
+        let audioTracks = tracks.filter { $0.mediaType == AVMediaType.audio }
+        let totalCount = videoTracks.count + audioTracks.count
+        guard totalCount > 0 else {
             return (false, 0, "No audio or video tracks identified by AVFoundation")
         }
-        return (asset.isPlayable, mediaTracks.count, asset.isPlayable ? nil : "AVAsset isPlayable returned false")
+        let playable = asset.isPlayable
+        return (playable, totalCount, playable ? nil : "AVAsset isPlayable returned false")
         #else
         return (true, 0, nil)
         #endif
