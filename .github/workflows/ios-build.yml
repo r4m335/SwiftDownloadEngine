@@ -10,7 +10,7 @@ on:
 jobs:
   package-tests:
     name: Swift Package Tests
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 20
 
     steps:
@@ -44,7 +44,7 @@ jobs:
 
   milestone1-torrent-build:
     name: Milestone 1-3 — libtorrent 2.0 iOS Native Build, Bridge & Transfer Engine Test
-    runs-on: macos-14
+    runs-on: macos-15
 
     steps:
       - name: Checkout Repository
@@ -568,7 +568,7 @@ jobs:
 
   build-simulator:
     name: iOS Simulator Build
-    runs-on: macos-14
+    runs-on: macos-15
     needs: [milestone1-torrent-build]
 
     steps:
@@ -647,7 +647,7 @@ jobs:
 
   build-device:
     name: iOS Device Build
-    runs-on: macos-14
+    runs-on: macos-15
     needs: [milestone1-torrent-build]
 
     steps:
