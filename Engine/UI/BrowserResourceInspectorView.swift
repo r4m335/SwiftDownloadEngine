@@ -287,39 +287,49 @@ public struct BrowserResourceInspectorSheet: View {
     private var resourceList: some View {
         List {
             ForEach(filteredResources) { resource in
-                ResourceRowView(
-                    resource: resource,
-                    candidate: viewModel.mediaCandidates.first {
-                        $0.rawURL.caseInsensitiveCompare(resource.url.absoluteString) == .orderedSame
-                    },
-                    qualitySummary: hlsMasterQualitySummaries[resource.id],
-                    variantItem: variantMetadataMap[resource.id],
-                    isSelected: viewModel.selectedResourceIDs.contains(resource.id),
-                    onToggleSelect: {
-                        if viewModel.selectedResourceIDs.contains(resource.id) {
-                            viewModel.selectedResourceIDs.remove(resource.id)
-                        } else {
-                            viewModel.selectedResourceIDs.insert(resource.id)
-                        }
-                    },
-                    onDownload: {
-                        if resource.isSegmentChunk {
-                            viewModel.blobCaptureErrorMessage = "This is a streaming segment chunk. Download the playlist manifest (.m3u8 or .mpd) instead."
-                        } else if resource.isStreamingManifest || resource.url.pathExtension.lowercased() == "m3u8" || resource.url.pathExtension.lowercased() == "mpd" {
-                            viewModel.promptStreamingDownload(for: resource)
-                        } else {
-                            viewModel.promptDownloadFromInspector(for: resource)
-                        }
-                    },
-                    onPreview: {
-                        viewModel.playInlineMedia(resource.url, title: resource.title)
-                    }
-                )
+                rowView(for: resource)
             }
         }
         #if canImport(UIKit)
         .listStyle(InsetGroupedListStyle())
         #endif
+    }
+
+    @ViewBuilder
+    private func rowView(for resource: WebpageResource) -> some View {
+        let cand = viewModel.mediaCandidates.first {
+            $0.rawURL.caseInsensitiveCompare(resource.url.absoluteString) == .orderedSame
+        }
+        let quality = hlsMasterQualitySummaries[resource.id]
+        let variant = variantMetadataMap[resource.id]
+        let isSelected = viewModel.selectedResourceIDs.contains(resource.id)
+
+        ResourceRowView(
+            resource: resource,
+            candidate: cand,
+            qualitySummary: quality,
+            variantItem: variant,
+            isSelected: isSelected,
+            onToggleSelect: {
+                if viewModel.selectedResourceIDs.contains(resource.id) {
+                    viewModel.selectedResourceIDs.remove(resource.id)
+                } else {
+                    viewModel.selectedResourceIDs.insert(resource.id)
+                }
+            },
+            onDownload: {
+                if resource.isSegmentChunk {
+                    viewModel.blobCaptureErrorMessage = "This is a streaming segment chunk. Download the playlist manifest (.m3u8 or .mpd) instead."
+                } else if resource.isStreamingManifest || resource.url.pathExtension.lowercased() == "m3u8" || resource.url.pathExtension.lowercased() == "mpd" {
+                    viewModel.promptStreamingDownload(for: resource)
+                } else {
+                    viewModel.promptDownloadFromInspector(for: resource)
+                }
+            },
+            onPreview: {
+                viewModel.playInlineMedia(resource.url, title: resource.title)
+            }
+        )
     }
 
     // MARK: - Empty & Loading States
@@ -537,88 +547,7 @@ public struct ResourceRowView: View {
                     .lineLimit(1)
 
                 if let variant = variantItem {
-                    // Quality, Audio, Subtitle & Codec Badges (1DM style)
-                    HStack(spacing: 5) {
-                        // Quality badge
-                        Text(variant.qualityLabel)
-                            .font(.system(size: 10, weight: .bold))
-                            .foregroundColor(.white)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(Color.blue)
-                            .cornerRadius(4)
-
-                        // Resolution badge
-                        if let resText = variant.resolutionText {
-                            Text(resText)
-                                .font(.system(size: 10, weight: .medium))
-                                .foregroundColor(.secondary)
-                                .padding(.horizontal, 5)
-                                .padding(.vertical, 2)
-                                #if canImport(UIKit)
-                                .background(Color(UIColor.tertiarySystemBackground))
-                                #else
-                                .background(Color.secondary.opacity(0.15))
-                                #endif
-                                .cornerRadius(4)
-                        }
-
-                        // Bitrate badge
-                        Text(variant.bitrateText)
-                            .font(.system(size: 10, weight: .medium))
-                            .foregroundColor(.secondary)
-                            .padding(.horizontal, 5)
-                            .padding(.vertical, 2)
-                            #if canImport(UIKit)
-                            .background(Color(UIColor.tertiarySystemBackground))
-                            #else
-                            .background(Color.secondary.opacity(0.15))
-                            #endif
-                            .cornerRadius(4)
-
-                        // Audio badge
-                        HStack(spacing: 2) {
-                            Image(systemName: variant.hasAudio ? "speaker.wave.2.fill" : "speaker.slash")
-                                .font(.system(size: 8))
-                            Text(variant.hasAudio ? "Audio" : "No Audio")
-                                .font(.system(size: 10, weight: .semibold))
-                        }
-                        .foregroundColor(variant.hasAudio ? .green : .secondary)
-                        .padding(.horizontal, 5)
-                        .padding(.vertical, 2)
-                        .background(variant.hasAudio ? Color.green.opacity(0.15) : Color.secondary.opacity(0.15))
-                        .cornerRadius(4)
-
-                        // Subtitle badge
-                        if variant.hasSubtitles {
-                            HStack(spacing: 2) {
-                                Image(systemName: "captions.bubble.fill")
-                                    .font(.system(size: 8))
-                                Text("Subtitles")
-                                    .font(.system(size: 10, weight: .semibold))
-                            }
-                            .foregroundColor(.purple)
-                            .padding(.horizontal, 5)
-                            .padding(.vertical, 2)
-                            .background(Color.purple.opacity(0.15))
-                            .cornerRadius(4)
-                        }
-
-                        // Codec badge
-                        if let vCodec = variant.videoCodec {
-                            Text(vCodec)
-                                .font(.system(size: 10, weight: .medium))
-                                .foregroundColor(.secondary)
-                                .padding(.horizontal, 5)
-                                .padding(.vertical, 2)
-                                #if canImport(UIKit)
-                                .background(Color(UIColor.tertiarySystemBackground))
-                                #else
-                                .background(Color.secondary.opacity(0.15))
-                                #endif
-                                .cornerRadius(4)
-                        }
-                    }
+                    variantBadges(for: variant)
                 } else if let qualitySummary {
                     Text("Available qualities: \(qualitySummary)")
                         .font(.caption2)
@@ -748,6 +677,80 @@ public struct ResourceRowView: View {
             }
         }
         .padding(.vertical, 4)
+    }
+
+    @ViewBuilder
+    private func variantBadges(for variant: HLSVariantStreamItem) -> some View {
+        HStack(spacing: 5) {
+            Text(variant.qualityLabel)
+                .font(.system(size: 10, weight: .bold))
+                .foregroundColor(.white)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background(Color.blue)
+                .cornerRadius(4)
+
+            if let resText = variant.resolutionText {
+                textPill(resText)
+            }
+
+            textPill(variant.bitrateText)
+
+            audioPill(hasAudio: variant.hasAudio)
+
+            if variant.hasSubtitles {
+                subtitlePill
+            }
+
+            if let vCodec = variant.videoCodec {
+                textPill(vCodec)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func textPill(_ text: String) -> some View {
+        Text(text)
+            .font(.system(size: 10, weight: .medium))
+            .foregroundColor(.secondary)
+            .padding(.horizontal, 5)
+            .padding(.vertical, 2)
+            #if canImport(UIKit)
+            .background(Color(UIColor.tertiarySystemBackground))
+            #else
+            .background(Color.secondary.opacity(0.15))
+            #endif
+            .cornerRadius(4)
+    }
+
+    @ViewBuilder
+    private func audioPill(hasAudio: Bool) -> some View {
+        HStack(spacing: 2) {
+            Image(systemName: hasAudio ? "speaker.wave.2.fill" : "speaker.slash")
+                .font(.system(size: 8))
+            Text(hasAudio ? "Audio" : "No Audio")
+                .font(.system(size: 10, weight: .semibold))
+        }
+        .foregroundColor(hasAudio ? .green : .secondary)
+        .padding(.horizontal, 5)
+        .padding(.vertical, 2)
+        .background(hasAudio ? Color.green.opacity(0.15) : Color.secondary.opacity(0.15))
+        .cornerRadius(4)
+    }
+
+    @ViewBuilder
+    private var subtitlePill: some View {
+        HStack(spacing: 2) {
+            Image(systemName: "captions.bubble.fill")
+                .font(.system(size: 8))
+            Text("Subtitles")
+                .font(.system(size: 10, weight: .semibold))
+        }
+        .foregroundColor(.purple)
+        .padding(.horizontal, 5)
+        .padding(.vertical, 2)
+        .background(Color.purple.opacity(0.15))
+        .cornerRadius(4)
     }
 }
 
