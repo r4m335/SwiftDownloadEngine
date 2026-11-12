@@ -5,6 +5,7 @@ import SwiftUI
 public struct DownloadManagerAppView: View {
     @StateObject public var viewModel: DownloadManagerViewModel
     @State private var selectedTab = 0
+    @State private var addURLPrefill = ""
 
     public init(engine: DownloadEngine, downloadsDirectory: URL? = nil) {
         let vm = DownloadManagerViewModel(
@@ -38,6 +39,9 @@ public struct DownloadManagerAppView: View {
 
             BrowserView(viewModel: viewModel, onDownloadInitiated: {
                 selectedTab = 0
+            }, onOpenAddDownload: { url in
+                addURLPrefill = url.absoluteString
+                selectedTab = 2
             })
                 .tabItem {
                     Label("Browser", systemImage: "globe")
@@ -46,7 +50,7 @@ public struct DownloadManagerAppView: View {
 
             AddDownloadView(viewModel: viewModel, onDownloadAdded: {
                 selectedTab = 0
-            })
+            }, prefilledURL: addURLPrefill)
                 .tabItem {
                     Label("Add", systemImage: "plus.circle")
                 }

@@ -30,6 +30,8 @@ public struct AddDownloadView: View {
     @ObservedObject public var viewModel: DownloadManagerViewModel
     @Environment(\.presentationMode) private var presentationMode
     public var onDownloadAdded: (() -> Void)? = nil
+    /// A URL supplied by the browser's direct-file handoff.
+    public var prefilledURL: String?
 
     // Common State
     @State private var downloadType: AddDownloadType = .http
@@ -52,9 +54,14 @@ public struct AddDownloadView: View {
     @State private var torrentPriority: TorrentPriority = .normal
     @State private var isShowingFileImporter = false
 
-    public init(viewModel: DownloadManagerViewModel, onDownloadAdded: (() -> Void)? = nil) {
+    public init(
+        viewModel: DownloadManagerViewModel,
+        onDownloadAdded: (() -> Void)? = nil,
+        prefilledURL: String? = nil
+    ) {
         self.viewModel = viewModel
         self.onDownloadAdded = onDownloadAdded
+        self.prefilledURL = prefilledURL
         _torrentPriority = State(initialValue: viewModel.defaultTorrentPriority)
     }
 
@@ -85,6 +92,8 @@ public struct AddDownloadView: View {
                     }
                 }
             }
+            .onAppear { applyPrefilledURL() }
+            .onChange(of: prefilledURL) { _ in applyPrefilledURL() }
             #if canImport(UniformTypeIdentifiers)
             .fileImporter(
                 isPresented: $isShowingFileImporter,
@@ -104,6 +113,15 @@ public struct AddDownloadView: View {
             }
             #endif
         }
+    }
+
+    private func applyPrefilledURL() {
+        guard let prefilledURL,
+              !prefilledURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        downloadType = .http
+        urlString = prefilledURL
+        autoFillFilename(from: prefilledURL)
+        errorMessage = nil
     }
 
     // MARK: - HTTP Form Sections

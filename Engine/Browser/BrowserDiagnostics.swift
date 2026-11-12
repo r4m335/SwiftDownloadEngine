@@ -2,6 +2,9 @@ import Foundation
 #if canImport(WebKit)
 import WebKit
 #endif
+#if canImport(SwiftUI)
+import SwiftUI
+#endif
 
 /// Category of browser diagnostic events for troubleshooting navigation,
 /// redirects, challenges, and runtime lifecycle errors.
@@ -199,6 +202,162 @@ public final class BrowserDiagnosticLogger: @unchecked Sendable {
     })();
     """#
 }
+
+/// Produces a comparison-ready, privacy-conscious snapshot of a navigation.
+///
+/// `WKNavigationResponse` exposes the final HTTP response but not its request,
+/// so the coordinator retains the latest main-frame request and combines it
+/// with this response snapshot.  Header values that commonly contain browser
+/// credentials are redacted before reaching the diagnostic event store.
+public enum BrowserNavigationDiagnosticDetails {
+    private static let sensitiveHeaderNames: Set<String> = [
+        "authorization", "cookie", "set-cookie", "proxy-authorization", "x-api-key"
+    ]
+
+    public static func requestDetails(_ request: URLRequest, isMainFrame: Bool) -> [String: String] {
+        var details: [String: String] = [
+            "requestURL": sanitizedURLString(request.url),
+            "method": request.httpMethod ?? "GET",
+            "isMainFrame": "\(isMainFrame)",
+            "requestHeaders": formattedHeaders(request.allHTTPHeaderFields ?? [:])
+        ]
+        if let userAgent = header(named: "User-Agent", in: request.allHTTPHeaderFields) {
+            details["userAgent"] = userAgent
+        }
+        if let range = header(named: "Range", in: request.allHTTPHeaderFields) {
+            details["range"] = range
+        }
+        return details
+    }
+
+    public static func responseDetails(_ response: HTTPURLResponse) -> [String: String] {
+        let headers = stringHeaders(response.allHeaderFields)
+        var details: [String: String] = [
+            "finalURL": sanitizedURLString(response.url),
+            "statusCode": "\(response.statusCode)",
+            "contentType": header(named: "Content-Type", in: headers) ?? response.mimeType ?? "unknown",
+            "contentLength": header(named: "Content-Length", in: headers) ??
+                (response.expectedContentLength >= 0 ? "\(response.expectedContentLength)" : "unknown"),
+            "contentRange": header(named: "Content-Range", in: headers) ?? "none",
+            "responseHeaders": formattedHeaders(headers)
+        ]
+        return details
+    }
+
+    public static func combinedDetails(
+        request: URLRequest?,
+        response: HTTPURLResponse
+    ) -> [String: String] {
+        var details = responseDetails(response)
+        if let request {
+            details.merge(requestDetails(request, isMainFrame: true), uniquingKeysWith: { _, requestValue in requestValue })
+        } else {
+            details["method"] = "unknown"
+            details["isMainFrame"] = "true"
+            details["requestHeaders"] = "unavailable"
+        }
+        return details
+    }
+
+    public static func failureDetails(request: URLRequest?, currentURL: URL?) -> [String: String] {
+        var details = request.map { requestDetails($0, isMainFrame: true) } ?? [
+            "method": "unknown",
+            "isMainFrame": "true",
+            "requestHeaders": "unavailable"
+        ]
+        details["finalURL"] = sanitizedURLString(currentURL ?? request?.url)
+        return details
+    }
+
+    private static func stringHeaders(_ headers: [AnyHashable: Any]) -> [String: String] {
+        Dictionary(uniqueKeysWithValues: headers.map { (String(describing: $0.key), String(describing: $0.value)) })
+    }
+
+    private static func header(named name: String, in headers: [String: String]?) -> String? {
+        headers?.first { $0.key.caseInsensitiveCompare(name) == .orderedSame }?.value
+    }
+
+    private static func formattedHeaders(_ headers: [String: String]) -> String {
+        headers
+            .map { key, value in
+                let redacted = sensitiveHeaderNames.contains(key.lowercased()) ? "<redacted>" : value
+                return "\(key): \(redacted)"
+            }
+            .sorted()
+            .joined(separator: "\n")
+    }
+
+    private static func sanitizedURLString(_ url: URL?) -> String {
+        guard let url else { return "unknown" }
+        guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              let queryItems = components.queryItems else {
+            return url.absoluteString
+        }
+        components.queryItems = queryItems.map { item in
+            let name = item.name.lowercased()
+            if name.contains("token") || name.contains("signature") || name.contains("credential") || name.contains("key") {
+                return URLQueryItem(name: item.name, value: "<redacted>")
+            }
+            return item
+        }
+        return components.url?.absoluteString ?? url.absoluteString
+    }
+}
+
+#if canImport(SwiftUI)
+/// In-app viewer for browser navigation records. It intentionally exposes the
+/// structured fields verbatim so support can compare browser implementations.
+public struct BrowserDiagnosticLogView: View {
+    @Environment(\.dismiss) private var dismiss
+    @State private var events: [BrowserDiagnosticEvent] = []
+
+    public init() {}
+
+    public var body: some View {
+        NavigationView {
+            Group {
+                if events.isEmpty {
+                    VStack(spacing: 10) {
+                        Image(systemName: "ladybug").font(.largeTitle)
+                        Text("No Browser Diagnostics")
+                    }
+                    .foregroundColor(.secondary)
+                } else {
+                    List(events.reversed()) { event in
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text(event.message).font(.subheadline.weight(.semibold))
+                            Text(event.timestamp, style: .time)
+                                .font(.caption).foregroundColor(.secondary)
+                            if !event.details.isEmpty {
+                                Text(event.details.keys.sorted().map { key in
+                                    "\(key): \(event.details[key] ?? "")"
+                                }.joined(separator: "\n"))
+                                .font(.system(.caption, design: .monospaced))
+                                .textSelection(.enabled)
+                            }
+                        }
+                        .padding(.vertical, 3)
+                    }
+                }
+            }
+            .navigationTitle("Browser Diagnostics")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Done") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Refresh") { reloadEvents() }
+                }
+            }
+            .onAppear(perform: reloadEvents)
+        }
+    }
+
+    private func reloadEvents() {
+        events = BrowserDiagnosticLogger.shared.events(limit: BrowserDiagnosticLogger.maximumEventCount)
+    }
+}
+#endif
 
 #if canImport(WebKit)
 /// WebKit script message handler that receives diagnostic events from `diagnosticScript`.
