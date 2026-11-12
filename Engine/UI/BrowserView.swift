@@ -114,6 +114,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
     public weak var downloadDelegate: BrowserDownloadDelegate?
     public weak var magnetDelegate: (any BrowserMagnetDelegate)?
     public var onDownloadInitiated: (() -> Void)? = nil
+    public var onOpenAddDownload: ((URL) -> Void)? = nil
 
     private var tabManager = BrowserTabManager()
     private var mediaCandidateCatalogs: [UUID: BrowserMediaCandidateCatalog] = [:]
@@ -160,12 +161,14 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         downloadDelegate: BrowserDownloadDelegate? = nil,
         magnetDelegate: (any BrowserMagnetDelegate)? = nil,
         onDownloadInitiated: (() -> Void)? = nil,
+        onOpenAddDownload: ((URL) -> Void)? = nil,
         streamingOrchestrator: StreamingDownloadOrchestrator? = nil,
         streamingDestinationDirectoryURL: URL? = nil
     ) {
         self.downloadDelegate = downloadDelegate
         self.magnetDelegate = magnetDelegate
         self.onDownloadInitiated = onDownloadInitiated
+        self.onOpenAddDownload = onOpenAddDownload
         let orchestrator = streamingOrchestrator ?? StreamingDownloadOrchestrator.shared
         if let orchestrator, let vm = downloadDelegate as? DownloadManagerViewModel {
             Task {
@@ -866,6 +869,11 @@ public final class BrowserViewModel: NSObject, ObservableObject {
 
     public func shouldSuppressDuplicatePrompt(for url: URL) -> Bool {
         interceptionManager.shouldSuppressDuplicate(for: url, isSheetPresented: isShowingDownloadSheet)
+    }
+
+    public func openAddDownload(for url: URL) {
+        guard !StreamingManifestClassifier.classify(url: url).isManifest else { return }
+        onOpenAddDownload?(url)
     }
 
     public func handleNativeDownloadHandoff(
@@ -2047,20 +2055,27 @@ public struct BrowserView: View {
     public init(
         downloadDelegate: BrowserDownloadDelegate? = nil,
         magnetDelegate: (any BrowserMagnetDelegate)? = nil,
-        onDownloadInitiated: (() -> Void)? = nil
+        onDownloadInitiated: (() -> Void)? = nil,
+        onOpenAddDownload: ((URL) -> Void)? = nil
     ) {
         _viewModel = StateObject(wrappedValue: BrowserViewModel(
             downloadDelegate: downloadDelegate,
             magnetDelegate: magnetDelegate,
-            onDownloadInitiated: onDownloadInitiated
+            onDownloadInitiated: onDownloadInitiated,
+            onOpenAddDownload: onOpenAddDownload
         ))
     }
 
-    public init(viewModel: DownloadManagerViewModel, onDownloadInitiated: (() -> Void)? = nil) {
+    public init(
+        viewModel: DownloadManagerViewModel,
+        onDownloadInitiated: (() -> Void)? = nil,
+        onOpenAddDownload: ((URL) -> Void)? = nil
+    ) {
         _viewModel = StateObject(wrappedValue: BrowserViewModel(
             downloadDelegate: viewModel,
             magnetDelegate: viewModel,
             onDownloadInitiated: onDownloadInitiated,
+            onOpenAddDownload: onOpenAddDownload,
             streamingOrchestrator: StreamingDownloadOrchestrator.shared,
             streamingDestinationDirectoryURL: viewModel.downloadsDirectoryURL
         ))
