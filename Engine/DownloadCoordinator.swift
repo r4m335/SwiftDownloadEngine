@@ -3120,6 +3120,10 @@ private final class DownloadResourceRedirectDelegate: NSObject, URLSessionTaskDe
 /// Standard, zero-dependency SHA-256 implementation ensuring portable digest validation across all platforms.
 public enum EngineSHA256 {
     public static func hash(data: Data) -> String {
+        #if canImport(CryptoKit)
+        let digest = SHA256.hash(data: data)
+        return digest.map { String(format: "%02x", $0) }.joined()
+        #else
         var h: [UInt32] = [
             0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
             0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19
@@ -3189,6 +3193,7 @@ public enum EngineSHA256 {
         }
 
         return h.map { String(format: "%08x", $0) }.joined()
+        #endif
     }
 }
 

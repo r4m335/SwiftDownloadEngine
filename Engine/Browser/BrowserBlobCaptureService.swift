@@ -1,5 +1,9 @@
 import Foundation
 
+#if canImport(CryptoKit)
+import CryptoKit
+#endif
+
 #if canImport(WebKit)
 import WebKit
 #endif
@@ -513,6 +517,26 @@ public struct BlobCaptureWireMessage: Codable, Sendable, Equatable {
 
 /// Computes SHA-256 incrementally over a stream of chunks without materialising
 /// the full file in memory. Each chunk feeds the running digest.
+#if canImport(CryptoKit)
+public struct EngineSHA256Hasher {
+    private var hasher = SHA256()
+
+    public init() {}
+
+    public mutating func update(data: Data) {
+        hasher.update(data: data)
+    }
+
+    /// Returns lowercase hex SHA-256 and resets the accumulator without
+    /// retaining the complete input.
+    public mutating func finalize() -> String {
+        let digest = hasher.finalize()
+        let result = digest.map { String(format: "%02x", $0) }.joined()
+        hasher = SHA256()
+        return result
+    }
+}
+#else
 public struct EngineSHA256Hasher {
     private var state: [UInt32] = [
         0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
@@ -527,9 +551,13 @@ public struct EngineSHA256Hasher {
         guard !data.isEmpty else { return }
         byteCount += UInt64(data.count)
         pending.append(contentsOf: data)
-        while pending.count >= 64 {
-            compress(pending, start: 0)
-            pending.removeSubrange(0..<64)
+        var offset = 0
+        while pending.count - offset >= 64 {
+            compress(pending, start: offset)
+            offset += 64
+        }
+        if offset > 0 {
+            pending.removeSubrange(0..<offset)
         }
     }
 
@@ -596,6 +624,7 @@ public struct EngineSHA256Hasher {
         state[6] = state[6] &+ g; state[7] = state[7] &+ h
     }
 }
+#endif
 
 // MARK: - Blob Export Writer (Production)
 
@@ -665,7 +694,7 @@ public actor BlobExportWriter {
     public func begin(
         authorization: BlobCaptureAuthorization,
         envelope: BlobCaptureMetadataEnvelope,
-        suggestedFilename: String
+        suggestedFilename: String? = nil
     ) throws -> BlobExportSnapshot {
         guard !authorization.isExpired else { throw BlobExportError.authorizationExpired }
         guard authorization.transferID == envelope.transferID else {
@@ -971,11 +1000,26 @@ public actor BlobExportWriter {
         )
     }
 
-    // MARK: Cancel
+    // MARK: Cancel & Fail
 
-    public func cancel(transferID: String) {
-        guard sessions[transferID] != nil else { return }
-        abort(transferID: transferID, reason: "cancelled by native side")
+    public func cancel(transferID: String, reason: String = "cancelled by native side") {
+        if var session = sessions.removeValue(forKey: transferID) {
+            try? session.stagingHandle.close()
+            try? FileManager.default.removeItem(at: session.record.stagingURL)
+            totalStagingBytes -= session.reservedStagingBytes
+            session.record.state = .cancelled
+            session.record.failureReason = reason
+            persistRecord(session.record)
+
+            session.diagnostics.transferState = .cancelled
+            session.diagnostics.failureReason = reason
+            session.diagnostics.updatedAt = Date()
+            persistDiagnostics(session.diagnostics)
+        }
+    }
+
+    public func fail(transferID: String, reason: String) {
+        abort(transferID: transferID, reason: reason)
     }
 
     // MARK: Process Termination Handling
@@ -1144,9 +1188,9 @@ public actor BlobExportWriter {
         )
     }
 
-    static func sanitizeFilename(_ value: String, fallback: String, maxLength: Int) throws -> String {
-        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        let source = trimmed.isEmpty ? fallback : trimmed
+    static func sanitizeFilename(_ value: String?, fallback: String, maxLength: Int) throws -> String {
+        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let source = (trimmed?.isEmpty == false) ? trimmed! : fallback
         let normalized = source
             .replacingOccurrences(of: "/", with: "_")
             .replacingOccurrences(of: "\\", with: "_")
@@ -1270,17 +1314,19 @@ public actor BrowserBlobCaptureReceiver {
                 await writer.cancel(transferID: transferID)
                 return BlobCaptureAck.rejected(transferID: transferID, error: .tabMismatch)
             }
-            if let authCandidateID = auth.candidateID, message.candidateID != authCandidateID {
-                authorizations.removeValue(forKey: transferID)
-                transferStats.removeValue(forKey: transferID)
-                await writer.cancel(transferID: transferID)
-                return BlobCaptureAck.rejected(transferID: transferID, error: .captureNotAuthorized)
-            }
-            if let authDocID = auth.documentID, message.documentID != authDocID {
-                authorizations.removeValue(forKey: transferID)
-                transferStats.removeValue(forKey: transferID)
-                await writer.cancel(transferID: transferID)
-                return BlobCaptureAck.rejected(transferID: transferID, error: .documentMismatch)
+            if message.kind != .cancel && message.kind != .failure {
+                if let authCandidateID = auth.candidateID, message.candidateID != authCandidateID {
+                    authorizations.removeValue(forKey: transferID)
+                    transferStats.removeValue(forKey: transferID)
+                    await writer.cancel(transferID: transferID)
+                    return BlobCaptureAck.rejected(transferID: transferID, error: .captureNotAuthorized)
+                }
+                if let authDocID = auth.documentID, message.documentID != authDocID {
+                    authorizations.removeValue(forKey: transferID)
+                    transferStats.removeValue(forKey: transferID)
+                    await writer.cancel(transferID: transferID)
+                    return BlobCaptureAck.rejected(transferID: transferID, error: .documentMismatch)
+                }
             }
             switch message.kind {
             case .metadata:
@@ -1337,10 +1383,15 @@ public actor BrowserBlobCaptureReceiver {
                 authorizations.removeValue(forKey: transferID)
                 transferStats.removeValue(forKey: transferID)
                 return BlobCaptureAck(transferID: transferID, accepted: true, snapshot: snapshot)
-            case .failure, .cancel:
+            case .failure:
                 authorizations.removeValue(forKey: transferID)
                 transferStats.removeValue(forKey: transferID)
-                await writer.cancel(transferID: transferID)
+                await writer.fail(transferID: transferID, reason: message.reason ?? "client failure")
+                return BlobCaptureAck(transferID: transferID, accepted: true)
+            case .cancel:
+                authorizations.removeValue(forKey: transferID)
+                transferStats.removeValue(forKey: transferID)
+                await writer.cancel(transferID: transferID, reason: message.reason ?? "cancelled by client")
                 return BlobCaptureAck(transferID: transferID, accepted: true)
             }
         } catch let error as BlobExportError {
@@ -1576,7 +1627,14 @@ public enum BlobCaptureBridge {
         }};
     }
     function nextBytes(s) {
-        if (s.pending && s.pending.length>0) { var p=s.pending; s.pending=null; return Promise.resolve(p); }
+        if (s.pending && s.pending.length>0) {
+            if (s.pending.length<=s.chunkSize) {
+                var p=s.pending; s.pending=null; return Promise.resolve(p);
+            }
+            var slice=s.pending.subarray(0,s.chunkSize);
+            s.pending=s.pending.subarray(s.chunkSize);
+            return Promise.resolve(slice);
+        }
         if (s.blob) {
             if (s.offset>=s.size) { return Promise.resolve(null); }
             var end=Math.min(s.offset+s.chunkSize,s.size);
@@ -1586,7 +1644,7 @@ public enum BlobCaptureBridge {
             if (r.done){return null;}
             var bytes=r.value||new Uint8Array(0);
             if (bytes.length<=s.chunkSize){return bytes;}
-            s.pending=bytes.slice(s.chunkSize); return bytes.slice(0,s.chunkSize);
+            s.pending=bytes.subarray(s.chunkSize); return bytes.subarray(0,s.chunkSize);
         });
     }
     function readNext(s) {
@@ -1680,7 +1738,7 @@ public enum BlobCaptureBridge {
                       mimeType:(b&&b.type)||mime,size:esz,readable:true,resourceKind:"completeBlobCandidate"});
             });
         }).catch(function(err){
-            post({version:PROTOCOL_VERSION,kind:"failure",transferID:transferID,tabID:tabID,candidateID:candidateID,reason:String(err&&err.message||err)});
+            post({version:PROTOCOL_VERSION,kind:"failure",transferID:transferID,tabID:tabID,candidateID:candidateID,documentID:docID||null,reason:String(err&&err.message||err)});
         });
     }
     function acknowledge(transferID,accepted) {
@@ -1692,7 +1750,7 @@ public enum BlobCaptureBridge {
         var s=sessions[transferID];
         if(s&&s.reader){try{s.reader.cancel();}catch(_){}}
         delete sessions[transferID];
-        post({version:PROTOCOL_VERSION,kind:"cancel",transferID:transferID,tabID:s&&s.tabID,candidateID:s&&s.candidateID});
+        post({version:PROTOCOL_VERSION,kind:"cancel",transferID:transferID,tabID:s&&s.tabID,candidateID:s&&s.candidateID,documentID:s&&s.documentID});
     }
     window.__lidBlobCapture={start:start,acknowledge:acknowledge,cancel:cancel};
 })();
