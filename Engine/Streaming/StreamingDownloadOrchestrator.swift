@@ -523,8 +523,21 @@ public final class URLSessionStreamingSegmentExecutor: StreamingSegmentExecutor,
             throw StreamingDownloadOrchestratorError.segmentTransferFailed(order: request.identity.order)
         }
 
-        let parentDir = request.destinationURL.deletingLastPathComponent()
         let fileManager = FileManager.default
+        if let mime = httpResponse.mimeType?.lowercased(), mime.contains("text/html") {
+            try? fileManager.removeItem(at: tempURL)
+            throw StreamingDownloadOrchestratorError.segmentTransferFailed(order: request.identity.order)
+        }
+        if let handle = try? FileHandle(forReadingFrom: tempURL) {
+            let headerBytes = (try? handle.read(upToCount: 512)) ?? Data()
+            try? handle.close()
+            if StreamingDownloadOrchestrator.isHTMLResponse(headerBytes) {
+                try? fileManager.removeItem(at: tempURL)
+                throw StreamingDownloadOrchestratorError.segmentTransferFailed(order: request.identity.order)
+            }
+        }
+
+        let parentDir = request.destinationURL.deletingLastPathComponent()
         try DownloadManagerViewModel.ensureDirectoryExistsAndWritable(parentDir, fileManager: fileManager)
 
         if fileManager.fileExists(atPath: request.destinationURL.path) {
@@ -2530,7 +2543,12 @@ public actor StreamingDownloadOrchestrator {
             }
 
             // Step 3: Validate the final published output file before completing download
-            let validationReport = MediaIntegrityValidator.validateHLSOutput(fileURL: assemblyOutput.destinationURL)
+            let isMPEGTS = transferPlan.allResources.allSatisfy { $0.kind != .initializationMap }
+            let isRemuxed = isMPEGTS && assemblyOutput.destinationURL.pathExtension.lowercased() == "mp4"
+            let validationReport = MediaIntegrityValidator.validateHLSOutput(
+                fileURL: assemblyOutput.destinationURL,
+                isRemuxedMPEGTS: isRemuxed
+            )
             guard validationReport.outcome.isConfirmedValid else {
                 let failureReason = validationReport.outcome.localizedDescription
                 PipelineLogger.shared.log("[HLS Pipeline] Final output validation failed: \(failureReason). Preserving downloaded segments for recovery.")

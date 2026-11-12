@@ -190,16 +190,21 @@ public struct MediaIntegrityValidationRequest: Sendable {
     /// `MediaAssembler.validateInput` rather than duplicating box-walk logic.
     public let assemblyRequest: MediaAssemblyRequest?
 
+    /// Flag indicating that an HLS MPEG-TS download was remuxed to a standard MP4 file.
+    public let isRemuxedMPEGTS: Bool
+
     public init(
         fileURL: URL,
         expectedByteCount: Int64? = nil,
         pathway: DownloadPathway = .directHTTP,
-        assemblyRequest: MediaAssemblyRequest? = nil
+        assemblyRequest: MediaAssemblyRequest? = nil,
+        isRemuxedMPEGTS: Bool = false
     ) {
         self.fileURL = fileURL
         self.expectedByteCount = expectedByteCount
         self.pathway = pathway
         self.assemblyRequest = assemblyRequest
+        self.isRemuxedMPEGTS = isRemuxedMPEGTS
     }
 }
 
@@ -323,7 +328,8 @@ public enum MediaIntegrityValidator {
                 fileURL: fileURL,
                 detectedType: detectedType,
                 pathway: request.pathway,
-                assemblyRequest: request.assemblyRequest
+                assemblyRequest: request.assemblyRequest,
+                isRemuxedMPEGTS: request.isRemuxedMPEGTS
             )
             return report(
                 fileURL: fileURL,
@@ -354,6 +360,10 @@ public enum MediaIntegrityValidator {
         case .mpegTS:
             return validateMPEGTS(fileURL: fileURL)
         case .fragmentedMP4:
+            let detected = FileTypeDetector.detect(at: fileURL)
+            if detected == .isoBaseMediaFile {
+                return validateISOBMFF(fileURL: fileURL, requiredBoxes: ["ftyp", "moov"])
+            }
             return validateISOBMFF(fileURL: fileURL, requiredBoxes: ["ftyp", "moov", "moof", "mdat"])
         }
     }
@@ -362,7 +372,8 @@ public enum MediaIntegrityValidator {
         fileURL: URL,
         detectedType: DetectedFileType,
         pathway: DownloadPathway,
-        assemblyRequest: MediaAssemblyRequest?
+        assemblyRequest: MediaAssemblyRequest?,
+        isRemuxedMPEGTS: Bool = false
     ) -> MediaIntegrityValidationOutcome {
 
         switch detectedType {
@@ -374,7 +385,14 @@ public enum MediaIntegrityValidator {
             // For HLS/DASH/MSE outputs we require the full box set.
             let requiredBoxes: Set<String>
             switch pathway {
-            case .hlsVOD, .dashVOD, .mseCapture:
+            case .hlsVOD:
+                if detectedType == .isoBaseMediaFile && (isRemuxedMPEGTS || assemblyRequest?.container == .mpegTS) {
+                    // Remuxed MPEG-TS to standard MP4
+                    requiredBoxes = ["ftyp", "moov"]
+                } else {
+                    requiredBoxes = ["ftyp", "moov", "moof", "mdat"]
+                }
+            case .dashVOD, .mseCapture:
                 // A complete assembled fMP4 must have ftyp + moov + moof + mdat.
                 requiredBoxes = ["ftyp", "moov", "moof", "mdat"]
             case .blobCapture, .directHTTP:
@@ -823,12 +841,14 @@ public extension MediaIntegrityValidator {
     /// Validates the assembled output of an HLS VOD reconstruction.
     static func validateHLSOutput(
         fileURL: URL,
-        expectedByteCount: Int64? = nil
+        expectedByteCount: Int64? = nil,
+        isRemuxedMPEGTS: Bool = false
     ) -> MediaIntegrityValidationReport {
         validate(MediaIntegrityValidationRequest(
             fileURL: fileURL,
             expectedByteCount: expectedByteCount,
-            pathway: .hlsVOD
+            pathway: .hlsVOD,
+            isRemuxedMPEGTS: isRemuxedMPEGTS
         ))
     }
 
