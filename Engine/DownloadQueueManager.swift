@@ -710,6 +710,36 @@ public actor DownloadQueueManager {
         notifyQueueChanged()
     }
 
+    /// Explicitly deletes the physical downloaded file from disk and updates or removes the corresponding record.
+    ///
+    /// - Parameters:
+    ///   - id: Identifier of the download.
+    ///   - keepRecord: If true, the record is retained in queue and persistence but transitioned to `.failed(reason: "Downloaded file missing from disk")`.
+    ///                 If false, the record is removed entirely from queue and persistence.
+    public func deleteDownloadedFile(id: String, keepRecord: Bool = true) async throws {
+        guard let item = items[id] else {
+            throw DownloadQueueError.downloadNotFound(id: id)
+        }
+        let fileURL = item.request.destinationURL
+        if FileManager.default.fileExists(atPath: fileURL.path) {
+            try? FileManager.default.removeItem(at: fileURL)
+        }
+        if keepRecord {
+            var updated = item
+            updated.state = .failed(reason: "Downloaded file missing from disk")
+            items[id] = updated
+            if var record = try? await persistenceStore.fetch(tag: id) {
+                record.state = .failed(reason: "Downloaded file missing from disk")
+                record.updatedAt = Date()
+                try? await persistenceStore.save(record)
+            }
+            persistQueue()
+            notifyQueueChanged()
+        } else {
+            try await removeFromQueue(id: id, deleteDestinationFile: true)
+        }
+    }
+
     /// Updates the scheduling priority of a queued download.
     ///
     /// If the download is actively running, its priority metadata is updated without interrupting the active transfer.
@@ -775,7 +805,7 @@ public actor DownloadQueueManager {
             for rawRecord in storedRecords {
                 // Streaming segment requests have their own durable parent
                 // record. They must never become user-visible queue items.
-                if Self.isInternalStreamingSegmentID(rawRecord.id) {
+                if Self.isInternalStreamingSegmentID(rawRecord.id) || rawRecord.isStreamingSegment {
                     continue
                 }
                 // Reconcile saved checkpoint with physical partial file on disk
@@ -869,6 +899,15 @@ public actor DownloadQueueManager {
                         updated.totalBytes = diskSize
                     }
                     self.items[id] = updated
+                } else {
+                    var updated = self.items[id] ?? item
+                    updated.state = .failed(reason: "Downloaded file missing from disk")
+                    self.items[id] = updated
+                    if var record = try? await persistenceStore.fetch(tag: id) {
+                        record.state = .failed(reason: "Downloaded file missing from disk")
+                        record.updatedAt = Date()
+                        try? await persistenceStore.save(record)
+                    }
                 }
             }
         }

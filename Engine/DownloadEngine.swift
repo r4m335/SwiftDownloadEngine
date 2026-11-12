@@ -746,6 +746,18 @@ public actor DownloadEngine {
         try await queueManager.removeFromQueue(id: id, deleteDestinationFile: deleteFile)
     }
 
+    /// Explicitly deletes the physical file for a download from disk, updating or removing the record.
+    public func deleteDownloadedFile(id: DownloadID, keepRecord: Bool = true) async throws {
+        if let orchestrator = streamingOrchestrator {
+            await orchestrator.removePersistedTransfer(id: id, deleteOutputFile: true)
+        }
+        try await queueManager.deleteDownloadedFile(id: id, keepRecord: keepRecord)
+        if keepRecord, let item = await queueManager.item(for: id) {
+            let snap = await makeSnapshot(from: item)
+            broadcast(.failed(snap, reason: "Downloaded file missing from disk"))
+        }
+    }
+
     /// Retries an eligible failed download.
     public func retryDownload(id: DownloadID) async throws {
         await attachListeners()

@@ -231,6 +231,49 @@ public enum BrowserMSECaptureLifecycle: String, Codable, Sendable, Equatable {
     case cancelled
     case unsupported
     case protectedMedia
+    case interrupted
+}
+
+/// Durable recovery metadata for an in-flight or interrupted MSE capture session.
+public struct BrowserMSECaptureRecoveryRecord: Codable, Sendable, Equatable, Identifiable {
+    public var id: String { captureID }
+    public let captureID: String
+    public let mediaSourceURL: String
+    public let documentID: String?
+    public let mimeTypes: [String]
+    public var bytesCaptured: Int64
+    public var segmentCount: Int
+    public var lifecycle: BrowserMSECaptureLifecycle
+    public var stagingDirectoryURL: URL
+    public let createdAt: Date
+    public var updatedAt: Date
+    public var failureReason: String?
+
+    public init(
+        captureID: String,
+        mediaSourceURL: String,
+        documentID: String? = nil,
+        mimeTypes: [String],
+        bytesCaptured: Int64 = 0,
+        segmentCount: Int = 0,
+        lifecycle: BrowserMSECaptureLifecycle = .capturing,
+        stagingDirectoryURL: URL,
+        createdAt: Date = Date(),
+        updatedAt: Date = Date(),
+        failureReason: String? = nil
+    ) {
+        self.captureID = captureID
+        self.mediaSourceURL = mediaSourceURL
+        self.documentID = documentID
+        self.mimeTypes = mimeTypes
+        self.bytesCaptured = bytesCaptured
+        self.segmentCount = segmentCount
+        self.lifecycle = lifecycle
+        self.stagingDirectoryURL = stagingDirectoryURL
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+        self.failureReason = failureReason
+    }
 }
 
 public struct BrowserMSECaptureSnapshot: Sendable, Equatable {
@@ -443,6 +486,18 @@ public actor BrowserMSECapturePrototypeWriter {
             lifecycle: .capturing
         )
 
+        let recoveryRecord = BrowserMSECaptureRecoveryRecord(
+            captureID: metadata.captureID,
+            mediaSourceURL: metadata.mediaSourceURL,
+            documentID: metadata.documentID,
+            mimeTypes: metadata.mimeTypes,
+            bytesCaptured: 0,
+            segmentCount: 0,
+            lifecycle: .capturing,
+            stagingDirectoryURL: staging
+        )
+        persistRecoveryRecord(recoveryRecord)
+
         return BrowserMSECaptureSnapshot(
             captureID: metadata.captureID,
             bytesCaptured: 0,
@@ -542,6 +597,20 @@ public actor BrowserMSECapturePrototypeWriter {
 
             session.tracks[trackIndex] = track
             sessions[captureID] = session
+
+            let recoveryRecord = BrowserMSECaptureRecoveryRecord(
+                captureID: captureID,
+                mediaSourceURL: session.metadata.mediaSourceURL,
+                documentID: session.metadata.documentID,
+                mimeTypes: session.metadata.mimeTypes,
+                bytesCaptured: session.bytesCaptured,
+                segmentCount: session.segmentCount,
+                lifecycle: .capturing,
+                stagingDirectoryURL: session.stagingDirectoryURL,
+                updatedAt: Date()
+            )
+            persistRecoveryRecord(recoveryRecord)
+
             return snapshot(for: session)
         } catch let error as BrowserMSECapturePrototypeError {
             abort(captureID: captureID)
@@ -796,6 +865,113 @@ public actor BrowserMSECapturePrototypeWriter {
                 kind: track.kind
             )
         }
+    }
+
+    // MARK: - Recovery & Termination Handling
+
+    private func stagingDirectoryURL(for captureID: String) -> URL {
+        destinationDirectoryURL
+            .appendingPathComponent("MSECaptures", isDirectory: true)
+            .appendingPathComponent(captureID, isDirectory: true)
+    }
+
+    private func persistRecoveryRecord(_ record: BrowserMSECaptureRecoveryRecord) {
+        let captureDir = stagingDirectoryURL(for: record.captureID)
+        try? FileManager.default.createDirectory(at: captureDir, withIntermediateDirectories: true)
+        let fileURL = captureDir.appendingPathComponent("mse_recovery.json")
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        if let data = try? encoder.encode(record) {
+            try? data.write(to: fileURL, options: .atomic)
+        }
+    }
+
+    /// Handles unexpected WebContent process termination (e.g. iOS memory pressure),
+    /// flushing staging handles, preserving segment data, and persisting recovery metadata.
+    public func handleWebContentProcessTermination(captureID: String? = nil) -> [BrowserMSECaptureRecoveryRecord] {
+        var records: [BrowserMSECaptureRecoveryRecord] = []
+        let idsToProcess: [String]
+        if let captureID, !captureID.isEmpty {
+            idsToProcess = sessions.keys.filter { $0 == captureID }
+        } else {
+            idsToProcess = Array(sessions.keys)
+        }
+
+        let now = Date()
+        for id in idsToProcess {
+            guard var session = sessions.removeValue(forKey: id) else { continue }
+            for (trackIndex, var track) in session.tracks {
+                if let handle = track.openHandle {
+                    try? handle.synchronize()
+                    try? handle.close()
+                    track.openHandle = nil
+                    session.tracks[trackIndex] = track
+                }
+            }
+            session.lifecycle = .interrupted
+            let record = BrowserMSECaptureRecoveryRecord(
+                captureID: id,
+                mediaSourceURL: session.metadata.mediaSourceURL,
+                documentID: session.metadata.documentID,
+                mimeTypes: session.metadata.mimeTypes,
+                bytesCaptured: session.bytesCaptured,
+                segmentCount: session.segmentCount,
+                lifecycle: .interrupted,
+                stagingDirectoryURL: session.stagingDirectoryURL,
+                updatedAt: now,
+                failureReason: "WebContent process terminated unexpectedly (possible memory pressure or crash)."
+            )
+            persistRecoveryRecord(record)
+            records.append(record)
+        }
+        return records
+    }
+
+    /// Reconciles on-disk MSE capture sessions at app launch, identifying interrupted captures.
+    public func recoverIncompleteCaptures() -> [BrowserMSECaptureRecoveryRecord] {
+        let parentDir = destinationDirectoryURL.appendingPathComponent("MSECaptures", isDirectory: true)
+        guard let subdirs = try? FileManager.default.contentsOfDirectory(
+            at: parentDir,
+            includingPropertiesForKeys: nil,
+            options: .skipsHiddenFiles
+        ) else { return [] }
+
+        var results: [BrowserMSECaptureRecoveryRecord] = []
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+
+        for dir in subdirs {
+            let recoveryURL = dir.appendingPathComponent("mse_recovery.json")
+            guard FileManager.default.fileExists(atPath: recoveryURL.path),
+                  let data = try? Data(contentsOf: recoveryURL),
+                  var record = try? decoder.decode(BrowserMSECaptureRecoveryRecord.self, from: data) else {
+                continue
+            }
+            if record.lifecycle == .capturing {
+                record.lifecycle = .interrupted
+                record.failureReason = "Incomplete capture recovered at launch (captured \(record.bytesCaptured) bytes)."
+                record.updatedAt = Date()
+                persistRecoveryRecord(record)
+            }
+            if record.lifecycle == .interrupted {
+                results.append(record)
+            }
+        }
+        return results
+    }
+
+    /// Loads the recovery record for a given capture ID if present on disk.
+    public func loadRecoveryRecord(for captureID: String) -> BrowserMSECaptureRecoveryRecord? {
+        let captureDir = stagingDirectoryURL(for: captureID)
+        let recoveryURL = captureDir.appendingPathComponent("mse_recovery.json")
+        guard FileManager.default.fileExists(atPath: recoveryURL.path),
+              let data = try? Data(contentsOf: recoveryURL) else {
+            return nil
+        }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return try? decoder.decode(BrowserMSECaptureRecoveryRecord.self, from: data)
     }
 
     private func abort(captureID: String) {
@@ -1120,6 +1296,25 @@ public actor BrowserMSECapturePrototypeReceiver {
             return BrowserMSECapturePrototypeAck(captureID: captureID, accepted: false, error: .fileOperationFailed)
         }
     }
+
+    public func handleWebContentProcessTermination(captureID: String? = nil) async -> [BrowserMSECaptureRecoveryRecord] {
+        if let captureID {
+            authorizedCaptureIDs.remove(captureID)
+            expectedDocumentIDs.removeValue(forKey: captureID)
+        } else {
+            authorizedCaptureIDs.removeAll()
+            expectedDocumentIDs.removeAll()
+        }
+        return await writer.handleWebContentProcessTermination(captureID: captureID)
+    }
+
+    public func recoverIncompleteCaptures() async -> [BrowserMSECaptureRecoveryRecord] {
+        await writer.recoverIncompleteCaptures()
+    }
+
+    public func loadRecoveryRecord(for captureID: String) async -> BrowserMSECaptureRecoveryRecord? {
+        await writer.loadRecoveryRecord(for: captureID)
+    }
 }
 
 public actor BrowserMSECaptureService {
@@ -1142,6 +1337,18 @@ public actor BrowserMSECaptureService {
 
     public func cancel(captureID: String) async {
         await receiver.cancel(captureID: captureID)
+    }
+
+    public func handleWebContentProcessTermination(captureID: String? = nil) async -> [BrowserMSECaptureRecoveryRecord] {
+        await receiver.handleWebContentProcessTermination(captureID: captureID)
+    }
+
+    public func recoverIncompleteCaptures() async -> [BrowserMSECaptureRecoveryRecord] {
+        await receiver.recoverIncompleteCaptures()
+    }
+
+    public func loadRecoveryRecord(for captureID: String) async -> BrowserMSECaptureRecoveryRecord? {
+        await receiver.loadRecoveryRecord(for: captureID)
     }
 
     public func receive(data: Data) async -> BrowserMSECapturePrototypeAck {

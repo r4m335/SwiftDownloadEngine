@@ -651,6 +651,24 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         }
     }
 
+    /// Handles unexpected WebContent process termination (crash or memory pressure) for MSE captures.
+    /// Preserves partial staging track segments for recovery and persists recovery metadata.
+    public func handleMSEProcessTermination(for tabID: UUID) {
+        if let session = tabSessions[tabID] {
+            let service = session.mseCaptureService
+            let captureID = activeMSECaptureID
+            Task {
+                _ = await service.handleWebContentProcessTermination(captureID: captureID)
+            }
+        }
+        if activeMSECaptureTabID == tabID {
+            activeMSECaptureID = nil
+            activeMSECaptureTabID = nil
+            isCapturingMSE = false
+            mseCaptureErrorMessage = "The webpage process was terminated by iOS (likely memory pressure). Partial MSE capture preserved for recovery."
+        }
+    }
+
     fileprivate func handleBlobCaptureAcknowledgement(
         _ acknowledgement: BlobCaptureAck,
         tabID: UUID
@@ -843,10 +861,26 @@ public final class BrowserViewModel: NSObject, ObservableObject {
             return
         }
         if let snapshot = acknowledgement.snapshot, snapshot.isSuccessfullyReconstructed {
-            isCapturingMSE = false
-            activeMSECaptureID = nil
-            activeMSECaptureTabID = nil
-            downloadSuccessNotification = "MSE capture reconstructed a validated media file."
+            let outputURL = snapshot.reconstructedURL
+            let capturedBytes = snapshot.bytesCaptured
+            let filename = outputURL?.lastPathComponent ?? "mse-capture.mp4"
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                if let outputURL {
+                    try? await self.downloadDelegate?.importCompletedBrowserFile(
+                        fileURL: outputURL,
+                        filename: filename,
+                        expectedSize: capturedBytes > 0 ? capturedBytes : nil,
+                        originalURL: nil,
+                        mimeType: "video/mp4"
+                    )
+                }
+                self.isCapturingMSE = false
+                self.activeMSECaptureID = nil
+                self.activeMSECaptureTabID = nil
+                self.downloadSuccessNotification = "MSE capture completed: \(filename)"
+                self.onDownloadInitiated?()
+            }
         } else if acknowledgement.snapshot?.lifecycle == .cancelled {
             isCapturingMSE = false
             activeMSECaptureID = nil
@@ -3419,6 +3453,7 @@ public final class BrowserWebViewCoordinator: NSObject, WKNavigationDelegate, WK
         DispatchQueue.main.async { [weak self] in
             guard let self, let tabID = self.tabID else { return }
             self.viewModel?.handleBlobProcessTermination(for: tabID)
+            self.viewModel?.handleMSEProcessTermination(for: tabID)
         }
         guard webView.url != nil else { return }
         webView.reload()

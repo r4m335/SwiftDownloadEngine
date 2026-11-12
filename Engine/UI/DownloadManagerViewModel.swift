@@ -766,6 +766,23 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
         }
     }
 
+    public func deleteDownloadedFile(id: DownloadID, keepRecord: Bool = true) async throws {
+        do {
+            try await engine.deleteDownloadedFile(id: id, keepRecord: keepRecord)
+            if !keepRecord {
+                await scheduleCoordinator.removeDownloadFromSchedule(downloadID: id)
+                downloads.removeAll { $0.id == id }
+                if selectedDownload?.id == id {
+                    selectedDownload = nil
+                }
+            }
+            await refreshSnapshots()
+        } catch {
+            self.errorMessage = error.localizedDescription
+            throw error
+        }
+    }
+
     public func retryDownload(id: DownloadID) async throws {
         do {
             try await engine.retryDownload(id: id)
