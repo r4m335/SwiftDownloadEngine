@@ -300,12 +300,16 @@ public final class BrowserViewModel: NSObject, ObservableObject {
 
     public static let defaultDesktopUserAgent = BrowserTabState.defaultDesktopUserAgent
 
+    public var activeTab: BrowserTabState? {
+        tabManager.activeTab
+    }
+
     public var isCurrentTabDesktopMode: Bool {
-        activeTab?.isDesktopMode ?? false
+        tabManager.activeTab?.isDesktopMode ?? false
     }
 
     public var isCurrentTabIncognito: Bool {
-        activeTab?.isIncognito ?? false
+        tabManager.activeTab?.isIncognito ?? false
     }
 
     @discardableResult
