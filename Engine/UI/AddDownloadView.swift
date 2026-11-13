@@ -12,8 +12,16 @@ import UniformTypeIdentifiers
 #endif
 
 public enum AddDownloadType: String, CaseIterable, Identifiable {
-    case http = "Web (HTTP)"
+    case http = "Single URL"
+    case batch = "Batch / Multi-Link"
     case torrent = "BitTorrent"
+
+    public var id: String { rawValue }
+}
+
+public enum BatchInputMode: String, CaseIterable, Identifiable {
+    case pattern = "URL Pattern"
+    case text = "Multi-Link Text"
 
     public var id: String { rawValue }
 }
@@ -47,6 +55,18 @@ public struct AddDownloadView: View {
     @State private var autoStart = true
     @State private var speedLimitKBps = ""
 
+    // Batch Download State
+    @State private var batchInputMode: BatchInputMode = .pattern
+    @State private var patternString = ""
+    @State private var multiLineText = ""
+    @State private var batchItems: [BatchDownloadItem] = []
+    @State private var batchRejectedEntries: [BatchRejectedEntry] = []
+    @State private var batchDuplicateCount = 0
+    @State private var isParsingBatch = false
+    @State private var isShowingTextFileImporter = false
+    @State private var showRejectedEntriesModal = false
+    @State private var batchCategoryOverride: DownloadCategory? = nil
+
     // Torrent Download State
     @State private var torrentInputMode: TorrentInputMode = .magnet
     @State private var magnetURI = ""
@@ -66,6 +86,14 @@ public struct AddDownloadView: View {
         _torrentPriority = State(initialValue: viewModel.defaultTorrentPriority)
     }
 
+    private var navigationTitle: String {
+        switch downloadType {
+        case .http: return "Add HTTP Download"
+        case .batch: return "Batch URL Downloads"
+        case .torrent: return "Add BitTorrent Transfer"
+        }
+    }
+
     public var body: some View {
         NavigationView {
             Form {
@@ -81,11 +109,13 @@ public struct AddDownloadView: View {
 
                 if downloadType == .http {
                     httpFormSections
+                } else if downloadType == .batch {
+                    batchFormSections
                 } else {
                     torrentFormSections
                 }
             }
-            .navigationTitle(downloadType == .http ? "Add HTTP Download" : "Add BitTorrent Transfer")
+            .navigationTitle(navigationTitle)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") {
@@ -112,16 +142,72 @@ public struct AddDownloadView: View {
                     errorMessage = "File import failed: \(error.localizedDescription)"
                 }
             }
+            .fileImporter(
+                isPresented: $isShowingTextFileImporter,
+                allowedContentTypes: [UTType.plainText, UTType.text, UTType(filenameExtension: "txt") ?? .data],
+                allowsMultipleSelection: false
+            ) { result in
+                switch result {
+                case .success(let urls):
+                    if let url = urls.first {
+                        guard url.startAccessingSecurityScopedResource() else {
+                            errorMessage = "Permission denied to read selected file."
+                            return
+                        }
+                        defer { url.stopAccessingSecurityScopedResource() }
+                        do {
+                            let content = try String(contentsOf: url, encoding: .utf8)
+                            multiLineText = content
+                            parseBatchText()
+                        } catch {
+                            errorMessage = "Failed to read text file: \(error.localizedDescription)"
+                        }
+                    }
+                case .failure(let error):
+                    errorMessage = "Text file import failed: \(error.localizedDescription)"
+                }
+            }
             #endif
+            .sheet(isPresented: $showRejectedEntriesModal) {
+                NavigationView {
+                    List(batchRejectedEntries) { entry in
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(entry.rawText)
+                                .font(.subheadline)
+                                .bold()
+                                .lineLimit(2)
+                            Text(entry.reason)
+                                .font(.caption)
+                                .foregroundColor(.red)
+                        }
+                        .padding(.vertical, 2)
+                    }
+                    .navigationTitle("Invalid Entries")
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button("Done") {
+                                showRejectedEntriesModal = false
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 
     private func applyPrefilledURL() {
         guard let prefilledURL,
               !prefilledURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-        downloadType = .http
-        urlString = prefilledURL
-        autoFillFilename(from: prefilledURL)
+        if prefilledURL.contains("[") && prefilledURL.contains("]") {
+            downloadType = .batch
+            batchInputMode = .pattern
+            patternString = prefilledURL
+            previewPatternExpansion()
+        } else {
+            downloadType = .http
+            urlString = prefilledURL
+            autoFillFilename(from: prefilledURL)
+        }
         errorMessage = nil
     }
 
@@ -438,6 +524,385 @@ public struct AddDownloadView: View {
                 urlString = ""
                 customFilename = ""
                 speedLimitKBps = ""
+
+                onDownloadAdded?()
+                presentationMode.wrappedValue.dismiss()
+            } catch {
+                errorMessage = error.localizedDescription
+                isSubmitting = false
+            }
+        }
+    }
+
+    // MARK: - Batch Form Sections
+
+    @ViewBuilder
+    private var batchFormSections: some View {
+        // Section 1: Batch Input Mode & Entry
+        Section(header: Text("Batch Input Mode")) {
+            Picker("Batch Mode", selection: $batchInputMode) {
+                ForEach(BatchInputMode.allCases) { mode in
+                    Text(mode.rawValue).tag(mode)
+                }
+            }
+            .pickerStyle(SegmentedPickerStyle())
+
+            if batchInputMode == .pattern {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        TextField("https://example.com/file[001-050].zip", text: $patternString)
+                        #if canImport(UIKit)
+                            .keyboardType(.URL)
+                            .autocapitalization(.none)
+                        #endif
+                            .disableAutocorrection(true)
+
+                        #if canImport(UIKit)
+                        Button {
+                            if let pasteboard = UIPasteboard.general.string {
+                                patternString = pasteboard
+                            }
+                        } label: {
+                            Image(systemName: "doc.on.clipboard")
+                                .foregroundColor(.blue)
+                        }
+                        #elseif canImport(AppKit)
+                        Button {
+                            if let pasteboard = NSPasteboard.general.string(forType: .string) {
+                                patternString = pasteboard
+                            }
+                        } label: {
+                            Image(systemName: "doc.on.clipboard")
+                                .foregroundColor(.blue)
+                        }
+                        #endif
+                    }
+
+                    Text("Example: https://example.com/file[001-050].zip or [1-20] or [a-z]")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+
+                    Button {
+                        previewPatternExpansion()
+                    } label: {
+                        HStack {
+                            if isParsingBatch {
+                                ProgressView()
+                                    .padding(.trailing, 4)
+                            }
+                            Image(systemName: "wand.and.stars")
+                            Text("Preview Pattern")
+                        }
+                        .font(.subheadline.bold())
+                    }
+                    .padding(.top, 4)
+                    .disabled(patternString.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isParsingBatch)
+                }
+            } else {
+                VStack(alignment: .leading, spacing: 8) {
+                    TextEditor(text: $multiLineText)
+                        .frame(minHeight: 120, maxHeight: 180)
+                        .font(.system(.caption, design: .monospaced))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 6)
+                                .stroke(Color.secondary.opacity(0.2), lineWidth: 1)
+                        )
+
+                    HStack(spacing: 12) {
+                        #if canImport(UIKit)
+                        Button {
+                            if let pasteboard = UIPasteboard.general.string {
+                                multiLineText = pasteboard
+                                parseBatchText()
+                            }
+                        } label: {
+                            Label("Paste URLs", systemImage: "doc.on.clipboard")
+                                .font(.caption)
+                        }
+                        .buttonStyle(.bordered)
+                        #elseif canImport(AppKit)
+                        Button {
+                            if let pasteboard = NSPasteboard.general.string(forType: .string) {
+                                multiLineText = pasteboard
+                                parseBatchText()
+                            }
+                        } label: {
+                            Label("Paste URLs", systemImage: "doc.on.clipboard")
+                                .font(.caption)
+                        }
+                        .buttonStyle(.bordered)
+                        #endif
+
+                        #if canImport(UniformTypeIdentifiers)
+                        Button {
+                            isShowingTextFileImporter = true
+                        } label: {
+                            Label("Import .txt...", systemImage: "folder")
+                                .font(.caption)
+                        }
+                        .buttonStyle(.bordered)
+                        #endif
+
+                        Spacer()
+
+                        Button {
+                            parseBatchText()
+                        } label: {
+                            HStack {
+                                if isParsingBatch {
+                                    ProgressView()
+                                        .padding(.trailing, 4)
+                                }
+                                Label("Parse Links", systemImage: "arrow.triangle.2.circlepath")
+                            }
+                            .font(.caption.bold())
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(multiLineText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isParsingBatch)
+                    }
+                }
+            }
+
+            if let error = errorMessage {
+                Text(error)
+                    .font(.caption)
+                    .foregroundColor(.red)
+            }
+
+            if let success = successMessage {
+                HStack {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundColor(.green)
+                    Text(success)
+                        .font(.caption)
+                        .foregroundColor(.green)
+                }
+            }
+        }
+
+        // Section 2: Batch Preview & Item Selection
+        if !batchItems.isEmpty {
+            Section(header: HStack {
+                Text("Batch Preview (\(batchItems.count) links)")
+                Spacer()
+                if batchItems.allSatisfy(\.isSelected) {
+                    Button("Deselect All") {
+                        for i in 0..<batchItems.count { batchItems[i].isSelected = false }
+                    }
+                    .font(.caption2)
+                } else {
+                    Button("Select All") {
+                        for i in 0..<batchItems.count { batchItems[i].isSelected = true }
+                    }
+                    .font(.caption2)
+                }
+            }) {
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 8) {
+                        Text("\(batchItems.filter(\.isSelected).count) of \(batchItems.count) selected")
+                            .font(.caption.bold())
+                            .foregroundColor(.primary)
+
+                        if batchDuplicateCount > 0 {
+                            Text("• \(batchDuplicateCount) duplicates omitted")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+
+                    if !batchRejectedEntries.isEmpty {
+                        Button {
+                            showRejectedEntriesModal = true
+                        } label: {
+                            HStack(spacing: 4) {
+                                Image(systemName: "exclamationmark.triangle.fill")
+                                    .foregroundColor(.orange)
+                                Text("\(batchRejectedEntries.count) invalid entries skipped (View details)")
+                                    .font(.caption)
+                                    .foregroundColor(.orange)
+                            }
+                        }
+                    }
+                }
+                .padding(.vertical, 2)
+
+                ForEach(batchItems) { item in
+                    HStack(spacing: 10) {
+                        Button {
+                            if let idx = batchItems.firstIndex(where: { $0.id == item.id }) {
+                                batchItems[idx].isSelected.toggle()
+                            }
+                        } label: {
+                            Image(systemName: item.isSelected ? "checkmark.circle.fill" : "circle")
+                                .foregroundColor(item.isSelected ? .blue : .secondary)
+                                .font(.title3)
+                        }
+                        .buttonStyle(.plain)
+
+                        VStack(alignment: .leading, spacing: 2) {
+                            HStack {
+                                Text(item.filename)
+                                    .font(.subheadline)
+                                    .bold()
+                                    .lineLimit(1)
+
+                                Spacer()
+
+                                Image(systemName: item.category.iconName)
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+                                Text(item.category.displayName)
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+                            }
+
+                            Text(item.url.absoluteString)
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                                .lineLimit(1)
+                        }
+
+                        Button {
+                            batchItems.removeAll(where: { $0.id == item.id })
+                        } label: {
+                            Image(systemName: "trash")
+                                .font(.caption)
+                                .foregroundColor(.red.opacity(0.8))
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    .padding(.vertical, 2)
+                }
+
+                Button(role: .destructive) {
+                    batchItems.removeAll()
+                    batchRejectedEntries.removeAll()
+                    batchDuplicateCount = 0
+                } label: {
+                    HStack {
+                        Spacer()
+                        Label("Clear All Links", systemImage: "trash")
+                            .font(.caption)
+                        Spacer()
+                    }
+                }
+            }
+
+            // Section 3: Batch Configuration
+            Section(header: Text("Batch Download Settings")) {
+                Picker("Category Override", selection: $selectedCategory) {
+                    Text("Auto Detect").tag(DownloadCategory.others)
+                    ForEach(DownloadCategory.allCases) { cat in
+                        HStack {
+                            Image(systemName: cat.iconName)
+                            Text(cat.displayName)
+                        }
+                        .tag(cat)
+                    }
+                }
+
+                Stepper("Worker Threads: \(workerCount)", value: $workerCount, in: 1...32)
+
+                Toggle("Start Immediately", isOn: $autoStart)
+
+                HStack {
+                    Text("Speed Limit (KB/s)")
+                    Spacer()
+                    TextField("Unlimited", text: $speedLimitKBps)
+                    #if canImport(UIKit)
+                        .keyboardType(.numberPad)
+                    #endif
+                        .multilineTextAlignment(.trailing)
+                        .frame(maxWidth: 120)
+                }
+            }
+
+            // Section 4: Start All Action
+            Section {
+                Button {
+                    submitBatchDownloads()
+                } label: {
+                    HStack {
+                        Spacer()
+                        if isSubmitting {
+                            ProgressView()
+                                .padding(.trailing, 8)
+                        }
+                        Text("Start All Downloads (\(batchItems.filter(\.isSelected).count))")
+                            .bold()
+                        Spacer()
+                    }
+                }
+                .disabled(batchItems.filter(\.isSelected).isEmpty || isSubmitting)
+            }
+        }
+    }
+
+    private func previewPatternExpansion() {
+        errorMessage = nil
+        successMessage = nil
+        isParsingBatch = true
+
+        do {
+            let urls = try BatchURLExpander.expandPattern(patternString)
+            let result = BatchExpansionResult(validURLs: urls, rejectedEntries: [], duplicateCount: 0)
+            self.batchItems = result.toDownloadItems()
+            self.batchRejectedEntries = []
+            self.batchDuplicateCount = 0
+            self.isParsingBatch = false
+            self.successMessage = "Expanded \(urls.count) URLs from pattern."
+        } catch {
+            self.errorMessage = error.localizedDescription
+            self.isParsingBatch = false
+        }
+    }
+
+    private func parseBatchText() {
+        errorMessage = nil
+        successMessage = nil
+        isParsingBatch = true
+
+        let result = BatchURLExpander.parseMultiLineText(multiLineText, expandPatterns: true)
+        self.batchItems = result.toDownloadItems()
+        self.batchRejectedEntries = result.rejectedEntries
+        self.batchDuplicateCount = result.duplicateCount
+        self.isParsingBatch = false
+
+        if result.validURLs.isEmpty {
+            self.errorMessage = "No valid HTTP/HTTPS URLs were detected in input."
+        } else {
+            self.successMessage = "Found \(result.validURLs.count) valid URLs."
+        }
+    }
+
+    private func submitBatchDownloads() {
+        errorMessage = nil
+        isSubmitting = true
+
+        let limit: Int64?
+        if let kb = Int64(speedLimitKBps), kb > 0 {
+            limit = kb * 1024
+        } else {
+            limit = nil
+        }
+
+        let itemsToDownload = batchItems.filter(\.isSelected)
+
+        Task { @MainActor in
+            do {
+                _ = try await viewModel.addBatchDownloads(
+                    items: itemsToDownload,
+                    threadCount: workerCount,
+                    speedLimitBytesPerSecond: limit,
+                    autoStart: autoStart,
+                    categoryOverride: selectedCategory == .others ? nil : selectedCategory
+                )
+
+                isSubmitting = false
+                viewModel.showNotification("Started \(itemsToDownload.count) batch downloads.")
+                batchItems.removeAll()
+                patternString = ""
+                multiLineText = ""
 
                 onDownloadAdded?()
                 presentationMode.wrappedValue.dismiss()

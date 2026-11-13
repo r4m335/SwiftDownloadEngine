@@ -750,16 +750,17 @@ public enum FileConflictResolver {
         return sanitized
     }
 
-    /// Resolves file collisions: if `directory/filename` already exists on disk,
+    /// Resolves file collisions: if `directory/filename` already exists on disk or in `excludingPaths`,
     /// automatically produces `directory/filename (1).ext`, `directory/filename (2).ext`, etc.
     public static func uniqueDestinationURL(
         desiredFilename: String,
         directory: URL,
-        fileManager: FileManager = .default
+        fileManager: FileManager = .default,
+        excludingPaths: Set<String> = []
     ) -> URL {
         let sanitized = sanitizeFilename(desiredFilename)
         let destination = directory.appendingPathComponent(sanitized, isDirectory: false)
-        if !fileManager.fileExists(atPath: destination.path) {
+        if !fileManager.fileExists(atPath: destination.path) && !excludingPaths.contains(destination.path) {
             return destination
         }
 
@@ -770,7 +771,7 @@ public enum FileConflictResolver {
         while true {
             let numberedName = ext.isEmpty ? "\(baseName) (\(counter))" : "\(baseName) (\(counter)).\(ext)"
             let candidateURL = directory.appendingPathComponent(numberedName, isDirectory: false)
-            if !fileManager.fileExists(atPath: candidateURL.path) {
+            if !fileManager.fileExists(atPath: candidateURL.path) && !excludingPaths.contains(candidateURL.path) {
                 return candidateURL
             }
             counter += 1

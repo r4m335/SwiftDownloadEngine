@@ -868,6 +868,71 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
         }
     }
 
+    // MARK: - Batch Download Lifecycle Actions
+
+    @discardableResult
+    public func addBatchDownloads(
+        items: [BatchDownloadItem],
+        threadCount: Int = 6,
+        speedLimitBytesPerSecond: Int64? = nil,
+        autoStart: Bool = true,
+        categoryOverride: DownloadCategory? = nil
+    ) async throws -> [DownloadSnapshot] {
+        let activeItems = items.filter(\.isSelected)
+        guard !activeItems.isEmpty else { return [] }
+
+        var requests: [DownloadRequest] = []
+        var allocatedPaths: Set<String> = []
+        let sanitizedLimit: Int64? = speedLimitBytesPerSecond.flatMap { $0 > 0 ? $0 : nil }
+        let threads = max(1, min(32, threadCount))
+
+        for item in activeItems {
+            let cat = categoryOverride ?? item.category
+            let targetDirectory: URL
+            if appSettings.isAutomaticCategorizationEnabled {
+                targetDirectory = (try? categoryDownloadsDirectory(for: cat)) ?? downloadsDirectoryURL
+            } else {
+                targetDirectory = downloadsDirectoryURL
+            }
+
+            try Self.ensureDirectoryExistsAndWritable(targetDirectory)
+            let destURL = FileConflictResolver.uniqueDestinationURL(
+                desiredFilename: item.filename,
+                directory: targetDirectory,
+                excludingPaths: allocatedPaths
+            )
+            allocatedPaths.insert(destURL.path)
+
+            let request = DownloadRequest(
+                url: item.url,
+                destinationURL: destURL,
+                headers: [:],
+                persistSensitiveHeaders: true,
+                configuredThreadCount: threads,
+                speedLimitBytesPerSecond: sanitizedLimit,
+                transportPolicy: .foreground
+            )
+            requests.append(request)
+        }
+
+        do {
+            let snapshots = try await engine.addDownloads(requests, priority: .normal, autoStart: autoStart)
+            for snap in snapshots {
+                upsertSnapshot(snap)
+#if canImport(BackgroundTasks) && os(iOS) && SDE_ENABLE_BG_CONTINUED_PROCESSING
+                if autoStart {
+                    continuedProcessingCoordinator.submit(downloadID: snap.id)
+                }
+#endif
+            }
+            showNotification("Added \(snapshots.count) batch downloads.")
+            return snapshots
+        } catch {
+            self.errorMessage = error.localizedDescription
+            throw error
+        }
+    }
+
     public func pauseDownload(id: DownloadID) async throws {
         do {
             try await engine.pauseDownload(id: id)
