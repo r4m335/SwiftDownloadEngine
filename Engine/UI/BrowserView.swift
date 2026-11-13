@@ -2390,6 +2390,69 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         #endif
     }
 
+    #if canImport(WebKit)
+    /// Loads an inline HTML5 player for an HLS stream directly into the active or specified tab,
+    /// keeping the browser tab alive and preventing WebKit from launching the native full-screen player.
+    public func loadInlineHLSPlayer(
+        for url: URL,
+        title: String? = nil,
+        in webView: WKWebView,
+        tabID: UUID? = nil
+    ) {
+        let displayTitle: String
+        if let title = title?.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty {
+            displayTitle = title
+        } else {
+            let last = url.lastPathComponent.trimmingCharacters(in: .whitespacesAndNewlines)
+            displayTitle = last.isEmpty ? (url.host ?? "HLS Stream") : last
+        }
+
+        let html = BrowserHLSInlinePlayer.html(for: url, title: displayTitle)
+        webView.loadHTMLString(html, baseURL: url)
+
+        let targetTabID = tabID ?? activeTabID
+        if let targetTabID = targetTabID {
+            updateWebViewState(
+                for: targetTabID,
+                webView: webView,
+                url: url,
+                title: displayTitle,
+                isLoading: false
+            )
+        } else {
+            currentURL = url
+            urlInputText = url.absoluteString
+            pageTitle = displayTitle
+            isLoading = false
+        }
+
+        BrowserDiagnosticLogger.shared.log(
+            category: .navigation,
+            message: "Loaded inline HLS player for \(url.absoluteString)",
+            url: url,
+            tabID: targetTabID
+        )
+    }
+
+    /// Convenience method to load the inline HLS player in the current tab session.
+    public func loadInlineHLSPlayer(
+        for url: URL,
+        title: String? = nil,
+        tabID: UUID? = nil
+    ) {
+        let targetTabID = tabID ?? activeTabID
+        let targetWebView: WKWebView?
+        if let targetTabID, let session = tabSessions[targetTabID] {
+            targetWebView = session.webView
+        } else {
+            targetWebView = self.webView
+        }
+        if let wv = targetWebView {
+            loadInlineHLSPlayer(for: url, title: title, in: wv, tabID: targetTabID)
+        }
+    }
+    #endif
+
     public func goBack() {
         errorMessage = nil
         #if canImport(WebKit)
@@ -4735,6 +4798,24 @@ public final class BrowserWebViewCoordinator: NSObject, WKNavigationDelegate, WK
                 guard let self = self else { return }
                 self.viewModel?.ingestMediaResource(resource, tabID: self.tabID)
             }
+        }
+
+        // Intercept top-level (main-frame) HLS stream navigations to render
+        // an inline HTML5 player in the existing tab, preventing iOS WebKit
+        // from presenting a full-screen native media document that dismisses
+        // the tab upon closing.
+        if navigationResponse.isForMainFrame && outcome.shouldPlayHLSInline {
+            decisionHandler(.cancel)
+            DispatchQueue.main.async { [weak self, weak webView] in
+                guard let self = self, let webView = webView, let vm = self.viewModel else { return }
+                vm.loadInlineHLSPlayer(
+                    for: url,
+                    title: outcome.suggestedFilename,
+                    in: webView,
+                    tabID: self.tabID
+                )
+            }
+            return
         }
 
         if outcome.shouldInterceptAsDownload {

@@ -12,6 +12,13 @@ public struct BrowserNavigationResponseClassifier: Sendable {
         public let suggestedFilename: String?
         public let reason: String
 
+        /// Whether this response is an HLS manifest that should be played inline
+        /// in an HTML5 video player rather than letting iOS WebKit take over
+        /// with its full-screen native document presentation.
+        public var shouldPlayHLSInline: Bool {
+            isStreamingManifest && manifestKind == .hls
+        }
+
         public init(
             isStreamingManifest: Bool,
             manifestKind: StreamingManifestKind,
@@ -109,6 +116,26 @@ public struct BrowserNavigationResponseClassifier: Sendable {
             suggestedFilename: downloadClassification.suggestedFilename,
             reason: downloadClassification.reason
         )
+    }
+
+    /// Determines whether a navigation response corresponds to a main-frame HLS manifest
+    /// that should be intercepted for inline playback inside the tab rather than being
+    /// handed over to WebKit's full-screen native AVPlayer document presentation.
+    public static func shouldInterceptForInlineHLS(
+        isForMainFrame: Bool,
+        url: URL,
+        statusCode: Int = 200,
+        contentDisposition: String? = nil,
+        contentType: String? = nil
+    ) -> Bool {
+        guard isForMainFrame else { return false }
+        let outcome = evaluate(
+            url: url,
+            statusCode: statusCode,
+            contentDisposition: contentDisposition,
+            contentType: contentType
+        )
+        return outcome.shouldPlayHLSInline
     }
 }
 
