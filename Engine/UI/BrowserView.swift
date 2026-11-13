@@ -1102,13 +1102,9 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                 resourceType: .video,
                 requestContext: requestContext ?? decision.candidate.requestContext,
                 manifestText: cachedText,
-                hlsVariantPreferences: decision.candidate.hlsVariantPreferences
+                hlsVariantPreferences: nil
             )
-            if res.hlsVariantPreferences != nil {
-                self.promptStreamingDownload(for: res)
-            } else {
-                self.presentQualityPicker(for: res)
-            }
+            self.presentQualityPicker(for: res)
 
         case .mseCapture(let candidate):
             #if canImport(WebKit)
@@ -1472,7 +1468,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
 
             promptStreamingDownload(for: configuredResource, customFilename: filename)
         } else if let candidate = qualityPickerTargetCandidate, let url = candidate.url ?? URL(string: candidate.rawURL) {
-            var prefs = candidate.hlsVariantPreferences
+            var prefs: HLSVariantSelectionPreferences? = nil
             if let selected = selectedQualityOption {
                 if selected.manifestKind == .hls {
                     prefs = HLSVariantSelectionPreferences(
