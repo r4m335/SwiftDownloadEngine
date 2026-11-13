@@ -5,6 +5,8 @@ import Foundation
 /// browser UI layer; this value carries the state needed by the tab overview
 /// and by the active-tab presentation.
 public struct BrowserTabState: Identifiable, Equatable, Sendable {
+    public static let defaultDesktopUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15"
+
     public let id: UUID
     public var url: URL?
     public var title: String
@@ -12,34 +14,40 @@ public struct BrowserTabState: Identifiable, Equatable, Sendable {
     public var canGoBack: Bool
     public var canGoForward: Bool
     public var estimatedProgress: Double
+    public var isDesktopMode: Bool
+    public var isIncognito: Bool
 
     public init(
         id: UUID = UUID(),
         url: URL? = nil,
-        title: String = "New Tab",
+        title: String? = nil,
         isLoading: Bool = false,
         canGoBack: Bool = false,
         canGoForward: Bool = false,
-        estimatedProgress: Double = 0
+        estimatedProgress: Double = 0,
+        isDesktopMode: Bool = false,
+        isIncognito: Bool = false
     ) {
         self.id = id
         self.url = url
-        self.title = title
+        self.title = title ?? (isIncognito ? "Private Tab" : "New Tab")
         self.isLoading = isLoading
         self.canGoBack = canGoBack
         self.canGoForward = canGoForward
         self.estimatedProgress = estimatedProgress
+        self.isDesktopMode = isDesktopMode
+        self.isIncognito = isIncognito
     }
 
     public var displayName: String {
         if !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-           title != "New Tab" {
+           title != "New Tab", title != "Private Tab" {
             return title
         }
         if let host = url?.host, !host.isEmpty {
             return host
         }
-        return "New Tab"
+        return isIncognito ? "Private Tab" : "New Tab"
     }
 }
 
@@ -60,8 +68,15 @@ public struct BrowserTabManager: Sendable, Equatable {
     }
 
     @discardableResult
-    public mutating func createTab(select: Bool = true) -> UUID {
-        let tab = BrowserTabState()
+    public mutating func createTab(
+        select: Bool = true,
+        isIncognito: Bool = false,
+        isDesktopMode: Bool = false
+    ) -> UUID {
+        let tab = BrowserTabState(
+            isDesktopMode: isDesktopMode,
+            isIncognito: isIncognito
+        )
         tabs.append(tab)
         if select || activeTabID == nil {
             activeTabID = tab.id

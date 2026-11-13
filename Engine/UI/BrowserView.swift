@@ -298,9 +298,27 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         #endif
     }
 
+    public static let defaultDesktopUserAgent = BrowserTabState.defaultDesktopUserAgent
+
+    public var isCurrentTabDesktopMode: Bool {
+        activeTab?.isDesktopMode ?? false
+    }
+
+    public var isCurrentTabIncognito: Bool {
+        activeTab?.isIncognito ?? false
+    }
+
     @discardableResult
-    public func createNewTab(with url: URL? = nil) -> UUID {
-        let id = tabManager.createTab(select: true)
+    public func createNewTab(
+        with url: URL? = nil,
+        isIncognito: Bool = false,
+        isDesktopMode: Bool = false
+    ) -> UUID {
+        let id = tabManager.createTab(
+            select: true,
+            isIncognito: isIncognito,
+            isDesktopMode: isDesktopMode
+        )
         publishTabState()
         syncActiveTabState()
         publishMediaCandidates()
@@ -317,6 +335,35 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         return id
     }
 
+    /// Toggles desktop/mobile user agent and viewport presentation for the specified tab (or active tab).
+    public func toggleDesktopMode(for tabID: UUID? = nil) {
+        let targetID = tabID ?? activeTabID
+        guard let id = targetID, var tab = tabManager.tab(withID: id) else { return }
+        tab.isDesktopMode.toggle()
+        _ = tabManager.updateTab(tab)
+        publishTabState()
+        syncActiveTabState()
+
+        #if canImport(WebKit)
+        if let session = tabSessions[id] {
+            session.webView.customUserAgent = tab.isDesktopMode ? Self.defaultDesktopUserAgent : nil
+            #if os(iOS)
+            if #available(iOS 13.0, *) {
+                session.webView.configuration.defaultWebpagePreferences.preferredContentMode = tab.isDesktopMode ? .desktop : .mobile
+            }
+            #endif
+            session.webView.reload()
+        }
+        #endif
+    }
+
+    public func closeAllIncognitoTabs() {
+        let incognitoIDs = tabs.filter(\.isIncognito).map(\.id)
+        for id in incognitoIDs {
+            _ = closeTab(id)
+        }
+    }
+
     @discardableResult
     public func selectTab(_ id: UUID) -> Bool {
         guard tabManager.selectTab(id) else { return false }
@@ -330,11 +377,23 @@ public final class BrowserViewModel: NSObject, ObservableObject {
 
     @discardableResult
     public func closeTab(_ id: UUID) -> UUID? {
+        let isIncognito = tabManager.tab(withID: id)?.isIncognito ?? false
         #if canImport(WebKit)
         cancelBlobCapture(for: id)
         cancelMSECapture(for: id)
         pendingNavigationURLs.removeValue(forKey: id)
-        tabSessions.removeValue(forKey: id)
+        if let session = tabSessions.removeValue(forKey: id) {
+            session.webView.stopLoading()
+            session.webView.navigationDelegate = nil
+            session.webView.uiDelegate = nil
+            if isIncognito {
+                let store = session.webView.configuration.websiteDataStore
+                let dataTypes = WKWebsiteDataStore.allWebsiteDataTypes()
+                store.fetchDataRecords(ofTypes: dataTypes) { records in
+                    store.removeData(ofTypes: dataTypes, for: records) { }
+                }
+            }
+        }
         #endif
         tabOriginChains.removeValue(forKey: id)
         mediaCandidateCatalogs.removeValue(forKey: id)
@@ -2958,6 +3017,21 @@ public struct BrowserView: View {
                 .buttonStyle(.plain)
                 .accessibilityLabel("Content Shields")
 
+                // Incognito Private Indicator (Phase 3 Milestone 3.4)
+                if viewModel.isCurrentTabIncognito {
+                    HStack(spacing: 3) {
+                        Image(systemName: "eyeglasses")
+                            .font(.system(size: 11, weight: .bold))
+                        Text("Private")
+                            .font(.system(size: 10, weight: .bold))
+                    }
+                    .foregroundColor(.purple)
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 2)
+                    .background(Color.purple.opacity(0.15))
+                    .cornerRadius(4)
+                }
+
                 // Security / Search Icon
                 if let url = viewModel.currentURL {
                     if url.scheme?.lowercased() == "https" {
@@ -3120,6 +3194,18 @@ public struct BrowserView: View {
                 .disabled(viewModel.currentURL == nil)
                 .frame(minWidth: 44, minHeight: 44)
 
+                // Desktop Mode Toggle Button (Phase 3 Milestone 3.4)
+                Button {
+                    viewModel.toggleDesktopMode()
+                } label: {
+                    Image(systemName: viewModel.isCurrentTabDesktopMode ? "desktopcomputer" : "iphone")
+                        .font(.system(size: 18))
+                        .foregroundColor(viewModel.isCurrentTabDesktopMode ? .blue : .primary)
+                }
+                .accessibilityLabel(viewModel.isCurrentTabDesktopMode ? "Request Mobile Website" : "Request Desktop Website")
+                .disabled(viewModel.currentURL == nil)
+                .frame(minWidth: 44, minHeight: 44)
+
                 // Reload Button
                 Button {
                     viewModel.reload()
@@ -3262,15 +3348,41 @@ public struct BrowserTabSwitcherView: View {
                         tabCard(for: tab)
                     }
 
-                    Button {
-                        viewModel.createNewTab()
-                        dismiss()
-                    } label: {
-                        Label("New Tab", systemImage: "plus")
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 12)
+                    VStack(spacing: 8) {
+                        HStack(spacing: 12) {
+                            Button {
+                                viewModel.createNewTab(isIncognito: false)
+                                dismiss()
+                            } label: {
+                                Label("New Tab", systemImage: "plus")
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 12)
+                            }
+                            .buttonStyle(.borderedProminent)
+
+                            Button {
+                                viewModel.createNewTab(isIncognito: true)
+                                dismiss()
+                            } label: {
+                                Label("Private Tab", systemImage: "eyeglasses")
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 12)
+                            }
+                            .buttonStyle(.bordered)
+                            .tint(.purple)
+                        }
+
+                        if viewModel.tabs.contains(where: \.isIncognito) {
+                            Button {
+                                viewModel.closeAllIncognitoTabs()
+                            } label: {
+                                Label("Close All Private Tabs", systemImage: "trash")
+                                    .font(.caption)
+                                    .foregroundColor(.purple)
+                            }
+                            .padding(.top, 4)
+                        }
                     }
-                    .buttonStyle(.borderedProminent)
                 }
                 .padding(16)
             }
@@ -3300,6 +3412,24 @@ public struct BrowserTabSwitcherView: View {
                     HStack(spacing: 6) {
                         if tab.id == viewModel.activeTabID {
                             Image(systemName: "checkmark.circle.fill")
+                                .foregroundColor(tab.isIncognito ? .purple : .blue)
+                        }
+                        if tab.isIncognito {
+                            HStack(spacing: 3) {
+                                Image(systemName: "eyeglasses")
+                                    .font(.system(size: 11, weight: .bold))
+                                Text("Private")
+                                    .font(.system(size: 10, weight: .bold))
+                            }
+                            .foregroundColor(.purple)
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 2)
+                            .background(Color.purple.opacity(0.18))
+                            .cornerRadius(4)
+                        }
+                        if tab.isDesktopMode {
+                            Image(systemName: "desktopcomputer")
+                                .font(.caption.bold())
                                 .foregroundColor(.blue)
                         }
                         Text(tab.displayName)
@@ -3330,7 +3460,15 @@ public struct BrowserTabSwitcherView: View {
         .padding(14)
         .background(
             RoundedRectangle(cornerRadius: 12)
-                .fill(tab.id == viewModel.activeTabID ? Color.blue.opacity(0.12) : Color.secondary.opacity(0.1))
+                .fill(
+                    tab.isIncognito
+                        ? (tab.id == viewModel.activeTabID ? Color.purple.opacity(0.18) : Color.purple.opacity(0.08))
+                        : (tab.id == viewModel.activeTabID ? Color.blue.opacity(0.12) : Color.secondary.opacity(0.1))
+                )
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(tab.isIncognito ? Color.purple.opacity(0.3) : Color.clear, lineWidth: 1)
         )
         .simultaneousGesture(
             DragGesture(minimumDistance: 20)
@@ -3840,13 +3978,20 @@ final class BrowserWebViewSession {
 
     init(tabID: UUID, viewModel: BrowserViewModel) {
         self.tabID = tabID
+        let tab = viewModel.tabs.first(where: { $0.id == tabID })
+        let isIncognito = tab?.isIncognito ?? false
+        let isDesktop = tab?.isDesktopMode ?? false
+
         let config = WKWebViewConfiguration()
         config.processPool = Self.sharedProcessPool
-        config.websiteDataStore = .default()
+        config.websiteDataStore = isIncognito ? WKWebsiteDataStore.nonPersistent() : .default()
         config.defaultWebpagePreferences.allowsContentJavaScript = true
         config.preferences.javaScriptCanOpenWindowsAutomatically = !viewModel.isPopupBlockerEnabled
 #if os(iOS)
         config.allowsInlineMediaPlayback = true
+        if #available(iOS 13.0, *) {
+            config.defaultWebpagePreferences.preferredContentMode = isDesktop ? .desktop : .mobile
+        }
 #endif
 
         // Native Content Blocking & Ad Blocker (Phase 3 Milestone 3.2)
@@ -3899,8 +4044,9 @@ final class BrowserWebViewSession {
         diagHandler.install(on: config)
 
         let webView = WKWebView(frame: .zero, configuration: config)
-        // Keep the native Safari User-Agent untouched to ensure consistency
-        // with device hardware and Client Hints, preventing Cloudflare Turnstile rejection.
+        if isDesktop {
+            webView.customUserAgent = BrowserViewModel.defaultDesktopUserAgent
+        }
         self.webView = webView
         let coordinator = BrowserWebViewCoordinator(viewModel: viewModel, tabID: tabID)
         self.coordinator = coordinator
