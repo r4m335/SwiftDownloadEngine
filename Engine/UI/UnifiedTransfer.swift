@@ -97,6 +97,7 @@ public struct UnifiedTransfer: Identifiable, Sendable, Equatable {
     public let connectedSeeds: Int?
     public let torrentPriority: TorrentPriority?
     public let isExplicitlyPaused: Bool
+    public let isSequentialDownload: Bool
     public let seedingPreference: SeedingPreference?
     public let filePriorities: [Int: TorrentFilePriority]?
 
@@ -145,6 +146,7 @@ public struct UnifiedTransfer: Identifiable, Sendable, Equatable {
         self.connectedSeeds = nil
         self.torrentPriority = nil
         self.isExplicitlyPaused = false
+        self.isSequentialDownload = false
         self.seedingPreference = nil
         self.filePriorities = nil
     }
@@ -190,6 +192,7 @@ public struct UnifiedTransfer: Identifiable, Sendable, Equatable {
         self.connectedSeeds = task.progress.activeSeeds
         self.torrentPriority = task.priority
         self.isExplicitlyPaused = task.isExplicitlyPaused
+        self.isSequentialDownload = task.isSequentialDownload
         self.seedingPreference = task.seedingPreference
         self.filePriorities = task.filePriorities
     }
@@ -217,6 +220,7 @@ public struct UnifiedTransfer: Identifiable, Sendable, Equatable {
         connectedSeeds: Int? = nil,
         torrentPriority: TorrentPriority? = nil,
         isExplicitlyPaused: Bool = false,
+        isSequentialDownload: Bool = false,
         seedingPreference: SeedingPreference? = nil,
         filePriorities: [Int: TorrentFilePriority]? = nil
     ) {
@@ -241,6 +245,7 @@ public struct UnifiedTransfer: Identifiable, Sendable, Equatable {
         self.connectedSeeds = connectedSeeds
         self.torrentPriority = torrentPriority
         self.isExplicitlyPaused = isExplicitlyPaused
+        self.isSequentialDownload = isSequentialDownload
         self.seedingPreference = seedingPreference
         self.filePriorities = filePriorities
     }

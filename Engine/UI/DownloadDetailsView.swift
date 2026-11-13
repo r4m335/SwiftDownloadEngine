@@ -25,6 +25,11 @@ public struct DownloadDetailsView: View {
     @State private var quickLookURL: URL? = nil
     @State private var torrentFiles: [TorrentFileInfo] = []
     @State private var isLoadingFiles: Bool = false
+    @State private var torrentTrackers: [TorrentTrackerInfo] = []
+    @State private var isLoadingTrackers: Bool = false
+    @State private var showingAddTrackerSheet: Bool = false
+    @State private var newTrackerURL: String = ""
+    @State private var trackerErrorMessage: String? = nil
     @State private var showingRefreshSheet: Bool = false
     @State private var newRefreshURL: String = ""
     @State private var isRefreshing: Bool = false
@@ -94,6 +99,7 @@ public struct DownloadDetailsView: View {
             torrentHeaderSection(transfer)
             torrentDiagnosticsSection(transfer)
             torrentMetricsSection(transfer)
+            torrentTrackersSection(transfer)
             torrentFilesSection(transfer)
             torrentSeedingSection(transfer)
             torrentIdentitySection(transfer)
@@ -105,9 +111,21 @@ public struct DownloadDetailsView: View {
         #endif
         .navigationTitle("Torrent Details")
         .onAppear {
-            if let hash = transfer.infoHash, transfer.totalBytes != nil {
-                loadFiles(for: hash)
+            if let hash = transfer.infoHash {
+                if transfer.totalBytes != nil {
+                    loadFiles(for: hash)
+                }
+                loadTrackers(for: hash)
             }
+        }
+        .sheet(isPresented: $showingAddTrackerSheet) {
+            #if os(iOS)
+            NavigationView {
+                addTrackerForm(for: transfer)
+            }
+            #else
+            addTrackerForm(for: transfer)
+            #endif
         }
     }
 
@@ -196,6 +214,220 @@ public struct DownloadDetailsView: View {
                     .frame(maxWidth: 180)
                 }
                 .padding(.vertical, 2)
+            }
+
+            if let hash = transfer.infoHash {
+                Toggle("Sequential Piece Download", isOn: Binding(
+                    get: { transfer.isSequentialDownload },
+                    set: { newVal in
+                        Task { @MainActor in
+                            try? await viewModel.setSequentialDownload(newVal, for: hash)
+                        }
+                    }
+                ))
+            }
+        }
+    }
+
+    // MARK: - Swarm Trackers
+
+    @ViewBuilder
+    private func torrentTrackersSection(_ transfer: UnifiedTransfer) -> some View {
+        if let hash = transfer.infoHash {
+            Section(
+                header: HStack {
+                    Text("Swarm Trackers (\(torrentTrackers.count))")
+                    Spacer()
+                    Button {
+                        Task { @MainActor in
+                            try? await viewModel.forceReannounce(for: hash)
+                            loadTrackers(for: hash)
+                        }
+                    } label: {
+                        Label("Re-announce", systemImage: "arrow.clockwise")
+                            .font(.caption)
+                    }
+                    #if os(iOS)
+                    .textCase(nil)
+                    #endif
+                },
+                footer: Text("Trackers coordinate peer discovery and swarm health. Adding custom trackers connects the transfer to additional swarms.")
+            ) {
+                if torrentTrackers.isEmpty {
+                    if isLoadingTrackers {
+                        HStack {
+                            Spacer()
+                            ProgressView()
+                                .padding(.trailing, 6)
+                            Text("Querying trackers...")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                            Spacer()
+                        }
+                    } else {
+                        Text("No active trackers found.")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                } else {
+                    ForEach(torrentTrackers) { tracker in
+                        trackerRow(tracker: tracker, hash: hash)
+                    }
+                }
+
+                Button {
+                    newTrackerURL = ""
+                    trackerErrorMessage = nil
+                    showingAddTrackerSheet = true
+                } label: {
+                    Label("Add Custom Tracker", systemImage: "plus.circle")
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func trackerRow(tracker: TorrentTrackerInfo, hash: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text("Tier \(tracker.tier)")
+                    .font(.caption2)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(Color.secondary.opacity(0.15))
+                    .cornerRadius(4)
+
+                Text(tracker.url)
+                    .font(.caption)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+
+                Spacer()
+
+                trackerStateBadge(tracker.state)
+            }
+
+            HStack(spacing: 12) {
+                if let peers = tracker.numPeers, peers >= 0 {
+                    Text("Peers: \(peers)")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                }
+                if let seeds = tracker.numSeeds, seeds >= 0 {
+                    Text("Seeds: \(seeds)")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                }
+                if let dl = tracker.numDownloaded, dl >= 0 {
+                    Text("Downloaded: \(dl)")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                }
+                Spacer()
+                Button(role: .destructive) {
+                    Task { @MainActor in
+                        try? await viewModel.removeTracker(url: tracker.url, for: hash)
+                        loadTrackers(for: hash)
+                    }
+                } label: {
+                    Image(systemName: "trash")
+                        .font(.caption2)
+                        .foregroundColor(.red)
+                }
+                .buttonStyle(BorderlessButtonStyle())
+            }
+
+            if let msg = tracker.message, !msg.isEmpty {
+                Text(msg)
+                    .font(.caption2)
+                    .foregroundColor(tracker.state == .notWorking ? .red : .secondary)
+            }
+        }
+        .padding(.vertical, 2)
+    }
+
+    @ViewBuilder
+    private func trackerStateBadge(_ state: TorrentTrackerState) -> some View {
+        Text(state.rawValue.capitalized)
+            .font(.caption2)
+            .bold()
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(badgeBackgroundColor(for: state))
+            .foregroundColor(badgeForegroundColor(for: state))
+            .cornerRadius(4)
+    }
+
+    private func badgeBackgroundColor(for state: TorrentTrackerState) -> Color {
+        switch state {
+        case .working: return Color.green.opacity(0.15)
+        case .updating: return Color.blue.opacity(0.15)
+        case .notWorking: return Color.red.opacity(0.15)
+        case .notContacted: return Color.gray.opacity(0.15)
+        }
+    }
+
+    private func badgeForegroundColor(for state: TorrentTrackerState) -> Color {
+        switch state {
+        case .working: return .green
+        case .updating: return .blue
+        case .notWorking: return .red
+        case .notContacted: return .secondary
+        }
+    }
+
+    @ViewBuilder
+    private func addTrackerForm(for transfer: UnifiedTransfer) -> some View {
+        Form {
+            Section(
+                header: Text("Tracker URL"),
+                footer: Text("Supported schemes: http, https, udp, ws, wss. UDP trackers must specify a port (e.g. :1337/announce).")
+            ) {
+                TextField("udp://tracker.opentrackr.org:1337/announce", text: $newTrackerURL)
+                    #if os(iOS)
+                    .autocapitalization(.none)
+                    .disableAutocorrection(true)
+                    #endif
+            }
+
+            if let err = trackerErrorMessage {
+                Section {
+                    Text(err)
+                        .font(.caption)
+                        .foregroundColor(.red)
+                }
+            }
+        }
+        .navigationTitle("Add Tracker")
+        #if os(iOS)
+        .navigationBarItems(
+            leading: Button("Cancel") { showingAddTrackerSheet = false },
+            trailing: Button("Add") {
+                submitNewTracker(for: transfer)
+            }
+            .disabled(newTrackerURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        )
+        #else
+        .toolbar {
+            Button("Cancel") { showingAddTrackerSheet = false }
+            Button("Add") {
+                submitNewTracker(for: transfer)
+            }
+            .disabled(newTrackerURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        }
+        #endif
+    }
+
+    private func submitNewTracker(for transfer: UnifiedTransfer) {
+        guard let hash = transfer.infoHash else { return }
+        let trimmed = newTrackerURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        Task { @MainActor in
+            do {
+                try await viewModel.addTracker(url: trimmed, tier: 0, for: hash)
+                showingAddTrackerSheet = false
+                loadTrackers(for: hash)
+            } catch {
+                trackerErrorMessage = error.localizedDescription
             }
         }
     }
@@ -840,6 +1072,15 @@ public struct DownloadDetailsView: View {
             let fetched = await viewModel.fetchTorrentFiles(for: infoHash)
             self.torrentFiles = fetched
             self.isLoadingFiles = false
+        }
+    }
+
+    private func loadTrackers(for infoHash: String) {
+        isLoadingTrackers = true
+        Task { @MainActor in
+            let fetched = await viewModel.fetchTrackers(for: infoHash)
+            self.torrentTrackers = fetched
+            self.isLoadingTrackers = false
         }
     }
 }

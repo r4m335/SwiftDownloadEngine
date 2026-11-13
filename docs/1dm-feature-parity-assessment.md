@@ -27,15 +27,15 @@ Each capability is classified under one of six unambiguous statuses:
 
 | Status | Count | Percentage |
 |---|:---:|:---:|
-| **Complete** | 48 | 67.6% |
+| **Complete** | 50 | 70.4% |
 | **Partial** | 5 | 7.0% |
 | **Untested** | 1 | 1.4% |
-| **Missing** | 14 | 19.7% |
+| **Missing** | 12 | 16.9% |
 | **iOS Restricted** | 3 | 4.2% |
 | **Total Features Evaluated** | **71** | **100.0%** |
 
 ```
-[████████████████████████████████████████████░░░░░░░░░░░░░░░] 67.6% Complete
+[██████████████████████████████████████████████░░░░░░░░░░░░░] 70.4% Complete
 ```
 
 ---
@@ -109,8 +109,8 @@ Each capability is classified under one of six unambiguous statuses:
 | 40 | Torrent Queue & Concurrency Management | Limits active torrents to prevent bandwidth saturation | **Complete** | `TorrentQueueScheduler.swift`, `AppSettings.maxConcurrentTorrents` | `TorrentQueueSchedulerTests.swift` | Manages active vs queued torrent transfers based on user settings. |
 | 41 | Seeding Policies (Ratio & Duration) | Stops seeding when ratio or time threshold is reached | **Complete** | `TorrentModels.swift:SeedingPreference`, `TorrentQueueScheduler.swift` | `TorrentQueueSchedulerTests.swift` | Modes: `doNotSeed`, `ratio`, `duration`, `indefinitely`. |
 | 42 | Fast-Resume Persistence | Saves resume data so torrents do not re-check on relaunch | **Complete** | `TorrentPersistenceStore.swift` | `TorrentPersistenceTests.swift` | Serializes and restores resume data. |
-| 43 | Sequential Download Mode | Prioritizes head and tail pieces to allow streaming while downloading | **Missing** | None | None | 1DM+ supports sequential piece downloading. Not exposed in LID torrent engine. |
-| 44 | Swarm Tracker Management | View, add, update, and re-announce trackers | **Missing** | None | None | Magnet trackers are passed at addition time, but no interactive tracker list or editing UI exists. |
+| 43 | Sequential Download Mode | Prioritizes head and tail pieces to allow streaming while downloading | **Complete** | `TorrentSessionBridge.mm`, `TorrentEngine.swift`, `TorrentModels.swift`, `AddDownloadView.swift`, `DownloadDetailsView.swift` | `TorrentTrackerAndSequentialTests.swift` | Exposes `setSequentialDownload` flag via native bridge (`libtorrent::torrent_flags::sequential_download`), Add Download toggle, Details toggle, and persistence. |
+| 44 | Swarm Tracker Management | View, add, update, and re-announce trackers | **Complete** | `TorrentSessionBridge.mm`, `TorrentEngine.swift`, `TorrentModels.swift:TorrentTrackerURLValidator`, `DownloadDetailsView.swift` | `TorrentTrackerAndSequentialTests.swift` | Swarm tracker inspection list with status pills, peer/seed stats, URL validation, custom tracker addition/deletion, and manual re-announce. |
 | 45 | Swarm Diagnostics (Peers, Pieces Map) | Visual piece map and peer IP/client list | **Partial** | `UnifiedTransfer.connectedPeers`, `connectedSeeds` | `UnifiedTransferTests.swift` | Peer counts are shown, but detailed peer inspection table and graphical piece map are absent. |
 | 46 | Create / Make `.torrent` Files | Generate `.torrent` from local files with custom trackers | **Missing** | None | None | Present in 1DM+ desktop/Android tools; not implemented in LID. |
 | 47 | Indefinite Background Seeding | Continues seeding torrents while app is closed | **iOS Restricted** | `ScheduleCoordinator.torrentBackgroundLimitationMessage` | None | **iOS Constraint:** iOS forbids raw socket listeners in the background. Torrent engine pauses shortly after app backgrounding. |

@@ -11,6 +11,7 @@
 #include <map>
 #include <mutex>
 #include <cstdint>
+#include <algorithm>
 
 #include <libtorrent/version.hpp>
 #include <libtorrent/session.hpp>
@@ -21,6 +22,7 @@
 #include <libtorrent/torrent_handle.hpp>
 #include <libtorrent/torrent_status.hpp>
 #include <libtorrent/torrent_flags.hpp>
+#include <libtorrent/announce_entry.hpp>
 #include <libtorrent/span.hpp>
 #include <libtorrent/info_hash.hpp>
 #include <libtorrent/write_resume_data.hpp>
@@ -142,6 +144,30 @@ static std::string infoHashToHex(const libtorrent::info_hash_t &ih) {
         _size = size;
         _priority = priority;
         _progress = progress;
+    }
+    return self;
+}
+
+@end
+
+@implementation TorrentBridgeTrackerInfo
+
+- (instancetype)initWithTier:(NSInteger)tier
+                         url:(NSString *)url
+                       state:(TorrentBridgeTrackerState)state
+                    numPeers:(NSInteger)numPeers
+                    numSeeds:(NSInteger)numSeeds
+               numDownloaded:(NSInteger)numDownloaded
+                     message:(nullable NSString *)message {
+    self = [super init];
+    if (self) {
+        _tier = tier;
+        _url = [url copy];
+        _state = state;
+        _numPeers = numPeers;
+        _numSeeds = numSeeds;
+        _numDownloaded = numDownloaded;
+        _message = [message copy];
     }
     return self;
 }
@@ -1058,6 +1084,209 @@ static std::string infoHashToHex(const libtorrent::info_hash_t &ih) {
         }
         return NO;
     }
+}
+
+// MARK: - Milestone 4.2: Sequential Download Mode & Swarm Tracker Management
+
+- (BOOL)setSequentialDownload:(BOOL)sequential
+            inTorrentWithHash:(NSString *)infoHash
+                        error:(NSError * _Nullable * _Nullable)error {
+    std::lock_guard<std::mutex> lock(_sessionMutex);
+    std::string hex = [infoHash.lowercaseString UTF8String];
+    auto it = _torrents.find(hex);
+    if (it == _torrents.end() || !it->second.is_valid()) {
+        if (error) {
+            *error = [NSError errorWithDomain:@"com.r4m335.TorrentSessionBridge"
+                                         code:2007
+                                     userInfo:@{NSLocalizedDescriptionKey: @"Torrent not found"}];
+        }
+        return NO;
+    }
+
+    libtorrent::torrent_handle &handle = it->second;
+    if (sequential) {
+        handle.set_flags(libtorrent::torrent_flags::sequential_download);
+    } else {
+        handle.unset_flags(libtorrent::torrent_flags::sequential_download);
+    }
+    return YES;
+}
+
+- (BOOL)isSequentialDownloadForTorrentWithHash:(NSString *)infoHash {
+    std::lock_guard<std::mutex> lock(_sessionMutex);
+    std::string hex = [infoHash.lowercaseString UTF8String];
+    auto it = _torrents.find(hex);
+    if (it == _torrents.end() || !it->second.is_valid()) {
+        return NO;
+    }
+    return bool(it->second.flags() & libtorrent::torrent_flags::sequential_download);
+}
+
+- (nullable NSArray<TorrentBridgeTrackerInfo *> *)trackersForTorrentWithHash:(NSString *)infoHash {
+    std::lock_guard<std::mutex> lock(_sessionMutex);
+    std::string hex = [infoHash.lowercaseString UTF8String];
+    auto it = _torrents.find(hex);
+    if (it == _torrents.end() || !it->second.is_valid()) {
+        return nil;
+    }
+
+    libtorrent::torrent_handle &handle = it->second;
+    std::vector<libtorrent::announce_entry> entries = handle.trackers();
+    NSMutableArray<TorrentBridgeTrackerInfo *> *result = [NSMutableArray arrayWithCapacity:entries.size()];
+
+    for (const auto &entry : entries) {
+        NSString *url = [NSString stringWithUTF8String:entry.url.c_str()];
+        if (!url) continue;
+
+        NSInteger numPeers = 0;
+        NSInteger numSeeds = 0;
+        NSInteger numDownloaded = 0;
+        NSString *msg = nil;
+        TorrentBridgeTrackerState state = TorrentBridgeTrackerStateNotContacted;
+
+        if (!entry.endpoints.empty()) {
+            for (const auto &ep : entry.endpoints) {
+                if (ep.scrape_incomplete > 0) numPeers += ep.scrape_incomplete;
+                if (ep.scrape_complete > 0) numSeeds += ep.scrape_complete;
+                if (ep.scrape_downloaded > 0) numDownloaded += ep.scrape_downloaded;
+                if (ep.message.length() > 0 && !msg) {
+                    msg = [NSString stringWithUTF8String:ep.message.c_str()];
+                }
+                if (ep.updating) {
+                    state = TorrentBridgeTrackerStateUpdating;
+                } else if (ep.last_error) {
+                    if (state != TorrentBridgeTrackerStateUpdating) {
+                        state = TorrentBridgeTrackerStateNotWorking;
+                    }
+                } else if (ep.fails == 0 && (ep.scrape_complete >= 0 || ep.scrape_incomplete >= 0)) {
+                    state = TorrentBridgeTrackerStateWorking;
+                }
+            }
+        }
+
+        TorrentBridgeTrackerInfo *info = [[TorrentBridgeTrackerInfo alloc] initWithTier:entry.tier
+                                                                                   url:url
+                                                                                 state:state
+                                                                              numPeers:numPeers
+                                                                              numSeeds:numSeeds
+                                                                         numDownloaded:numDownloaded
+                                                                               message:msg];
+        [result addObject:info];
+    }
+
+    return result;
+}
+
+- (BOOL)addTrackerWithURL:(NSString *)trackerURL
+                     tier:(NSInteger)tier
+        toTorrentWithHash:(NSString *)infoHash
+                    error:(NSError * _Nullable * _Nullable)error {
+    std::lock_guard<std::mutex> lock(_sessionMutex);
+    std::string hex = [infoHash.lowercaseString UTF8String];
+    auto it = _torrents.find(hex);
+    if (it == _torrents.end() || !it->second.is_valid()) {
+        if (error) {
+            *error = [NSError errorWithDomain:@"com.r4m335.TorrentSessionBridge"
+                                         code:2007
+                                     userInfo:@{NSLocalizedDescriptionKey: @"Torrent not found"}];
+        }
+        return NO;
+    }
+
+    libtorrent::torrent_handle &handle = it->second;
+    std::string urlStr = [trackerURL UTF8String];
+    libtorrent::announce_entry entry(urlStr);
+    entry.tier = static_cast<std::uint8_t>(std::max(0, std::min(255, (int)tier)));
+    handle.add_tracker(entry);
+    return YES;
+}
+
+- (BOOL)removeTrackerWithURL:(NSString *)trackerURL
+         fromTorrentWithHash:(NSString *)infoHash
+                       error:(NSError * _Nullable * _Nullable)error {
+    std::lock_guard<std::mutex> lock(_sessionMutex);
+    std::string hex = [infoHash.lowercaseString UTF8String];
+    auto it = _torrents.find(hex);
+    if (it == _torrents.end() || !it->second.is_valid()) {
+        if (error) {
+            *error = [NSError errorWithDomain:@"com.r4m335.TorrentSessionBridge"
+                                         code:2007
+                                     userInfo:@{NSLocalizedDescriptionKey: @"Torrent not found"}];
+        }
+        return NO;
+    }
+
+    libtorrent::torrent_handle &handle = it->second;
+    std::string targetUrl = [trackerURL UTF8String];
+    std::vector<libtorrent::announce_entry> current = handle.trackers();
+    size_t beforeCount = current.size();
+
+    current.erase(std::remove_if(current.begin(), current.end(), [&](const libtorrent::announce_entry &e) {
+        return e.url == targetUrl;
+    }), current.end());
+
+    if (current.size() == beforeCount) {
+        if (error) {
+            *error = [NSError errorWithDomain:@"com.r4m335.TorrentSessionBridge"
+                                         code:2010
+                                     userInfo:@{NSLocalizedDescriptionKey: @"Tracker URL not found in torrent"}];
+        }
+        return NO;
+    }
+
+    handle.replace_trackers(current);
+    return YES;
+}
+
+- (BOOL)replaceTrackers:(NSArray<NSString *> *)trackerURLs
+      inTorrentWithHash:(NSString *)infoHash
+                  error:(NSError * _Nullable * _Nullable)error {
+    std::lock_guard<std::mutex> lock(_sessionMutex);
+    std::string hex = [infoHash.lowercaseString UTF8String];
+    auto it = _torrents.find(hex);
+    if (it == _torrents.end() || !it->second.is_valid()) {
+        if (error) {
+            *error = [NSError errorWithDomain:@"com.r4m335.TorrentSessionBridge"
+                                         code:2007
+                                     userInfo:@{NSLocalizedDescriptionKey: @"Torrent not found"}];
+        }
+        return NO;
+    }
+
+    libtorrent::torrent_handle &handle = it->second;
+    std::vector<libtorrent::announce_entry> newEntries;
+    newEntries.reserve(trackerURLs.count);
+
+    int tier = 0;
+    for (NSString *urlStr in trackerURLs) {
+        std::string s = [urlStr UTF8String];
+        if (!s.empty()) {
+            libtorrent::announce_entry entry(s);
+            entry.tier = static_cast<std::uint8_t>(tier++);
+            newEntries.push_back(entry);
+        }
+    }
+
+    handle.replace_trackers(newEntries);
+    return YES;
+}
+
+- (BOOL)forceReannounceForTorrentWithHash:(NSString *)infoHash
+                                    error:(NSError * _Nullable * _Nullable)error {
+    std::lock_guard<std::mutex> lock(_sessionMutex);
+    std::string hex = [infoHash.lowercaseString UTF8String];
+    auto it = _torrents.find(hex);
+    if (it == _torrents.end() || !it->second.is_valid()) {
+        if (error) {
+            *error = [NSError errorWithDomain:@"com.r4m335.TorrentSessionBridge"
+                                         code:2007
+                                     userInfo:@{NSLocalizedDescriptionKey: @"Torrent not found"}];
+        }
+        return NO;
+    }
+
+    it->second.force_reannounce();
+    return YES;
 }
 
 - (void)dealloc {

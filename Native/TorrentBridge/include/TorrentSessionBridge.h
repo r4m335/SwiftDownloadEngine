@@ -93,6 +93,39 @@ NS_SWIFT_NAME(TorrentBridgeFileInfo)
 
 @end
 
+/// Status of an individual BitTorrent tracker endpoint.
+typedef NS_ENUM(NSInteger, TorrentBridgeTrackerState) {
+    TorrentBridgeTrackerStateNotWorking = 0,
+    TorrentBridgeTrackerStateUpdating = 1,
+    TorrentBridgeTrackerStateWorking = 2,
+    TorrentBridgeTrackerStateNotContacted = 3
+};
+
+/// Information regarding an individual tracker registered on a torrent.
+NS_SWIFT_NAME(TorrentBridgeTrackerInfo)
+@interface TorrentBridgeTrackerInfo : NSObject
+
+@property (nonatomic, readonly) NSInteger tier;
+@property (nonatomic, readonly, copy) NSString *url;
+@property (nonatomic, readonly) TorrentBridgeTrackerState state;
+@property (nonatomic, readonly) NSInteger numPeers;
+@property (nonatomic, readonly) NSInteger numSeeds;
+@property (nonatomic, readonly) NSInteger numDownloaded;
+@property (nonatomic, readonly, nullable, copy) NSString *message;
+
+- (instancetype)initWithTier:(NSInteger)tier
+                         url:(NSString *)url
+                       state:(TorrentBridgeTrackerState)state
+                    numPeers:(NSInteger)numPeers
+                    numSeeds:(NSInteger)numSeeds
+               numDownloaded:(NSInteger)numDownloaded
+                     message:(nullable NSString *)message NS_DESIGNATED_INITIALIZER;
+
+- (instancetype)init NS_UNAVAILABLE;
++ (instancetype)new NS_UNAVAILABLE;
+
+@end
+
 /// Objective-C bridge wrapping libtorrent 2.0.x session lifecycle and transfer operations.
 /// Exposes clean, pure Objective-C types to Swift without leaking C++ symbols into Swift layers.
 NS_SWIFT_NAME(TorrentSessionBridge)
@@ -262,6 +295,39 @@ NS_SWIFT_NAME(TorrentSessionBridge)
                           port:(NSUInteger)port
              toTorrentWithHash:(NSString *)infoHash
                          error:(NSError * _Nullable * _Nullable)error NS_SWIFT_NAME(connectPeer(address:port:toTorrentWithHash:));
+
+// MARK: - Milestone 4.2: Sequential Download Mode & Swarm Tracker Management
+
+/// Sets or unsets sequential piece download mode on the target torrent.
+- (BOOL)setSequentialDownload:(BOOL)sequential
+            inTorrentWithHash:(NSString *)infoHash
+                        error:(NSError * _Nullable * _Nullable)error NS_SWIFT_NAME(setSequentialDownload(_:inTorrentWithHash:));
+
+/// Queries whether sequential piece download mode is active for the target torrent.
+- (BOOL)isSequentialDownloadForTorrentWithHash:(NSString *)infoHash NS_SWIFT_NAME(isSequentialDownload(forTorrentWithHash:));
+
+/// Retrieves all trackers currently registered for the target torrent.
+- (nullable NSArray<TorrentBridgeTrackerInfo *> *)trackersForTorrentWithHash:(NSString *)infoHash NS_SWIFT_NAME(trackers(forTorrentWithHash:));
+
+/// Adds a new tracker to the target torrent.
+- (BOOL)addTrackerWithURL:(NSString *)trackerURL
+                     tier:(NSInteger)tier
+        toTorrentWithHash:(NSString *)infoHash
+                    error:(NSError * _Nullable * _Nullable)error NS_SWIFT_NAME(addTracker(url:tier:toTorrentWithHash:));
+
+/// Removes a tracker by URL from the target torrent.
+- (BOOL)removeTrackerWithURL:(NSString *)trackerURL
+         fromTorrentWithHash:(NSString *)infoHash
+                       error:(NSError * _Nullable * _Nullable)error NS_SWIFT_NAME(removeTracker(url:fromTorrentWithHash:));
+
+/// Replaces all trackers for the target torrent with the given URL list.
+- (BOOL)replaceTrackers:(NSArray<NSString *> *)trackerURLs
+      inTorrentWithHash:(NSString *)infoHash
+                  error:(NSError * _Nullable * _Nullable)error NS_SWIFT_NAME(replaceTrackers(_:inTorrentWithHash:));
+
+/// Forces an immediate re-announce to all trackers for the target torrent.
+- (BOOL)forceReannounceForTorrentWithHash:(NSString *)infoHash
+                                    error:(NSError * _Nullable * _Nullable)error NS_SWIFT_NAME(forceReannounce(forTorrentWithHash:));
 
 @end
 

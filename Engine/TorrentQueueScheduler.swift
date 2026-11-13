@@ -52,7 +52,8 @@ public actor TorrentQueueScheduler {
         name: String,
         savePath: URL,
         priority: TorrentPriority = .normal,
-        isExplicitlyPaused: Bool = false
+        isExplicitlyPaused: Bool = false,
+        isSequential: Bool = false
     ) async throws -> TorrentRecord {
         let key = infoHash.lowercased()
         guard records[key] == nil else {
@@ -71,7 +72,8 @@ public actor TorrentQueueScheduler {
             progress: TorrentProgress(),
             priority: priority,
             sequenceIndex: sequenceCounter,
-            isExplicitlyPaused: isExplicitlyPaused
+            isExplicitlyPaused: isExplicitlyPaused,
+            isSequentialDownload: isSequential
         )
 
         // Transactional: Persist to disk before committing to memory

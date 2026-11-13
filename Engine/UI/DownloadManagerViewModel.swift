@@ -1055,7 +1055,8 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
     public func addTorrent(
         magnetURI: String,
         saveDirectoryURL: URL? = nil,
-        priority: TorrentPriority? = nil
+        priority: TorrentPriority? = nil,
+        isSequential: Bool = false
     ) async throws -> UnifiedTransfer {
         guard let te = torrentEngine else {
             let error = "Torrent engine is not initialized."
@@ -1096,7 +1097,8 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
             let task = try await te.addTorrent(
                 magnetURI: normalizedMagnetURI,
                 saveDirectoryURL: targetDir,
-                priority: resolvedPriority
+                priority: resolvedPriority,
+                isSequential: isSequential
             )
             try? await te.setSeedingPreference(defaultSeedingPreference, for: task.infoHash)
             await refreshTorrentSnapshots()
@@ -1113,7 +1115,8 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
     public func addTorrent(
         fileURL: URL,
         saveDirectoryURL: URL? = nil,
-        priority: TorrentPriority? = nil
+        priority: TorrentPriority? = nil,
+        isSequential: Bool = false
     ) async throws -> UnifiedTransfer {
         guard let te = torrentEngine else {
             let error = "Torrent engine is not initialized."
@@ -1145,7 +1148,8 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
             let task = try await te.addTorrent(
                 fileURL: fileURL,
                 saveDirectoryURL: targetDir,
-                priority: resolvedPriority
+                priority: resolvedPriority,
+                isSequential: isSequential
             )
             try? await te.setSeedingPreference(defaultSeedingPreference, for: task.infoHash)
             await refreshTorrentSnapshots()
@@ -1163,7 +1167,8 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
         data: Data,
         name: String? = nil,
         saveDirectoryURL: URL? = nil,
-        priority: TorrentPriority? = nil
+        priority: TorrentPriority? = nil,
+        isSequential: Bool = false
     ) async throws -> UnifiedTransfer {
         guard let te = torrentEngine else {
             let error = "Torrent engine is not initialized."
@@ -1194,7 +1199,8 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
                 data: data,
                 name: name,
                 saveDirectoryURL: targetDir,
-                priority: resolvedPriority
+                priority: resolvedPriority,
+                isSequential: isSequential
             )
             try? await te.setSeedingPreference(defaultSeedingPreference, for: task.infoHash)
             await refreshTorrentSnapshots()
@@ -1296,6 +1302,68 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
         guard let te = torrentEngine else { return }
         do {
             try await te.setSeedingPreference(preference, for: infoHash)
+            await refreshTorrentSnapshots()
+        } catch {
+            self.errorMessage = error.localizedDescription
+            throw error
+        }
+    }
+
+    // MARK: - Milestone 4.2: Sequential Download Mode & Tracker Management
+
+    public func setSequentialDownload(_ sequential: Bool, for infoHash: String) async throws {
+        guard let te = torrentEngine else { return }
+        do {
+            try await te.setSequentialDownload(sequential, for: infoHash)
+            await refreshTorrentSnapshots()
+        } catch {
+            self.errorMessage = error.localizedDescription
+            throw error
+        }
+    }
+
+    public func fetchTrackers(for infoHash: String) async -> [TorrentTrackerInfo] {
+        guard let te = torrentEngine else { return [] }
+        return await te.trackers(for: infoHash)
+    }
+
+    public func addTracker(url: String, tier: Int = 0, for infoHash: String) async throws {
+        guard let te = torrentEngine else { return }
+        do {
+            try await te.addTracker(url: url, tier: tier, for: infoHash)
+            await refreshTorrentSnapshots()
+        } catch {
+            self.errorMessage = error.localizedDescription
+            throw error
+        }
+    }
+
+    public func removeTracker(url: String, for infoHash: String) async throws {
+        guard let te = torrentEngine else { return }
+        do {
+            try await te.removeTracker(url: url, for: infoHash)
+            await refreshTorrentSnapshots()
+        } catch {
+            self.errorMessage = error.localizedDescription
+            throw error
+        }
+    }
+
+    public func replaceTrackers(_ urls: [String], for infoHash: String) async throws {
+        guard let te = torrentEngine else { return }
+        do {
+            try await te.replaceTrackers(urls, for: infoHash)
+            await refreshTorrentSnapshots()
+        } catch {
+            self.errorMessage = error.localizedDescription
+            throw error
+        }
+    }
+
+    public func forceReannounce(for infoHash: String) async throws {
+        guard let te = torrentEngine else { return }
+        do {
+            try await te.forceReannounce(for: infoHash)
             await refreshTorrentSnapshots()
         } catch {
             self.errorMessage = error.localizedDescription

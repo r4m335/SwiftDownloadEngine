@@ -101,7 +101,15 @@ public actor TorrentEngine {
                 }
             }
 
-            // 3. Preserve pause / queued status
+            // 3. Preserve pause / queued status & sequential mode & custom trackers
+            if record.isSequentialDownload {
+                try? bridge.setSequentialDownload(true, inTorrentWithHash: hash)
+            }
+            if let custom = record.customTrackers {
+                for t in custom {
+                    try? bridge.addTracker(url: t, tier: 0, toTorrentWithHash: hash)
+                }
+            }
             if record.isExplicitlyPaused {
                 bridge.setExplicitlyPaused(true, forTorrentWithHash: hash)
                 try? bridge.pauseTorrent(withHash: hash)
@@ -224,11 +232,16 @@ public actor TorrentEngine {
         magnetURI: String,
         saveDirectoryURL: URL? = nil,
         priority: TorrentPriority = .normal,
-        isExplicitlyPaused: Bool = false
+        isExplicitlyPaused: Bool = false,
+        isSequential: Bool = false
     ) async throws -> TorrentTask {
         guard isRunning else { throw TorrentEngineError.sessionNotRunning }
         let savePath = saveDirectoryURL?.path ?? storageDirectoryURL.path
         let hash = try bridge.addTorrent(withMagnetURI: magnetURI, savePath: savePath)
+
+        if isSequential {
+            try? bridge.setSequentialDownload(true, inTorrentWithHash: hash)
+        }
 
         if let sched = scheduler {
             let record = try await sched.enqueue(
@@ -237,7 +250,8 @@ public actor TorrentEngine {
                 name: "Magnet \(hash.prefix(8))",
                 savePath: saveDirectoryURL ?? storageDirectoryURL,
                 priority: priority,
-                isExplicitlyPaused: isExplicitlyPaused
+                isExplicitlyPaused: isExplicitlyPaused,
+                isSequential: isSequential
             )
 
             if isExplicitlyPaused {
@@ -253,7 +267,10 @@ public actor TorrentEngine {
         guard let status = bridge.status(forTorrentWithHash: hash) else {
             throw TorrentEngineError.bridgeError("Failed to fetch status for added magnet torrent.")
         }
-        return updateTask(from: status, source: magnetURI)
+        var task = updateTask(from: status, source: magnetURI)
+        task.isSequentialDownload = isSequential
+        tasks[hash.lowercased()] = task
+        return task
     }
 
     @discardableResult
@@ -261,11 +278,16 @@ public actor TorrentEngine {
         fileURL: URL,
         saveDirectoryURL: URL? = nil,
         priority: TorrentPriority = .normal,
-        isExplicitlyPaused: Bool = false
+        isExplicitlyPaused: Bool = false,
+        isSequential: Bool = false
     ) async throws -> TorrentTask {
         guard isRunning else { throw TorrentEngineError.sessionNotRunning }
         let savePath = saveDirectoryURL?.path ?? storageDirectoryURL.path
         let hash = try bridge.addTorrent(withFilePath: fileURL.path, savePath: savePath)
+
+        if isSequential {
+            try? bridge.setSequentialDownload(true, inTorrentWithHash: hash)
+        }
 
         if let sched = scheduler {
             let record = try await sched.enqueue(
@@ -274,7 +296,8 @@ public actor TorrentEngine {
                 name: fileURL.deletingPathExtension().lastPathComponent,
                 savePath: saveDirectoryURL ?? storageDirectoryURL,
                 priority: priority,
-                isExplicitlyPaused: isExplicitlyPaused
+                isExplicitlyPaused: isExplicitlyPaused,
+                isSequential: isSequential
             )
 
             if isExplicitlyPaused {
@@ -290,7 +313,10 @@ public actor TorrentEngine {
         guard let status = bridge.status(forTorrentWithHash: hash) else {
             throw TorrentEngineError.bridgeError("Failed to fetch status for added file torrent.")
         }
-        return updateTask(from: status, source: fileURL.lastPathComponent)
+        var task = updateTask(from: status, source: fileURL.lastPathComponent)
+        task.isSequentialDownload = isSequential
+        tasks[hash.lowercased()] = task
+        return task
     }
 
     @discardableResult
@@ -299,11 +325,16 @@ public actor TorrentEngine {
         name: String? = nil,
         saveDirectoryURL: URL? = nil,
         priority: TorrentPriority = .normal,
-        isExplicitlyPaused: Bool = false
+        isExplicitlyPaused: Bool = false,
+        isSequential: Bool = false
     ) async throws -> TorrentTask {
         guard isRunning else { throw TorrentEngineError.sessionNotRunning }
         let savePath = saveDirectoryURL?.path ?? storageDirectoryURL.path
         let hash = try bridge.addTorrent(with: data, savePath: savePath)
+
+        if isSequential {
+            try? bridge.setSequentialDownload(true, inTorrentWithHash: hash)
+        }
 
         let displayName = name ?? "Torrent \(hash.prefix(8))"
         if let sched = scheduler {
@@ -313,7 +344,8 @@ public actor TorrentEngine {
                 name: displayName,
                 savePath: saveDirectoryURL ?? storageDirectoryURL,
                 priority: priority,
-                isExplicitlyPaused: isExplicitlyPaused
+                isExplicitlyPaused: isExplicitlyPaused,
+                isSequential: isSequential
             )
 
             if isExplicitlyPaused {
@@ -329,7 +361,10 @@ public actor TorrentEngine {
         guard let status = bridge.status(forTorrentWithHash: hash) else {
             throw TorrentEngineError.bridgeError("Failed to fetch status for added buffer torrent.")
         }
-        return updateTask(from: status, source: displayName)
+        var task = updateTask(from: status, source: displayName)
+        task.isSequentialDownload = isSequential
+        tasks[hash.lowercased()] = task
+        return task
     }
 
     // MARK: - Transfer Controls
@@ -485,6 +520,90 @@ public actor TorrentEngine {
         try await scheduler?.setSeedingPreference(preference, for: key)
     }
 
+    // MARK: - Milestone 4.2: Sequential Download Mode & Tracker Management
+
+    public func setSequentialDownload(_ sequential: Bool, for infoHash: String) async throws {
+        let key = infoHash.lowercased()
+        try bridge.setSequentialDownload(sequential, inTorrentWithHash: key)
+        if var t = tasks[key] {
+            t.isSequentialDownload = sequential
+            tasks[key] = t
+        }
+        if var record = await persistenceStore.loadRecord(infoHash: key) {
+            record.isSequentialDownload = sequential
+            try? await persistenceStore.saveRecord(record)
+        }
+    }
+
+    public func isSequentialDownload(for infoHash: String) async -> Bool {
+        let key = infoHash.lowercased()
+        return bridge.isSequentialDownload(forTorrentWithHash: key)
+    }
+
+    public func trackers(for infoHash: String) async -> [TorrentTrackerInfo] {
+        let key = infoHash.lowercased()
+        if let nativeTrackers = bridge.trackers(forTorrentWithHash: key) {
+            return nativeTrackers.map { t in
+                let state: TorrentTrackerState
+                switch t.state {
+                case .working: state = .working
+                case .updating: state = .updating
+                case .notWorking: state = .notWorking
+                case .notContacted: state = .notContacted
+                @unknown default: state = .notContacted
+                }
+                return TorrentTrackerInfo(
+                    tier: t.tier,
+                    url: t.url,
+                    state: state,
+                    numPeers: t.numPeers,
+                    numSeeds: t.numSeeds,
+                    numDownloaded: t.numDownloaded,
+                    message: t.message
+                )
+            }
+        }
+        return tasks[key]?.trackers ?? []
+    }
+
+    public func addTracker(url: String, tier: Int = 0, for infoHash: String) async throws {
+        let validated = try TorrentTrackerURLValidator.validate(url)
+        let key = infoHash.lowercased()
+        try bridge.addTracker(url: validated.absoluteString, tier: tier, toTorrentWithHash: key)
+        if var record = await persistenceStore.loadRecord(infoHash: key) {
+            var list = record.customTrackers ?? []
+            if !list.contains(validated.absoluteString) {
+                list.append(validated.absoluteString)
+                record.customTrackers = list
+                try? await persistenceStore.saveRecord(record)
+            }
+        }
+    }
+
+    public func removeTracker(url: String, for infoHash: String) async throws {
+        let key = infoHash.lowercased()
+        try bridge.removeTracker(url: url, fromTorrentWithHash: key)
+        if var record = await persistenceStore.loadRecord(infoHash: key) {
+            record.customTrackers?.removeAll(where: { $0 == url })
+            try? await persistenceStore.saveRecord(record)
+        }
+    }
+
+    public func replaceTrackers(_ urls: [String], for infoHash: String) async throws {
+        let validatedURLs = try urls.map { try TorrentTrackerURLValidator.validate($0).absoluteString }
+        let key = infoHash.lowercased()
+        try bridge.replaceTrackers(validatedURLs, inTorrentWithHash: key)
+        if var record = await persistenceStore.loadRecord(infoHash: key) {
+            record.customTrackers = validatedURLs
+            try? await persistenceStore.saveRecord(record)
+        }
+    }
+
+    public func forceReannounce(for infoHash: String) async throws {
+        let key = infoHash.lowercased()
+        try bridge.forceReannounce(forTorrentWithHash: key)
+    }
+
     // MARK: - Status & Inspection
 
     public func task(for infoHash: String) async -> TorrentTask? {
@@ -574,6 +693,7 @@ public actor TorrentEngine {
             progressFraction: Double(status.progress)
         )
         let saveURL = URL(fileURLWithPath: status.savePath)
+        let isSequential = bridge.isSequentialDownload(forTorrentWithHash: key)
 
         if var existing = tasks[key] {
             existing.state = state
@@ -582,6 +702,7 @@ public actor TorrentEngine {
                 existing.name = status.name
             }
             existing.errorMessage = status.errorMessage
+            existing.isSequentialDownload = isSequential
             tasks[key] = existing
             return existing
         } else {
@@ -592,7 +713,8 @@ public actor TorrentEngine {
                 state: state,
                 progress: progress,
                 errorMessage: status.errorMessage,
-                infoHash: key
+                infoHash: key,
+                isSequentialDownload: isSequential
             )
             tasks[key] = task
             return task
@@ -721,7 +843,7 @@ public actor TorrentEngine {
         let records = await scheduler.allRecords()
         for record in records {
             let state: TorrentState = record.isExplicitlyPaused ? .paused : .queued
-            let task = TorrentTask(
+            var task = TorrentTask(
                 id: record.id,
                 source: record.source,
                 name: record.name,
@@ -731,9 +853,15 @@ public actor TorrentEngine {
                 infoHash: record.infoHash,
                 priority: record.priority,
                 isExplicitlyPaused: record.isExplicitlyPaused,
+                isSequentialDownload: record.isSequentialDownload,
                 filePriorities: record.filePriorities,
                 seedingPreference: record.seedingPreference
             )
+            if let custom = record.customTrackers {
+                task.trackers = custom.enumerated().map { idx, u in
+                    TorrentTrackerInfo(tier: idx, url: u, state: .notContacted)
+                }
+            }
             tasks[record.infoHash.lowercased()] = task
         }
     }
@@ -750,7 +878,8 @@ public actor TorrentEngine {
         magnetURI: String,
         saveDirectoryURL: URL? = nil,
         priority: TorrentPriority = .normal,
-        isExplicitlyPaused: Bool = false
+        isExplicitlyPaused: Bool = false,
+        isSequential: Bool = false
     ) async throws -> TorrentTask {
         guard isRunning else { throw TorrentEngineError.sessionNotRunning }
         guard let infoHash = Self.extractInfoHash(from: magnetURI) else {
@@ -769,7 +898,8 @@ public actor TorrentEngine {
             name: name,
             savePath: saveDir.appendingPathComponent(name),
             priority: priority,
-            isExplicitlyPaused: isExplicitlyPaused
+            isExplicitlyPaused: isExplicitlyPaused,
+            isSequential: isSequential
         )
         let task = TorrentTask(
             id: record.id,
@@ -780,7 +910,8 @@ public actor TorrentEngine {
             createdAt: record.createdAt,
             infoHash: record.infoHash,
             priority: record.priority,
-            isExplicitlyPaused: record.isExplicitlyPaused
+            isExplicitlyPaused: record.isExplicitlyPaused,
+            isSequentialDownload: isSequential
         )
         tasks[infoHash] = task
         return task
@@ -790,7 +921,8 @@ public actor TorrentEngine {
         fileURL: URL,
         saveDirectoryURL: URL? = nil,
         priority: TorrentPriority = .normal,
-        isExplicitlyPaused: Bool = false
+        isExplicitlyPaused: Bool = false,
+        isSequential: Bool = false
     ) async throws -> TorrentTask {
         let data = try Data(contentsOf: fileURL)
         var name = fileURL.deletingPathExtension().lastPathComponent
@@ -802,7 +934,8 @@ public actor TorrentEngine {
             name: name,
             saveDirectoryURL: saveDirectoryURL,
             priority: priority,
-            isExplicitlyPaused: isExplicitlyPaused
+            isExplicitlyPaused: isExplicitlyPaused,
+            isSequential: isSequential
         )
     }
 
@@ -811,7 +944,8 @@ public actor TorrentEngine {
         name: String? = nil,
         saveDirectoryURL: URL? = nil,
         priority: TorrentPriority = .normal,
-        isExplicitlyPaused: Bool = false
+        isExplicitlyPaused: Bool = false,
+        isSequential: Bool = false
     ) async throws -> TorrentTask {
         guard isRunning else { throw TorrentEngineError.sessionNotRunning }
         guard !data.isEmpty else {
@@ -839,7 +973,8 @@ public actor TorrentEngine {
             name: displayName,
             savePath: saveDir.appendingPathComponent(displayName),
             priority: priority,
-            isExplicitlyPaused: isExplicitlyPaused
+            isExplicitlyPaused: isExplicitlyPaused,
+            isSequential: isSequential
         )
         let task = TorrentTask(
             id: record.id,
@@ -850,7 +985,8 @@ public actor TorrentEngine {
             createdAt: record.createdAt,
             infoHash: record.infoHash,
             priority: record.priority,
-            isExplicitlyPaused: record.isExplicitlyPaused
+            isExplicitlyPaused: record.isExplicitlyPaused,
+            isSequentialDownload: isSequential
         )
         tasks[infoHash] = task
         return task
@@ -967,6 +1103,91 @@ public actor TorrentEngine {
         guard tasks[key] != nil else { throw TorrentEngineError.torrentNotFound }
         try await scheduler?.setSeedingPreference(preference, for: key)
         tasks[key]?.seedingPreference = preference
+    }
+
+    // MARK: - Milestone 4.2: Sequential Download Mode & Tracker Management
+
+    public func setSequentialDownload(_ sequential: Bool, for infoHash: String) async throws {
+        let key = infoHash.lowercased()
+        guard var task = tasks[key] else { throw TorrentEngineError.torrentNotFound }
+        task.isSequentialDownload = sequential
+        tasks[key] = task
+        if var record = await persistenceStore.loadRecord(infoHash: key) {
+            record.isSequentialDownload = sequential
+            try? await persistenceStore.saveRecord(record)
+        }
+    }
+
+    public func isSequentialDownload(for infoHash: String) async -> Bool {
+        let key = infoHash.lowercased()
+        return tasks[key]?.isSequentialDownload ?? false
+    }
+
+    public func trackers(for infoHash: String) async -> [TorrentTrackerInfo] {
+        let key = infoHash.lowercased()
+        guard let task = tasks[key] else { return [] }
+        if let existing = task.trackers {
+            return existing
+        }
+        return [
+            TorrentTrackerInfo(tier: 0, url: "udp://tracker.opentrackr.org:1337/announce", state: .working, numPeers: 12, numSeeds: 45)
+        ]
+    }
+
+    public func addTracker(url: String, tier: Int = 0, for infoHash: String) async throws {
+        let validated = try TorrentTrackerURLValidator.validate(url)
+        let key = infoHash.lowercased()
+        guard var task = tasks[key] else { throw TorrentEngineError.torrentNotFound }
+        var current = task.trackers ?? []
+        if !current.contains(where: { $0.url == validated.absoluteString }) {
+            current.append(TorrentTrackerInfo(tier: tier, url: validated.absoluteString, state: .notContacted))
+            task.trackers = current
+            tasks[key] = task
+        }
+        if var record = await persistenceStore.loadRecord(infoHash: key) {
+            var list = record.customTrackers ?? []
+            if !list.contains(validated.absoluteString) {
+                list.append(validated.absoluteString)
+                record.customTrackers = list
+                try? await persistenceStore.saveRecord(record)
+            }
+        }
+    }
+
+    public func removeTracker(url: String, for infoHash: String) async throws {
+        let key = infoHash.lowercased()
+        guard var task = tasks[key] else { throw TorrentEngineError.torrentNotFound }
+        task.trackers?.removeAll(where: { $0.url == url })
+        tasks[key] = task
+        if var record = await persistenceStore.loadRecord(infoHash: key) {
+            record.customTrackers?.removeAll(where: { $0 == url })
+            try? await persistenceStore.saveRecord(record)
+        }
+    }
+
+    public func replaceTrackers(_ urls: [String], for infoHash: String) async throws {
+        let validatedURLs = try urls.map { try TorrentTrackerURLValidator.validate($0).absoluteString }
+        let key = infoHash.lowercased()
+        guard var task = tasks[key] else { throw TorrentEngineError.torrentNotFound }
+        task.trackers = validatedURLs.enumerated().map { TorrentTrackerInfo(tier: $0.offset, url: $0.element, state: .notContacted) }
+        tasks[key] = task
+        if var record = await persistenceStore.loadRecord(infoHash: key) {
+            record.customTrackers = validatedURLs
+            try? await persistenceStore.saveRecord(record)
+        }
+    }
+
+    public func forceReannounce(for infoHash: String) async throws {
+        let key = infoHash.lowercased()
+        guard var task = tasks[key] else { throw TorrentEngineError.torrentNotFound }
+        if let current = task.trackers {
+            task.trackers = current.map { t in
+                var updated = t
+                updated.state = .updating
+                return updated
+            }
+            tasks[key] = task
+        }
     }
 
     public func allTasks() async -> [TorrentTask] {

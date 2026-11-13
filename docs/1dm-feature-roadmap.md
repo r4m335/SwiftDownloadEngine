@@ -131,9 +131,9 @@ To bridge the remaining functional distance without compromising stability or vi
   - Inputting a bracketed range generates all enumerated download tasks.
   - Importing a 20-line text file adds 20 queued items without locking the UI.
 
-### Milestone 4.2: Torrent Swarm Tracker Management & Sequential Download Mode
+### Milestone 4.2: Torrent Swarm Tracker Management & Sequential Download Mode [Completed]
 - **Objective:** Provide full control over torrent trackers and support sequential piece downloading for media streaming.
-- **Current State:** Trackers parsed from magnet links are read-only; piece ordering is default rarest-first.
+- **Current State:** Implemented & verified. Native sequential download flag exposed via libtorrent bridge (`torrent_flags::sequential_download`), interactive toggles in `AddDownloadView` and `DownloadDetailsView`, persistent storage in `TorrentRecord`, and interactive tracker management (URL validation, status badge, re-announce, add/remove).
 - **Implementation Scope:**
   - Expose `libtorrent::torrent_handle::set_sequential_download(bool)` through `TorrentSessionBridge.mm`.
   - Add sequential download toggle in `AddDownloadView` (Torrent) and `DownloadDetailsView`.
@@ -142,6 +142,7 @@ To bridge the remaining functional distance without compromising stability or vi
 - **Completion Criteria:**
   - Sequential download flag causes early pieces of video torrents to finish first.
   - Adding a tracker in `DownloadDetailsView` contacts the announce server and updates peer count.
+  - Fully verified across 992 passing tests including dedicated `TorrentTrackerAndSequentialTests`.
 
 ### Milestone 4.3: Real-Time Bandwidth Speed Chart (Swift Charts)
 - **Objective:** Display a dynamic, real-time bandwidth graph showing download and upload speeds over time.

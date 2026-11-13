@@ -160,6 +160,96 @@ public struct TorrentInfoHash: Sendable, Codable, Equatable, Hashable, CustomStr
     }
 }
 
+// MARK: - Torrent Tracker Models & Validation
+
+public enum TorrentTrackerState: String, Codable, CaseIterable, Sendable {
+    case notWorking = "Not Working"
+    case updating = "Updating..."
+    case working = "Working"
+    case notContacted = "Not Contacted"
+}
+
+public struct TorrentTrackerInfo: Identifiable, Codable, Equatable, Hashable, Sendable {
+    public let id: String
+    public var tier: Int
+    public var url: String
+    public var state: TorrentTrackerState
+    public var numPeers: Int
+    public var numSeeds: Int
+    public var numDownloaded: Int
+    public var message: String?
+
+    public init(
+        tier: Int = 0,
+        url: String,
+        state: TorrentTrackerState = .notContacted,
+        numPeers: Int = 0,
+        numSeeds: Int = 0,
+        numDownloaded: Int = 0,
+        message: String? = nil
+    ) {
+        self.id = url
+        self.tier = tier
+        self.url = url
+        self.state = state
+        self.numPeers = numPeers
+        self.numSeeds = numSeeds
+        self.numDownloaded = numDownloaded
+        self.message = message
+    }
+}
+
+public enum TorrentTrackerValidationError: LocalizedError, Equatable {
+    case emptyURL
+    case invalidURLFormat
+    case unsupportedScheme(String)
+    case missingHost
+    case invalidPort(Int)
+    case missingUDPPort
+
+    public var errorDescription: String? {
+        switch self {
+        case .emptyURL:
+            return "Tracker URL cannot be empty."
+        case .invalidURLFormat:
+            return "Invalid tracker URL format."
+        case .unsupportedScheme(let scheme):
+            return "Unsupported tracker scheme '\(scheme)'. Supported schemes are http, https, udp, and wss."
+        case .missingHost:
+            return "Tracker URL is missing a valid host."
+        case .invalidPort(let port):
+            return "Tracker port \(port) is invalid (must be between 1 and 65535)."
+        case .missingUDPPort:
+            return "UDP tracker URLs must specify a port (e.g. udp://tracker.example.com:6969/announce)."
+        }
+    }
+}
+
+public struct TorrentTrackerURLValidator {
+    public static func validate(_ urlString: String) throws -> URL {
+        let trimmed = urlString.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { throw TorrentTrackerValidationError.emptyURL }
+        guard let url = URL(string: trimmed), let scheme = url.scheme?.lowercased() else {
+            throw TorrentTrackerValidationError.invalidURLFormat
+        }
+        let allowed = ["http", "https", "udp", "wss", "ws"]
+        guard allowed.contains(scheme) else {
+            throw TorrentTrackerValidationError.unsupportedScheme(scheme)
+        }
+        guard let host = url.host, !host.isEmpty else {
+            throw TorrentTrackerValidationError.missingHost
+        }
+        if let port = url.port {
+            guard port > 0 && port <= 65535 else {
+                throw TorrentTrackerValidationError.invalidPort(port)
+            }
+        } else if scheme == "udp" {
+            throw TorrentTrackerValidationError.missingUDPPort
+        }
+        return url
+    }
+}
+
 /// Persistent identity and user-visible state for one torrent.
 public struct TorrentTask: Identifiable, Codable, Equatable, Sendable {
     public let id: UUID
@@ -175,8 +265,10 @@ public struct TorrentTask: Identifiable, Codable, Equatable, Sendable {
     public var infoHashV2: String?
     public var priority: TorrentPriority
     public var isExplicitlyPaused: Bool
+    public var isSequentialDownload: Bool
     public var filePriorities: [Int: TorrentFilePriority]?
     public var seedingPreference: SeedingPreference?
+    public var trackers: [TorrentTrackerInfo]?
 
     public var structuredInfoHash: TorrentInfoHash {
         TorrentInfoHash(v1: infoHashV1 ?? (infoHash.count == 40 ? infoHash : nil),
@@ -197,8 +289,10 @@ public struct TorrentTask: Identifiable, Codable, Equatable, Sendable {
         infoHashV2: String? = nil,
         priority: TorrentPriority = .normal,
         isExplicitlyPaused: Bool = false,
+        isSequentialDownload: Bool = false,
         filePriorities: [Int: TorrentFilePriority]? = nil,
-        seedingPreference: SeedingPreference? = nil
+        seedingPreference: SeedingPreference? = nil,
+        trackers: [TorrentTrackerInfo]? = nil
     ) {
         self.id = id
         self.source = source
@@ -214,8 +308,10 @@ public struct TorrentTask: Identifiable, Codable, Equatable, Sendable {
         self.infoHashV2 = infoHashV2?.lowercased() ?? (cleanHash.count == 64 ? cleanHash : nil)
         self.priority = priority
         self.isExplicitlyPaused = isExplicitlyPaused
+        self.isSequentialDownload = isSequentialDownload
         self.filePriorities = filePriorities
         self.seedingPreference = seedingPreference
+        self.trackers = trackers
     }
 }
 
@@ -235,10 +331,12 @@ public struct TorrentRecord: Identifiable, Codable, Equatable, Sendable {
     public var priority: TorrentPriority
     public var sequenceIndex: Int64
     public var isExplicitlyPaused: Bool
+    public var isSequentialDownload: Bool
     public var seedRatioLimit: Double?
     public var fastResumeFileName: String?
     public var filePriorities: [Int: TorrentFilePriority]?
     public var seedingPreference: SeedingPreference?
+    public var customTrackers: [String]?
     public var schemaVersion: Int
     public var errorMessage: String?
 
@@ -255,10 +353,12 @@ public struct TorrentRecord: Identifiable, Codable, Equatable, Sendable {
         priority: TorrentPriority = .normal,
         sequenceIndex: Int64 = 0,
         isExplicitlyPaused: Bool = false,
+        isSequentialDownload: Bool = false,
         seedRatioLimit: Double? = nil,
         fastResumeFileName: String? = nil,
         filePriorities: [Int: TorrentFilePriority]? = nil,
         seedingPreference: SeedingPreference? = nil,
+        customTrackers: [String]? = nil,
         schemaVersion: Int = TorrentRecord.currentSchemaVersion,
         errorMessage: String? = nil
     ) {
@@ -274,12 +374,42 @@ public struct TorrentRecord: Identifiable, Codable, Equatable, Sendable {
         self.priority = priority
         self.sequenceIndex = sequenceIndex
         self.isExplicitlyPaused = isExplicitlyPaused
+        self.isSequentialDownload = isSequentialDownload
         self.seedRatioLimit = seedRatioLimit
         self.fastResumeFileName = fastResumeFileName
         self.filePriorities = filePriorities
         self.seedingPreference = seedingPreference
+        self.customTrackers = customTrackers
         self.schemaVersion = schemaVersion
         self.errorMessage = errorMessage
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id, infoHash, source, name, savePath, createdAt, updatedAt, state, progress, priority, sequenceIndex, isExplicitlyPaused, isSequentialDownload, seedRatioLimit, fastResumeFileName, filePriorities, seedingPreference, customTrackers, schemaVersion, errorMessage
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        infoHash = try container.decode(String.self, forKey: .infoHash)
+        source = try container.decode(String.self, forKey: .source)
+        name = try container.decode(String.self, forKey: .name)
+        savePath = try container.decode(URL.self, forKey: .savePath)
+        createdAt = try container.decode(Date.self, forKey: .createdAt)
+        updatedAt = try container.decode(Date.self, forKey: .updatedAt)
+        state = try container.decode(TorrentState.self, forKey: .state)
+        progress = try container.decodeIfPresent(TorrentProgress.self, forKey: .progress) ?? TorrentProgress()
+        priority = try container.decodeIfPresent(TorrentPriority.self, forKey: .priority) ?? .normal
+        sequenceIndex = try container.decodeIfPresent(Int64.self, forKey: .sequenceIndex) ?? 0
+        isExplicitlyPaused = try container.decodeIfPresent(Bool.self, forKey: .isExplicitlyPaused) ?? false
+        isSequentialDownload = try container.decodeIfPresent(Bool.self, forKey: .isSequentialDownload) ?? false
+        seedRatioLimit = try container.decodeIfPresent(Double.self, forKey: .seedRatioLimit)
+        fastResumeFileName = try container.decodeIfPresent(String.self, forKey: .fastResumeFileName)
+        filePriorities = try container.decodeIfPresent([Int: TorrentFilePriority].self, forKey: .filePriorities)
+        seedingPreference = try container.decodeIfPresent(SeedingPreference.self, forKey: .seedingPreference)
+        customTrackers = try container.decodeIfPresent([String].self, forKey: .customTrackers)
+        schemaVersion = try container.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 1
+        errorMessage = try container.decodeIfPresent(String.self, forKey: .errorMessage)
     }
 }
 

@@ -73,6 +73,7 @@ public struct AddDownloadView: View {
     @State private var selectedTorrentURL: URL? = nil
     @State private var selectedTorrentFilename = ""
     @State private var torrentPriority: TorrentPriority = .normal
+    @State private var isSequentialDownload = false
     @State private var isShowingFileImporter = false
 
     public init(
@@ -434,12 +435,14 @@ public struct AddDownloadView: View {
         }
 
         // Section 2: Torrent Settings & Priority
-        Section(header: Text("Torrent Options"), footer: Text("Higher priority torrents receive bandwidth preference and scheduled queue admittance.")) {
+        Section(header: Text("Torrent Options"), footer: Text("Higher priority torrents receive bandwidth preference. Sequential download requests pieces in chronological order.")) {
             Picker("Priority", selection: $torrentPriority) {
                 Text("Low").tag(TorrentPriority.low)
                 Text("Normal").tag(TorrentPriority.normal)
                 Text("High").tag(TorrentPriority.high)
             }
+
+            Toggle("Sequential Piece Download", isOn: $isSequentialDownload)
 
             HStack {
                 Text("Destination")
@@ -922,12 +925,14 @@ public struct AddDownloadView: View {
                 if torrentInputMode == .magnet {
                     _ = try await viewModel.addTorrent(
                         magnetURI: magnetURI,
-                        priority: torrentPriority
+                        priority: torrentPriority,
+                        isSequential: isSequentialDownload
                     )
                 } else if let fileURL = selectedTorrentURL {
                     _ = try await viewModel.addTorrent(
                         fileURL: fileURL,
-                        priority: torrentPriority
+                        priority: torrentPriority,
+                        isSequential: isSequentialDownload
                     )
                 }
 
