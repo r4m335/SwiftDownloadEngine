@@ -3,7 +3,7 @@ import Foundation
 /// Codable user-facing preferences stored in UserDefaults (@AppStorage).
 /// Features a `version` field for seamless migrations across app updates.
 public struct AppSettings: Codable, Sendable, Equatable {
-    public static let currentVersion: Int = 1
+    public static let currentVersion: Int = 2
     public static let userDefaultsKey = "com.r4m335.SwiftDownloadEngine.AppSettings"
 
     public var version: Int
@@ -23,6 +23,11 @@ public struct AppSettings: Codable, Sendable, Equatable {
     public var targetRatio: Double
     public var targetDurationMinutes: Int
 
+    // Browser Shields & Content Blocking (Phase 3 Milestone 3.2)
+    public var isAdBlockerEnabled: Bool
+    public var isPopupBlockerEnabled: Bool
+    public var adBlockerWhitelistedDomains: [String]
+
     public static let `default` = AppSettings(
         version: currentVersion,
         maxConcurrentDownloads: 3,
@@ -39,7 +44,10 @@ public struct AppSettings: Codable, Sendable, Equatable {
         defaultTorrentPriority: .normal,
         seedingMode: .ratio,
         targetRatio: 1.0,
-        targetDurationMinutes: 60
+        targetDurationMinutes: 60,
+        isAdBlockerEnabled: true,
+        isPopupBlockerEnabled: true,
+        adBlockerWhitelistedDomains: []
     )
 
     public init(
@@ -58,7 +66,10 @@ public struct AppSettings: Codable, Sendable, Equatable {
         defaultTorrentPriority: TorrentPriority = .normal,
         seedingMode: SeedingMode = .ratio,
         targetRatio: Double = 1.0,
-        targetDurationMinutes: Int = 60
+        targetDurationMinutes: Int = 60,
+        isAdBlockerEnabled: Bool = true,
+        isPopupBlockerEnabled: Bool = true,
+        adBlockerWhitelistedDomains: [String] = []
     ) {
         self.version = version
         self.maxConcurrentDownloads = max(1, maxConcurrentDownloads)
@@ -76,6 +87,32 @@ public struct AppSettings: Codable, Sendable, Equatable {
         self.seedingMode = seedingMode
         self.targetRatio = targetRatio
         self.targetDurationMinutes = targetDurationMinutes
+        self.isAdBlockerEnabled = isAdBlockerEnabled
+        self.isPopupBlockerEnabled = isPopupBlockerEnabled
+        self.adBlockerWhitelistedDomains = adBlockerWhitelistedDomains
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.version = try container.decodeIfPresent(Int.self, forKey: .version) ?? Self.currentVersion
+        self.maxConcurrentDownloads = try container.decodeIfPresent(Int.self, forKey: .maxConcurrentDownloads) ?? 3
+        self.maxGlobalRequests = try container.decodeIfPresent(Int.self, forKey: .maxGlobalRequests) ?? 12
+        self.timeoutSeconds = try container.decodeIfPresent(Int.self, forKey: .timeoutSeconds) ?? 30
+        self.customUserAgent = try container.decodeIfPresent(String.self, forKey: .customUserAgent)
+        self.maxRetryAttempts = try container.decodeIfPresent(Int.self, forKey: .maxRetryAttempts) ?? 3
+        self.duplicateNamingRule = try container.decodeIfPresent(DuplicateNamingRule.self, forKey: .duplicateNamingRule) ?? .autoRename
+        self.allowCellular = try container.decodeIfPresent(Bool.self, forKey: .allowCellular) ?? true
+        self.enableGlobalSpeedLimit = try container.decodeIfPresent(Bool.self, forKey: .enableGlobalSpeedLimit) ?? false
+        self.globalSpeedLimitKBps = try container.decodeIfPresent(Int.self, forKey: .globalSpeedLimitKBps) ?? 2048
+        self.globalBandwidthLimitBytes = try container.decodeIfPresent(Int64.self, forKey: .globalBandwidthLimitBytes)
+        self.maxConcurrentTorrents = try container.decodeIfPresent(Int.self, forKey: .maxConcurrentTorrents) ?? 3
+        self.defaultTorrentPriority = try container.decodeIfPresent(TorrentPriority.self, forKey: .defaultTorrentPriority) ?? .normal
+        self.seedingMode = try container.decodeIfPresent(SeedingMode.self, forKey: .seedingMode) ?? .ratio
+        self.targetRatio = try container.decodeIfPresent(Double.self, forKey: .targetRatio) ?? 1.0
+        self.targetDurationMinutes = try container.decodeIfPresent(Int.self, forKey: .targetDurationMinutes) ?? 60
+        self.isAdBlockerEnabled = try container.decodeIfPresent(Bool.self, forKey: .isAdBlockerEnabled) ?? true
+        self.isPopupBlockerEnabled = try container.decodeIfPresent(Bool.self, forKey: .isPopupBlockerEnabled) ?? true
+        self.adBlockerWhitelistedDomains = try container.decodeIfPresent([String].self, forKey: .adBlockerWhitelistedDomains) ?? []
     }
 
     /// Maps UI AppSettings into the engine layer's decoupled EngineConfiguration.

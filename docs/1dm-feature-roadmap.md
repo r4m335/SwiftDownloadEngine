@@ -69,9 +69,9 @@ To bridge the remaining functional distance without compromising stability or vi
   - Selecting a 720p variant downloads only that variant's media playlist.
   - Automated tests verify custom variant selection propagates accurately to the orchestrator.
 
-### Milestone 3.2: Content Blocking & Ad Blocker (`WKContentRuleListStore`)
+### Milestone 3.2: Content Blocking & Ad Blocker (`WKContentRuleListStore`) — **Complete**
 - **Objective:** Provide a fast, native ad and popup blocker inside the integrated browser to prevent malicious redirects, tracking scripts, and intrusive ads.
-- **Current State:** Missing. No content rule lists are compiled or attached to `WKUserContentController`.
+- **Current State:** Complete. Fully implemented in `BrowserContentBlocker.swift`, `BrowserShieldSheet.swift`, `AppSettings.swift`, `SettingsView.swift`, and integrated into `BrowserView.swift`. Tested with 10 passing unit tests in `BrowserContentBlockerTests.swift` and verified with backward-compatibility tests in `AppSettingsTests.swift`.
 - **Implementation Scope:**
   - Create `BrowserContentBlocker.swift` utilizing Apple's native `WKContentRuleListStore`.
   - Include bundled EasyList/AdGuard JSON rules compiled on first app launch into binary format.
@@ -79,9 +79,11 @@ To bridge the remaining functional distance without compromising stability or vi
   - Intercept and suppress unsolicited `window.open` calls via `WKUIDelegate`.
 - **Dependencies:** `BrowserView.swift`, `Engine/Browser/`.
 - **Completion Criteria:**
-  - Known ad scripts and banner domains fail to load inside `BrowserView`.
-  - Aggressive popunder windows are blocked and logged.
-  - Toggle switch in Settings dynamically enables/disables content blocking rules.
+  - [x] Known ad scripts and banner domains fail to load inside `BrowserView`.
+  - [x] Aggressive popunder windows are blocked and logged.
+  - [x] Toggle switch in Settings dynamically enables/disables content blocking rules.
+  - [x] Per-site shield toggle and status sheet in browser navigation bar.
+  - [x] EasyList rule conversion engine for future filter list additions.
 
 ### Milestone 3.3: File Categorization & Custom Subfolder Routing
 - **Objective:** Automatically sort downloads into MIME-type categories and user-defined directories.

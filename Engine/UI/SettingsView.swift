@@ -42,6 +42,10 @@ public struct SettingsView: View {
     @State private var snifferExtensions: String = ""
     @State private var snifferMIMETypes: String = ""
 
+    // Content Shields & Ad Blocking (Phase 3 Milestone 3.2)
+    @State private var isAdBlockerEnabled: Bool = true
+    @State private var isPopupBlockerEnabled: Bool = true
+
     // Download Scheduler Settings (iOS URLSession & Local Notifications)
     @State private var scheduleEnabled: Bool = false
     @State private var scheduleStartTime: Date = Calendar.current.date(from: DateComponents(hour: 2, minute: 0)) ?? Date()
@@ -289,7 +293,26 @@ public struct SettingsView: View {
                     }
                 }
 
-                // Section 9: Download Scheduler (iOS Native URLSession & Local Notifications)
+                // Section 9: Content Shields & Ad Blocking (Phase 3 Milestone 3.2)
+                Section(
+                    header: Text("Content Shields & Privacy"),
+                    footer: Text("Apple WKContentRuleListStore provides hardware-accelerated ad and tracker blocking with zero JavaScript overhead.")
+                ) {
+                    Toggle("Block Invasive Ads & Annoyances", isOn: $isAdBlockerEnabled)
+                    Toggle("Block Popups & Hijack Redirects", isOn: $isPopupBlockerEnabled)
+
+                    if !viewModel.appSettings.adBlockerWhitelistedDomains.isEmpty {
+                        HStack {
+                            Text("Whitelisted Domains")
+                            Spacer()
+                            Text("\(viewModel.appSettings.adBlockerWhitelistedDomains.count) active")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                }
+
+                // Section 10: Download Scheduler (iOS Native URLSession & Local Notifications)
                 Section(
                     header: Text("Download Scheduler"),
                     footer: Text("\(ScheduleCoordinator.scheduledBackgroundBehaviorMessage) \(ScheduleCoordinator.torrentBackgroundLimitationMessage)")
@@ -399,6 +422,9 @@ public struct SettingsView: View {
         self.snifferExtensions = sniffer.allowedExtensions.joined(separator: ", ")
         self.snifferMIMETypes = sniffer.allowedMIMETypes.joined(separator: ", ")
 
+        self.isAdBlockerEnabled = settings.isAdBlockerEnabled
+        self.isPopupBlockerEnabled = settings.isPopupBlockerEnabled
+
         if let rule = viewModel.scheduleRules.first {
             self.scheduleEnabled = rule.isEnabled
             let cal = Calendar.current
@@ -431,7 +457,10 @@ public struct SettingsView: View {
             defaultTorrentPriority: defaultTorrentPriority,
             seedingMode: seedingMode,
             targetRatio: targetRatio,
-            targetDurationMinutes: targetDurationMinutes
+            targetDurationMinutes: targetDurationMinutes,
+            isAdBlockerEnabled: isAdBlockerEnabled,
+            isPopupBlockerEnabled: isPopupBlockerEnabled,
+            adBlockerWhitelistedDomains: viewModel.appSettings.adBlockerWhitelistedDomains
         )
 
         var currentRule = viewModel.scheduleRules.first ?? ScheduleRule()

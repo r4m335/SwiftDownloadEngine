@@ -27,15 +27,15 @@ Each capability is classified under one of six unambiguous statuses:
 
 | Status | Count | Percentage |
 |---|:---:|:---:|
-| **Complete** | 46 | 64.8% |
+| **Complete** | 48 | 67.6% |
 | **Partial** | 5 | 7.0% |
 | **Untested** | 1 | 1.4% |
-| **Missing** | 16 | 22.5% |
+| **Missing** | 14 | 19.7% |
 | **iOS Restricted** | 3 | 4.2% |
 | **Total Features Evaluated** | **71** | **100.0%** |
 
 ```
-[██████████████████████████████████████████░░░░░░░░░░░░░░░░░] 64.8% Complete
+[████████████████████████████████████████████░░░░░░░░░░░░░░░] 67.6% Complete
 ```
 
 ---
@@ -71,8 +71,8 @@ Each capability is classified under one of six unambiguous statuses:
 | 16 | Media Sniffing & Asset Detection | Intercepts video, audio, and media streams from HTML5 elements and network requests | **Complete** | `BrowserMediaDiscoveryBridge.swift`, `BrowserMediaCandidateClassifier.swift` | `BrowserMediaDiscoveryTests.swift`, `BrowserMediaCandidateTests.swift` | Injects JavaScript observers for `<video>`, `<audio>`, `fetch()`, `XMLHttpRequest`, and URL regex patterns. |
 | 17 | Download Decision Pipeline | Routes media candidates to direct, streaming, blob, MSE, or DRM paths | **Complete** | `BrowserDownloadDecisionPipeline.swift` | `BrowserDownloadDecisionPipelineTests.swift`, `BrowserToDownloadWorkflowTests.swift` | Automatically classifies `.direct`, `.streaming`, `.blobExport`, `.mseCapture`, `.protectedMedia`. |
 | 18 | Request Context & Cookie Preservation | Preserves `Cookie`, `Referer`, and `User-Agent` from the browser page | **Complete** | `BrowserRequestContext.swift`, `DownloadRequestEnricher.swift` | `DownloadRequestEnricherTests.swift`, `BrowserToDownloadWorkflowTests.swift` | Strips Referer on HTTPS->HTTP downgrade; extracts WKHTTPCookieStore session cookies. |
-| 19 | Built-in Ad Blocker | Rule-based element hiding and ad network blocking | **Missing** | None | None | 1DM+ includes a full ad blocker. LID currently has no `WKContentRuleListStore` integration. |
-| 20 | Popup Blocker | Blocks aggressive popups and redirect loops | **Missing** | None | None | No JavaScript `window.open` interception or suppression rules. |
+| 19 | Built-in Ad Blocker | Rule-based element hiding and ad network blocking | **Complete** | `BrowserContentBlocker.swift`, `BrowserShieldSheet.swift`, `AppSettings.swift`, `SettingsView.swift`, `BrowserView.swift` | `BrowserContentBlockerTests.swift`, `AppSettingsTests.swift` | Native `WKContentRuleListStore` compiler with built-in rules, EasyList/ABP parser, tracker protection, cosmetic display-none hiding, per-site whitelist bypass, and global settings toggles. |
+| 20 | Popup Blocker | Blocks aggressive popups and redirect loops | **Complete** | `BrowserContentBlocker.swift:BrowserPopupPolicyEvaluator`, `BrowserView.swift` | `BrowserContentBlockerTests.swift` | Blocks unsolicited popup windows via `WKUIDelegate.createWebViewWith`, intercepts non-user-initiated window targets, and suppresses suspicious URL scheme redirects (`itms-appss`, `facetime`, `sms`, `tel`). |
 | 21 | Desktop Mode (User-Agent Switcher) | Per-tab toggle to request desktop version of sites | **Missing** | `AppSettings.swift` (global UA only) | None | LID has a global UA setting, but lacks a per-tab "Request Desktop Site" quick toggle. |
 | 22 | Incognito / Private Browsing Mode | Ephemeral browsing with zero history or cookie persistence | **Missing** | None | None | Needs `WKWebsiteDataStore.nonPersistent()` implementation for isolated tabs. |
 | 23 | Bookmarks & History Management | Hierarchical folders, bookmark export/import, searchable history | **Partial** | `BrowserViewModel.bookmarks` (rudimentary array) | `BrowserTests.swift` | Lacks folder hierarchy, history persistence store, search, and import/export. |

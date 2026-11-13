@@ -20,6 +20,9 @@ final class AppSettingsTests: XCTestCase {
         XCTAssertEqual(settings.seedingMode, .ratio)
         XCTAssertEqual(settings.targetRatio, 1.0)
         XCTAssertEqual(settings.targetDurationMinutes, 60)
+        XCTAssertTrue(settings.isAdBlockerEnabled)
+        XCTAssertTrue(settings.isPopupBlockerEnabled)
+        XCTAssertEqual(settings.adBlockerWhitelistedDomains, [])
     }
 
     func testAppSettings_JSONRoundTrip() throws {
@@ -37,6 +40,9 @@ final class AppSettingsTests: XCTestCase {
         original.defaultTorrentPriority = .high
         original.seedingMode = .duration
         original.targetDurationMinutes = 120
+        original.isAdBlockerEnabled = false
+        original.isPopupBlockerEnabled = false
+        original.adBlockerWhitelistedDomains = ["example.com", "trusted-stream.org"]
 
         let data = try JSONEncoder().encode(original)
         let decoded = try JSONDecoder().decode(AppSettings.self, from: data)
@@ -46,6 +52,38 @@ final class AppSettingsTests: XCTestCase {
         XCTAssertEqual(decoded.duplicateNamingRule, .overwrite)
         XCTAssertFalse(decoded.allowCellular)
         XCTAssertEqual(decoded.globalSpeedLimitKBps, 4096)
+        XCTAssertFalse(decoded.isAdBlockerEnabled)
+        XCTAssertFalse(decoded.isPopupBlockerEnabled)
+        XCTAssertEqual(decoded.adBlockerWhitelistedDomains, ["example.com", "trusted-stream.org"])
+    }
+
+    func testAppSettings_BackwardCompatibilityWithV1JSON() throws {
+        // Legacy JSON without ad blocker keys
+        let v1JSON = """
+        {
+            "version": 1,
+            "maxConcurrentDownloads": 4,
+            "maxGlobalRequests": 16,
+            "timeoutSeconds": 30,
+            "maxRetryAttempts": 3,
+            "duplicateNamingRule": "Auto-rename with index",
+            "allowCellular": true,
+            "enableGlobalSpeedLimit": false,
+            "globalSpeedLimitKBps": 2048,
+            "maxConcurrentTorrents": 3,
+            "defaultTorrentPriority": 2,
+            "seedingMode": "Stop at Ratio",
+            "targetRatio": 1.0,
+            "targetDurationMinutes": 60
+        }
+        """.data(using: .utf8)!
+
+        let decoded = try JSONDecoder().decode(AppSettings.self, from: v1JSON)
+        XCTAssertEqual(decoded.version, 1)
+        XCTAssertEqual(decoded.maxConcurrentDownloads, 4)
+        XCTAssertTrue(decoded.isAdBlockerEnabled) // Safe fallback default
+        XCTAssertTrue(decoded.isPopupBlockerEnabled) // Safe fallback default
+        XCTAssertEqual(decoded.adBlockerWhitelistedDomains, []) // Safe fallback default
     }
 
     func testAppSettings_MappingToEngineConfiguration() {

@@ -145,6 +145,12 @@ public final class BrowserViewModel: NSObject, ObservableObject {
     @Published public var qualityInspectionError: String? = nil
     @Published public var qualityPickerFilename: String = ""
 
+    // Native Content Blocking & Shields (Phase 3 Milestone 3.2)
+    @Published public var isAdBlockerEnabled: Bool = true
+    @Published public var isPopupBlockerEnabled: Bool = true
+    @Published public var adBlockerWhitelistedDomains: Set<String> = []
+    @Published public var isShowingShieldSheet: Bool = false
+
     public weak var downloadDelegate: BrowserDownloadDelegate?
     public weak var magnetDelegate: (any BrowserMagnetDelegate)?
     public var onDownloadInitiated: (() -> Void)? = nil
@@ -214,7 +220,22 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         self.streamingDestinationDirectoryURL = streamingDestinationDirectoryURL ??
             (downloadDelegate as? DownloadManagerViewModel)?.downloadsDirectoryURL ??
             DownloadManagerViewModel.defaultDownloadsDirectory()
+
+        let initialSettings = (downloadDelegate as? DownloadManagerViewModel)?.appSettings ?? AppSettings.load()
+        self.isAdBlockerEnabled = initialSettings.isAdBlockerEnabled
+        self.isPopupBlockerEnabled = initialSettings.isPopupBlockerEnabled
+        self.adBlockerWhitelistedDomains = Set(initialSettings.adBlockerWhitelistedDomains)
+
         super.init()
+
+        #if canImport(WebKit)
+        Task {
+            await BrowserContentBlocker.shared.prepareRuleLists(
+                whitelistedDomains: initialSettings.adBlockerWhitelistedDomains
+            )
+        }
+        #endif
+
         if let orchestrator {
             Task { await orchestrator.setURLResolver(self) }
         }
@@ -1500,6 +1521,64 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         }
     }
 
+    // MARK: - Native Content Blocking & Shields (Phase 3 Milestone 3.2)
+
+    public var isCurrentSiteWhitelisted: Bool {
+        guard let host = currentURL?.host else { return false }
+        return BrowserDomainMatcher.isDomainWhitelisted(host, in: Array(adBlockerWhitelistedDomains))
+    }
+
+    public var currentDomainDisplayName: String {
+        guard let host = currentURL?.host else { return "Current Website" }
+        return BrowserDomainMatcher.normalizeDomain(host)
+    }
+
+    public func toggleShieldForCurrentSite() {
+        guard let host = currentURL?.host else { return }
+        let domain = BrowserDomainMatcher.normalizeDomain(host)
+        if adBlockerWhitelistedDomains.contains(domain) {
+            adBlockerWhitelistedDomains.remove(domain)
+        } else {
+            adBlockerWhitelistedDomains.insert(domain)
+        }
+        persistShieldSettings()
+        updateActiveTabBlocker()
+        reload()
+    }
+
+    public func setAdBlockerEnabled(_ enabled: Bool) {
+        isAdBlockerEnabled = enabled
+        persistShieldSettings()
+        updateActiveTabBlocker()
+    }
+
+    public func setPopupBlockerEnabled(_ enabled: Bool) {
+        isPopupBlockerEnabled = enabled
+        persistShieldSettings()
+    }
+
+    public func persistShieldSettings() {
+        var current = AppSettings.load()
+        current.isAdBlockerEnabled = isAdBlockerEnabled
+        current.isPopupBlockerEnabled = isPopupBlockerEnabled
+        current.adBlockerWhitelistedDomains = Array(adBlockerWhitelistedDomains)
+        current.save()
+        if let vm = downloadDelegate as? DownloadManagerViewModel {
+            vm.appSettings = current
+        }
+    }
+
+    public func updateActiveTabBlocker() {
+        #if canImport(WebKit)
+        guard let webView = self.webView else { return }
+        BrowserContentBlocker.shared.update(
+            for: webView,
+            isEnabled: isAdBlockerEnabled,
+            isCurrentDomainWhitelisted: isCurrentSiteWhitelisted
+        )
+        #endif
+    }
+
     public func presentMagnetLink(_ magnet: MagnetLink, sourcePageURL: URL?) {
         guard !isShowingMagnetSheet || magnetCandidate?.uri != magnet.uri else { return }
         magnetCandidate = magnet
@@ -2554,6 +2633,9 @@ public struct BrowserView: View {
         .sheet(isPresented: $viewModel.isShowingQualityPicker) {
             StreamQualityPickerSheet(viewModel: viewModel)
         }
+        .sheet(isPresented: $viewModel.isShowingShieldSheet) {
+            BrowserShieldSheet(viewModel: viewModel)
+        }
         .sheet(isPresented: $viewModel.isShowingMagnetSheet) {
             BrowserMagnetConfirmationSheet(viewModel: viewModel)
         }
@@ -2743,8 +2825,29 @@ public struct BrowserView: View {
         viewModel.isShowingDownloadSheet ||
         viewModel.isShowingResourceInspector ||
         viewModel.isShowingQualityPicker ||
+        viewModel.isShowingShieldSheet ||
         viewModel.isShowingMagnetSheet ||
         viewModel.isShowingTabSwitcher
+    }
+
+    private var shieldIconName: String {
+        if !viewModel.isAdBlockerEnabled {
+            return "shield.slash"
+        }
+        if viewModel.isCurrentSiteWhitelisted {
+            return "shield.slash.fill"
+        }
+        return "shield.checkered"
+    }
+
+    private var shieldIconColor: Color {
+        if !viewModel.isAdBlockerEnabled {
+            return .secondary
+        }
+        if viewModel.isCurrentSiteWhitelisted {
+            return .orange
+        }
+        return .blue
     }
 
     // MARK: - Address Bar Header
@@ -2753,6 +2856,17 @@ public struct BrowserView: View {
         HStack(spacing: 8) {
             // Address Bar Capsule
             HStack(spacing: 6) {
+                // Shield Protection Button
+                Button {
+                    viewModel.isShowingShieldSheet = true
+                } label: {
+                    Image(systemName: shieldIconName)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(shieldIconColor)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Content Shields")
+
                 // Security / Search Icon
                 if let url = viewModel.currentURL {
                     if url.scheme?.lowercased() == "https" {
@@ -3639,10 +3753,17 @@ final class BrowserWebViewSession {
         config.processPool = Self.sharedProcessPool
         config.websiteDataStore = .default()
         config.defaultWebpagePreferences.allowsContentJavaScript = true
-        config.preferences.javaScriptCanOpenWindowsAutomatically = true
+        config.preferences.javaScriptCanOpenWindowsAutomatically = !viewModel.isPopupBlockerEnabled
 #if os(iOS)
         config.allowsInlineMediaPlayback = true
 #endif
+
+        // Native Content Blocking & Ad Blocker (Phase 3 Milestone 3.2)
+        BrowserContentBlocker.shared.apply(
+            to: config,
+            isEnabled: viewModel.isAdBlockerEnabled,
+            isCurrentDomainWhitelisted: false
+        )
 
         let bridge = BrowserMediaDiscoveryBridge()
         bridge.observationHandler = { [weak viewModel] observation in
@@ -3780,6 +3901,18 @@ public final class BrowserWebViewCoordinator: NSObject, WKNavigationDelegate, WK
             url: webView.url,
             tabID: tabID
         )
+
+        if let host = webView.url?.host, let vm = viewModel {
+            let isWhitelisted = BrowserDomainMatcher.isDomainWhitelisted(
+                host,
+                in: Array(vm.adBlockerWhitelistedDomains)
+            )
+            BrowserContentBlocker.shared.update(
+                for: webView,
+                isEnabled: vm.isAdBlockerEnabled,
+                isCurrentDomainWhitelisted: isWhitelisted
+            )
+        }
     }
 
     public func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
@@ -3933,19 +4066,31 @@ public final class BrowserWebViewCoordinator: NSObject, WKNavigationDelegate, WK
         for navigationAction: WKNavigationAction,
         windowFeatures: WKWindowFeatures
     ) -> WKWebView? {
+        let isUserInitiated = navigationAction.navigationType == .linkActivated
+        let isPopupAllowed = BrowserPopupPolicyEvaluator.shouldAllowPopup(
+            navigationType: navigationAction.navigationType.rawValue,
+            isUserInitiated: isUserInitiated,
+            targetFrameIsNil: navigationAction.targetFrame == nil,
+            isPopupBlockerEnabled: viewModel?.isPopupBlockerEnabled ?? true
+        )
+
         BrowserDiagnosticLogger.shared.log(
             category: .navigation,
-            message: "createWebViewWith requested by page",
+            message: "createWebViewWith requested: allowed=\(isPopupAllowed)",
             url: navigationAction.request.url,
             tabID: tabID,
             details: [
                 "targetFrame": navigationAction.targetFrame == nil ? "nil" : "non-nil",
-                "navigationType": "\(navigationAction.navigationType.rawValue)"
+                "navigationType": "\(navigationAction.navigationType.rawValue)",
+                "isPopupAllowed": "\(isPopupAllowed)"
             ]
         )
+
+        guard isPopupAllowed else {
+            return nil
+        }
+
         // If a user tapped a link opening in a new tab/window, load it in the current web view.
-        // Automated script windows (e.g. challenge popups) are allowed to evaluate without
-        // forcibly resetting the primary web view.
         if navigationAction.navigationType == .linkActivated {
             webView.load(navigationAction.request)
         }
@@ -4063,6 +4208,18 @@ public final class BrowserWebViewCoordinator: NSObject, WKNavigationDelegate, WK
                 "navigationType": "\(navigationAction.navigationType.rawValue)"
             ]
         )
+
+        // Aggressive app store hijacks and scheme spam defense (Phase 3 Milestone 3.2)
+        if viewModel?.isPopupBlockerEnabled == true && BrowserPopupPolicyEvaluator.isSuspiciousExternalRedirect(url: url) {
+            BrowserDiagnosticLogger.shared.log(
+                category: .policy,
+                message: "Blocked suspicious external redirect to: \(url.scheme ?? "")",
+                url: url,
+                tabID: tabID
+            )
+            decisionHandler(.cancel)
+            return
+        }
 
         // Magnet links identify torrent metadata rather than HTTP resources.
         // Intercept them before the normal web-navigation scheme check so
