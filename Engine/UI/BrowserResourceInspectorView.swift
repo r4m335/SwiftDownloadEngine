@@ -390,8 +390,6 @@ public struct BrowserResourceInspectorSheet: View {
             onDownload: {
                 if resource.isSegmentChunk {
                     viewModel.blobCaptureErrorMessage = "This is a streaming segment chunk. Download the playlist manifest (.m3u8 or .mpd) instead."
-                } else if resource.isStreamingManifest || resource.url.pathExtension.lowercased() == "m3u8" || resource.url.pathExtension.lowercased() == "mpd" {
-                    viewModel.promptStreamingDownload(for: resource)
                 } else {
                     viewModel.promptDownloadFromInspector(for: resource)
                 }

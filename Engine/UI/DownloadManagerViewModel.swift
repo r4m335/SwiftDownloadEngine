@@ -1453,7 +1453,8 @@ extension DownloadManagerViewModel: BrowserDownloadDelegate {
         Task { @MainActor in
             do {
                 let filename = candidate.suggestedFilename.isEmpty ? nil : candidate.suggestedFilename
-                _ = try await addDownload(urlText: url.absoluteString, filename: filename)
+                let headers = candidate.requestContext?.effectiveHeaders(for: url, includeCredentials: true) ?? [:]
+                _ = try await addDownload(urlText: url.absoluteString, filename: filename, headers: headers)
             } catch {
                 errorMessage = "Engine error: \(error.localizedDescription)"
             }

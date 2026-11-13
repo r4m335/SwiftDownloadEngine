@@ -532,6 +532,13 @@ public struct BrowserMediaCandidateCatalog: Sendable, Equatable {
         merge(BrowserMediaCandidateClassifier.classify(resource: resource, now: now))
     }
 
+    @discardableResult
+    public mutating func ingest(
+        candidate: BrowserMediaCandidate
+    ) -> BrowserMediaCandidate {
+        merge(candidate)
+    }
+
     public mutating func associateManifestSegments(
         manifestID: String,
         segmentURLs: [URL]
