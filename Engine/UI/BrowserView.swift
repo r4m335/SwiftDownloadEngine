@@ -1021,7 +1021,10 @@ public final class BrowserViewModel: NSObject, ObservableObject {
             if !candidate.suggestedFilename.isEmpty {
                 return candidate.suggestedFilename
             }
-            return BrowserURLResolver.suggestedFilename(from: url)
+            if let url {
+                return BrowserURLResolver.suggestedFilename(from: url)
+            }
+            return "download.bin"
         }()
         downloadCandidateFilename = resolvedFilename
         downloadCandidateRequestContext = candidate.requestContext
