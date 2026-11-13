@@ -681,6 +681,8 @@ public actor StreamingDownloadOrchestrator {
     public var hlsPersistenceStore: HLSPersistenceStore?
     private var proposals: [String: StreamingTransferProposal] = [:]
     private var runningTransfers: Set<String> = []
+    private var activeAssemblyOperations: Set<String> = []
+    private var activeAssemblyDirectories: [String: URL] = [:]
     private var completedTransfers: [String: StreamingTransferResult] = [:]
     private var pausedTransfers: Set<String> = []
     private var cancelledTransfers: Set<String> = []
@@ -962,11 +964,25 @@ public actor StreamingDownloadOrchestrator {
 
     private func purgeOrphanAssemblyDirectories(records: [HLSTransferRecord]) async {
         let fileManager = FileManager.default
-        let activeDirectories = Set(
+        var activeDirectories = Set(
             records
                 .filter { $0.state == .downloading || $0.state == .paused }
                 .map { $0.segmentDirectoryURL.standardizedFileURL.path }
         )
+        for url in activeAssemblyDirectories.values {
+            activeDirectories.insert(url.standardizedFileURL.path)
+        }
+        for runId in runningTransfers {
+            if let record = records.first(where: { $0.id == runId }) {
+                activeDirectories.insert(record.segmentDirectoryURL.standardizedFileURL.path)
+            }
+        }
+        for runId in activeAssemblyOperations {
+            if let record = records.first(where: { $0.id == runId }) {
+                activeDirectories.insert(record.segmentDirectoryURL.standardizedFileURL.path)
+            }
+        }
+
         let parentDirectories = Set(records.map {
             $0.segmentDirectoryURL.deletingLastPathComponent().standardizedFileURL
         })
@@ -979,7 +995,20 @@ public actor StreamingDownloadOrchestrator {
             ) else { continue }
             for child in children where child.lastPathComponent.hasPrefix(".assembly_temp_") {
                 let path = child.standardizedFileURL.path
-                guard !activeDirectories.contains(path) else { continue }
+                guard !activeDirectories.contains(path) else {
+                    PipelineLogger.shared.log("[HLS Recovery] Preserving active assembly directory: \(path)")
+                    continue
+                }
+
+                // Minimum age grace period: do not delete directories created or modified within 2 hours (7200 seconds)
+                let attrs = try? fileManager.attributesOfItem(atPath: child.path)
+                let modDate = (attrs?[.modificationDate] as? Date) ?? (attrs?[.creationDate] as? Date) ?? Date.distantPast
+                let age = Date().timeIntervalSince(modDate)
+                guard age > 7200 else {
+                    PipelineLogger.shared.log("[HLS Recovery] Assembly directory \(path) was modified recently (\(Int(age))s ago < 7200s grace period). Preserving.")
+                    continue
+                }
+
                 do {
                     try fileManager.removeItem(at: child)
                     PipelineLogger.shared.log("[HLS Recovery] Removed orphaned assembly directory: \(path)")
@@ -1041,7 +1070,13 @@ public actor StreamingDownloadOrchestrator {
                 registeredTransferIDs[record.id] = record.id
                 PipelineLogger.shared.log("[HLS Recovery] Transfer \(record.id) already in engine queue. Skipping re-registration.")
                 if resumeInterrupted, record.state == .downloading {
-                    Task { await self.resumePersistedHLS(record) }
+                    let isRunningInMemory = runningTransfers.contains(record.id) || activeAssemblyOperations.contains(record.id)
+                    let isEngineActive = existingSnap?.state == .downloading || existingSnap?.state == .pending || existingSnap?.state == .probing
+                    if isRunningInMemory || isEngineActive {
+                        PipelineLogger.shared.log("[HLS Recovery] Transfer \(record.id) is currently actively executing (engine state: \(String(describing: existingSnap?.state))). Skipping duplicate resume.")
+                    } else {
+                        Task { await self.resumePersistedHLS(record) }
+                    }
                 }
                 continue
             }
@@ -1073,7 +1108,12 @@ public actor StreamingDownloadOrchestrator {
                 let segsTotal = record.totalSegments
                 PipelineLogger.shared.log("[HLS Recovery] Re-registered \(record.outputFilename) (\(segsDone)/\(segsTotal) segments).")
                 if resumeInterrupted, record.state == .downloading {
-                    Task { await self.resumePersistedHLS(record) }
+                    let isRunningInMemory = runningTransfers.contains(record.id) || activeAssemblyOperations.contains(record.id)
+                    if isRunningInMemory {
+                        PipelineLogger.shared.log("[HLS Recovery] Transfer \(record.id) is already running in memory. Skipping duplicate resume.")
+                    } else {
+                        Task { await self.resumePersistedHLS(record) }
+                    }
                 }
             } catch {
                 PipelineLogger.shared.log("[HLS Recovery] Failed to re-register \(record.id): \(error.localizedDescription)")
@@ -1099,6 +1139,10 @@ public actor StreamingDownloadOrchestrator {
     /// output destination. Browser credentials are intentionally not loaded
     /// from disk; the normal loader/keychain path supplies them when available.
     private func resumePersistedHLS(_ record: HLSTransferRecord) async {
+        guard !runningTransfers.contains(record.id), !activeAssemblyOperations.contains(record.id) else {
+            PipelineLogger.shared.log("[HLS Recovery] Transfer \(record.id) is already running or assembling. Aborting duplicate resume.")
+            return
+        }
         do {
             let candidate = try StreamingManifestCandidate(url: record.manifestURL)
             let proposal = try await prepare(candidate: candidate)
@@ -2376,6 +2420,10 @@ public actor StreamingDownloadOrchestrator {
             throw StreamingDownloadOrchestratorError.unsupportedManifest(.dash)
         }
         let parentID = runID ?? "stream-run-\(UUID().uuidString.lowercased())"
+        guard !runningTransfers.contains(parentID), !activeAssemblyOperations.contains(parentID) else {
+            PipelineLogger.shared.log("[HLS Pipeline] Transfer \(parentID) is already actively running or assembling. Ignoring redundant execution request.")
+            throw StreamingDownloadOrchestratorError.transferAlreadyRunning
+        }
         let runProposal = proposalForRun(proposal, transferID: parentID)
         guard case .hls(let transferPlan) = runProposal.manifest else {
             throw StreamingDownloadOrchestratorError.unsupportedManifest(.dash)
@@ -2432,6 +2480,13 @@ public actor StreamingDownloadOrchestrator {
 
         var effectiveDestinationDirectory = destinationDirectory
 
+        activeAssemblyOperations.insert(parentID)
+        activeAssemblyDirectories[parentID] = effectiveDestinationDirectory
+        defer {
+            activeAssemblyOperations.remove(parentID)
+            activeAssemblyDirectories.removeValue(forKey: parentID)
+        }
+
         // Persist the parent HLS transfer record so it survives app restarts.
         if let persistence = hlsPersistenceStore {
             let previousRecord: HLSTransferRecord?
@@ -2446,6 +2501,7 @@ public actor StreamingDownloadOrchestrator {
             }
             if let previousRecord, FileManager.default.fileExists(atPath: previousRecord.segmentDirectoryURL.path) {
                 effectiveDestinationDirectory = previousRecord.segmentDirectoryURL
+                activeAssemblyDirectories[parentID] = effectiveDestinationDirectory
             }
             let hlsRecord = HLSTransferRecord(
                 id: parentID,
@@ -2500,6 +2556,9 @@ public actor StreamingDownloadOrchestrator {
                 proposal: runProposal
             )
             throw error
+        } catch let error as StreamingDownloadOrchestratorError where error == .transferAlreadyRunning {
+            PipelineLogger.shared.log("[HLS Pipeline] Duplicate resume request rejected for \(parentID). Preserving active transfer state.")
+            throw error
         } catch {
             let isCancelled = self.cancelledTransfers.contains(parentID) ||
                               self.cancelledTransfers.contains(proposal.transferID) ||
@@ -2530,6 +2589,40 @@ public actor StreamingDownloadOrchestrator {
         let completed = zip(allPlanned, result.localFiles).map {
             HLSCompletedResource(resource: $0.0, fileURL: $0.1)
         }
+
+        // Pre-assembly validation and reconciliation:
+        // Verify every completed segment exists on disk and is non-empty.
+        // If an unexpected filesystem event or race removed a segment, perform targeted re-download.
+        var validatedCompleted: [HLSCompletedResource] = []
+        for item in completed {
+            let path = item.fileURL.path
+            let exists = FileManager.default.fileExists(atPath: path)
+            let size = (try? FileManager.default.attributesOfItem(atPath: path)[.size] as? Int64) ?? 0
+            if exists && size > 0 {
+                validatedCompleted.append(item)
+            } else {
+                PipelineLogger.shared.log("[HLS Reconciliation] Missing or empty segment detected for order \(item.resource.order) at \(path). Performing targeted re-download...")
+                guard let transferResource = runProposal.resources.first(where: { $0.identity.order == item.resource.order }) else {
+                    PipelineLogger.shared.log("[HLS Reconciliation] Transfer resource not found for order \(item.resource.order).")
+                    throw StreamingDownloadOrchestratorError.segmentTransferFailed(order: item.resource.order)
+                }
+                let redownloaded = try await downloadSegment(
+                    resource: transferResource,
+                    index: item.resource.order,
+                    proposal: runProposal,
+                    destinationDirectory: effectiveDestinationDirectory,
+                    pipelineTag: "[HLS Reconciliation]"
+                )
+                let recheckSize = (try? FileManager.default.attributesOfItem(atPath: redownloaded.destinationURL.path)[.size] as? Int64) ?? 0
+                guard FileManager.default.fileExists(atPath: redownloaded.destinationURL.path) && recheckSize > 0 else {
+                    PipelineLogger.shared.log("[HLS Reconciliation] Targeted re-download failed for segment \(item.resource.order).")
+                    throw StreamingDownloadOrchestratorError.segmentTransferFailed(order: item.resource.order)
+                }
+                validatedCompleted.append(HLSCompletedResource(resource: item.resource, fileURL: redownloaded.destinationURL))
+                PipelineLogger.shared.log("[HLS Reconciliation] Successfully recovered missing segment \(item.resource.order) (\(recheckSize) bytes).")
+            }
+        }
+
         do {
             // Mark assembly in-progress before calling the reconstructor.
             try Task.checkCancellation()
@@ -2540,7 +2633,7 @@ public actor StreamingDownloadOrchestrator {
 
             let assemblyOutput = try HLSVODReconstructor.assemble(
                 transferPlan: transferPlan,
-                completedResources: completed,
+                completedResources: validatedCompleted,
                 destinationURL: finalOutputURL,
                 temporaryDirectoryURL: destinationDirectory.appendingPathComponent(
                     ".media-assembly",

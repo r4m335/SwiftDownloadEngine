@@ -902,6 +902,106 @@ final class HLSLifecycleTests: XCTestCase {
         // No assertion needed — verifies the method exists and doesn't crash.
     }
 
+    // MARK: - Physical iPhone Regression Tests: Active Transfer & Directory Protection
+
+    func testRestoreHLSTransfersDoesNotResumeActivelyExecutingTransfer() async throws {
+        let manifestURL = URL(string: "https://example.com/stream/index.m3u8")!
+        let parentID = "active-run-test"
+        let outputURL = URL(fileURLWithPath: "/tmp/active_test.mp4")
+        let segDir = URL(fileURLWithPath: "/tmp/segs_active_test")
+
+        let record = HLSTransferRecord(
+            id: parentID,
+            manifestURL: manifestURL,
+            outputFilename: "active_test.mp4",
+            outputDestinationURL: outputURL,
+            segmentDirectoryURL: segDir,
+            totalSegments: 10,
+            completedSegmentOrders: [0, 1, 2],
+            state: .downloading,
+            assemblyState: .notStarted
+        )
+
+        let store = HLSPersistenceStore(inMemory: true)
+        try await store.save(record)
+
+        let engine = makeFakeEngine()
+        // Register the download in the engine in downloading state
+        _ = try await engine.registerStreamingDownload(
+            id: parentID,
+            manifestURL: manifestURL,
+            destinationURL: outputURL,
+            filename: "active_test.mp4",
+            totalBytes: 10_000_000,
+            mimeType: "video/mp4"
+        )
+        await engine.queueManager.resumeStreaming(id: parentID)
+
+        let snapBefore = await engine.snapshot(for: parentID)
+        XCTAssertEqual(snapBefore?.state, .downloading)
+
+        let orchestrator = StreamingDownloadOrchestrator(
+            manifestLoader: StubManifestLoader(data: Data(), finalURL: manifestURL),
+            segmentExecutor: WritingSegmentExecutorStub(),
+            downloadEngine: engine,
+            hlsPersistenceStore: store
+        )
+
+        // Simulating app foregrounding (scenePhase == .active) calling restoreHLSTransfers(resumeInterrupted: true)
+        await orchestrator.restoreHLSTransfers(resumeInterrupted: true)
+
+        // The active download must NOT be marked as failed or thrown into error
+        let snapAfter = await engine.snapshot(for: parentID)
+        XCTAssertEqual(snapAfter?.state, .downloading)
+
+        let persistedRecord = try await store.load(id: parentID)
+        XCTAssertEqual(persistedRecord?.state, .downloading, "State must remain .downloading and not poisoned to .failed")
+    }
+
+    func testPurgeOrphanAssemblyDirectoriesPreservesRecentDirectories() async throws {
+        let tempBase = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempBase, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempBase) }
+
+        let recentAssemblyDir = tempBase.appendingPathComponent(".assembly_temp_recent")
+        try FileManager.default.createDirectory(at: recentAssemblyDir, withIntermediateDirectories: true)
+        let sampleFile = recentAssemblyDir.appendingPathComponent("segment0.part")
+        try "test data".write(to: sampleFile, atomically: true, encoding: .utf8)
+
+        let manifestURL = URL(string: "https://example.com/recent.m3u8")!
+        let record = HLSTransferRecord(
+            id: "recent-test",
+            manifestURL: manifestURL,
+            outputFilename: "recent.mp4",
+            outputDestinationURL: tempBase.appendingPathComponent("recent.mp4"),
+            segmentDirectoryURL: recentAssemblyDir,
+            totalSegments: 1,
+            state: .failed // Even if state is failed, recent directory within 7200s must be preserved!
+        )
+
+        let store = HLSPersistenceStore(inMemory: true)
+        try await store.save(record)
+        let engine = makeFakeEngine()
+
+        let orchestrator = StreamingDownloadOrchestrator(
+            manifestLoader: StubManifestLoader(data: Data(), finalURL: manifestURL),
+            segmentExecutor: WritingSegmentExecutorStub(),
+            downloadEngine: engine,
+            hlsPersistenceStore: store
+        )
+
+        await orchestrator.restoreHLSTransfers(resumeInterrupted: false)
+
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: recentAssemblyDir.path),
+            "Assembly directory created recently (< 7200s) must NOT be deleted by purgeOrphanAssemblyDirectories"
+        )
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: sampleFile.path),
+            "Files inside recent assembly directory must remain intact"
+        )
+    }
+
     // MARK: - Private Helpers
 
     /// Creates a real `DownloadEngine` backed by in-memory stores.

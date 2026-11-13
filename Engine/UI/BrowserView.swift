@@ -1404,6 +1404,29 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                         )
                     }
                 }
+
+                // If no specific variant was pre-selected, inspect the manifest first.
+                // When multiple quality variants exist (e.g. 1080p, 720p, 480p, audio),
+                // present the interactive StreamQualityPickerSheet so user can choose.
+                if resource.hlsVariantPreferences == nil && resource.dashVideoRepresentationID == nil && !self.isShowingQualityPicker {
+                    do {
+                        let options = try await StreamQualityInspector.inspect(
+                            manifestText: effectiveResource.manifestText ?? "",
+                            url: effectiveResource.url,
+                            mimeType: effectiveResource.mimeType,
+                            requestContext: effectiveResource.requestContext
+                        )
+                        if options.count > 1 {
+                            print("[HLS Pipeline] Discovered \(options.count) variants. Presenting StreamQualityPickerSheet...")
+                            self.isPreparingStreaming = false
+                            self.presentQualityPicker(for: effectiveResource, preloadedOptions: options)
+                            return
+                        }
+                    } catch {
+                        print("[HLS Pipeline] Quality inspection note: \(error.localizedDescription). Proceeding with standard preparation.")
+                    }
+                }
+
                 print("[HLS Pipeline] Creating StreamingManifestCandidate and preparing proposal with orchestrator...")
                 let candidate = try StreamingManifestCandidate(
                     resource: effectiveResource,
@@ -1531,16 +1554,24 @@ public final class BrowserViewModel: NSObject, ObservableObject {
 
     // MARK: - Interactive Stream Quality Picker (Phase 3 Milestone 3.1)
 
-    public func presentQualityPicker(for resource: WebpageResource) {
+    public func presentQualityPicker(for resource: WebpageResource, preloadedOptions: [StreamQualityOption]? = nil) {
         qualityPickerTargetResource = resource
         qualityPickerTargetCandidate = nil
         let baseFilename = resource.suggestedFilename.isEmpty ? "video.mp4" : resource.suggestedFilename
         qualityPickerFilename = baseFilename
-        qualityPickerOptions = []
         selectedQualityOption = nil
         qualityInspectionError = nil
-        isInspectingQualities = true
         isShowingQualityPicker = true
+
+        if let preloaded = preloadedOptions, !preloaded.isEmpty {
+            self.qualityPickerOptions = preloaded
+            self.selectedQualityOption = preloaded.first
+            self.isInspectingQualities = false
+            return
+        }
+
+        qualityPickerOptions = []
+        isInspectingQualities = true
 
         Task { @MainActor [weak self] in
             guard let self else { return }
@@ -1548,7 +1579,8 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                 let options = try await StreamQualityInspector.inspect(
                     manifestText: resource.manifestText ?? "",
                     url: resource.url,
-                    mimeType: resource.mimeType
+                    mimeType: resource.mimeType,
+                    requestContext: resource.requestContext
                 )
                 self.qualityPickerOptions = options
                 self.selectedQualityOption = options.first
@@ -1560,16 +1592,24 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         }
     }
 
-    public func presentQualityPicker(for candidate: BrowserMediaCandidate) {
+    public func presentQualityPicker(for candidate: BrowserMediaCandidate, preloadedOptions: [StreamQualityOption]? = nil) {
         qualityPickerTargetCandidate = candidate
         let url = candidate.url ?? URL(string: candidate.rawURL)
         let baseFilename = candidate.suggestedFilename.isEmpty ? (url.map { BrowserURLResolver.suggestedFilename(from: $0) } ?? "video.mp4") : candidate.suggestedFilename
         qualityPickerFilename = baseFilename
-        qualityPickerOptions = []
         selectedQualityOption = nil
         qualityInspectionError = nil
-        isInspectingQualities = true
         isShowingQualityPicker = true
+
+        if let preloaded = preloadedOptions, !preloaded.isEmpty {
+            self.qualityPickerOptions = preloaded
+            self.selectedQualityOption = preloaded.first
+            self.isInspectingQualities = false
+            return
+        }
+
+        qualityPickerOptions = []
+        isInspectingQualities = true
 
         Task { @MainActor [weak self] in
             guard let self else { return }
@@ -1582,7 +1622,8 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                 let options = try await StreamQualityInspector.inspect(
                     manifestText: candidate.cachedManifestText ?? "",
                     url: targetURL,
-                    mimeType: candidate.mimeType
+                    mimeType: candidate.mimeType,
+                    requestContext: candidate.requestContext
                 )
                 self.qualityPickerOptions = options
                 self.selectedQualityOption = options.first
@@ -1610,64 +1651,96 @@ public final class BrowserViewModel: NSObject, ObservableObject {
 
         if let resource = qualityPickerTargetResource {
             var prefs = resource.hlsVariantPreferences
+            var targetURL = resource.url
             if let selected = selectedQualityOption {
                 if selected.manifestKind == .hls {
-                    prefs = HLSVariantSelectionPreferences(
-                        maximumBandwidth: Int(selected.bandwidth),
-                        maximumWidth: selected.resolution?.width,
-                        maximumHeight: selected.resolution?.height,
-                        exactURI: selected.uri
-                    )
+                    if selected.isAudioOnly {
+                        targetURL = selected.uri
+                        prefs = nil
+                    } else {
+                        prefs = HLSVariantSelectionPreferences(
+                            maximumBandwidth: Int(selected.bandwidth),
+                            maximumWidth: selected.resolution?.width,
+                            maximumHeight: selected.resolution?.height,
+                            exactURI: selected.uri
+                        )
+                    }
                 }
+            }
+
+            let isAudio = selectedQualityOption?.isAudioOnly == true
+            let effectiveFilename: String
+            if !filename.isEmpty {
+                effectiveFilename = filename
+            } else if !resource.suggestedFilename.isEmpty {
+                effectiveFilename = resource.suggestedFilename
+            } else {
+                effectiveFilename = isAudio ? "audio.m4a" : "video.mp4"
             }
 
             let configuredResource = WebpageResource(
                 id: resource.id,
-                url: resource.url,
-                title: filename.isEmpty ? resource.title : filename,
-                suggestedFilename: filename.isEmpty ? resource.suggestedFilename : filename,
-                resourceType: selectedQualityOption?.isAudioOnly == true ? .audio : .video,
+                url: targetURL,
+                title: effectiveFilename,
+                suggestedFilename: effectiveFilename,
+                resourceType: isAudio ? .audio : .video,
                 mimeType: resource.mimeType,
                 estimatedSize: selectedQualityOption?.estimatedSizeBytes ?? resource.estimatedSize,
                 isSupported: true,
                 requestContext: resource.requestContext,
-                manifestText: resource.manifestText,
+                manifestText: (targetURL == resource.url) ? resource.manifestText : nil,
                 hlsVariantPreferences: prefs,
                 dashVideoRepresentationID: selectedQualityOption?.dashVideoRepresentationID,
                 dashAudioRepresentationID: selectedQualityOption?.dashAudioRepresentationID
             )
 
-            promptStreamingDownload(for: configuredResource, customFilename: filename)
+            promptStreamingDownload(for: configuredResource, customFilename: effectiveFilename)
         } else if let candidate = qualityPickerTargetCandidate, let url = candidate.url ?? URL(string: candidate.rawURL) {
             var prefs: HLSVariantSelectionPreferences? = nil
+            var targetURL = url
             if let selected = selectedQualityOption {
                 if selected.manifestKind == .hls {
-                    prefs = HLSVariantSelectionPreferences(
-                        maximumBandwidth: Int(selected.bandwidth),
-                        maximumWidth: selected.resolution?.width,
-                        maximumHeight: selected.resolution?.height,
-                        exactURI: selected.uri
-                    )
+                    if selected.isAudioOnly {
+                        targetURL = selected.uri
+                        prefs = nil
+                    } else {
+                        prefs = HLSVariantSelectionPreferences(
+                            maximumBandwidth: Int(selected.bandwidth),
+                            maximumWidth: selected.resolution?.width,
+                            maximumHeight: selected.resolution?.height,
+                            exactURI: selected.uri
+                        )
+                    }
                 }
+            }
+
+            let isAudio = selectedQualityOption?.isAudioOnly == true
+            let effectiveFilename: String
+            if !filename.isEmpty {
+                effectiveFilename = filename
+            } else if !candidate.suggestedFilename.isEmpty {
+                effectiveFilename = candidate.suggestedFilename
+            } else {
+                effectiveFilename = isAudio ? "audio.m4a" : "video.mp4"
             }
 
             let configuredResource = WebpageResource(
                 id: candidate.id,
-                url: url,
-                title: filename.isEmpty ? (candidate.suggestedFilename.isEmpty ? "video.mp4" : candidate.suggestedFilename) : filename,
-                suggestedFilename: filename.isEmpty ? (candidate.suggestedFilename.isEmpty ? "video.mp4" : candidate.suggestedFilename) : filename,
-                resourceType: selectedQualityOption?.isAudioOnly == true ? .audio : .video,
+                url: targetURL,
+                title: effectiveFilename,
+                suggestedFilename: effectiveFilename,
+                resourceType: isAudio ? .audio : .video,
                 mimeType: candidate.mimeType,
                 estimatedSize: selectedQualityOption?.estimatedSizeBytes,
                 isSupported: true,
                 requestContext: candidate.requestContext,
-                manifestText: candidate.cachedManifestText,
+                manifestText: (targetURL == url) ? candidate.cachedManifestText : nil,
                 hlsVariantPreferences: prefs,
                 dashVideoRepresentationID: selectedQualityOption?.dashVideoRepresentationID,
                 dashAudioRepresentationID: selectedQualityOption?.dashAudioRepresentationID
             )
 
-            promptStreamingDownload(for: configuredResource, customFilename: filename)
+            promptStreamingDownload(for: configuredResource, customFilename: effectiveFilename)
         }
     }
 

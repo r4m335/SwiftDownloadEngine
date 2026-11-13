@@ -156,7 +156,7 @@ public struct StreamQualityOption: Identifiable, Sendable, Equatable, Hashable {
         let hasAudio = variant.audioGroup != nil || aCodec != nil
 
         let estBytes: Int64? = durationSeconds.flatMap { estimateSize(bandwidth: Int64(variant.bandwidth), durationSeconds: $0) }
-        let estText = estBytes.map { "~\(formatByteSize($0))" }
+        let estText = estBytes.map { "~\(formatByteSize($0))" } ?? "Size unavailable"
 
         let id = "hls-\(variant.bandwidth)-\(height ?? 0)-\(variant.uri.lastPathComponent)"
 
@@ -191,7 +191,7 @@ public struct StreamQualityOption: Identifiable, Sendable, Equatable, Hashable {
         durationSeconds: Double? = nil
     ) -> StreamQualityOption {
         let estBytes = durationSeconds.flatMap { estimateSize(bandwidth: bandwidth, durationSeconds: $0) }
-        let estText = estBytes.map { "~\(formatByteSize($0))" }
+        let estText = estBytes.map { "~\(formatByteSize($0))" } ?? "Size unavailable"
         let targetURI = rendition.uri ?? masterURL
         let langSuffix = rendition.language.map { " (\($0.uppercased()))" } ?? ""
 
@@ -256,7 +256,7 @@ public struct StreamQualityOption: Identifiable, Sendable, Equatable, Hashable {
         let aCodec = extractAudioCodec(audioRep?.codecs ?? rep.codecs)
 
         let estBytes = durationSeconds.flatMap { estimateSize(bandwidth: bw, durationSeconds: $0) }
-        let estText = estBytes.map { "~\(formatByteSize($0))" }
+        let estText = estBytes.map { "~\(formatByteSize($0))" } ?? "Size unavailable"
 
         let repID = rep.id ?? "dash-rep-\(bw)"
         let targetURL = rep.baseURL ?? baseURL
@@ -308,7 +308,7 @@ public struct StreamQualityOption: Identifiable, Sendable, Equatable, Hashable {
             hasVideo: true,
             isAudioOnly: false,
             estimatedSizeBytes: nil,
-            estimatedSizeText: nil,
+            estimatedSizeText: "Size unavailable",
             uri: url,
             manifestKind: kind
         )

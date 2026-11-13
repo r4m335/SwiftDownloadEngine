@@ -218,6 +218,68 @@ final class StreamQualityPickerTests: XCTestCase {
         XCTAssertEqual(kbpsFormatted, "850 Kbps")
     }
 
+    // MARK: - Mux 5-Variant Master Stream & Size Fallback
+
+    func testMuxMasterPlaylistDiscoversFiveVariantsAndSizeFallback() throws {
+        // Matches the 5-variant Mux test stream from the physical device execution logs:
+        // https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8
+        let muxManifest = """
+        #EXTM3U
+        #EXT-X-STREAM-INF:PROGRAM-ID=1,BANDWIDTH=6221600,RESOLUTION=1920x1080,CODECS="avc1.640028,mp4a.40.2"
+        url_0/1920x1080.m3u8
+        #EXT-X-STREAM-INF:PROGRAM-ID=1,BANDWIDTH=3361600,RESOLUTION=1280x720,CODECS="avc1.4d401f,mp4a.40.2"
+        url_2/1280x720.m3u8
+        #EXT-X-STREAM-INF:PROGRAM-ID=1,BANDWIDTH=1961600,RESOLUTION=960x540,CODECS="avc1.4d401f,mp4a.40.2"
+        url_4/960x540.m3u8
+        #EXT-X-STREAM-INF:PROGRAM-ID=1,BANDWIDTH=1161600,RESOLUTION=640x360,CODECS="avc1.4d401e,mp4a.40.2"
+        url_6/640x360.m3u8
+        #EXT-X-STREAM-INF:PROGRAM-ID=1,BANDWIDTH=694400,RESOLUTION=416x234,CODECS="avc1.42c00d,mp4a.40.2"
+        url_8/416x234.m3u8
+        """
+
+        let options = try StreamQualityInspector.inspectHLS(
+            manifestText: muxManifest,
+            baseURL: URL(string: "https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8")!
+        )
+
+        XCTAssertEqual(options.count, 5)
+
+        // 1. Highest: 1080p
+        XCTAssertEqual(options[0].qualityBadge, "1080p")
+        XCTAssertEqual(options[0].resolution?.width, 1920)
+        XCTAssertEqual(options[0].resolution?.height, 1080)
+        XCTAssertEqual(options[0].bandwidth, 6_221_600)
+        XCTAssertEqual(options[0].estimatedSizeText, "Size unavailable")
+
+        // 2. 720p
+        XCTAssertEqual(options[1].qualityBadge, "720p")
+        XCTAssertEqual(options[1].resolution?.height, 720)
+        XCTAssertEqual(options[1].bandwidth, 3_361_600)
+
+        // 3. 540p (SD)
+        XCTAssertEqual(options[2].resolution?.height, 540)
+        XCTAssertEqual(options[2].bandwidth, 1_961_600)
+
+        // 4. 360p
+        XCTAssertEqual(options[3].qualityBadge, "360p")
+        XCTAssertEqual(options[3].resolution?.height, 360)
+
+        // 5. 234p
+        XCTAssertEqual(options[4].resolution?.height, 234)
+        XCTAssertEqual(options[4].bandwidth, 694_400)
+
+        // When duration is supplied (e.g. 10 minutes = 600s), size is accurately computed
+        let optionsWithDuration = try StreamQualityInspector.inspectHLS(
+            manifestText: muxManifest,
+            baseURL: URL(string: "https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8")!,
+            durationSeconds: 600.0
+        )
+        XCTAssertEqual(optionsWithDuration.count, 5)
+        XCTAssertNotNil(optionsWithDuration[0].estimatedSizeBytes)
+        XCTAssertNotEqual(optionsWithDuration[0].estimatedSizeText, "Size unavailable")
+        XCTAssertTrue(optionsWithDuration[0].estimatedSizeText?.contains("MB") == true)
+    }
+
     // MARK: - Quality Selection Filename Extension Adjustment
 
     #if canImport(SwiftUI)
@@ -252,6 +314,36 @@ final class StreamQualityPickerTests: XCTestCase {
         // Switch back to video option: should change back to .mp4
         vm.selectQualityOption(videoOption)
         XCTAssertEqual(vm.qualityPickerFilename, "SummerVacation.mp4")
+    }
+
+    @MainActor
+    func testPromptStreamingDownloadTriggersQualityPickerForMultiVariantStream() async throws {
+        let vm = BrowserViewModel()
+        let muxManifest = """
+        #EXTM3U
+        #EXT-X-STREAM-INF:BANDWIDTH=6221600,RESOLUTION=1920x1080
+        1080p.m3u8
+        #EXT-X-STREAM-INF:BANDWIDTH=3361600,RESOLUTION=1280x720
+        720p.m3u8
+        """
+        let resource = WebpageResource(
+            url: URL(string: "https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8")!,
+            title: "Mux Big Buck Bunny",
+            suggestedFilename: "bunny.mp4",
+            resourceType: .video,
+            manifestText: muxManifest,
+            hlsVariantPreferences: nil
+        )
+
+        vm.promptStreamingDownload(for: resource)
+
+        // Allow MainActor task to inspect options
+        try await Task.sleep(nanoseconds: 100_000_000)
+
+        XCTAssertTrue(vm.isShowingQualityPicker)
+        XCTAssertEqual(vm.qualityPickerOptions.count, 2)
+        XCTAssertEqual(vm.selectedQualityOption?.qualityBadge, "1080p")
+        XCTAssertFalse(vm.isExecutingStreaming)
     }
     #endif
 }

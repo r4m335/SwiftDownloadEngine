@@ -13,18 +13,62 @@ public enum StreamQualityInspector {
         candidate: StreamingManifestCandidate,
         session: URLSession = .shared
     ) async throws -> [StreamQualityOption] {
-        let manifestText: String
-        if let cached = candidate.cachedManifestText, !cached.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            manifestText = cached
-        } else {
-            manifestText = try await loadManifestText(from: candidate.url, requestContext: candidate.browserRequestContext, session: session)
-        }
-
-        return try inspect(
+        let manifestText = candidate.cachedManifestText ?? ""
+        return try await inspect(
             manifestText: manifestText,
             url: candidate.url,
-            mimeType: candidate.mimeType
+            mimeType: candidate.mimeType,
+            requestContext: candidate.browserRequestContext,
+            session: session
         )
+    }
+
+    /// Asynchronously inspects a stream from manifest text or remote URL, discovering all available
+    /// quality options and fetching child media playlists to determine exact duration and size estimates.
+    public static func inspect(
+        manifestText: String,
+        url: URL,
+        mimeType: String? = nil,
+        requestContext: BrowserRequestContext? = nil,
+        session: URLSession = .shared
+    ) async throws -> [StreamQualityOption] {
+        let cleanText: String
+        if manifestText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            cleanText = try await loadManifestText(from: url, requestContext: requestContext, session: session)
+        } else {
+            cleanText = manifestText.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: "\u{FEFF}", with: "")
+        }
+
+        let classification = StreamingManifestClassifier.classify(
+            url: url,
+            mimeType: mimeType,
+            content: Data(cleanText.utf8)
+        )
+
+        if classification.kind == .dash || url.pathExtension.lowercased() == "mpd" || cleanText.contains("<MPD") {
+            return try inspectDASH(manifestText: cleanText, baseURL: url, durationSeconds: nil)
+        } else {
+            var durationSeconds: Double? = nil
+            do {
+                let manifest = try HLSManifestParser.parse(cleanText, baseURL: url)
+                if manifest.playlistType == .media {
+                    let totalSec = manifest.segments.reduce(0.0) { $0 + $1.duration }
+                    if totalSec > 0 { durationSeconds = totalSec }
+                } else if manifest.playlistType == .master, let firstVariant = manifest.variants.first {
+                    // Fetch child media playlist to calculate stream duration and variant size estimates
+                    if let childText = try? await loadManifestText(from: firstVariant.uri, requestContext: requestContext, session: session) {
+                        if let childManifest = try? HLSManifestParser.parse(childText, baseURL: firstVariant.uri) {
+                            let totalSec = childManifest.segments.reduce(0.0) { $0 + $1.duration }
+                            if totalSec > 0 { durationSeconds = totalSec }
+                        }
+                    }
+                }
+            } catch {
+                // In case of parsing issues, inspectHLS will handle or re-throw
+            }
+
+            return try inspectHLS(manifestText: cleanText, baseURL: url, durationSeconds: durationSeconds)
+        }
     }
 
     /// Inspects a stream from raw manifest text and URL.
