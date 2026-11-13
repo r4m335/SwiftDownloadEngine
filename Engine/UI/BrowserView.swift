@@ -398,13 +398,14 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         self.redirectPrompt = nil
     }
 
-    public func recordTabOrigin(_ host: String, for tabID: UUID) {
+    public func recordTabOrigin(_ host: String, for tabID: UUID?) {
+        guard let resolvedID = tabID ?? activeTabID else { return }
         let normalized = BrowserDomainMatcher.normalizeDomain(host)
         guard !normalized.isEmpty else { return }
-        if tabOriginChains[tabID] == nil {
-            tabOriginChains[tabID] = []
+        if tabOriginChains[resolvedID] == nil {
+            tabOriginChains[resolvedID] = []
         }
-        tabOriginChains[tabID]?.insert(normalized)
+        tabOriginChains[resolvedID]?.insert(normalized)
     }
 
     private func openExternalScheme(_ url: URL) {
