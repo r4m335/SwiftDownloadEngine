@@ -262,13 +262,13 @@ final class BatchURLExpanderTests: XCTestCase {
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
-        let config = DownloadEngineConfiguration(
-            downloadsDirectory: tempDir,
-            maxConcurrentDownloads: 4,
-            defaultChunkSize: 1024 * 1024
-        )
-        let engine = DownloadEngine(configuration: config)
-        let viewModel = DownloadManagerViewModel(engine: engine, downloadsDirectoryURL: tempDir)
+        let storeURL = tempDir.appendingPathComponent("Store", isDirectory: true)
+        let downloadsDir = tempDir.appendingPathComponent("Downloads", isDirectory: true)
+        try FileManager.default.createDirectory(at: storeURL, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: downloadsDir, withIntermediateDirectories: true)
+
+        let engine = try DownloadEngine(storageDirectoryURL: storeURL, maxConcurrentDownloads: 4)
+        let viewModel = DownloadManagerViewModel(engine: engine, downloadsDirectory: downloadsDir)
 
         let items = [
             BatchDownloadItem(url: URL(string: "https://example.com/part1.bin")!, isSelected: true),
@@ -280,7 +280,7 @@ final class BatchURLExpanderTests: XCTestCase {
         XCTAssertEqual(snapshots.count, 2, "Only selected items must be enqueued")
 
         // Both part1 and part2 should be tracked in viewModel
-        let snapshotFilenames = snapshots.map(\.destinationURL.lastPathComponent)
+        let snapshotFilenames = snapshots.map { $0.destinationURL.lastPathComponent }
         XCTAssertTrue(snapshotFilenames.contains("part1.bin"))
         XCTAssertTrue(snapshotFilenames.contains("part2.bin"))
     }
