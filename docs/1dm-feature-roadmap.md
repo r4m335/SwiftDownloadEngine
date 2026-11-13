@@ -70,13 +70,14 @@ To bridge the remaining functional distance without compromising stability or vi
   - Automated tests verify custom variant selection propagates accurately to the orchestrator.
 
 ### Milestone 3.2: Content Blocking & Ad Blocker (`WKContentRuleListStore`) — **Complete**
-- **Objective:** Provide a fast, native ad and popup blocker inside the integrated browser to prevent malicious redirects, tracking scripts, and intrusive ads.
-- **Current State:** Complete. Fully implemented in `BrowserContentBlocker.swift`, `BrowserShieldSheet.swift`, `AppSettings.swift`, `SettingsView.swift`, and integrated into `BrowserView.swift`. Tested with 10 passing unit tests in `BrowserContentBlockerTests.swift` and verified with backward-compatibility tests in `AppSettingsTests.swift`.
+- **Objective:** Provide a fast, native ad and popup blocker inside the integrated browser to prevent malicious redirects, tracking scripts, and intrusive ads, coupled with user-controlled confirmation for unsolicited redirects and popups.
+- **Current State:** Complete. Fully implemented in `BrowserContentBlocker.swift`, `BrowserShieldSheet.swift`, `BrowserRedirectSheet.swift`, `AppSettings.swift`, `SettingsView.swift`, and integrated into `BrowserView.swift`. Tested with 21 passing unit tests in `BrowserContentBlockerTests.swift` and verified with backward-compatibility tests in `AppSettingsTests.swift`.
 - **Implementation Scope:**
   - Create `BrowserContentBlocker.swift` utilizing Apple's native `WKContentRuleListStore`.
   - Include bundled EasyList/AdGuard JSON rules compiled on first app launch into binary format.
   - Add an "Ad Blocker" toggle in `SettingsView` and a per-site shield toggle in the browser address bar.
   - Intercept and suppress unsolicited `window.open` calls via `WKUIDelegate`.
+  - Add user-controlled confirmation sheet (`BrowserRedirectSheet.swift`) for unsolicited cross-domain redirects, popups, and custom URL schemes with separate handling for user-initiated links.
 - **Dependencies:** `BrowserView.swift`, `Engine/Browser/`.
 - **Completion Criteria:**
   - [x] Known ad scripts and banner domains fail to load inside `BrowserView`.
@@ -84,6 +85,8 @@ To bridge the remaining functional distance without compromising stability or vi
   - [x] Toggle switch in Settings dynamically enables/disables content blocking rules.
   - [x] Per-site shield toggle and status sheet in browser navigation bar.
   - [x] EasyList rule conversion engine for future filter list additions.
+  - [x] User-controlled confirmation modal for unsolicited redirects and popups displaying destination and origin with "Open in New Tab", "Open in Current Tab", and "Cancel".
+  - [x] Target="_blank" links activated by users open directly in a new tab.
 
 ### Milestone 3.3: File Categorization & Custom Subfolder Routing
 - **Objective:** Automatically sort downloads into MIME-type categories and user-defined directories.

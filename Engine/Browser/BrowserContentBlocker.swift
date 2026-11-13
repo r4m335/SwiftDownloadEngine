@@ -593,6 +593,65 @@ public final class BrowserContentBlocker: ObservableObject {
 }
 #endif
 
+// MARK: - Redirect & Popup Confirmation Models
+
+/// Identifies the motivation for asking user confirmation on a redirect or popup.
+public enum BrowserRedirectReason: String, Sendable, Equatable, Codable {
+    case automaticWindowOpen = "JavaScript opened a new window"
+    case automaticCrossDomainRedirect = "Automatic cross-domain redirect"
+    case suspiciousExternalRedirect = "Suspicious external website redirect"
+    case externalAppScheme = "External application request"
+}
+
+/// A structured model describing a redirect or popup event awaiting user confirmation.
+public struct BrowserRedirectPrompt: Identifiable, Equatable, Sendable {
+    public let id: UUID
+    public let destinationURL: URL
+    public let originURL: URL?
+    public let sourceTabID: UUID?
+    public let reason: BrowserRedirectReason
+    public let isSuspicious: Bool
+
+    public init(
+        id: UUID = UUID(),
+        destinationURL: URL,
+        originURL: URL?,
+        sourceTabID: UUID? = nil,
+        reason: BrowserRedirectReason,
+        isSuspicious: Bool
+    ) {
+        self.id = id
+        self.destinationURL = destinationURL
+        self.originURL = originURL
+        self.sourceTabID = sourceTabID
+        self.reason = reason
+        self.isSuspicious = isSuspicious
+    }
+
+    public var destinationHost: String {
+        guard let host = destinationURL.host, !host.isEmpty else {
+            return destinationURL.absoluteString
+        }
+        return host
+    }
+
+    public var originHost: String {
+        guard let host = originURL?.host, !host.isEmpty else {
+            return "Current Website"
+        }
+        return host
+    }
+}
+
+/// The actionable disposition for a web navigation action or popup request.
+public enum BrowserNavigationDecision: Equatable, Sendable {
+    case allowSameTab
+    case openInNewTab
+    case blockPopunder
+    case promptConfirmation(reason: BrowserRedirectReason, isSuspicious: Bool)
+    case promptExternalScheme(isSuspicious: Bool)
+}
+
 // MARK: - Popup & Aggressive Navigation Policy Evaluator
 
 public enum BrowserPopupPolicyEvaluator {
@@ -634,5 +693,178 @@ public enum BrowserPopupPolicyEvaluator {
         // Aggressive app store hijacks often executed without user consent
         let suspiciousSchemes = ["itms-appss", "itms-services", "facetime", "sms", "tel"]
         return suspiciousSchemes.contains(scheme)
+    }
+
+    /// Checks whether a host belongs to known aggressive ad or popunder networks.
+    public static func isKnownAdOrPopunderDomain(host: String?) -> Bool {
+        guard let host = host?.lowercased(), !host.isEmpty else { return false }
+        let knownAdPatterns = [
+            "doubleclick",
+            "googleadservices",
+            "googlesyndication",
+            "adservice.google",
+            "taboola",
+            "outbrain",
+            "popads",
+            "propellerads",
+            "exoclick",
+            "adsterra",
+            "popcash",
+            "trafficjunky",
+            "clickadu",
+            "yllix",
+            "mgid",
+            "revcontent",
+            "criteo",
+            "adnxs",
+            "openx",
+            "rubiconproject",
+            "pubmatic",
+            "zergnet",
+            "popunder"
+        ]
+        for pattern in knownAdPatterns {
+            if host.contains(pattern) {
+                return true
+            }
+        }
+        return false
+    }
+
+    /// Checks whether two URLs belong to the same registered site or domain hierarchy.
+    public static func isSameSite(currentURL: URL?, destinationURL: URL) -> Bool {
+        guard let currentURL = currentURL,
+              let currentHost = currentURL.host?.lowercased(),
+              !currentHost.isEmpty,
+              currentURL.scheme != "about" else {
+            // Initial load or blank page
+            return true
+        }
+
+        guard let destHost = destinationURL.host?.lowercased(), !destHost.isEmpty else {
+            return true
+        }
+
+        let normCurrent = BrowserDomainMatcher.normalizeDomain(currentHost)
+        let normDest = BrowserDomainMatcher.normalizeDomain(destHost)
+
+        if normCurrent == normDest {
+            return true
+        }
+
+        if normDest.hasSuffix("." + normCurrent) || normCurrent.hasSuffix("." + normDest) {
+            return true
+        }
+
+        return false
+    }
+
+    /// Evaluates a `createWebViewWith` window.open or secondary window request.
+    public static func evaluateWindowOpen(
+        destinationURL: URL?,
+        currentURL: URL?,
+        isUserInitiated: Bool,
+        isPopupBlockerEnabled: Bool
+    ) -> BrowserNavigationDecision {
+        guard isPopupBlockerEnabled else {
+            return isUserInitiated ? .openInNewTab : .allowSameTab
+        }
+
+        // 1. User clicked a link with target="_blank" -> Open in new tab
+        if isUserInitiated {
+            return .openInNewTab
+        }
+
+        // 2. Unsolicited script popup
+        guard let destinationURL = destinationURL else {
+            return .blockPopunder
+        }
+
+        // 3. Ad network popunder -> block
+        if isKnownAdOrPopunderDomain(host: destinationURL.host) {
+            return .blockPopunder
+        }
+
+        // 4. Suspicious redirect / external scheme -> prompt with warning
+        if isSuspiciousExternalRedirect(url: destinationURL) {
+            return .promptConfirmation(reason: .suspiciousExternalRedirect, isSuspicious: true)
+        }
+
+        // 5. JavaScript window.open -> prompt user for confirmation
+        return .promptConfirmation(reason: .automaticWindowOpen, isSuspicious: false)
+    }
+
+    /// Evaluates navigation requests inside `decidePolicyFor navigationAction`.
+    public static func evaluateNavigation(
+        destinationURL: URL,
+        currentURL: URL?,
+        navigationType: Int,
+        isTargetFrameNil: Bool,
+        isPopupBlockerEnabled: Bool,
+        originChain: Set<String> = []
+    ) -> BrowserNavigationDecision {
+        let scheme = destinationURL.scheme?.lowercased() ?? ""
+
+        // 1. External custom app scheme (e.g. tel:, sms:, itms-appss:, whatsapp:)
+        if scheme != "http" && scheme != "https" && scheme != "about" && scheme != "blob" && scheme != "data" && scheme != "magnet" {
+            let isSuspicious = isSuspiciousExternalRedirect(url: destinationURL)
+            return .promptExternalScheme(isSuspicious: isSuspicious)
+        }
+
+        // 2. User-initiated link click (navigationType == 0 is .linkActivated)
+        if navigationType == 0 {
+            if isTargetFrameNil {
+                // User tapped a link with target="_blank" -> Open in a new tab
+                return .openInNewTab
+            }
+            return .allowSameTab
+        }
+
+        // 3. User form submission (1/2), Back/Forward (2), or Reload (3)
+        if navigationType != 5 { // 5 is .other (script redirects, meta refreshes, HTTP 3xx)
+            return .allowSameTab
+        }
+
+        // 4. Initial load or blank page -> always allow without prompting
+        guard let currentURL = currentURL,
+              let currentHost = currentURL.host,
+              !currentHost.isEmpty,
+              currentURL.scheme != "about" else {
+            return .allowSameTab
+        }
+
+        // If popup blocker is disabled, allow navigation
+        guard isPopupBlockerEnabled else {
+            return .allowSameTab
+        }
+
+        // 5. Ad network redirect or popunder -> block
+        if isKnownAdOrPopunderDomain(host: destinationURL.host) {
+            return .blockPopunder
+        }
+
+        // 6. Same site / subdomain navigation -> allow
+        if isSameSite(currentURL: currentURL, destinationURL: destinationURL) {
+            return .allowSameTab
+        }
+
+        // 7. Legitimate auth/return navigation (matches an origin in the active tab's chain)
+        if let destHost = destinationURL.host {
+            let normDest = BrowserDomainMatcher.normalizeDomain(destHost)
+            for origin in originChain {
+                let normOrigin = BrowserDomainMatcher.normalizeDomain(origin)
+                if normDest == normOrigin || normDest.hasSuffix("." + normOrigin) {
+                    return .allowSameTab
+                }
+            }
+        }
+
+        // 8. Suspicious redirect -> prompt with warning
+        if isSuspiciousExternalRedirect(url: destinationURL) {
+            return .promptConfirmation(reason: .suspiciousExternalRedirect, isSuspicious: true)
+        }
+
+        // 9. Unsolicited cross-domain redirect -> ask for confirmation
+        return .promptConfirmation(reason: .automaticCrossDomainRedirect, isSuspicious: false)
     }
 }

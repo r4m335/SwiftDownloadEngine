@@ -151,6 +151,15 @@ public final class BrowserViewModel: NSObject, ObservableObject {
     @Published public var adBlockerWhitelistedDomains: Set<String> = []
     @Published public var isShowingShieldSheet: Bool = false
 
+    // User-controlled redirect & popup confirmation
+    @Published public var redirectPrompt: BrowserRedirectPrompt? = nil
+    private var tabOriginChains: [UUID: Set<String>] = [:]
+
+    public var activeTabOriginChain: Set<String> {
+        guard let tabID = activeTabID else { return [] }
+        return tabOriginChains[tabID] ?? []
+    }
+
     public weak var downloadDelegate: BrowserDownloadDelegate?
     public weak var magnetDelegate: (any BrowserMagnetDelegate)?
     public var onDownloadInitiated: (() -> Void)? = nil
@@ -290,12 +299,21 @@ public final class BrowserViewModel: NSObject, ObservableObject {
     }
 
     @discardableResult
-    public func createNewTab() -> UUID {
+    public func createNewTab(with url: URL? = nil) -> UUID {
         let id = tabManager.createTab(select: true)
         publishTabState()
         syncActiveTabState()
         publishMediaCandidates()
         isShowingTabSwitcher = false
+        if let url = url {
+            #if canImport(WebKit)
+            let session = webViewSession(for: id)
+            session.webView.load(URLRequest(url: url))
+            if let host = url.host {
+                recordTabOrigin(host, for: id)
+            }
+            #endif
+        }
         return id
     }
 
@@ -318,6 +336,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         pendingNavigationURLs.removeValue(forKey: id)
         tabSessions.removeValue(forKey: id)
         #endif
+        tabOriginChains.removeValue(forKey: id)
         mediaCandidateCatalogs.removeValue(forKey: id)
         let replacement = tabManager.closeTab(id)
         publishTabState()
@@ -327,6 +346,73 @@ public final class BrowserViewModel: NSObject, ObservableObject {
             isShowingTabSwitcher = false
         }
         return replacement
+    }
+
+    // MARK: - Redirect & Popup Confirmation Handling
+
+    public func promptRedirectConfirmation(
+        destinationURL: URL,
+        originURL: URL?,
+        sourceTabID: UUID?,
+        reason: BrowserRedirectReason,
+        isSuspicious: Bool
+    ) {
+        self.redirectPrompt = BrowserRedirectPrompt(
+            destinationURL: destinationURL,
+            originURL: originURL,
+            sourceTabID: sourceTabID,
+            reason: reason,
+            isSuspicious: isSuspicious
+        )
+    }
+
+    public func confirmRedirectInNewTab(_ prompt: BrowserRedirectPrompt) {
+        self.redirectPrompt = nil
+        let scheme = prompt.destinationURL.scheme?.lowercased() ?? ""
+        if scheme != "http" && scheme != "https" && scheme != "about" && scheme != "blob" && scheme != "data" {
+            openExternalScheme(prompt.destinationURL)
+        } else {
+            createNewTab(with: prompt.destinationURL)
+        }
+    }
+
+    public func confirmRedirectInCurrentTab(_ prompt: BrowserRedirectPrompt) {
+        self.redirectPrompt = nil
+        let scheme = prompt.destinationURL.scheme?.lowercased() ?? ""
+        if scheme != "http" && scheme != "https" && scheme != "about" && scheme != "blob" && scheme != "data" {
+            openExternalScheme(prompt.destinationURL)
+        } else {
+            #if canImport(WebKit)
+            let targetID = prompt.sourceTabID ?? activeTabID
+            if let tabID = targetID, let webView = webView(for: tabID) {
+                if let host = prompt.destinationURL.host {
+                    recordTabOrigin(host, for: tabID)
+                }
+                webView.load(URLRequest(url: prompt.destinationURL))
+            }
+            #endif
+        }
+    }
+
+    public func cancelRedirectPrompt() {
+        self.redirectPrompt = nil
+    }
+
+    public func recordTabOrigin(_ host: String, for tabID: UUID) {
+        let normalized = BrowserDomainMatcher.normalizeDomain(host)
+        guard !normalized.isEmpty else { return }
+        if tabOriginChains[tabID] == nil {
+            tabOriginChains[tabID] = []
+        }
+        tabOriginChains[tabID]?.insert(normalized)
+    }
+
+    private func openExternalScheme(_ url: URL) {
+        #if canImport(UIKit)
+        UIApplication.shared.open(url, options: [:], completionHandler: nil)
+        #elseif canImport(AppKit)
+        NSWorkspace.shared.open(url)
+        #endif
     }
 
     public func showTabSwitcher() {
@@ -2636,6 +2722,9 @@ public struct BrowserView: View {
         .sheet(isPresented: $viewModel.isShowingShieldSheet) {
             BrowserShieldSheet(viewModel: viewModel)
         }
+        .sheet(item: $viewModel.redirectPrompt) { prompt in
+            BrowserRedirectSheet(viewModel: viewModel, prompt: prompt)
+        }
         .sheet(isPresented: $viewModel.isShowingMagnetSheet) {
             BrowserMagnetConfirmationSheet(viewModel: viewModel)
         }
@@ -2826,6 +2915,7 @@ public struct BrowserView: View {
         viewModel.isShowingResourceInspector ||
         viewModel.isShowingQualityPicker ||
         viewModel.isShowingShieldSheet ||
+        viewModel.redirectPrompt != nil ||
         viewModel.isShowingMagnetSheet ||
         viewModel.isShowingTabSwitcher
     }
@@ -3903,6 +3993,7 @@ public final class BrowserWebViewCoordinator: NSObject, WKNavigationDelegate, WK
         )
 
         if let host = webView.url?.host, let vm = viewModel {
+            vm.recordTabOrigin(host, for: tabID)
             let isWhitelisted = BrowserDomainMatcher.isDomainWhitelisted(
                 host,
                 in: Array(vm.adBlockerWhitelistedDomains)
@@ -4066,35 +4157,79 @@ public final class BrowserWebViewCoordinator: NSObject, WKNavigationDelegate, WK
         for navigationAction: WKNavigationAction,
         windowFeatures: WKWindowFeatures
     ) -> WKWebView? {
+        let destURL = navigationAction.request.url
         let isUserInitiated = navigationAction.navigationType == .linkActivated
-        let isPopupAllowed = BrowserPopupPolicyEvaluator.shouldAllowPopup(
-            navigationType: navigationAction.navigationType.rawValue,
+        let isPopupBlockerEnabled = viewModel?.isPopupBlockerEnabled ?? true
+
+        let decision = BrowserPopupPolicyEvaluator.evaluateWindowOpen(
+            destinationURL: destURL,
+            currentURL: webView.url,
             isUserInitiated: isUserInitiated,
-            targetFrameIsNil: navigationAction.targetFrame == nil,
-            isPopupBlockerEnabled: viewModel?.isPopupBlockerEnabled ?? true
+            isPopupBlockerEnabled: isPopupBlockerEnabled
         )
 
         BrowserDiagnosticLogger.shared.log(
             category: .navigation,
-            message: "createWebViewWith requested: allowed=\(isPopupAllowed)",
-            url: navigationAction.request.url,
+            message: "createWebViewWith decision: \(decision)",
+            url: destURL,
             tabID: tabID,
             details: [
                 "targetFrame": navigationAction.targetFrame == nil ? "nil" : "non-nil",
                 "navigationType": "\(navigationAction.navigationType.rawValue)",
-                "isPopupAllowed": "\(isPopupAllowed)"
+                "isUserInitiated": "\(isUserInitiated)"
             ]
         )
 
-        guard isPopupAllowed else {
+        switch decision {
+        case .openInNewTab:
+            if let destURL = destURL {
+                DispatchQueue.main.async { [weak self] in
+                    self?.viewModel?.createNewTab(with: destURL)
+                }
+            }
+            return nil
+
+        case .allowSameTab:
+            webView.load(navigationAction.request)
+            return nil
+
+        case .blockPopunder:
+            BrowserDiagnosticLogger.shared.log(
+                category: .policy,
+                message: "Blocked advertisement popunder to: \(destURL?.host ?? "")",
+                url: destURL,
+                tabID: tabID
+            )
+            return nil
+
+        case .promptConfirmation(let reason, let isSuspicious):
+            if let destURL = destURL {
+                DispatchQueue.main.async { [weak self] in
+                    self?.viewModel?.promptRedirectConfirmation(
+                        destinationURL: destURL,
+                        originURL: webView.url,
+                        sourceTabID: self?.tabID,
+                        reason: reason,
+                        isSuspicious: isSuspicious
+                    )
+                }
+            }
+            return nil
+
+        case .promptExternalScheme(let isSuspicious):
+            if let destURL = destURL {
+                DispatchQueue.main.async { [weak self] in
+                    self?.viewModel?.promptRedirectConfirmation(
+                        destinationURL: destURL,
+                        originURL: webView.url,
+                        sourceTabID: self?.tabID,
+                        reason: .externalAppScheme,
+                        isSuspicious: isSuspicious
+                    )
+                }
+            }
             return nil
         }
-
-        // If a user tapped a link opening in a new tab/window, load it in the current web view.
-        if navigationAction.navigationType == .linkActivated {
-            webView.load(navigationAction.request)
-        }
-        return nil
     }
 
     public func webView(
@@ -4209,18 +4344,6 @@ public final class BrowserWebViewCoordinator: NSObject, WKNavigationDelegate, WK
             ]
         )
 
-        // Aggressive app store hijacks and scheme spam defense (Phase 3 Milestone 3.2)
-        if viewModel?.isPopupBlockerEnabled == true && BrowserPopupPolicyEvaluator.isSuspiciousExternalRedirect(url: url) {
-            BrowserDiagnosticLogger.shared.log(
-                category: .policy,
-                message: "Blocked suspicious external redirect to: \(url.scheme ?? "")",
-                url: url,
-                tabID: tabID
-            )
-            decisionHandler(.cancel)
-            return
-        }
-
         // Magnet links identify torrent metadata rather than HTTP resources.
         // Intercept them before the normal web-navigation scheme check so
         // WebKit cannot hand them to an unrelated URL-scheme handler.
@@ -4248,12 +4371,6 @@ public final class BrowserWebViewCoordinator: NSObject, WKNavigationDelegate, WK
             }
         }
 
-        // Allow HTTP, HTTPS, and internal browser pseudo-schemes (about:blank, about:srcdoc)
-        guard BrowserURLResolver.isValidWebNavigationURL(url) else {
-            decisionHandler(.cancel)
-            return
-        }
-
         if let link = BrowserViewModel.externalAppPrompt(
             for: url,
             navigationAction: navigationAction,
@@ -4274,26 +4391,63 @@ public final class BrowserWebViewCoordinator: NSObject, WKNavigationDelegate, WK
             }
         }
 
-        // Handle target="_blank" links by navigating in the current web view only when activated by user
-        if navigationAction.targetFrame == nil {
-            if navigationAction.navigationType == .linkActivated {
-                BrowserDiagnosticLogger.shared.log(
-                    category: .policy,
-                    message: "Navigating user target=_blank link in current webView",
-                    url: url,
-                    tabID: tabID,
-                    details: ["method": navigationAction.request.httpMethod ?? "GET"]
+        let isPopupBlockerEnabled = viewModel?.isPopupBlockerEnabled ?? true
+        let originChain = viewModel?.activeTabOriginChain ?? []
+        let decision = BrowserPopupPolicyEvaluator.evaluateNavigation(
+            destinationURL: url,
+            currentURL: webView.url,
+            navigationType: navigationAction.navigationType.rawValue,
+            isTargetFrameNil: navigationAction.targetFrame == nil,
+            isPopupBlockerEnabled: isPopupBlockerEnabled,
+            originChain: originChain
+        )
+
+        switch decision {
+        case .allowSameTab:
+            if let host = url.host {
+                viewModel?.recordTabOrigin(host, for: tabID)
+            }
+            decisionHandler(.allow)
+
+        case .openInNewTab:
+            decisionHandler(.cancel)
+            DispatchQueue.main.async { [weak self] in
+                self?.viewModel?.createNewTab(with: url)
+            }
+
+        case .blockPopunder:
+            decisionHandler(.cancel)
+            BrowserDiagnosticLogger.shared.log(
+                category: .policy,
+                message: "Blocked advertisement redirect or popunder to: \(url.host ?? "")",
+                url: url,
+                tabID: tabID
+            )
+
+        case .promptConfirmation(let reason, let isSuspicious):
+            decisionHandler(.cancel)
+            DispatchQueue.main.async { [weak self] in
+                self?.viewModel?.promptRedirectConfirmation(
+                    destinationURL: url,
+                    originURL: webView.url,
+                    sourceTabID: self?.tabID,
+                    reason: reason,
+                    isSuspicious: isSuspicious
                 )
-                webView.load(navigationAction.request)
-                decisionHandler(.cancel)
-                return
-            } else {
-                decisionHandler(.allow)
-                return
+            }
+
+        case .promptExternalScheme(let isSuspicious):
+            decisionHandler(.cancel)
+            DispatchQueue.main.async { [weak self] in
+                self?.viewModel?.promptRedirectConfirmation(
+                    destinationURL: url,
+                    originURL: webView.url,
+                    sourceTabID: self?.tabID,
+                    reason: .externalAppScheme,
+                    isSuspicious: isSuspicious
+                )
             }
         }
-
-        decisionHandler(.allow)
     }
 
     @available(iOS 14.5, macOS 11.3, *)

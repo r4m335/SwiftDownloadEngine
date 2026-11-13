@@ -234,6 +234,151 @@ final class BrowserContentBlockerTests: XCTestCase {
         XCTAssertTrue(BrowserPopupPolicyEvaluator.isSuspiciousExternalRedirect(url: URL(string: "tel:+1234567890")!))
     }
 
+    // MARK: - Navigation & Redirect Decision Tests
+
+    func testEvaluateWindowOpen_UserInitiatedOpensInNewTab() {
+        let decision = BrowserPopupPolicyEvaluator.evaluateWindowOpen(
+            destinationURL: URL(string: "https://example.com/page")!,
+            currentURL: URL(string: "https://origin.com")!,
+            isUserInitiated: true,
+            isPopupBlockerEnabled: true
+        )
+        XCTAssertEqual(decision, .openInNewTab)
+    }
+
+    func testEvaluateWindowOpen_UnsolicitedAdPopunderBlocked() {
+        let decision = BrowserPopupPolicyEvaluator.evaluateWindowOpen(
+            destinationURL: URL(string: "https://popads.net/serve?id=123")!,
+            currentURL: URL(string: "https://origin.com")!,
+            isUserInitiated: false,
+            isPopupBlockerEnabled: true
+        )
+        XCTAssertEqual(decision, .blockPopunder)
+    }
+
+    func testEvaluateWindowOpen_UnsolicitedLegitimatePopupPromptsConfirmation() {
+        let decision = BrowserPopupPolicyEvaluator.evaluateWindowOpen(
+            destinationURL: URL(string: "https://partner-portal.com/view")!,
+            currentURL: URL(string: "https://origin.com")!,
+            isUserInitiated: false,
+            isPopupBlockerEnabled: true
+        )
+        XCTAssertEqual(decision, .promptConfirmation(reason: .automaticWindowOpen, isSuspicious: false))
+    }
+
+    func testEvaluateWindowOpen_SuspiciousExternalRedirectPromptsWarning() {
+        let decision = BrowserPopupPolicyEvaluator.evaluateWindowOpen(
+            destinationURL: URL(string: "itms-appss://apps.apple.com/app/id999")!,
+            currentURL: URL(string: "https://origin.com")!,
+            isUserInitiated: false,
+            isPopupBlockerEnabled: true
+        )
+        XCTAssertEqual(decision, .promptConfirmation(reason: .suspiciousExternalRedirect, isSuspicious: true))
+    }
+
+    func testEvaluateNavigation_UserLinkActivatedAllowsSameTab() {
+        let decision = BrowserPopupPolicyEvaluator.evaluateNavigation(
+            destinationURL: URL(string: "https://articles.org/read")!,
+            currentURL: URL(string: "https://origin.com")!,
+            navigationType: 0, // linkActivated
+            isTargetFrameNil: false,
+            isPopupBlockerEnabled: true
+        )
+        XCTAssertEqual(decision, .allowSameTab)
+    }
+
+    func testEvaluateNavigation_UserLinkTargetBlankOpensInNewTab() {
+        let decision = BrowserPopupPolicyEvaluator.evaluateNavigation(
+            destinationURL: URL(string: "https://articles.org/read")!,
+            currentURL: URL(string: "https://origin.com")!,
+            navigationType: 0, // linkActivated
+            isTargetFrameNil: true,
+            isPopupBlockerEnabled: true
+        )
+        XCTAssertEqual(decision, .openInNewTab)
+    }
+
+    func testEvaluateNavigation_AutomaticCrossDomainPromptsConfirmation() {
+        let decision = BrowserPopupPolicyEvaluator.evaluateNavigation(
+            destinationURL: URL(string: "https://different-destination.com")!,
+            currentURL: URL(string: "https://origin.com")!,
+            navigationType: 5, // other
+            isTargetFrameNil: false,
+            isPopupBlockerEnabled: true
+        )
+        XCTAssertEqual(decision, .promptConfirmation(reason: .automaticCrossDomainRedirect, isSuspicious: false))
+    }
+
+    func testEvaluateNavigation_SameSiteRedirectAllowed() {
+        // Same domain
+        let sameDomain = BrowserPopupPolicyEvaluator.evaluateNavigation(
+            destinationURL: URL(string: "https://origin.com/login")!,
+            currentURL: URL(string: "https://origin.com/home")!,
+            navigationType: 5,
+            isTargetFrameNil: false,
+            isPopupBlockerEnabled: true
+        )
+        XCTAssertEqual(sameDomain, .allowSameTab)
+
+        // Subdomain to main domain
+        let subToMain = BrowserPopupPolicyEvaluator.evaluateNavigation(
+            destinationURL: URL(string: "https://origin.com/dashboard")!,
+            currentURL: URL(string: "https://auth.origin.com/callback")!,
+            navigationType: 5,
+            isTargetFrameNil: false,
+            isPopupBlockerEnabled: true
+        )
+        XCTAssertEqual(subToMain, .allowSameTab)
+    }
+
+    func testEvaluateNavigation_AuthReturnRedirectAllowedViaOriginChain() {
+        // Origin chain includes the original initiating domain
+        let originChain: Set<String> = ["myapp.com", "accounts.google.com"]
+        let decision = BrowserPopupPolicyEvaluator.evaluateNavigation(
+            destinationURL: URL(string: "https://myapp.com/oauth/complete")!,
+            currentURL: URL(string: "https://accounts.google.com/signin")!,
+            navigationType: 5, // other
+            isTargetFrameNil: false,
+            isPopupBlockerEnabled: true,
+            originChain: originChain
+        )
+        XCTAssertEqual(decision, .allowSameTab)
+    }
+
+    func testEvaluateNavigation_AdRedirectBlocked() {
+        let decision = BrowserPopupPolicyEvaluator.evaluateNavigation(
+            destinationURL: URL(string: "https://adservice.google.com/ads")!,
+            currentURL: URL(string: "https://news.com")!,
+            navigationType: 5,
+            isTargetFrameNil: false,
+            isPopupBlockerEnabled: true
+        )
+        XCTAssertEqual(decision, .blockPopunder)
+    }
+
+    func testEvaluateNavigation_ExternalAppSchemePromptsConfirmation() {
+        // Standard external app scheme: prompt confirmation
+        let customScheme = BrowserPopupPolicyEvaluator.evaluateNavigation(
+            destinationURL: URL(string: "whatsapp://send?text=hello")!,
+            currentURL: URL(string: "https://news.com")!,
+            navigationType: 0,
+            isTargetFrameNil: false,
+            isPopupBlockerEnabled: true
+        )
+        XCTAssertEqual(customScheme, .promptExternalScheme(isSuspicious: false))
+
+        // Aggressive app store hijack scheme: prompt with warning
+        let suspiciousScheme = BrowserPopupPolicyEvaluator.evaluateNavigation(
+            destinationURL: URL(string: "itms-appss://apps.apple.com/app/id123")!,
+            currentURL: URL(string: "https://news.com")!,
+            navigationType: 5,
+            isTargetFrameNil: false,
+            isPopupBlockerEnabled: true
+        )
+        XCTAssertEqual(customScheme, .promptExternalScheme(isSuspicious: false))
+        XCTAssertEqual(suspiciousScheme, .promptExternalScheme(isSuspicious: true))
+    }
+
     // MARK: - BrowserViewModel Shield Controls Tests
 
     #if canImport(SwiftUI)
@@ -270,6 +415,33 @@ final class BrowserContentBlockerTests: XCTestCase {
         // Disable popup blocker globally
         vm.setPopupBlockerEnabled(false)
         XCTAssertFalse(vm.isPopupBlockerEnabled)
+    }
+
+    @MainActor
+    func testBrowserViewModelRedirectPromptLifecycle() {
+        let vm = BrowserViewModel()
+        let dest = URL(string: "https://redirect-target.com/page")!
+        let origin = URL(string: "https://source-site.com")!
+
+        XCTAssertNil(vm.redirectPrompt)
+
+        // Present prompt
+        vm.promptRedirectConfirmation(
+            destinationURL: dest,
+            originURL: origin,
+            sourceTabID: nil,
+            reason: .automaticCrossDomainRedirect,
+            isSuspicious: false
+        )
+
+        XCTAssertNotNil(vm.redirectPrompt)
+        XCTAssertEqual(vm.redirectPrompt?.destinationHost, "redirect-target.com")
+        XCTAssertEqual(vm.redirectPrompt?.originHost, "source-site.com")
+        XCTAssertEqual(vm.redirectPrompt?.reason, .automaticCrossDomainRedirect)
+
+        // Cancel prompt
+        vm.cancelRedirectPrompt()
+        XCTAssertNil(vm.redirectPrompt)
     }
     #endif
 }
