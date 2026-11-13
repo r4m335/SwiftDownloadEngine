@@ -160,6 +160,9 @@ public struct DownloadsView: View {
                     QueueSummaryHeader(summary: summary)
                 }
 
+                // Bandwidth Dashboard (Milestone 4.3)
+                BandwidthDashboardSection(viewModel: viewModel)
+
                 // Clipboard Auto-Detection Banner (1DM+ Architecture)
                 if showClipboardBanner, let url = detectedClipboardURL {
                     HStack(spacing: 12) {
@@ -1669,6 +1672,71 @@ private struct HeaderStat: View {
                 .foregroundColor(.secondary)
         }
         .frame(maxWidth: .infinity)
+    }
+}
+
+// MARK: - Bandwidth Dashboard Section (Milestone 4.3)
+
+public struct BandwidthDashboardSection: View {
+    @ObservedObject public var viewModel: DownloadManagerViewModel
+    @State private var isExpanded: Bool = false
+
+    public init(viewModel: DownloadManagerViewModel) {
+        self.viewModel = viewModel
+    }
+
+    public var body: some View {
+        VStack(spacing: 6) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    isExpanded.toggle()
+                }
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "waveform.path.ecg")
+                        .foregroundColor(.blue)
+                        .font(.subheadline)
+
+                    Text("Bandwidth Throughput")
+                        .font(.caption.bold())
+                        .foregroundColor(.primary)
+
+                    Spacer()
+
+                    // Compact preview when collapsed
+                    HStack(spacing: 8) {
+                        Text("↓ \(UIFormatters.formatSpeed(viewModel.currentTotalDownloadSpeed))")
+                            .font(.caption)
+                            .foregroundColor(.blue)
+
+                        Text("↑ \(UIFormatters.formatSpeed(viewModel.currentTotalUploadSpeed))")
+                            .font(.caption)
+                            .foregroundColor(.green)
+                    }
+
+                    Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                }
+                .padding(.horizontal)
+                .padding(.vertical, 6)
+                .background(Color.platformSecondaryBackground.opacity(0.8))
+            }
+            .buttonStyle(PlainButtonStyle())
+
+            if isExpanded {
+                SpeedChartView(
+                    history: viewModel.bandwidthHistory,
+                    currentDownloadSpeed: viewModel.currentTotalDownloadSpeed,
+                    currentUploadSpeed: viewModel.currentTotalUploadSpeed,
+                    peakDownloadSpeed: viewModel.peakDownloadSpeed,
+                    peakUploadSpeed: viewModel.peakUploadSpeed
+                )
+                .padding(.horizontal)
+                .padding(.bottom, 6)
+                .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+        }
     }
 }
 

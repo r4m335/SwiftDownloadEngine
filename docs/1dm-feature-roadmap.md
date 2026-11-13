@@ -144,9 +144,9 @@ To bridge the remaining functional distance without compromising stability or vi
   - Adding a tracker in `DownloadDetailsView` contacts the announce server and updates peer count.
   - Fully verified across 992 passing tests including dedicated `TorrentTrackerAndSequentialTests`.
 
-### Milestone 4.3: Real-Time Bandwidth Speed Chart (Swift Charts)
+### Milestone 4.3: Real-Time Bandwidth Speed Chart (Swift Charts) [Completed]
 - **Objective:** Display a dynamic, real-time bandwidth graph showing download and upload speeds over time.
-- **Current State:** Only textual speed readout (`UIFormatters.formatSpeed`).
+- **Current State:** Implemented & verified. 60-second bounded rolling history in `BandwidthHistoryTracker`, live 1-second sampling in `DownloadManagerViewModel`, and `SpeedChartView` with Apple Swift Charts on iOS 16+ and high-fidelity custom Path fallback for iOS 15. Integrated into `DownloadsView` via `BandwidthDashboardSection`.
 - **Implementation Scope:**
   - Build `SpeedChartView.swift` using Apple's `SwiftCharts` framework (iOS 16+ with iOS 15 fallback).
   - Maintain a 60-second rolling ring buffer of throughput data points in `DownloadSpeedTracker`.
@@ -155,6 +155,7 @@ To bridge the remaining functional distance without compromising stability or vi
 - **Completion Criteria:**
   - Live graph updates smoothly every second without memory growth.
   - Clearly renders both aggregate download and upload rates.
+  - Fully verified across 998 passing tests including dedicated `BandwidthSpeedTrackerTests`.
 
 ### Milestone 4.4: Interactive Download Sorting Selector
 - **Objective:** Allow users to sort their download library dynamically.

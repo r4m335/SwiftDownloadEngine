@@ -131,3 +131,108 @@ public final class DownloadSpeedTracker: @unchecked Sendable {
         totalBytes = 0
     }
 }
+
+// MARK: - Milestone 4.3: Bandwidth History & Aggregated Speed Tracking
+
+/// An individual timestamped bandwidth measurement for aggregate download and upload rates.
+public struct BandwidthSample: Identifiable, Equatable, Sendable, Codable {
+    public var id: TimeInterval { timestamp }
+    public let timestamp: TimeInterval // Unix epoch seconds
+    public let downloadBytesPerSecond: Double
+    public let uploadBytesPerSecond: Double
+
+    public init(timestamp: TimeInterval, downloadBytesPerSecond: Double, uploadBytesPerSecond: Double) {
+        self.timestamp = timestamp
+        self.downloadBytesPerSecond = max(0, downloadBytesPerSecond)
+        self.uploadBytesPerSecond = max(0, uploadBytesPerSecond)
+    }
+
+    public init(date: Date = Date(), downloadBytesPerSecond: Double, uploadBytesPerSecond: Double) {
+        self.init(
+            timestamp: date.timeIntervalSince1970,
+            downloadBytesPerSecond: downloadBytesPerSecond,
+            uploadBytesPerSecond: uploadBytesPerSecond
+        )
+    }
+}
+
+/// Bounded, thread-safe rolling-window bandwidth history tracker.
+///
+/// **Features:**
+/// - Maintains timestamped download and upload speed samples up to `maxDuration` seconds (default 60.0s).
+/// - Automatically expires samples older than `maxDuration`.
+/// - Enforces a strict upper bound on sample capacity (`maxCapacity`) to prevent memory growth.
+/// - Calculates peak download and upload rates across the active window.
+/// - Thread-safe via NSLock.
+public final class BandwidthHistoryTracker: @unchecked Sendable {
+    private let lock = NSLock()
+    private var samples: [BandwidthSample] = []
+    public let maxDuration: TimeInterval
+    public let maxCapacity: Int
+
+    public init(maxDuration: TimeInterval = 60.0, maxCapacity: Int = 120) {
+        self.maxDuration = max(10.0, maxDuration)
+        self.maxCapacity = max(60, maxCapacity)
+    }
+
+    /// Records an aggregated bandwidth sample at the given timestamp.
+    public func record(downloadSpeed: Double, uploadSpeed: Double, timestamp: Date = Date()) {
+        lock.lock()
+        defer { lock.unlock() }
+
+        let t = timestamp.timeIntervalSince1970
+        let sample = BandwidthSample(
+            timestamp: t,
+            downloadBytesPerSecond: max(0, downloadSpeed),
+            uploadBytesPerSecond: max(0, uploadSpeed)
+        )
+        samples.append(sample)
+
+        // Expire samples older than maxDuration relative to this sample
+        let cutoff = t - maxDuration
+        while let first = samples.first, first.timestamp < cutoff {
+            samples.removeFirst()
+        }
+
+        // Bounded capacity safeguard
+        if samples.count > maxCapacity {
+            let overflow = samples.count - maxCapacity
+            samples.removeFirst(overflow)
+        }
+    }
+
+    /// Returns the current snapshot of active history within the rolling window.
+    public func history(asOf date: Date = Date()) -> [BandwidthSample] {
+        lock.lock()
+        defer { lock.unlock() }
+
+        let cutoff = date.timeIntervalSince1970 - maxDuration
+        return samples.filter { $0.timestamp >= cutoff }
+    }
+
+    /// Returns the most recent recorded sample, if any.
+    public var latestSample: BandwidthSample? {
+        lock.lock()
+        defer { lock.unlock() }
+        return samples.last
+    }
+
+    /// Returns the highest download speed recorded within the current active window.
+    public func peakDownloadSpeed(asOf date: Date = Date()) -> Double {
+        let current = history(asOf: date)
+        return current.map(\.downloadBytesPerSecond).max() ?? 0.0
+    }
+
+    /// Returns the highest upload speed recorded within the current active window.
+    public func peakUploadSpeed(asOf date: Date = Date()) -> Double {
+        let current = history(asOf: date)
+        return current.map(\.uploadBytesPerSecond).max() ?? 0.0
+    }
+
+    /// Clears all recorded samples.
+    public func reset() {
+        lock.lock()
+        defer { lock.unlock() }
+        samples.removeAll()
+    }
+}

@@ -27,15 +27,15 @@ Each capability is classified under one of six unambiguous statuses:
 
 | Status | Count | Percentage |
 |---|:---:|:---:|
-| **Complete** | 50 | 70.4% |
+| **Complete** | 51 | 71.8% |
 | **Partial** | 5 | 7.0% |
 | **Untested** | 1 | 1.4% |
-| **Missing** | 12 | 16.9% |
+| **Missing** | 11 | 15.5% |
 | **iOS Restricted** | 3 | 4.2% |
 | **Total Features Evaluated** | **71** | **100.0%** |
 
 ```
-[██████████████████████████████████████████████░░░░░░░░░░░░░] 70.4% Complete
+[███████████████████████████████████████████████░░░░░░░░░░░░] 71.8% Complete
 ```
 
 ---
@@ -142,7 +142,7 @@ Each capability is classified under one of six unambiguous statuses:
 | 59 | Clipboard Link Sniffing & Prompt Banner | Auto-detects URLs copied to clipboard and shows download banner | **Complete** | `DownloadsView.swift:checkClipboardForURL()`, `UIPasteboard.general.detectPatterns` | `DownloadsViewInteractionTests.swift` | Checks clipboard on foregrounding with iOS 14+ pattern detection. |
 | 60 | Completion Notifications | System banner and sound when download finishes | **Complete** | `DownloadManagerViewModel.swift`, `UNUserNotificationCenter` | `DownloadManagerViewModelTests.swift` | Sends local notifications on download completion. |
 | 61 | Search & Filter Bar | Search downloads by name; filter by active/paused/finished | **Complete** | `DownloadsView.swift:.searchable`, `FilterBar` | `DownloadsViewInteractionTests.swift` | Real-time name search and filter chips. |
-| 62 | Real-time Bandwidth Speed Graph | Visual line chart displaying speed history over time | **Missing** | None | None | 1DM+ displays a live speed graph in notifications and UI. Not implemented in LID. |
+| 62 | Real-time Bandwidth Speed Graph | Visual line chart displaying speed history over time | **Complete** | `DownloadSpeedTracker.swift:BandwidthHistoryTracker`, `SpeedChartView.swift`, `DownloadManagerViewModel.swift`, `DownloadsView.swift:BandwidthDashboardSection` | `BandwidthSpeedTrackerTests.swift` | Real-time 60-second rolling bandwidth throughput chart using Apple Swift Charts on iOS 16+ with high-fidelity custom Path fallback for iOS 15. Separate download and upload series, axis markers, and peak indicators. |
 | 63 | Dark / Light Theme Support | Follows system dark/light mode with native colors | **Complete** | Native SwiftUI color system (`Color.primary`, `Color.platformSecondaryBackground`) | `DownloadsViewInteractionTests.swift` | Adapts automatically to iOS dark/light appearance. |
 | 64 | Download Sorting Options | Sort downloads by date, name, size, type, or speed | **Partial** | Default chronological sort | None | No UI picker to reorder items by name, file size, or speed. |
 

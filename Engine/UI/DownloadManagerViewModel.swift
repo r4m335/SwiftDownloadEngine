@@ -318,6 +318,14 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
     @Published public var unifiedTransfers: [UnifiedTransfer] = []
     @Published public var selectedTransfer: UnifiedTransfer? = nil
 
+    // Milestone 4.3: Live Bandwidth History & Aggregate Throughput
+    public let bandwidthTracker = BandwidthHistoryTracker(maxDuration: 60.0)
+    @Published public private(set) var bandwidthHistory: [BandwidthSample] = []
+    @Published public private(set) var currentTotalDownloadSpeed: Double = 0.0
+    @Published public private(set) var currentTotalUploadSpeed: Double = 0.0
+    @Published public private(set) var peakDownloadSpeed: Double = 0.0
+    @Published public private(set) var peakUploadSpeed: Double = 0.0
+
     @Published public var filterText: String = ""
     @Published public var selectedFilter: DownloadFilter = .all
     @Published public var selectedCategory: DownloadCategory? = nil
@@ -366,6 +374,7 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
 
     private var eventTask: Task<Void, Never>? = nil
     private var torrentRefreshTask: Task<Void, Never>? = nil
+    private var bandwidthSamplingTask: Task<Void, Never>? = nil
 
 #if canImport(BackgroundTasks) && os(iOS) && SDE_ENABLE_BG_CONTINUED_PROCESSING
     private let continuedProcessingCoordinator: ContinuedProcessingTaskCoordinator
@@ -535,6 +544,9 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
         // Fetch authoritative initial snapshots
         await refreshSnapshots()
 
+        // Start live bandwidth throughput sampling (Milestone 4.3)
+        startBandwidthSampling()
+
         // Listen for real-time background events from HTTP engine
         eventTask?.cancel()
         let stream = await engine.events()
@@ -555,6 +567,8 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
         eventTask = nil
         torrentRefreshTask?.cancel()
         torrentRefreshTask = nil
+        bandwidthSamplingTask?.cancel()
+        bandwidthSamplingTask = nil
         isObserving = false
     }
 
@@ -584,6 +598,67 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
                 try? await Task.sleep(nanoseconds: 1_500_000_000) // 1.5s
                 guard !Task.isCancelled else { break }
                 await self?.refreshTorrentSnapshots()
+            }
+        }
+    }
+
+    // MARK: - Milestone 4.3: Bandwidth Sampling & Aggregate Throughput
+
+    /// Aggregates active download and upload throughput across all managed HTTP downloads and BitTorrent tasks.
+    ///
+    /// - Only actively transferring downloads (.downloading / .probing) and torrents (.downloading) contribute download bytes.
+    /// - Active torrent tasks (.downloading / .seeding) contribute upload bytes.
+    /// - Paused, pending, completed, failed, and cancelled transfers strictly report 0.0 throughput.
+    nonisolated public static func computeAggregateThroughput(
+        downloads: [DownloadSnapshot],
+        torrents: [TorrentTask]
+    ) -> (downloadBytesPerSecond: Double, uploadBytesPerSecond: Double) {
+        var totalDownload: Double = 0.0
+        var totalUpload: Double = 0.0
+
+        for download in downloads {
+            switch download.state {
+            case .downloading, .probing:
+                totalDownload += max(0, download.currentBytesPerSecond)
+            case .pending, .paused, .completed, .failed, .cancelled:
+                break
+            }
+        }
+
+        for task in torrents {
+            if task.state == .downloading {
+                totalDownload += max(0, task.progress.downloadBytesPerSecond)
+            }
+            if task.state == .downloading || task.state == .seeding {
+                totalUpload += max(0, task.progress.uploadBytesPerSecond)
+            }
+        }
+
+        return (totalDownload, totalUpload)
+    }
+
+    /// Captures a point-in-time bandwidth sample and updates published metrics for UI subscribers.
+    @MainActor
+    public func sampleBandwidth(timestamp: Date = Date()) {
+        let (down, up) = Self.computeAggregateThroughput(downloads: downloads, torrents: torrentTasks)
+        bandwidthTracker.record(downloadSpeed: down, uploadSpeed: up, timestamp: timestamp)
+
+        self.currentTotalDownloadSpeed = down
+        self.currentTotalUploadSpeed = up
+        self.peakDownloadSpeed = bandwidthTracker.peakDownloadSpeed(asOf: timestamp)
+        self.peakUploadSpeed = bandwidthTracker.peakUploadSpeed(asOf: timestamp)
+        self.bandwidthHistory = bandwidthTracker.history(asOf: timestamp)
+    }
+
+    private func startBandwidthSampling() {
+        bandwidthSamplingTask?.cancel()
+        bandwidthSamplingTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 1_000_000_000) // 1.0s interval
+                guard !Task.isCancelled else { break }
+                await MainActor.run { [weak self] in
+                    self?.sampleBandwidth()
+                }
             }
         }
     }
