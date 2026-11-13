@@ -1047,6 +1047,7 @@ extension BrowserToDownloadWorkflowTests {
         // Switch back to Tab 1
         vm.selectTab(tab1)
         XCTAssertEqual(vm.activeTabID, tab1)
+        XCTAssertEqual(vm.detectedMediaCount, 1)
     }
 }
 #endif

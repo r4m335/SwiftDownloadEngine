@@ -62,15 +62,12 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         var count = 0
         for candidate in mediaCandidates {
             guard candidate.kind != .unknown, candidate.availability != .unsupported else { continue }
-            let key = (candidate.url?.absoluteString ?? candidate.rawURL).lowercased()
-            if !seenKeys.contains(key) {
-                seenKeys.insert(key)
-                count += 1
-            }
-        }
-        for resource in discoveredResources {
-            guard (resource.isSupported || resource.isStreamingManifest), !resource.isSegmentChunk else { continue }
-            let key = resource.url.absoluteString.lowercased()
+            let url = candidate.url ?? URL(string: candidate.rawURL)
+            let ext = url?.pathExtension.lowercased()
+            if ext == "ts" || ext == "m4s" { continue }
+            if let mime = candidate.mimeType?.lowercased(), mime.contains("mp2t") || mime.contains("iso.segment") { continue }
+
+            let key = (url?.absoluteString ?? candidate.rawURL).lowercased()
             if !seenKeys.contains(key) {
                 seenKeys.insert(key)
                 count += 1
@@ -1007,10 +1004,12 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         customFilename: String? = nil
     ) {
         activeDownloadCandidate = candidate
-        activeDownloadResource = discoveredResources.first {
-            $0.id == candidate.id ||
-            $0.url.absoluteString.caseInsensitiveCompare(candidate.rawURL) == .orderedSame ||
-            (candidate.url != nil && $0.url == candidate.url)
+        if activeDownloadResource == nil || (activeDownloadResource?.url != candidate.url && activeDownloadResource?.id != candidate.id) {
+            activeDownloadResource = discoveredResources.first {
+                $0.id == candidate.id ||
+                $0.url.absoluteString.caseInsensitiveCompare(candidate.rawURL) == .orderedSame ||
+                (candidate.url != nil && $0.url == candidate.url)
+            }
         }
         let url = candidate.url ?? URL(string: candidate.rawURL)
         downloadCandidateURL = url
