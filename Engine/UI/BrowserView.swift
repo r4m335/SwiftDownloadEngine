@@ -1337,7 +1337,8 @@ public final class BrowserViewModel: NSObject, ObservableObject {
             blobCaptureErrorMessage = errorMsg
             return
         }
-        guard let orchestrator = streamingOrchestrator else {
+        let effectiveOrchestrator = streamingOrchestrator ?? StreamingDownloadOrchestrator.shared
+        guard let orchestrator = effectiveOrchestrator else {
             let errorMsg = "Streaming downloads are unavailable: StreamingDownloadOrchestrator is nil."
             print("[HLS Pipeline] \(errorMsg)")
             streamingErrorMessage = errorMsg
@@ -1449,7 +1450,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
 
     public func executeStreamingProposal() {
         guard let proposal = streamingProposal,
-              let orchestrator = streamingOrchestrator,
+              let orchestrator = streamingOrchestrator ?? StreamingDownloadOrchestrator.shared,
               !isExecutingStreaming else { return }
 
         isExecutingStreaming = true

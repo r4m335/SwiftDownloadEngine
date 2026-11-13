@@ -318,7 +318,8 @@ final class StreamQualityPickerTests: XCTestCase {
 
     @MainActor
     func testPromptStreamingDownloadTriggersQualityPickerForMultiVariantStream() async throws {
-        let vm = BrowserViewModel()
+        let orchestrator = StreamingDownloadOrchestrator(segmentExecutor: URLSessionStreamingSegmentExecutor())
+        let vm = BrowserViewModel(streamingOrchestrator: orchestrator)
         let muxManifest = """
         #EXTM3U
         #EXT-X-STREAM-INF:BANDWIDTH=6221600,RESOLUTION=1920x1080
@@ -337,8 +338,11 @@ final class StreamQualityPickerTests: XCTestCase {
 
         vm.promptStreamingDownload(for: resource)
 
-        // Allow MainActor task to inspect options
-        try await Task.sleep(nanoseconds: 100_000_000)
+        // Allow MainActor task cooperative cycles to inspect options
+        for _ in 0..<50 {
+            if vm.isShowingQualityPicker && !vm.qualityPickerOptions.isEmpty { break }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
 
         XCTAssertTrue(vm.isShowingQualityPicker)
         XCTAssertEqual(vm.qualityPickerOptions.count, 2)
