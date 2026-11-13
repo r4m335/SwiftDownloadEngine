@@ -469,7 +469,7 @@ final class DownloadEngineTests: XCTestCase {
         try await engine.waitUntilIdle(timeoutSeconds: 10.0)
 
         // Allow async stream tasks cooperative cycles to consume terminal events
-        for _ in 0..<30 {
+        for _ in 0..<100 {
             let c1 = await collector1.contains { if case .completed(let snap) = $0 { return snap.id == req.id }; return false }
             let c2 = await collector2.contains { if case .completed(let snap) = $0 { return snap.id == req.id }; return false }
             if c1 && c2 { break }
@@ -526,7 +526,14 @@ final class DownloadEngineTests: XCTestCase {
         }
 
         try await engine.waitUntilIdle(timeoutSeconds: 15.0)
-        try? await Task.sleep(nanoseconds: 50_000_000)
+        for _ in 0..<50 {
+            let done = await collector.contains {
+                if case .completed(let snap) = $0 { return snap.id == req.id }
+                return false
+            }
+            if done { break }
+            try? await Task.sleep(nanoseconds: 20_000_000)
+        }
         task.cancel()
 
         let hasCompleted = await collector.contains {
