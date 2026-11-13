@@ -308,18 +308,18 @@ public struct DownloadDetailsView: View {
             }
 
             HStack(spacing: 12) {
-                if let peers = tracker.numPeers, peers >= 0 {
-                    Text("Peers: \(peers)")
+                if tracker.numPeers >= 0 {
+                    Text("Peers: \(tracker.numPeers)")
                         .font(.caption2)
                         .foregroundColor(.secondary)
                 }
-                if let seeds = tracker.numSeeds, seeds >= 0 {
-                    Text("Seeds: \(seeds)")
+                if tracker.numSeeds >= 0 {
+                    Text("Seeds: \(tracker.numSeeds)")
                         .font(.caption2)
                         .foregroundColor(.secondary)
                 }
-                if let dl = tracker.numDownloaded, dl >= 0 {
-                    Text("Downloaded: \(dl)")
+                if tracker.numDownloaded >= 0 {
+                    Text("Downloaded: \(tracker.numDownloaded)")
                         .font(.caption2)
                         .foregroundColor(.secondary)
                 }
