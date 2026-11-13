@@ -92,6 +92,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
     @Published public var isShowingResourceInspector: Bool = false
     @Published public var isScanningResources: Bool = false
     @Published public var discoveredResources: [WebpageResource] = []
+    @Published public var variantStreamItems: [String: HLSVariantStreamItem] = [:]
     @Published public var selectedResourceIDs: Set<String> = []
     @Published public var resourceScanError: String? = nil
     @Published public private(set) var mediaCandidates: [BrowserMediaCandidate] = []
@@ -1255,8 +1256,12 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         isShowingResourceInspector = false
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
             guard let self = self else { return }
-            if resource.isStreamingManifest && resource.hlsVariantPreferences == nil {
-                self.presentQualityPicker(for: resource)
+            if resource.isStreamingManifest {
+                if resource.hlsVariantPreferences == nil && resource.dashVideoRepresentationID == nil {
+                    self.presentQualityPicker(for: resource)
+                } else {
+                    self.promptStreamingDownload(for: resource)
+                }
             } else {
                 self.promptDownload(for: resource)
             }
@@ -1387,7 +1392,10 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                             isSupported: effectiveResource.isSupported,
                             unsupportedReason: effectiveResource.unsupportedReason,
                             requestContext: effectiveResource.requestContext,
-                            manifestText: cachedText
+                            manifestText: cachedText,
+                            hlsVariantPreferences: effectiveResource.hlsVariantPreferences,
+                            dashVideoRepresentationID: effectiveResource.dashVideoRepresentationID,
+                            dashAudioRepresentationID: effectiveResource.dashAudioRepresentationID
                         )
                     } else if let cachedText = self.mediaCandidates.first(where: { $0.url == resource.url })?.cachedManifestText, !cachedText.isEmpty {
                         effectiveResource = WebpageResource(
@@ -1401,7 +1409,10 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                             isSupported: effectiveResource.isSupported,
                             unsupportedReason: effectiveResource.unsupportedReason,
                             requestContext: effectiveResource.requestContext,
-                            manifestText: cachedText
+                            manifestText: cachedText,
+                            hlsVariantPreferences: effectiveResource.hlsVariantPreferences,
+                            dashVideoRepresentationID: effectiveResource.dashVideoRepresentationID,
+                            dashAudioRepresentationID: effectiveResource.dashAudioRepresentationID
                         )
                     }
                 }
@@ -1551,6 +1562,144 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         isPreparingStreaming = false
         isExecutingStreaming = false
         isShowingStreamingConfirmation = false
+    }
+
+    /// Initiates a background streaming transfer for a specific manifest resource variant.
+    public func startStreamingTransfer(
+        for resource: WebpageResource,
+        customFilename: String? = nil,
+        sessionSnapshot: BrowserSessionSnapshot? = nil
+    ) {
+        let effectiveOrchestrator = streamingOrchestrator ?? StreamingDownloadOrchestrator.shared
+        guard let orchestrator = effectiveOrchestrator else {
+            let errorMsg = "Streaming downloads are unavailable: StreamingDownloadOrchestrator is nil."
+            streamingErrorMessage = errorMsg
+            blobCaptureErrorMessage = errorMsg
+            return
+        }
+
+        Task { @MainActor [weak self] in
+            guard let self = self else { return }
+            do {
+                await orchestrator.setURLResolver(self)
+                let candidate = try StreamingManifestCandidate(
+                    resource: resource,
+                    browserSessionSnapshot: sessionSnapshot
+                )
+                let proposal = try await orchestrator.prepare(candidate: candidate)
+                let destination = self.streamingDestinationDirectoryURL
+                let tempAssemblyDir = destination
+                    .appendingPathComponent(".assembly_temp_\(UUID().uuidString)", isDirectory: true)
+                try DownloadManagerViewModel.ensureDirectoryExistsAndWritable(destination)
+                try DownloadManagerViewModel.ensureDirectoryExistsAndWritable(tempAssemblyDir)
+
+                let targetFilename: String = {
+                    if let custom = customFilename?.trimmingCharacters(in: .whitespacesAndNewlines), !custom.isEmpty {
+                        return custom.hasSuffix(".mp4") ? custom : custom + ".mp4"
+                    }
+                    if !resource.suggestedFilename.isEmpty && resource.suggestedFilename != resource.url.lastPathComponent {
+                        let f = resource.suggestedFilename
+                        return f.hasSuffix(".mp4") ? f : f + ".mp4"
+                    }
+                    switch proposal.manifest {
+                    case .hls(let plan): return HLSVODReconstructionPlanner.suggestedFilename(for: plan)
+                    case .dash(let plan): return DASHVODReconstructionPlanner.suggestedFilename(for: plan)
+                    }
+                }()
+                let targetURL = destination.appendingPathComponent(targetFilename, isDirectory: false)
+
+                switch proposal.manifest {
+                case .hls:
+                    _ = try await orchestrator.executeAndAssembleHLS(
+                        proposal,
+                        approved: true,
+                        destinationDirectory: tempAssemblyDir,
+                        outputURL: targetURL,
+                        progress: { _ in }
+                    )
+                case .dash:
+                    _ = try await orchestrator.executeAndAssembleDASH(
+                        proposal,
+                        approved: true,
+                        destinationDirectory: tempAssemblyDir,
+                        outputURL: targetURL,
+                        progress: { _ in }
+                    )
+                }
+            } catch {
+                let errorMsg = "Streaming transfer failed: \(error.localizedDescription)"
+                print("[HLS Pipeline] \(errorMsg)")
+                self.streamingErrorMessage = errorMsg
+            }
+        }
+    }
+
+    /// Asynchronously inspects and expands streaming master manifests (HLS and DASH)
+    /// into individual selectable video and audio quality resources directly in `discoveredResources`.
+    public func expandStreamingManifests(in resources: [WebpageResource]? = nil) {
+        let targets = (resources ?? discoveredResources).filter {
+            $0.isStreamingManifest && $0.hlsVariantPreferences == nil && $0.dashVideoRepresentationID == nil
+        }
+        guard !targets.isEmpty else { return }
+
+        Task { @MainActor [weak self] in
+            guard let self = self else { return }
+            for manifest in targets {
+                let expanded = await StreamManifestResourceExpander.shared.expand(manifestResource: manifest)
+                guard expanded.count > 1 || (expanded.count == 1 && expanded[0].id != manifest.id) else {
+                    continue
+                }
+
+                for variant in expanded {
+                    if let item = await StreamManifestResourceExpander.shared.variantItem(for: variant.id) {
+                        self.variantStreamItems[variant.id] = item
+                    }
+                }
+
+                let wasManifestSelected = self.selectedResourceIDs.contains(manifest.id)
+                if wasManifestSelected {
+                    self.selectedResourceIDs.remove(manifest.id)
+                    if let highest = expanded.first {
+                        self.selectedResourceIDs.insert(highest.id)
+                    }
+                }
+
+                var updated: [WebpageResource] = []
+                var inserted = false
+                for res in self.discoveredResources {
+                    if res.id == manifest.id || (res.url == manifest.url && res.hlsVariantPreferences == nil && res.dashVideoRepresentationID == nil) {
+                        if !inserted {
+                            for v in expanded {
+                                if !updated.contains(where: { $0.id == v.id }) {
+                                    updated.append(v)
+                                }
+                            }
+                            let parent = WebpageResource(
+                                id: res.id,
+                                url: res.url,
+                                title: "\(res.title) (Master Playlist)",
+                                suggestedFilename: res.suggestedFilename,
+                                resourceType: res.resourceType,
+                                mimeType: res.mimeType,
+                                estimatedSize: res.estimatedSize,
+                                isSupported: true,
+                                unsupportedReason: "Parent master manifest containing \(expanded.count) quality variants",
+                                requestContext: res.requestContext,
+                                manifestText: expanded.first?.manifestText ?? res.manifestText
+                            )
+                            updated.append(parent)
+                            inserted = true
+                        }
+                    } else if !expanded.contains(where: { $0.id == res.id }) {
+                        updated.append(res)
+                    }
+                }
+                if !inserted {
+                    updated.append(contentsOf: expanded)
+                }
+                self.discoveredResources = updated
+            }
+        }
     }
 
     // MARK: - Interactive Stream Quality Picker (Phase 3 Milestone 3.1)
@@ -1927,6 +2076,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                     }
                     self.resetMediaCandidateCatalog(for: self.activeTabID)
                     self.ingestMediaResources(contextualResources, tabID: self.activeTabID)
+                    self.expandStreamingManifests(in: contextualResources)
                 }
             }
         }
@@ -2123,6 +2273,9 @@ public final class BrowserViewModel: NSObject, ObservableObject {
             selectedResourceIDs.insert(manifest.id)
         }
         if targetTabID == activeTabID { publishMediaCandidates() }
+        if resources.contains(where: { $0.isStreamingManifest && $0.hlsVariantPreferences == nil && $0.dashVideoRepresentationID == nil }) {
+            expandStreamingManifests(in: resources)
+        }
     }
 
     public func ingestMediaResource(
@@ -2277,15 +2430,35 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                     streamingErrorMessage = errorMsg
                     return
                 }
+                let effectiveFilename: String = {
+                    if !resource.suggestedFilename.isEmpty && resource.suggestedFilename != manifestURL.lastPathComponent {
+                        return resource.suggestedFilename
+                    }
+                    if !decision.candidate.suggestedFilename.isEmpty {
+                        return decision.candidate.suggestedFilename
+                    }
+                    return suggestedFilename
+                }()
                 let res = WebpageResource(
+                    id: resource.id,
                     url: manifestURL,
-                    title: decision.candidate.suggestedFilename.isEmpty ? suggestedFilename : decision.candidate.suggestedFilename,
-                    suggestedFilename: suggestedFilename,
-                    resourceType: .video,
+                    title: resource.title,
+                    suggestedFilename: effectiveFilename,
+                    resourceType: resource.resourceType,
+                    mimeType: resource.mimeType,
+                    estimatedSize: resource.estimatedSize,
+                    isSupported: true,
                     requestContext: requestContext ?? resContext ?? decision.candidate.requestContext,
-                    manifestText: cachedText
+                    manifestText: cachedText ?? resource.manifestText,
+                    hlsVariantPreferences: resource.hlsVariantPreferences,
+                    dashVideoRepresentationID: resource.dashVideoRepresentationID,
+                    dashAudioRepresentationID: resource.dashAudioRepresentationID
                 )
-                promptStreamingDownload(for: res)
+                if targets.count == 1 {
+                    promptStreamingDownload(for: res, customFilename: effectiveFilename)
+                } else {
+                    startStreamingTransfer(for: res, customFilename: effectiveFilename, sessionSnapshot: sessionSnapshot)
+                }
 
             case .blobExport(let candidate):
                 #if canImport(WebKit)

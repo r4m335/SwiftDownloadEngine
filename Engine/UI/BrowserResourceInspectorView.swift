@@ -54,11 +54,13 @@ public struct BrowserResourceInspectorSheet: View {
     }
 
     private var variantMetadataMap: [String: HLSVariantStreamItem] {
-        var map: [String: HLSVariantStreamItem] = [:]
+        var map = viewModel.variantStreamItems
         for res in viewModel.discoveredResources {
             let items = HLSResourceGrouping.extractVariantStreamItems(for: res)
             for item in items {
-                map[item.id] = item
+                if map[item.id] == nil {
+                    map[item.id] = item
+                }
             }
         }
         return map
@@ -68,6 +70,7 @@ public struct BrowserResourceInspectorSheet: View {
         let hasStreamingManifest = viewModel.discoveredResources.contains(where: { $0.isStreamingManifest })
         let sequentialChunkIDs = WebpageResourceExtractor.detectSequentialSegmentChunks(in: viewModel.discoveredResources)
         let variantURLs = knownHLSVariantURLs
+        let hasExpandedVariants = viewModel.discoveredResources.contains(where: { $0.hlsVariantPreferences != nil || $0.dashVideoRepresentationID != nil })
         var expanded: [WebpageResource] = []
 
         for res in viewModel.discoveredResources {
@@ -87,17 +90,27 @@ public struct BrowserResourceInspectorSheet: View {
                 continue
             }
 
-            // Expand master playlist into individual resolution videos like 1DM!
-            if res.isStreamingManifest, res.url.pathExtension.lowercased() == "m3u8",
-               let text = res.manifestText,
-               let manifest = try? HLSManifestParser.parse(text, baseURL: res.url),
-               manifest.playlistType == .master,
-               !manifest.variants.isEmpty {
-                let variants = HLSResourceGrouping.extractVariantResources(from: res)
-                expanded.append(contentsOf: variants)
-            } else {
-                expanded.append(res)
+            // In standard "Media" view, when expanded variants exist, hide the unexpanded parent master manifest
+            // so users only see the individual video qualities. Under "All", the parent master is visible.
+            if res.isStreamingManifest && res.hlsVariantPreferences == nil && res.dashVideoRepresentationID == nil && hasExpandedVariants && !showsAllResources {
+                continue
             }
+
+            // Expand master playlist synchronously if text is present and not already expanded
+            if res.isStreamingManifest, res.hlsVariantPreferences == nil, res.dashVideoRepresentationID == nil,
+               let text = res.manifestText, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+               !hasExpandedVariants {
+                let syncResult = StreamManifestResourceExpander.expandSynchronously(masterResource: res, manifestText: text)
+                if !syncResult.variants.isEmpty && (syncResult.variants.count > 1 || syncResult.variants[0].id != res.id) {
+                    expanded.append(contentsOf: syncResult.variants)
+                    if showsAllResources {
+                        expanded.append(res)
+                    }
+                    continue
+                }
+            }
+
+            expanded.append(res)
         }
         return expanded
     }
@@ -196,6 +209,7 @@ public struct BrowserResourceInspectorSheet: View {
                 }
             }
             .onAppear {
+                viewModel.expandStreamingManifests()
                 if viewModel.selectedResourceIDs.isEmpty,
                    let manifest = filteredResources.first(where: { $0.isStreamingManifest }) {
                     viewModel.selectedResourceIDs.insert(manifest.id)
@@ -609,79 +623,113 @@ public struct ResourceRowView: View {
                     .font(.subheadline.weight(.semibold))
                     .lineLimit(2)
 
-                Text(resource.suggestedFilename)
-                    .font(.caption2)
-                    .foregroundColor(.secondary)
-                    .lineLimit(1)
-
                 if let variant = variantItem {
-                    variantBadges(for: variant)
-                } else if let qualitySummary {
-                    Text("Available qualities: \(qualitySummary)")
+                    // Variant Specifications Line (e.g. 1920 × 1080 • 6.2 Mbps • ~estimated size)
+                    let resStr = variant.resolutionText ?? (variant.resolution.map { "\($0.width) × \($0.height)" } ?? "")
+                    let sizeStr = variant.estimatedSizeText ?? (variant.estimatedSizeBytes.map { "~\(StreamQualityOption.formatByteSize($0))" } ?? "Size unavailable")
+                    let specsParts: [String] = [resStr, variant.bitrateText, sizeStr].filter { !$0.isEmpty }
+                    let specsLine = specsParts.joined(separator: " • ")
+
+                    Text(specsLine)
+                        .font(.caption.weight(.medium))
+                        .foregroundColor(.primary)
+                        .lineLimit(1)
+
+                    HStack(spacing: 6) {
+                        Text(variant.qualityLabel)
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Color.blue)
+                            .cornerRadius(4)
+
+                        if let vCodec = variant.videoCodec {
+                            textPill(vCodec)
+                        }
+
+                        if variant.hasAudio {
+                            audioPill(hasAudio: true)
+                        }
+
+                        Text(resource.suggestedFilename)
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                            .lineLimit(1)
+                    }
+                } else {
+                    Text(resource.suggestedFilename)
                         .font(.caption2)
                         .foregroundColor(.secondary)
                         .lineLimit(1)
-                }
 
-                // URL & Type Badges
-                HStack(spacing: 6) {
-                    Text(isMediaSourceBlob ? WebpageResourceType.other.rawValue : resource.resourceType.rawValue)
-                        .font(.system(size: 10, weight: .bold))
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        #if canImport(UIKit)
-                        .background(Color(UIColor.tertiarySystemBackground))
-                        #else
-                        .background(Color.secondary.opacity(0.2))
-                        #endif
-                        .cornerRadius(4)
+                    if let qualitySummary {
+                        Text("Available qualities: \(qualitySummary)")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                            .lineLimit(1)
+                    }
 
-                    if resource.isStreamingManifest {
-                        let isDash = resource.url.pathExtension.lowercased() == "mpd" ||
-                            resource.mimeType?.lowercased().contains("dash") == true ||
-                            resource.manifestText?.range(of: #"<\s*(?:[A-Za-z_][A-Za-z0-9_.-]*:)?MPD(?:\s|>)"#, options: [.regularExpression, .caseInsensitive]) != nil
-                        let label = isDash ? "Ready for DASH Download" : "Ready for HLS Download"
-                        Text(label)
+                    // URL & Type Badges
+                    HStack(spacing: 6) {
+                        Text(isMediaSourceBlob ? WebpageResourceType.other.rawValue : resource.resourceType.rawValue)
                             .font(.system(size: 10, weight: .bold))
-                            .foregroundColor(.blue)
                             .padding(.horizontal, 6)
                             .padding(.vertical, 2)
-                            .background(Color.blue.opacity(0.15))
+                            #if canImport(UIKit)
+                            .background(Color(UIColor.tertiarySystemBackground))
+                            #else
+                            .background(Color.secondary.opacity(0.2))
+                            #endif
                             .cornerRadius(4)
-                    } else if isMediaSourceBlob {
-                        let isDash = resource.url.pathExtension.lowercased() == "mpd" || (hasManifest && candidate?.associatedManifestURL?.pathExtension.lowercased() == "mpd")
-                        if hasManifest {
-                            Text(isDash ? "Ready for DASH Download" : "Ready for HLS Download")
+
+                        if resource.isStreamingManifest {
+                            let isDash = resource.url.pathExtension.lowercased() == "mpd" ||
+                                resource.mimeType?.lowercased().contains("dash") == true ||
+                                resource.manifestText?.range(of: #"<\s*(?:[A-Za-z_][A-Za-z0-9_.-]*:)?MPD(?:\s|>)"#, options: [.regularExpression, .caseInsensitive]) != nil
+                            let label = isDash ? "Ready for DASH Download" : "Ready for HLS Download"
+                            Text(label)
                                 .font(.system(size: 10, weight: .bold))
                                 .foregroundColor(.blue)
                                 .padding(.horizontal, 6)
                                 .padding(.vertical, 2)
                                 .background(Color.blue.opacity(0.15))
                                 .cornerRadius(4)
-                        } else {
-                            Text("Ready for MSE Capture")
+                        } else if isMediaSourceBlob {
+                            let isDash = resource.url.pathExtension.lowercased() == "mpd" || (hasManifest && candidate?.associatedManifestURL?.pathExtension.lowercased() == "mpd")
+                            if hasManifest {
+                                Text(isDash ? "Ready for DASH Download" : "Ready for HLS Download")
+                                    .font(.system(size: 10, weight: .bold))
+                                    .foregroundColor(.blue)
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 2)
+                                    .background(Color.blue.opacity(0.15))
+                                    .cornerRadius(4)
+                            } else {
+                                Text("Ready for MSE Capture")
+                                    .font(.system(size: 10, weight: .bold))
+                                    .foregroundColor(.purple)
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 2)
+                                    .background(Color.purple.opacity(0.15))
+                                    .cornerRadius(4)
+                            }
+                        } else if resource.url.scheme?.lowercased() == "blob" {
+                            Text("Ready for Blob Export")
                                 .font(.system(size: 10, weight: .bold))
-                                .foregroundColor(.purple)
+                                .foregroundColor(.green)
                                 .padding(.horizontal, 6)
                                 .padding(.vertical, 2)
-                                .background(Color.purple.opacity(0.15))
+                                .background(Color.green.opacity(0.15))
                                 .cornerRadius(4)
                         }
-                    } else if resource.url.scheme?.lowercased() == "blob" {
-                        Text("Ready for Blob Export")
-                            .font(.system(size: 10, weight: .bold))
-                            .foregroundColor(.green)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(Color.green.opacity(0.15))
-                            .cornerRadius(4)
-                    }
 
-                    if let host = resource.url.host {
-                        Text(host)
-                            .font(.system(size: 10))
-                            .foregroundColor(.secondary)
-                            .lineLimit(1)
+                        if let host = resource.url.host {
+                            Text(host)
+                                .font(.system(size: 10))
+                                .foregroundColor(.secondary)
+                                .lineLimit(1)
+                        }
                     }
                 }
 

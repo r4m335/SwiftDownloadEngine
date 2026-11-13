@@ -16,6 +16,8 @@ public struct HLSVariantStreamItem: Identifiable, Sendable, Hashable {
     public let subtitleText: String? // e.g. "Subtitles", "CC"
     public let codecs: String?
     public let videoCodec: String? // e.g. "H.264", "HEVC", "AV1"
+    public let estimatedSizeBytes: Int64?
+    public let estimatedSizeText: String?
 
     public init(
         id: String,
@@ -31,7 +33,9 @@ public struct HLSVariantStreamItem: Identifiable, Sendable, Hashable {
         hasSubtitles: Bool = false,
         subtitleText: String? = nil,
         codecs: String? = nil,
-        videoCodec: String? = nil
+        videoCodec: String? = nil,
+        estimatedSizeBytes: Int64? = nil,
+        estimatedSizeText: String? = nil
     ) {
         self.id = id
         self.masterURL = masterURL
@@ -47,6 +51,8 @@ public struct HLSVariantStreamItem: Identifiable, Sendable, Hashable {
         self.subtitleText = subtitleText
         self.codecs = codecs
         self.videoCodec = videoCodec
+        self.estimatedSizeBytes = estimatedSizeBytes
+        self.estimatedSizeText = estimatedSizeText
     }
 }
 
@@ -121,13 +127,13 @@ public enum HLSResourceGrouping {
         return items.map { item in
             let baseFilename = (masterResource.suggestedFilename as NSString).deletingPathExtension
             let filename = "\(baseFilename)-\(item.qualityLabel).mp4"
-            let resSuffix = item.resolutionText.map { " (\($0))" } ?? ""
-            let title = "\(masterResource.title) · \(item.qualityLabel)\(resSuffix)"
+            let title = "HLS \(item.qualityLabel)"
 
             let preferences = HLSVariantSelectionPreferences(
                 maximumBandwidth: item.bandwidth,
                 maximumWidth: item.resolution?.width,
-                maximumHeight: item.resolution?.height
+                maximumHeight: item.resolution?.height,
+                exactURI: item.variantURL
             )
 
             return WebpageResource(
@@ -137,7 +143,7 @@ public enum HLSResourceGrouping {
                 suggestedFilename: filename,
                 resourceType: .video,
                 mimeType: masterResource.mimeType ?? "application/vnd.apple.mpegurl",
-                estimatedSize: nil,
+                estimatedSize: item.estimatedSizeBytes,
                 isSupported: true,
                 requestContext: masterResource.requestContext,
                 manifestText: masterResource.manifestText,
