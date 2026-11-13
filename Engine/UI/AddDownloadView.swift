@@ -42,6 +42,7 @@ public struct AddDownloadView: View {
     // HTTP Download State
     @State private var urlString = ""
     @State private var customFilename = ""
+    @State private var selectedCategory: DownloadCategory = .others
     @State private var workerCount = 6
     @State private var autoStart = true
     @State private var speedLimitKBps = ""
@@ -181,19 +182,34 @@ public struct AddDownloadView: View {
             }
         }
 
-        // Section 2: Destination & File Settings
-        Section(header: Text("Destination & File")) {
+        // Section 2: Destination & Category Settings
+        Section(header: Text("Destination & Category")) {
             TextField("Filename (optional)", text: $customFilename)
             #if canImport(UIKit)
                 .autocapitalization(.none)
             #endif
                 .disableAutocorrection(true)
+                .onChange(of: customFilename) { newName in
+                    if !newName.isEmpty {
+                        selectedCategory = DownloadCategoryClassifier.classify(mimeType: nil, filename: newName)
+                    }
+                }
+
+            Picker("Category", selection: $selectedCategory) {
+                ForEach(DownloadCategory.allCases) { cat in
+                    HStack {
+                        Image(systemName: cat.iconName)
+                        Text(cat.displayName)
+                    }
+                    .tag(cat)
+                }
+            }
 
             HStack {
-                Text("Destination")
+                Text("Subfolder")
                     .foregroundColor(.secondary)
                 Spacer()
-                Text(viewModel.downloadsDirectoryURL.lastPathComponent)
+                Text("Downloads/\(viewModel.appSettings.subfolderName(for: selectedCategory))")
                     .foregroundColor(.primary)
                     .lineLimit(1)
             }
@@ -343,7 +359,7 @@ public struct AddDownloadView: View {
                 Text("Destination")
                     .foregroundColor(.secondary)
                 Spacer()
-                Text(viewModel.downloadsDirectoryURL.lastPathComponent)
+                Text("Downloads/\(viewModel.appSettings.subfolderName(for: .torrents))")
                     .foregroundColor(.primary)
                     .lineLimit(1)
             }
@@ -383,13 +399,15 @@ public struct AddDownloadView: View {
     }
 
     private func autoFillFilename(from urlText: String) {
-        guard customFilename.isEmpty, let url = URL(string: urlText.trimmingCharacters(in: .whitespacesAndNewlines)) else {
+        guard let url = URL(string: urlText.trimmingCharacters(in: .whitespacesAndNewlines)) else {
             return
         }
         let last = url.lastPathComponent
-        if !last.isEmpty && last != "/" && last.contains(".") {
+        if customFilename.isEmpty && !last.isEmpty && last != "/" && last.contains(".") {
             customFilename = last
         }
+        let candidateName = customFilename.isEmpty ? last : customFilename
+        selectedCategory = DownloadCategoryClassifier.classify(mimeType: nil, filename: candidateName)
     }
 
     private func submitHTTPDownload() {
@@ -410,7 +428,8 @@ public struct AddDownloadView: View {
                     filename: customFilename.isEmpty ? nil : customFilename,
                     threadCount: workerCount,
                     speedLimitBytesPerSecond: limit,
-                    autoStart: autoStart
+                    autoStart: autoStart,
+                    category: selectedCategory
                 )
 
                 isSubmitting = false

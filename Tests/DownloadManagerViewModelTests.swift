@@ -115,8 +115,8 @@ final class DownloadManagerViewModelTests: XCTestCase {
         XCTAssertEqual(item?.state, .completed)
         XCTAssertEqual(item?.completedBytes, Int64(size))
 
-        // Verify file written to configured UI downloads directory
-        let expectedFile = await viewModel.downloadsDirectoryURL.appendingPathComponent("my_file.bin")
+        // Verify file written to configured UI downloads directory (or category subfolder)
+        let expectedFile = snapshot.destinationURL
         XCTAssertTrue(FileManager.default.fileExists(atPath: expectedFile.path))
         let downloadedData = try Data(contentsOf: expectedFile)
         XCTAssertEqual(downloadedData, payload)
@@ -277,7 +277,7 @@ final class DownloadManagerViewModelTests: XCTestCase {
         try await engine.waitUntilIdle(timeoutSeconds: 10.0)
         await viewModel.refreshSnapshots()
 
-        let file = await viewModel.downloadsDirectoryURL.appendingPathComponent("remove_test.bin")
+        let file = snapshot.destinationURL
         XCTAssertTrue(FileManager.default.fileExists(atPath: file.path))
 
         // Remove from UI without deleting file

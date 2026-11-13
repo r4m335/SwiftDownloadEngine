@@ -177,6 +177,91 @@ public enum DownloadsDirectoryManager: Sendable {
         throw failure
     }
 
+    /// Resolves and ensures the writable category subfolder within the downloads directory.
+    @discardableResult
+    public static func categoryDownloadsDirectory(
+        for category: DownloadCategory,
+        customSubfolderName: String? = nil,
+        baseDirectory: URL? = nil,
+        fileManager: FileManager = .default
+    ) throws -> URL {
+        let base = try (baseDirectory ?? validatedDownloadsDirectory(fileManager: fileManager))
+        let subfolder = customSubfolderName ?? category.defaultSubfolderName
+        let categoryDir = base.appendingPathComponent(subfolder, isDirectory: true)
+        return try ensureDirectoryExistsAndWritable(categoryDir, fileManager: fileManager)
+    }
+
+    /// Pre-creates all standard category subdirectories in the downloads directory.
+    public static func ensureAllCategoryDirectoriesExist(
+        baseDirectory: URL? = nil,
+        categoryFolderMappings: [DownloadCategory: String]? = nil,
+        fileManager: FileManager = .default
+    ) throws {
+        let base = try (baseDirectory ?? validatedDownloadsDirectory(fileManager: fileManager))
+        for category in DownloadCategory.allCases {
+            let subfolder = categoryFolderMappings?[category] ?? category.defaultSubfolderName
+            let categoryDir = base.appendingPathComponent(subfolder, isDirectory: true)
+            _ = try ensureDirectoryExistsAndWritable(categoryDir, fileManager: fileManager)
+        }
+    }
+
+    public struct OrganizedFileResult: Sendable, Equatable {
+        public let originalURL: URL
+        public let newURL: URL
+        public let category: DownloadCategory
+
+        public init(originalURL: URL, newURL: URL, category: DownloadCategory) {
+            self.originalURL = originalURL
+            self.newURL = newURL
+            self.category = category
+        }
+    }
+
+    /// Atomically moves completed files located directly in the root downloads directory
+    /// into their corresponding category subfolders.
+    /// Preserves existing subdirectories and ignores temporary/in-progress files (.tmp, .part).
+    public static func organizeUncategorizedFiles(
+        in rootDirectory: URL,
+        categoryFolderMappings: [DownloadCategory: String]? = nil,
+        fileManager: FileManager = .default
+    ) throws -> [OrganizedFileResult] {
+        var results: [OrganizedFileResult] = []
+        let contents = try fileManager.contentsOfDirectory(
+            at: rootDirectory,
+            includingPropertiesForKeys: [.isDirectoryKey, .isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        )
+
+        for item in contents {
+            let values = try? item.resourceValues(forKeys: [.isDirectoryKey, .isRegularFileKey])
+            if values?.isDirectory == true {
+                // Do not move existing subdirectories (Videos, Music, Documents, etc.)
+                continue
+            }
+            guard values?.isRegularFile == true else { continue }
+
+            let ext = item.pathExtension.lowercased()
+            // Never move active segment/temporary/metadata files
+            if ext == "tmp" || ext == "part" || ext == "json" || ext == "meta" || item.lastPathComponent.hasPrefix(".") {
+                continue
+            }
+
+            let category = DownloadCategoryClassifier.classify(url: item, mimeType: nil)
+            let subfolderName = categoryFolderMappings?[category] ?? category.defaultSubfolderName
+            let categoryDir = rootDirectory.appendingPathComponent(subfolderName, isDirectory: true)
+            _ = try ensureDirectoryExistsAndWritable(categoryDir, fileManager: fileManager)
+
+            let targetURL = FileConflictResolver.uniqueDestinationURL(desiredFilename: item.lastPathComponent, directory: categoryDir)
+
+            // Atomic move
+            try fileManager.moveItem(at: item, to: targetURL)
+            results.append(OrganizedFileResult(originalURL: item, newURL: targetURL, category: category))
+            PipelineLogger.shared.log("[FileSystem] Atomically organized '\(item.lastPathComponent)' into '\(subfolderName)/\(targetURL.lastPathComponent)'")
+        }
+
+        return results
+    }
+
     /// Resolves the default destination downloads directory with defensive validation and fallback cascades.
     public static func defaultDownloadsDirectory() -> URL {
         do {
@@ -235,6 +320,7 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
 
     @Published public var filterText: String = ""
     @Published public var selectedFilter: DownloadFilter = .all
+    @Published public var selectedCategory: DownloadCategory? = nil
 
     // Codable UI Settings Model
     @Published public var appSettings: AppSettings
@@ -386,9 +472,44 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
             targetDurationSeconds: TimeInterval(loadedSettings.targetDurationMinutes * 60)
         )
 
+        // Pre-create standard category subdirectories in sandbox
+        try? DownloadsDirectoryManager.ensureAllCategoryDirectoriesExist(
+            baseDirectory: self.downloadsDirectoryURL,
+            categoryFolderMappings: nil,
+            fileManager: .default
+        )
+
         Task { [weak self] in
             await self?.loadScheduleRules()
         }
+    }
+
+    /// Resolves the destination directory for a specific category based on current AppSettings.
+    public func categoryDownloadsDirectory(for category: DownloadCategory) throws -> URL {
+        let subfolder = appSettings.subfolderName(for: category)
+        return try DownloadsDirectoryManager.categoryDownloadsDirectory(
+            for: category,
+            customSubfolderName: subfolder,
+            baseDirectory: downloadsDirectoryURL
+        )
+    }
+
+    /// Atomically organizes existing completed files located directly in the root downloads directory into category subfolders.
+    @discardableResult
+    public func organizeExistingDownloads() async throws -> Int {
+        var mapping: [DownloadCategory: String] = [:]
+        for cat in DownloadCategory.allCases {
+            mapping[cat] = appSettings.subfolderName(for: cat)
+        }
+        let organized = try DownloadsDirectoryManager.organizeUncategorizedFiles(
+            in: downloadsDirectoryURL,
+            categoryFolderMappings: mapping
+        )
+        if !organized.isEmpty {
+            await refreshSnapshots()
+            rebuildUnifiedTransfers()
+        }
+        return organized.count
     }
 
     // MARK: - Event Subscription & Synchronization
@@ -589,7 +710,7 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
 
     // MARK: - Filtered Views
 
-    /// Returns downloads matching current search query and status filter.
+    /// Returns downloads matching current search query, status filter, and optional category filter.
     public var filteredDownloads: [DownloadSnapshot] {
         downloads.filter { snap in
             if !filterText.isEmpty {
@@ -603,21 +724,27 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
 
             switch selectedFilter {
             case .all:
-                return true
+                break
             case .active:
-                return snap.state == .downloading || snap.state == .probing
+                guard snap.state == .downloading || snap.state == .probing else { return false }
             case .paused:
-                return snap.state == .paused
+                guard snap.state == .paused else { return false }
             case .completed:
-                return snap.state == .completed
+                guard snap.state == .completed else { return false }
             case .failed:
-                if case .failed = snap.state { return true }
-                return false
+                if case .failed = snap.state {} else { return false }
             }
+
+            if let category = selectedCategory {
+                let itemCategory = DownloadCategoryClassifier.classify(mimeType: nil, filename: snap.destinationURL.lastPathComponent)
+                guard itemCategory == category else { return false }
+            }
+
+            return true
         }
     }
 
-    /// Returns unified transfers (HTTP + Torrent) matching current search query and status filter.
+    /// Returns unified transfers (HTTP + Torrent) matching current search query, status filter, and optional category filter.
     public var filteredTransfers: [UnifiedTransfer] {
         unifiedTransfers.filter { item in
             if !filterText.isEmpty {
@@ -632,17 +759,22 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
 
             switch selectedFilter {
             case .all:
-                return true
+                break
             case .active:
-                return item.state == .downloading || item.state == .seeding
+                guard item.state == .downloading || item.state == .seeding else { return false }
             case .paused:
-                return item.state == .paused
+                guard item.state == .paused else { return false }
             case .completed:
-                return item.state == .completed
+                guard item.state == .completed else { return false }
             case .failed:
-                if case .failed = item.state { return true }
-                return false
+                if case .failed = item.state {} else { return false }
             }
+
+            if let category = selectedCategory {
+                guard item.category == category else { return false }
+            }
+
+            return true
         }
     }
 
@@ -657,7 +789,9 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
         headers: [String: String] = [:],
         persistSensitiveHeaders: Bool = true,
         transportPolicy: HTTPTransportPolicy = .foreground,
-        autoStart: Bool = true
+        autoStart: Bool = true,
+        destinationDirectory: URL? = nil,
+        category: DownloadCategory? = nil
     ) async throws -> DownloadSnapshot {
         let trimmed = urlText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let url = URL(string: trimmed),
@@ -688,8 +822,18 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
             resolvedFilename = (!last.isEmpty && last != "/") ? last : "download_\(UUID().uuidString.prefix(8)).bin"
         }
 
+        let targetDirectory: URL
+        if let explicitDir = destinationDirectory {
+            targetDirectory = explicitDir
+        } else if appSettings.isAutomaticCategorizationEnabled {
+            let cat = category ?? DownloadCategoryClassifier.classify(mimeType: headers["Content-Type"], filename: resolvedFilename)
+            targetDirectory = (try? categoryDownloadsDirectory(for: cat)) ?? downloadsDirectoryURL
+        } else {
+            targetDirectory = downloadsDirectoryURL
+        }
+
         do {
-            try Self.ensureDirectoryExistsAndWritable(downloadsDirectoryURL)
+            try Self.ensureDirectoryExistsAndWritable(targetDirectory)
         } catch {
             let msg = "Cannot start download: destination directory is not writable (\(error.localizedDescription))"
             PipelineLogger.shared.log("[DownloadManager] \(msg)")
@@ -697,7 +841,7 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
             throw error
         }
 
-        let destURL = FileConflictResolver.uniqueDestinationURL(desiredFilename: resolvedFilename, directory: downloadsDirectoryURL)
+        let destURL = FileConflictResolver.uniqueDestinationURL(desiredFilename: resolvedFilename, directory: targetDirectory)
         let sanitizedLimit: Int64? = speedLimitBytesPerSecond.flatMap { $0 > 0 ? $0 : nil }
         let request = DownloadRequest(
             url: url,
@@ -865,7 +1009,14 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
         }
         let normalizedMagnetURI = parsedMagnet.uri.absoluteString
 
-        let targetDir = saveDirectoryURL ?? downloadsDirectoryURL
+        let targetDir: URL
+        if let explicitDir = saveDirectoryURL {
+            targetDir = explicitDir
+        } else if appSettings.isAutomaticCategorizationEnabled {
+            targetDir = (try? categoryDownloadsDirectory(for: .torrents)) ?? downloadsDirectoryURL
+        } else {
+            targetDir = downloadsDirectoryURL
+        }
         do {
             try Self.ensureDirectoryExistsAndWritable(targetDir)
         } catch {
@@ -956,7 +1107,14 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
         }
 
         let resolvedPriority = priority ?? defaultTorrentPriority
-        let targetDir = saveDirectoryURL ?? downloadsDirectoryURL
+        let targetDir: URL
+        if let explicitDir = saveDirectoryURL {
+            targetDir = explicitDir
+        } else if appSettings.isAutomaticCategorizationEnabled {
+            targetDir = (try? categoryDownloadsDirectory(for: .torrents)) ?? downloadsDirectoryURL
+        } else {
+            targetDir = downloadsDirectoryURL
+        }
         do {
             try Self.ensureDirectoryExistsAndWritable(targetDir)
         } catch {
@@ -1357,15 +1515,23 @@ extension DownloadManagerViewModel: BrowserDownloadDelegate {
             }
         }
 
+        let targetDirectory: URL
+        if appSettings.isAutomaticCategorizationEnabled {
+            let cat = DownloadCategoryClassifier.classify(mimeType: mimeType, filename: filename)
+            targetDirectory = (try? categoryDownloadsDirectory(for: cat)) ?? downloadsDirectoryURL
+        } else {
+            targetDirectory = downloadsDirectoryURL
+        }
+
         try FileManager.default.createDirectory(
-            at: downloadsDirectoryURL,
+            at: targetDirectory,
             withIntermediateDirectories: true
         )
         let destination = uniqueDownloadURL(
-            in: downloadsDirectoryURL,
+            in: targetDirectory,
             filename: filename
         )
-        let temporaryDestination = downloadsDirectoryURL
+        let temporaryDestination = targetDirectory
             .appendingPathComponent(".\(destination.lastPathComponent).\(UUID().uuidString).partial")
         do {
             try FileManager.default.copyItem(at: fileURL, to: temporaryDestination)

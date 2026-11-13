@@ -129,6 +129,18 @@ public struct StreamQualityPickerSheet: View {
                             .cornerRadius(4)
                     }
                 }
+
+                HStack {
+                    Text("Category & Folder")
+                    Spacer()
+                    let isAudio = viewModel.selectedQualityOption?.isAudioOnly == true
+                    HStack(spacing: 4) {
+                        Image(systemName: isAudio ? "music.note" : "film")
+                        Text(isAudio ? "Audio (Downloads/Music)" : "Videos (Downloads/Videos)")
+                    }
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                }
             }
 
             // Section 2: Quality Selection List

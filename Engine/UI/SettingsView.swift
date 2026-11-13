@@ -46,6 +46,11 @@ public struct SettingsView: View {
     @State private var isAdBlockerEnabled: Bool = true
     @State private var isPopupBlockerEnabled: Bool = true
 
+    // Download File Categorization (Phase 3 Milestone 3.3)
+    @State private var isAutomaticCategorizationEnabled: Bool = true
+    @State private var isOrganizingDownloads: Bool = false
+    @State private var organizeFeedbackMessage: String? = nil
+
     // Download Scheduler Settings (iOS URLSession & Local Notifications)
     @State private var scheduleEnabled: Bool = false
     @State private var scheduleStartTime: Date = Calendar.current.date(from: DateComponents(hour: 2, minute: 0)) ?? Date()
@@ -224,15 +229,62 @@ public struct SettingsView: View {
                     }
                 }
 
-                // Section 6: Storage & Persistence
-                Section(header: Text("Storage & Recovery")) {
+                // Section 6: Storage, Categorization & Persistence
+                Section(
+                    header: Text("Download Storage & Categorization"),
+                    footer: Text("Automatically classifies downloads into Videos, Music, Documents, Archives, Torrents, and Others subfolders inside the app sandbox.")
+                ) {
                     HStack {
-                        Text("Download Directory")
+                        Text("Root Downloads Directory")
                         Spacer()
                         Text(viewModel.downloadsDirectoryURL.path)
                             .font(.caption)
                             .foregroundColor(.secondary)
                             .lineLimit(1)
+                    }
+
+                    Toggle("Automatic File Categorization", isOn: $isAutomaticCategorizationEnabled)
+
+                    if isAutomaticCategorizationEnabled {
+                        ForEach(DownloadCategory.allCases) { category in
+                            HStack {
+                                Label(category.displayName, systemImage: category.iconName)
+                                Spacer()
+                                Text("Downloads/\(viewModel.appSettings.subfolderName(for: category))/")
+                                    .font(.caption.monospaced())
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+                    }
+
+                    Button {
+                        Task { @MainActor in
+                            isOrganizingDownloads = true
+                            defer { isOrganizingDownloads = false }
+                            do {
+                                let count = try await viewModel.organizeExistingDownloads()
+                                organizeFeedbackMessage = count > 0
+                                    ? "Successfully organized \(count) file\(count == 1 ? "" : "s") into category folders."
+                                    : "All completed downloads are already organized."
+                            } catch {
+                                organizeFeedbackMessage = "Organization failed: \(error.localizedDescription)"
+                            }
+                        }
+                    } label: {
+                        HStack {
+                            Label("Organize Existing Downloads", systemImage: "folder.badge.gearshape")
+                            if isOrganizingDownloads {
+                                Spacer()
+                                ProgressView()
+                            }
+                        }
+                    }
+                    .disabled(isOrganizingDownloads)
+
+                    if let msg = organizeFeedbackMessage {
+                        Text(msg)
+                            .font(.caption)
+                            .foregroundColor(.blue)
                     }
 
                     Button {
@@ -424,6 +476,7 @@ public struct SettingsView: View {
 
         self.isAdBlockerEnabled = settings.isAdBlockerEnabled
         self.isPopupBlockerEnabled = settings.isPopupBlockerEnabled
+        self.isAutomaticCategorizationEnabled = settings.isAutomaticCategorizationEnabled
 
         if let rule = viewModel.scheduleRules.first {
             self.scheduleEnabled = rule.isEnabled
@@ -460,7 +513,10 @@ public struct SettingsView: View {
             targetDurationMinutes: targetDurationMinutes,
             isAdBlockerEnabled: isAdBlockerEnabled,
             isPopupBlockerEnabled: isPopupBlockerEnabled,
-            adBlockerWhitelistedDomains: viewModel.appSettings.adBlockerWhitelistedDomains
+            adBlockerWhitelistedDomains: viewModel.appSettings.adBlockerWhitelistedDomains,
+            isAutomaticCategorizationEnabled: isAutomaticCategorizationEnabled,
+            customCategoryFolders: viewModel.appSettings.customCategoryFolders,
+            defaultDownloadDirectoryBookmark: viewModel.appSettings.defaultDownloadDirectoryBookmark
         )
 
         var currentRule = viewModel.scheduleRules.first ?? ScheduleRule()

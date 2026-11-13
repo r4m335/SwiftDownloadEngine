@@ -262,11 +262,16 @@ public struct DownloadsView: View {
 
                 // Filter Chips
                 FilterBar(selectedFilter: $viewModel.selectedFilter)
-                    .padding(.vertical, 8)
+                    .padding(.top, 6)
+                    .padding(.bottom, 2)
+
+                // Secondary Category Filter Chips (Phase 3 Milestone 3.3)
+                CategoryFilterBar(selectedCategory: $viewModel.selectedCategory)
+                    .padding(.bottom, 6)
 
                 // Unified Downloads & Torrents List
                 if viewModel.filteredTransfers.isEmpty {
-                    EmptyDownloadsState(filter: viewModel.selectedFilter)
+                    EmptyDownloadsState(filter: viewModel.selectedFilter, category: viewModel.selectedCategory)
                 } else {
                     List {
                         ForEach(viewModel.filteredTransfers) { transfer in
@@ -1694,18 +1699,77 @@ public struct FilterBar: View {
     }
 }
 
+// MARK: - Category Filter Bar
+
+public struct CategoryFilterBar: View {
+    @Binding public var selectedCategory: DownloadCategory?
+
+    public init(selectedCategory: Binding<DownloadCategory?>) {
+        self._selectedCategory = selectedCategory
+    }
+
+    public var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                // "All" chip
+                Button {
+                    selectedCategory = nil
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "square.grid.2x2")
+                            .font(.system(size: 11))
+                        Text("All")
+                            .font(.caption.bold())
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .background(selectedCategory == nil ? Color.blue : Color.platformSecondaryBackground)
+                    .foregroundColor(selectedCategory == nil ? .white : .primary)
+                    .cornerRadius(14)
+                }
+
+                // Category chips: Videos, Audio, Documents, Archives, Torrents, Others
+                ForEach(DownloadCategory.allCases) { category in
+                    Button {
+                        selectedCategory = category
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: category.iconName)
+                                .font(.system(size: 11))
+                            Text(category.displayName)
+                                .font(.caption.bold())
+                        }
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 5)
+                        .background(selectedCategory == category ? Color.blue : Color.platformSecondaryBackground)
+                        .foregroundColor(selectedCategory == category ? .white : .primary)
+                        .cornerRadius(14)
+                    }
+                }
+            }
+            .padding(.horizontal)
+        }
+    }
+}
+
 // MARK: - Empty State
 
 public struct EmptyDownloadsState: View {
     public let filter: DownloadFilter
+    public var category: DownloadCategory? = nil
+
+    public init(filter: DownloadFilter, category: DownloadCategory? = nil) {
+        self.filter = filter
+        self.category = category
+    }
 
     public var body: some View {
         VStack(spacing: 12) {
             Spacer()
-            Image(systemName: "arrow.down.circle")
+            Image(systemName: category?.iconName ?? "arrow.down.circle")
                 .font(.system(size: 48))
                 .foregroundColor(.secondary)
-            Text("No \(filter == .all ? "" : filter.rawValue) Downloads")
+            Text(emptyTitle)
                 .font(.headline)
                 .foregroundColor(.secondary)
             Text("Tap the + button to enqueue a new download URL.")
@@ -1714,6 +1778,20 @@ public struct EmptyDownloadsState: View {
                 .multilineTextAlignment(.center)
                 .padding(.horizontal)
             Spacer()
+        }
+    }
+
+    private var emptyTitle: String {
+        let catText = category?.displayName ?? ""
+        let filterText = filter == .all ? "" : filter.rawValue
+        if !catText.isEmpty && !filterText.isEmpty {
+            return "No \(filterText) \(catText)"
+        } else if !catText.isEmpty {
+            return "No \(catText)"
+        } else if !filterText.isEmpty {
+            return "No \(filterText) Downloads"
+        } else {
+            return "No Downloads"
         }
     }
 }

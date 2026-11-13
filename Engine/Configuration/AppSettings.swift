@@ -3,7 +3,7 @@ import Foundation
 /// Codable user-facing preferences stored in UserDefaults (@AppStorage).
 /// Features a `version` field for seamless migrations across app updates.
 public struct AppSettings: Codable, Sendable, Equatable {
-    public static let currentVersion: Int = 2
+    public static let currentVersion: Int = 3
     public static let userDefaultsKey = "com.r4m335.SwiftDownloadEngine.AppSettings"
 
     public var version: Int
@@ -28,6 +28,11 @@ public struct AppSettings: Codable, Sendable, Equatable {
     public var isPopupBlockerEnabled: Bool
     public var adBlockerWhitelistedDomains: [String]
 
+    // Download File Categorization & Routing (Phase 3 Milestone 3.3)
+    public var isAutomaticCategorizationEnabled: Bool
+    public var customCategoryFolders: [String: String]
+    public var defaultDownloadDirectoryBookmark: Data?
+
     public static let `default` = AppSettings(
         version: currentVersion,
         maxConcurrentDownloads: 3,
@@ -47,7 +52,10 @@ public struct AppSettings: Codable, Sendable, Equatable {
         targetDurationMinutes: 60,
         isAdBlockerEnabled: true,
         isPopupBlockerEnabled: true,
-        adBlockerWhitelistedDomains: []
+        adBlockerWhitelistedDomains: [],
+        isAutomaticCategorizationEnabled: true,
+        customCategoryFolders: [:],
+        defaultDownloadDirectoryBookmark: nil
     )
 
     public init(
@@ -69,7 +77,10 @@ public struct AppSettings: Codable, Sendable, Equatable {
         targetDurationMinutes: Int = 60,
         isAdBlockerEnabled: Bool = true,
         isPopupBlockerEnabled: Bool = true,
-        adBlockerWhitelistedDomains: [String] = []
+        adBlockerWhitelistedDomains: [String] = [],
+        isAutomaticCategorizationEnabled: Bool = true,
+        customCategoryFolders: [String: String] = [:],
+        defaultDownloadDirectoryBookmark: Data? = nil
     ) {
         self.version = version
         self.maxConcurrentDownloads = max(1, maxConcurrentDownloads)
@@ -90,6 +101,9 @@ public struct AppSettings: Codable, Sendable, Equatable {
         self.isAdBlockerEnabled = isAdBlockerEnabled
         self.isPopupBlockerEnabled = isPopupBlockerEnabled
         self.adBlockerWhitelistedDomains = adBlockerWhitelistedDomains
+        self.isAutomaticCategorizationEnabled = isAutomaticCategorizationEnabled
+        self.customCategoryFolders = customCategoryFolders
+        self.defaultDownloadDirectoryBookmark = defaultDownloadDirectoryBookmark
     }
 
     public init(from decoder: Decoder) throws {
@@ -113,6 +127,14 @@ public struct AppSettings: Codable, Sendable, Equatable {
         self.isAdBlockerEnabled = try container.decodeIfPresent(Bool.self, forKey: .isAdBlockerEnabled) ?? true
         self.isPopupBlockerEnabled = try container.decodeIfPresent(Bool.self, forKey: .isPopupBlockerEnabled) ?? true
         self.adBlockerWhitelistedDomains = try container.decodeIfPresent([String].self, forKey: .adBlockerWhitelistedDomains) ?? []
+        self.isAutomaticCategorizationEnabled = try container.decodeIfPresent(Bool.self, forKey: .isAutomaticCategorizationEnabled) ?? true
+        self.customCategoryFolders = try container.decodeIfPresent([String: String].self, forKey: .customCategoryFolders) ?? [:]
+        self.defaultDownloadDirectoryBookmark = try container.decodeIfPresent(Data.self, forKey: .defaultDownloadDirectoryBookmark)
+    }
+
+    /// Resolves the effective subfolder name for a category.
+    public func subfolderName(for category: DownloadCategory) -> String {
+        customCategoryFolders[category.rawValue] ?? category.defaultSubfolderName
     }
 
     /// Maps UI AppSettings into the engine layer's decoupled EngineConfiguration.

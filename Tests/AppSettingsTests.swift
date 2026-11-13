@@ -23,6 +23,9 @@ final class AppSettingsTests: XCTestCase {
         XCTAssertTrue(settings.isAdBlockerEnabled)
         XCTAssertTrue(settings.isPopupBlockerEnabled)
         XCTAssertEqual(settings.adBlockerWhitelistedDomains, [])
+        XCTAssertTrue(settings.isAutomaticCategorizationEnabled)
+        XCTAssertEqual(settings.customCategoryFolders, [:])
+        XCTAssertNil(settings.defaultDownloadDirectoryBookmark)
     }
 
     func testAppSettings_JSONRoundTrip() throws {
@@ -84,6 +87,9 @@ final class AppSettingsTests: XCTestCase {
         XCTAssertTrue(decoded.isAdBlockerEnabled) // Safe fallback default
         XCTAssertTrue(decoded.isPopupBlockerEnabled) // Safe fallback default
         XCTAssertEqual(decoded.adBlockerWhitelistedDomains, []) // Safe fallback default
+        XCTAssertTrue(decoded.isAutomaticCategorizationEnabled) // Safe fallback default
+        XCTAssertEqual(decoded.customCategoryFolders, [:])
+        XCTAssertNil(decoded.defaultDownloadDirectoryBookmark)
     }
 
     func testAppSettings_MappingToEngineConfiguration() {

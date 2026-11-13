@@ -250,6 +250,21 @@ public struct UnifiedTransfer: Identifiable, Sendable, Equatable {
     public var isHTTP: Bool { type == .http || type == .streaming || type == .hls || type == .dash }
     public var isStreaming: Bool { type == .streaming || type == .hls || type == .dash }
 
+    /// Authoritative category derived from transfer type, stream characteristics, and file extensions.
+    public var category: DownloadCategory {
+        if type == .torrent {
+            return .torrents
+        }
+        if type == .hls || type == .dash || type == .streaming {
+            let ext = (name as NSString).pathExtension.lowercased()
+            if ["m4a", "mp3", "aac", "flac", "wav", "ogg", "opus", "aiff"].contains(ext) {
+                return .audio
+            }
+            return .videos
+        }
+        return DownloadCategoryClassifier.classify(mimeType: nil, filename: name)
+    }
+
     public var canPause: Bool {
         switch state {
         case .downloading, .seeding:
