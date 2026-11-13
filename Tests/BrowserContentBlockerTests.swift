@@ -240,7 +240,7 @@ final class BrowserContentBlockerTests: XCTestCase {
     @MainActor
     func testBrowserViewModelShieldTogglesAndPersistence() {
         let vm = BrowserViewModel()
-        vm.currentURL = URL(string: "https://sub.testsite.com/video")!
+        vm.currentURL = URL(string: "https://www.testsite.com/video")!
 
         // Initial state
         XCTAssertTrue(vm.isAdBlockerEnabled)
@@ -253,7 +253,12 @@ final class BrowserContentBlockerTests: XCTestCase {
         XCTAssertTrue(vm.isCurrentSiteWhitelisted)
         XCTAssertTrue(vm.adBlockerWhitelistedDomains.contains("testsite.com"))
 
-        // Un-whitelist current site
+        // Subdomain inherits whitelist
+        vm.currentURL = URL(string: "https://sub.testsite.com/other")!
+        XCTAssertTrue(vm.isCurrentSiteWhitelisted)
+
+        // Reset to main domain and un-whitelist
+        vm.currentURL = URL(string: "https://www.testsite.com/video")!
         vm.toggleShieldForCurrentSite()
         XCTAssertFalse(vm.isCurrentSiteWhitelisted)
         XCTAssertFalse(vm.adBlockerWhitelistedDomains.contains("testsite.com"))
@@ -268,3 +273,4 @@ final class BrowserContentBlockerTests: XCTestCase {
     }
     #endif
 }
+
