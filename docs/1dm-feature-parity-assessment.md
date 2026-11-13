@@ -27,15 +27,15 @@ Each capability is classified under one of six unambiguous statuses:
 
 | Status | Count | Percentage |
 |---|:---:|:---:|
-| **Complete** | 51 | 71.8% |
-| **Partial** | 5 | 7.0% |
+| **Complete** | 52 | 73.2% |
+| **Partial** | 4 | 5.6% |
 | **Untested** | 1 | 1.4% |
 | **Missing** | 11 | 15.5% |
 | **iOS Restricted** | 3 | 4.2% |
 | **Total Features Evaluated** | **71** | **100.0%** |
 
 ```
-[███████████████████████████████████████████████░░░░░░░░░░░░] 71.8% Complete
+[████████████████████████████████████████████████░░░░░░░░░░░] 73.2% Complete
 ```
 
 ---
@@ -144,7 +144,7 @@ Each capability is classified under one of six unambiguous statuses:
 | 61 | Search & Filter Bar | Search downloads by name; filter by active/paused/finished | **Complete** | `DownloadsView.swift:.searchable`, `FilterBar` | `DownloadsViewInteractionTests.swift` | Real-time name search and filter chips. |
 | 62 | Real-time Bandwidth Speed Graph | Visual line chart displaying speed history over time | **Complete** | `DownloadSpeedTracker.swift:BandwidthHistoryTracker`, `SpeedChartView.swift`, `DownloadManagerViewModel.swift`, `DownloadsView.swift:BandwidthDashboardSection` | `BandwidthSpeedTrackerTests.swift` | Real-time 60-second rolling bandwidth throughput chart using Apple Swift Charts on iOS 16+ with high-fidelity custom Path fallback for iOS 15. Separate download and upload series, axis markers, and peak indicators. |
 | 63 | Dark / Light Theme Support | Follows system dark/light mode with native colors | **Complete** | Native SwiftUI color system (`Color.primary`, `Color.platformSecondaryBackground`) | `DownloadsViewInteractionTests.swift` | Adapts automatically to iOS dark/light appearance. |
-| 64 | Download Sorting Options | Sort downloads by date, name, size, type, or speed | **Partial** | Default chronological sort | None | No UI picker to reorder items by name, file size, or speed. |
+| 64 | Download Sorting Options | Sort downloads by date, name, size, type, or speed | **Complete** | `AppSettings.swift:DownloadSortOrder`, `DownloadManagerViewModel.swift:sortTransfers`, `updateSortOrder`, `selectedSortOrder`, `DownloadsView.swift:sortOrderMenu` | `DownloadSortOrderTests.swift`, `AppSettingsTests.swift` | Interactive sort selector with 5 modes: Date Added (Newest/Oldest), Name (A to Z), Size (Largest First), and Progress (Highest First). Deterministic tie-breaking, dynamic re-sorting on progress updates, and persistence in AppSettings. |
 
 ---
 

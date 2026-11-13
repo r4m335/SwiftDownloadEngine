@@ -1,9 +1,35 @@
 import Foundation
 
+/// User-selectable sort order for download listings (HTTP and BitTorrent transfers).
+public enum DownloadSortOrder: String, CaseIterable, Identifiable, Codable, Sendable {
+    case dateAddedDesc = "dateAddedDesc"
+    case dateAddedAsc = "dateAddedAsc"
+    case nameAsc = "nameAsc"
+    case sizeDesc = "sizeDesc"
+    case progressDesc = "progressDesc"
+
+    public var id: String { rawValue }
+
+    public var displayName: String {
+        switch self {
+        case .dateAddedDesc:
+            return "Date Added — Newest First"
+        case .dateAddedAsc:
+            return "Date Added — Oldest First"
+        case .nameAsc:
+            return "Name — A to Z"
+        case .sizeDesc:
+            return "Size — Largest First"
+        case .progressDesc:
+            return "Progress — Highest First"
+        }
+    }
+}
+
 /// Codable user-facing preferences stored in UserDefaults (@AppStorage).
 /// Features a `version` field for seamless migrations across app updates.
 public struct AppSettings: Codable, Sendable, Equatable {
-    public static let currentVersion: Int = 3
+    public static let currentVersion: Int = 4
     public static let userDefaultsKey = "com.r4m335.SwiftDownloadEngine.AppSettings"
 
     public var version: Int
@@ -33,6 +59,9 @@ public struct AppSettings: Codable, Sendable, Equatable {
     public var customCategoryFolders: [String: String]
     public var defaultDownloadDirectoryBookmark: Data?
 
+    // Interactive Download Sorting (Phase 4 Milestone 4.4)
+    public var downloadSortOrder: DownloadSortOrder
+
     public static let `default` = AppSettings(
         version: currentVersion,
         maxConcurrentDownloads: 3,
@@ -55,7 +84,8 @@ public struct AppSettings: Codable, Sendable, Equatable {
         adBlockerWhitelistedDomains: [],
         isAutomaticCategorizationEnabled: true,
         customCategoryFolders: [:],
-        defaultDownloadDirectoryBookmark: nil
+        defaultDownloadDirectoryBookmark: nil,
+        downloadSortOrder: .dateAddedDesc
     )
 
     public init(
@@ -80,7 +110,8 @@ public struct AppSettings: Codable, Sendable, Equatable {
         adBlockerWhitelistedDomains: [String] = [],
         isAutomaticCategorizationEnabled: Bool = true,
         customCategoryFolders: [String: String] = [:],
-        defaultDownloadDirectoryBookmark: Data? = nil
+        defaultDownloadDirectoryBookmark: Data? = nil,
+        downloadSortOrder: DownloadSortOrder = .dateAddedDesc
     ) {
         self.version = version
         self.maxConcurrentDownloads = max(1, maxConcurrentDownloads)
@@ -104,6 +135,7 @@ public struct AppSettings: Codable, Sendable, Equatable {
         self.isAutomaticCategorizationEnabled = isAutomaticCategorizationEnabled
         self.customCategoryFolders = customCategoryFolders
         self.defaultDownloadDirectoryBookmark = defaultDownloadDirectoryBookmark
+        self.downloadSortOrder = downloadSortOrder
     }
 
     public init(from decoder: Decoder) throws {
@@ -130,6 +162,7 @@ public struct AppSettings: Codable, Sendable, Equatable {
         self.isAutomaticCategorizationEnabled = try container.decodeIfPresent(Bool.self, forKey: .isAutomaticCategorizationEnabled) ?? true
         self.customCategoryFolders = try container.decodeIfPresent([String: String].self, forKey: .customCategoryFolders) ?? [:]
         self.defaultDownloadDirectoryBookmark = try container.decodeIfPresent(Data.self, forKey: .defaultDownloadDirectoryBookmark)
+        self.downloadSortOrder = try container.decodeIfPresent(DownloadSortOrder.self, forKey: .downloadSortOrder) ?? .dateAddedDesc
     }
 
     /// Resolves the effective subfolder name for a category.

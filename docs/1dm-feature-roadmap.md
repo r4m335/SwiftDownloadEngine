@@ -157,16 +157,19 @@ To bridge the remaining functional distance without compromising stability or vi
   - Clearly renders both aggregate download and upload rates.
   - Fully verified across 998 passing tests including dedicated `BandwidthSpeedTrackerTests`.
 
-### Milestone 4.4: Interactive Download Sorting Selector
+### Milestone 4.4: Interactive Download Sorting Selector [Completed]
 - **Objective:** Allow users to sort their download library dynamically.
-- **Current State:** Fixed chronological insertion order.
+- **Current State:** Implemented & verified. Added `DownloadSortOrder` enum with 5 modes (`dateAddedDesc`, `dateAddedAsc`, `nameAsc`, `sizeDesc`, `progressDesc`), persistence in `AppSettings` (schema version 4 with backward compatibility), interactive toolbar sort menu with checkmarks in `DownloadsView`, and dynamic re-sorting on progress/size updates in `DownloadManagerViewModel`.
 - **Implementation Scope:**
   - Add `DownloadSortOrder` enum: `dateAddedDesc`, `dateAddedAsc`, `nameAsc`, `sizeDesc`, `progressDesc`.
   - Add sort menu button to `DownloadsView` navigation bar.
-  - Persist chosen sort preference in `AppSettings`.
-- **Dependencies:** `DownloadManagerViewModel.swift`, `DownloadsView.swift`.
+  - Persist chosen sort preference in `AppSettings` and migrate previous versions.
+  - Apply deterministic sorting across unified HTTP and BitTorrent transfers with secondary tie-breaking.
+- **Dependencies:** `AppSettings.swift`, `DownloadManagerViewModel.swift`, `DownloadsView.swift`.
 - **Completion Criteria:**
   - Changing sort order reorders the transfer list instantaneously.
+  - Live progress updates reorder transfers dynamically when sorting by progress.
+  - Fully verified across 1,008 passing tests including dedicated `DownloadSortOrderTests`.
 
 ---
 

@@ -26,6 +26,7 @@ final class AppSettingsTests: XCTestCase {
         XCTAssertTrue(settings.isAutomaticCategorizationEnabled)
         XCTAssertEqual(settings.customCategoryFolders, [:])
         XCTAssertNil(settings.defaultDownloadDirectoryBookmark)
+        XCTAssertEqual(settings.downloadSortOrder, .dateAddedDesc)
     }
 
     func testAppSettings_JSONRoundTrip() throws {
@@ -46,6 +47,7 @@ final class AppSettingsTests: XCTestCase {
         original.isAdBlockerEnabled = false
         original.isPopupBlockerEnabled = false
         original.adBlockerWhitelistedDomains = ["example.com", "trusted-stream.org"]
+        original.downloadSortOrder = .sizeDesc
 
         let data = try JSONEncoder().encode(original)
         let decoded = try JSONDecoder().decode(AppSettings.self, from: data)
@@ -58,10 +60,11 @@ final class AppSettingsTests: XCTestCase {
         XCTAssertFalse(decoded.isAdBlockerEnabled)
         XCTAssertFalse(decoded.isPopupBlockerEnabled)
         XCTAssertEqual(decoded.adBlockerWhitelistedDomains, ["example.com", "trusted-stream.org"])
+        XCTAssertEqual(decoded.downloadSortOrder, .sizeDesc)
     }
 
     func testAppSettings_BackwardCompatibilityWithV1JSON() throws {
-        // Legacy JSON without ad blocker keys
+        // Legacy JSON without ad blocker keys or downloadSortOrder
         let v1JSON = """
         {
             "version": 1,
@@ -90,6 +93,7 @@ final class AppSettingsTests: XCTestCase {
         XCTAssertTrue(decoded.isAutomaticCategorizationEnabled) // Safe fallback default
         XCTAssertEqual(decoded.customCategoryFolders, [:])
         XCTAssertNil(decoded.defaultDownloadDirectoryBookmark)
+        XCTAssertEqual(decoded.downloadSortOrder, .dateAddedDesc) // Safe fallback default
     }
 
     func testAppSettings_MappingToEngineConfiguration() {

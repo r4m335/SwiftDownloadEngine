@@ -329,6 +329,7 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
     @Published public var filterText: String = ""
     @Published public var selectedFilter: DownloadFilter = .all
     @Published public var selectedCategory: DownloadCategory? = nil
+    @Published public var selectedSortOrder: DownloadSortOrder
 
     // Codable UI Settings Model
     @Published public var appSettings: AppSettings
@@ -466,6 +467,7 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
             loadedSettings.defaultTorrentPriority = prio
         }
         self.appSettings = loadedSettings
+        self.selectedSortOrder = loadedSettings.downloadSortOrder
 
         self.maxConcurrentDownloads = loadedSettings.maxConcurrentDownloads
         self.maxGlobalRequests = loadedSettings.maxGlobalRequests
@@ -691,14 +693,76 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
         rebuildUnifiedTransfers()
     }
 
+    /// Sorts an array of unified transfers deterministically according to the specified sort order.
+    nonisolated public static func sortTransfers(
+        _ transfers: [UnifiedTransfer],
+        by order: DownloadSortOrder
+    ) -> [UnifiedTransfer] {
+        transfers.sorted { a, b in
+            switch order {
+            case .dateAddedDesc:
+                if a.createdAt != b.createdAt {
+                    return a.createdAt > b.createdAt
+                }
+                return a.id < b.id
+
+            case .dateAddedAsc:
+                if a.createdAt != b.createdAt {
+                    return a.createdAt < b.createdAt
+                }
+                return a.id < b.id
+
+            case .nameAsc:
+                let cmp = a.name.localizedCaseInsensitiveCompare(b.name)
+                if cmp != .orderedSame {
+                    return cmp == .orderedAscending
+                }
+                if a.createdAt != b.createdAt {
+                    return a.createdAt > b.createdAt
+                }
+                return a.id < b.id
+
+            case .sizeDesc:
+                let sizeA = a.totalBytes ?? -1
+                let sizeB = b.totalBytes ?? -1
+                if sizeA != sizeB {
+                    return sizeA > sizeB
+                }
+                if a.createdAt != b.createdAt {
+                    return a.createdAt > b.createdAt
+                }
+                return a.id < b.id
+
+            case .progressDesc:
+                let progA = a.progressFraction.isFinite ? a.progressFraction : 0.0
+                let progB = b.progressFraction.isFinite ? b.progressFraction : 0.0
+                if progA != progB {
+                    return progA > progB
+                }
+                if a.createdAt != b.createdAt {
+                    return a.createdAt > b.createdAt
+                }
+                return a.id < b.id
+            }
+        }
+    }
+
+    /// Updates the active download sort order, persisting to AppSettings and re-sorting unified transfers.
+    public func updateSortOrder(_ newOrder: DownloadSortOrder) {
+        self.selectedSortOrder = newOrder
+        self.appSettings.downloadSortOrder = newOrder
+        self.appSettings.save(to: userDefaults)
+        self.rebuildUnifiedTransfers()
+    }
+
     private func rebuildUnifiedTransfers() {
         let httpTransfers = downloads.map { UnifiedTransfer(from: $0) }
         let torrentTransfers = torrentTasks.map { UnifiedTransfer(from: $0) }
-        var combined = httpTransfers + torrentTransfers
-        combined.sort { $0.createdAt > $1.createdAt }
-        self.unifiedTransfers = combined
+        let combined = httpTransfers + torrentTransfers
+        let sorted = Self.sortTransfers(combined, by: selectedSortOrder)
+        self.unifiedTransfers = sorted
 
-        if let selected = selectedTransfer, let updated = combined.first(where: { $0.id == selected.id }) {
+        if let selected = selectedTransfer, let updated = sorted.first(where: { $0.id == selected.id }) {
             self.selectedTransfer = updated
         }
     }
@@ -781,6 +845,10 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
             selectedDownload = snap
         }
         rebuildUnifiedTransfers()
+    }
+
+    internal func upsertSnapshotForTesting(_ snap: DownloadSnapshot) {
+        upsertSnapshot(snap)
     }
 
     // MARK: - Filtered Views
@@ -1624,6 +1692,8 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
         userDefaults.set(TimeInterval(newSettings.targetDurationMinutes * 60), forKey: SettingsKeys.defaultSeedingDuration)
 
         self.appSettings = newSettings
+        self.selectedSortOrder = newSettings.downloadSortOrder
+        rebuildUnifiedTransfers()
         let engineConfig = newSettings.makeEngineConfiguration()
 
         try await engine.updateConfiguration(engineConfig)

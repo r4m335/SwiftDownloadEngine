@@ -596,6 +596,8 @@ public struct DownloadsView: View {
 
     @ViewBuilder
     private var normalToolbarContent: some View {
+        sortOrderMenu
+
         Menu {
             Button {
                 Task { @MainActor in await viewModel.pauseAll() }
@@ -633,6 +635,27 @@ public struct DownloadsView: View {
         } label: {
             Image(systemName: "plus.circle.fill")
                 .font(.title3)
+        }
+    }
+
+    private var sortOrderMenu: some View {
+        Menu {
+            Section("Sort By") {
+                ForEach(DownloadSortOrder.allCases) { order in
+                    Button {
+                        viewModel.updateSortOrder(order)
+                    } label: {
+                        if viewModel.selectedSortOrder == order {
+                            Label(order.displayName, systemImage: "checkmark")
+                        } else {
+                            Text(order.displayName)
+                        }
+                    }
+                }
+            }
+        } label: {
+            Image(systemName: "arrow.up.arrow.down")
+                .accessibilityLabel("Sort Transfers")
         }
     }
 
