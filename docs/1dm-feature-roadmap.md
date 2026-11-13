@@ -19,22 +19,34 @@ To bridge the remaining functional distance without compromising stability or vi
 │                        Phased Parity Evolution                         │
 ├────────────────────────────────────────────────────────────────────────┤
 │ Phase 3: Core UX, Browser & Media Parity (High Impact / User-Facing)   │
-│   • Interactive Stream Quality / Resolution Picker Modal               │
-│   • WKContentRuleListStore Ad & Popup Blocker                          │
-│   • Download File Categories (Videos/Music/Docs) & Subfolder Routing   │
-│   • Per-Tab Desktop Mode & Ephemeral Incognito Browsing                │
+│   • Milestone 3.1: Interactive Stream Quality / Resolution Picker      │
+│   • Milestone 3.2: WKContentRuleListStore Ad & Popup Blocker           │
+│   • Milestone 3.3: Download File Categories & Subfolder Routing        │
+│   • Milestone 3.4: Per-Tab Desktop Mode & Ephemeral Incognito Browsing │
 ├────────────────────────────────────────────────────────────────────────┤
 │ Phase 4: Batch Downloads & Swarm Enhancements (Power Features)         │
-│   • Batch URL Pattern Expansion & Multi-Link Text Import               │
-│   • Torrent Swarm Tracker Management & Sequential Download Mode        │
-│   • Live Bandwidth Throughput Chart (Swift Charts)                     │
-│   • Interactive List Sorting Selector (Name, Size, Date)               │
+│   • Milestone 4.1: Batch URL Pattern Expansion & Multi-Link Import     │
+│   • Milestone 4.2: Torrent Swarm Tracker Management & Sequential Mode  │
+│   • Milestone 4.3: Live Bandwidth Throughput Chart (Swift Charts)      │
+│   • Milestone 4.4: Interactive List Sorting Selector (Name, Size, Date)│
 ├────────────────────────────────────────────────────────────────────────┤
 │ Phase 5: Power-User Utilities & Advanced Ecosystem                     │
-│   • In-App Compressed Archive Extraction (ZIP/TAR)                     │
-│   • Hierarchical Bookmarks & Persistent History Store                  │
-│   • Download Queue Export / Import (Backup & Migration)                │
-│   • Battery-Aware Execution & Low-Power Auto-Pause                     │
+│   • Milestone 5.1: In-App Compressed Archive Extraction (ZIP/TAR)      │
+│   • Milestone 5.2: Hierarchical Bookmarks & Persistent History Store   │
+│   • Milestone 5.3: Download Queue Export / Import (Backup & Migration) │
+│   • Milestone 5.4: Battery-Aware Execution & Low-Power Auto-Pause      │
+├────────────────────────────────────────────────────────────────────────┤
+│ Workstream A: LID Dedicated Media Player Subsystem                     │
+│   • Full local & network media playback engine (AVPlayer / AVKit)     │
+│   • VLC-style advanced controls, gestures, speeds, & aspect ratios     │
+│   • Discrete audio track & multi-subtitle stream selection             │
+│   • Direct HLS/DASH playback & BitTorrent sequential swarm streaming   │
+├────────────────────────────────────────────────────────────────────────┤
+│ Workstream B: LID Advanced Browser Modernization                       │
+│   • Enhanced multi-list ad, tracker, & cryptominer blocking            │
+│   • Aggressive popup, redirect loop, & frame-busting protection        │
+│   • Visual tab previews & grid/stack tab management                    │
+│   • Safari Reader Mode extraction & custom site permissions/cookies    │
 └────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -44,13 +56,13 @@ To bridge the remaining functional distance without compromising stability or vi
 
 **Goal:** Address the highest-visibility gaps in media discovery, ad blocking, and file organization.
 
-### Milestone 3.1: Interactive Stream Quality & Resolution Picker Modal
+### Milestone 3.1: Interactive Stream Quality & Resolution Picker Modal (Complete)
 - **Objective:** Allow users to inspect and choose specific stream resolutions (1080p, 720p, 480p, 360p, or audio-only) before initiating HLS or DASH downloads.
-- **Current State:** The underlying engine (`HLSVariantSelector`, `DASHManifestParser`) parses and ranks all variants, but `BrowserView` automatically selects the highest bitrate without presenting a choice to the user.
+- **Status:** **Complete** (Implemented in `StreamQualityPickerSheet.swift`, `StreamQualityModels.swift`, `StreamQualityInspector.swift`, and verified by `StreamQualityPickerTests.swift`).
 - **Implementation Scope:**
-  - Create `StreamQualityPickerSheet.swift` in `Engine/UI/`.
-  - Present variant list with resolution badges (`1920x1080`), estimated file sizes, video/audio codecs, and bandwidth.
-  - Wire selected variant directly into `StreamingDownloadOrchestrator.proposeTransfer()`.
+  - Created `StreamQualityModels.swift` and `StreamQualityInspector.swift` to inspect and rank HLS/DASH renditions.
+  - Created `StreamQualityPickerSheet.swift` in `Engine/UI/` with resolution badges, bitrate specs, codecs, size estimation, and audio-only extraction.
+  - Wired selected variant preferences and DASH representation IDs directly into `StreamingDownloadOrchestrator` and `BrowserView`.
 - **Dependencies:** `HLSVariantSelection.swift`, `DASHTransferPlanner.swift`.
 - **Completion Criteria:**
   - When an HLS/DASH stream is tapped in the browser sniffer, an action sheet presents all available renditions.
@@ -200,35 +212,117 @@ To bridge the remaining functional distance without compromising stability or vi
 
 ---
 
+## Dedicated Workstream A: LID Advanced Media Player Subsystem
+
+**Goal:** Provide an integrated, hardware-accelerated, VLC-style media player for local, remote, and live swarm playback, eliminating the need to leave the application for media consumption.
+
+### Milestone A.1: Custom Playback Engine & VLC-Style Gesture Controls
+- **Objective:** Full-featured playback interface with intuitive gesture navigation.
+- **Scope:**
+  - Gesture controls: vertical swipe on left for brightness, vertical swipe on right for volume, horizontal swipe for scrubbing.
+  - Multi-speed playback: 0.25x, 0.5x, 0.75x, 1.0x, 1.25x, 1.5x, 2.0x with pitch correction.
+  - Aspect ratio cycling: Original, 16:9, 4:3, Fill / Zoom-to-fill, Stretch.
+  - Double-tap forward/rewind (10s increments) with animated visual feedback.
+
+### Milestone A.2: Discrete Audio Track & Subtitle Stream Selection
+- **Objective:** Seamless switching between embedded/external audio renditions and subtitle tracks.
+- **Scope:**
+  - Enumerate `AVMediaSelectionGroup` for legible (subtitles) and audible (soundtracks) characteristics.
+  - Support external `.srt` / `.vtt` subtitle file loading and encoding autodetection (UTF-8, ISO-8859-1).
+  - Subtitle delay/synchronization adjuster (±5 seconds in 100ms increments).
+
+### Milestone A.3: Direct Streaming Media Playback (HLS, DASH, Network Streams)
+- **Objective:** Stream remote manifests directly without saving to disk first.
+- **Scope:**
+  - Feed discovered HLS and DASH master manifests directly into `AVPlayerItem`.
+  - Provide live playback scrubbing for DVR-enabled streams.
+
+### Milestone A.4: BitTorrent Swarm Streaming (Sequential Playback)
+- **Objective:** Stream downloading torrent videos in real time before the transfer is 100% complete.
+- **Scope:**
+  - Coordinate with Milestone 4.2 sequential downloading: prioritize head pieces (metadata & moov atom) and playback window pieces.
+  - Mount a local loopback HTTP streaming server or custom `AVAssetResourceLoaderDelegate` reading verified downloaded torrent chunks from disk.
+
+---
+
+## Dedicated Workstream B: LID Advanced Browser Modernization
+
+**Goal:** Elevate the integrated browser into a modern, private, and secure mobile browsing powerhouse.
+
+### Milestone B.1: Enhanced Multi-List Ad, Tracker & Privacy Protection
+- **Objective:** Comprehensive blocking of tracking scripts, telemetry, and aggressive ad networks.
+- **Scope:**
+  - Multi-list compilation via `WKContentRuleListStore` (EasyList, EasyPrivacy, Fanboy's Annoyance).
+  - Domain exception allowlist / per-site shields toggle in the navigation bar.
+
+### Milestone B.2: Popup, Redirect & Frame-Busting Protection
+- **Objective:** Prevent intrusive new windows, rogue app-store redirects, and background tab spams.
+- **Scope:**
+  - Implement strict `WKUIDelegate.webView(_:createWebViewWith:for:windowFeatures:)` approval dialogs.
+  - Detect and block rapid meta-refresh or JS redirect chains.
+
+### Milestone B.3: Safari Reader Mode & Text Extraction
+- **Objective:** Clutter-free article reading with distraction removal.
+- **Scope:**
+  - Readability.js DOM extraction pipeline into native SwiftUI reader view.
+  - Font size, typography (Serif/Sans), and theme customization (Light/Sepia/Dark).
+
+### Milestone B.4: Modern Tab Grid & Visual Tab Management
+- **Objective:** Visual thumbnail previews and tab grouping.
+- **Scope:**
+  - Snapshot active WebViews to cached thumbnail images.
+  - Render a 2-column visual grid with swipe-to-dismiss and search open tabs.
+
+---
+
 ## 2. Summary Dependency Graph
 
 ```mermaid
 flowchart TD
-    subgraph Phase 3
+    subgraph Phase 3: Core UX & Media
         M31["3.1 Stream Quality Picker"]
         M32["3.2 Ad Blocker (WKContentRuleListStore)"]
         M33["3.3 Categorization & Subfolders"]
         M34["3.4 Desktop Mode & Incognito"]
     end
 
-    subgraph Phase 4
+    subgraph Phase 4: Swarm & Batch
         M41["4.1 Batch URLs & Text Import"]
         M42["4.2 Torrent Sequential & Trackers"]
         M43["4.3 Speed Chart (SwiftCharts)"]
         M44["4.4 Sort Order Selector"]
     end
 
-    subgraph Phase 5
+    subgraph Phase 5: Power Utilities
         M51["5.1 In-App ZIP Extraction"]
         M52["5.2 Bookmarks & History Hierarchy"]
         M53["5.3 Queue Export / Import"]
         M54["5.4 Battery-Aware Auto-Pause"]
     end
 
+    subgraph Workstream A: LID Media Player
+        MA1["A.1 VLC Controls & Gestures"]
+        MA2["A.2 Audio & Subtitle Selection"]
+        MA3["A.3 HLS/DASH Direct Stream"]
+        MA4["A.4 Torrent Swarm Streaming"]
+    end
+
+    subgraph Workstream B: Browser Modernization
+        MB1["B.1 Multi-List Privacy Shields"]
+        MB2["B.2 Popup & Redirect Defense"]
+        MB3["B.3 Safari Reader Mode"]
+        MB4["B.4 Visual Tab Grid"]
+    end
+
     M31 --> M41
     M33 --> M44
     M33 --> M51
     M42 --> M43
+    M42 --> MA4
+    M31 --> MA3
+    M32 --> MB1
+    MB1 --> MB2
+    M34 --> MB4
 ```
 
 ---

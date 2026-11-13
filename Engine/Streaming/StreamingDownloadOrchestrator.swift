@@ -13,6 +13,8 @@ public struct StreamingManifestCandidate: Sendable, Equatable {
     public let browserSessionSnapshot: BrowserSessionSnapshot?
     public let hlsVariantPreferences: HLSVariantSelectionPreferences
     public let cachedManifestText: String?
+    public let dashVideoRepresentationID: String?
+    public let dashAudioRepresentationID: String?
 
     public init(
         url: URL,
@@ -20,7 +22,9 @@ public struct StreamingManifestCandidate: Sendable, Equatable {
         browserRequestContext: BrowserRequestContext? = nil,
         browserSessionSnapshot: BrowserSessionSnapshot? = nil,
         hlsVariantPreferences: HLSVariantSelectionPreferences = HLSVariantSelectionPreferences(),
-        cachedManifestText: String? = nil
+        cachedManifestText: String? = nil,
+        dashVideoRepresentationID: String? = nil,
+        dashAudioRepresentationID: String? = nil
     ) throws {
         guard BrowserURLResolver.isValidDownloadURL(url) else {
             throw StreamingDownloadOrchestratorError.invalidManifestURL
@@ -45,6 +49,8 @@ public struct StreamingManifestCandidate: Sendable, Equatable {
         }
         self.hlsVariantPreferences = hlsVariantPreferences
         self.cachedManifestText = cachedManifestText
+        self.dashVideoRepresentationID = dashVideoRepresentationID
+        self.dashAudioRepresentationID = dashAudioRepresentationID
     }
 
     public init(
@@ -57,7 +63,9 @@ public struct StreamingManifestCandidate: Sendable, Equatable {
             browserRequestContext: resource.requestContext,
             browserSessionSnapshot: browserSessionSnapshot,
             hlsVariantPreferences: resource.hlsVariantPreferences ?? HLSVariantSelectionPreferences(),
-            cachedManifestText: resource.manifestText
+            cachedManifestText: resource.manifestText,
+            dashVideoRepresentationID: resource.dashVideoRepresentationID,
+            dashAudioRepresentationID: resource.dashAudioRepresentationID
         )
     }
 }
@@ -1853,6 +1861,8 @@ public actor StreamingDownloadOrchestrator {
             do {
                 plan = try DASHTransferPlanner.makeVODPlan(
                     from: parsed,
+                    videoRepresentationID: candidate.dashVideoRepresentationID,
+                    audioRepresentationID: candidate.dashAudioRepresentationID,
                     browserRequestContext: candidate.browserRequestContext
                 )
             } catch let error as DASHVODTransferPlanError {

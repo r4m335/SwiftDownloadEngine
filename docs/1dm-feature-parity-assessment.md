@@ -27,15 +27,15 @@ Each capability is classified under one of six unambiguous statuses:
 
 | Status | Count | Percentage |
 |---|:---:|:---:|
-| **Complete** | 45 | 63.4% |
-| **Partial** | 6 | 8.5% |
+| **Complete** | 46 | 64.8% |
+| **Partial** | 5 | 7.0% |
 | **Untested** | 1 | 1.4% |
 | **Missing** | 16 | 22.5% |
 | **iOS Restricted** | 3 | 4.2% |
 | **Total Features Evaluated** | **71** | **100.0%** |
 
 ```
-[█████████████████████████████████████████░░░░░░░░░░░░░░░░░░] 63.4% Complete
+[██████████████████████████████████████████░░░░░░░░░░░░░░░░░] 64.8% Complete
 ```
 
 ---
@@ -89,7 +89,7 @@ Each capability is classified under one of six unambiguous statuses:
 | 27 | HLS AES-128 Segment Decryption | Decrypts encrypted segments using fetched keys and initialization vectors | **Complete** | `HLSSegmentDecryptor.swift` | `HLSSegmentDecryptorTests.swift` | AES-128-CBC software decryptor using Apple `CryptoKit` / `CommonCrypto`. |
 | 28 | DASH MPD Manifest Parsing | Parses XML MPD manifests, SegmentTemplate, SegmentTimeline, SegmentList | **Complete** | `DASHManifestParser.swift`, `DASHTransferPlanner.swift` | `StreamingManifestTests.swift`, `DASHTransferPlannerTests.swift` | Supports multi-period and separated adaptation sets. |
 | 29 | Stream Reconstruction & Muxing | Demuxes and multiplexes separate video and audio tracks into MP4 | **Complete** | `MediaAssembler.swift`, `HLSVODReconstruction.swift`, `DASHVODReconstruction.swift` | `MediaAssemblerTests.swift`, `HLSVODReconstructionTests.swift`, `DASHVODReconstructionTests.swift` | **Testing Gap:** Compiles and muxes via `AVAssetWriter` on Apple platforms; synthetic parser tests pass. Real-world physical playback on an iPhone hardware screen remains unverified. |
-| 30 | Stream Quality / Resolution Picker Modal | Interactive sheet displaying resolutions (1080p, 720p, 480p, Audio) | **Partial** | `HLSVariantSelection.swift:HLSVariantSelector` | `HLSVariantSelectionTests` | Engine has variant ranking and preference filtering, but the UI automatically selects highest quality without showing an interactive selection dialog to the user. |
+| 30 | Stream Quality / Resolution Picker Modal | Interactive sheet displaying resolutions (1080p, 720p, 480p, Audio) | **Complete** | `StreamQualityPickerSheet.swift`, `StreamQualityModels.swift`, `StreamQualityInspector.swift`, `BrowserView.swift:presentQualityPicker()` | `StreamQualityPickerTests.swift` | Discovers and ranks HLS/DASH renditions; presents interactive selection modal with bitrate, codecs, size estimation, and audio-only extraction. |
 | 31 | Browser Blob URL Export | Transfers `blob:` URLs out of WKWebView via memory-bounded chunks | **Complete** | `BrowserBlobCaptureService.swift`, `BlobExportWriter.swift` | `BrowserBlobCaptureServiceTests.swift`, `BrowserBlobCaptureStabilityTests.swift` | 256 KB chunking, SHA-256 rolling verification, handles WebContent crashes, persists staging. |
 | 32 | MediaSource Extensions (MSE) Interception | Hooks `SourceBuffer.appendBuffer` to capture media streams | **Complete** | `BrowserMSECapturePrototype.swift`, `BrowserMediaDiscoveryBridge.swift` | `BrowserMSECapturePrototypeTests.swift`, `BrowserMSERealWorldValidationTests.swift` | Early-append capture, track separation, representation switch rejection. |
 | 33 | Live Stream Recording | Captures continuous live broadcasts to local file | **Untested** | `StreamingDownloadOrchestrator.swift` (VOD oriented) | None | Architecture is optimized for VOD (fixed duration manifests). Live sliding-window capture is untested and unverified. |

@@ -135,6 +135,16 @@ public final class BrowserViewModel: NSObject, ObservableObject {
     private var activeMSECaptureID: String?
     private var activeMSECaptureTabID: UUID?
 
+    // Interactive Stream Quality Picker state (Phase 3 Milestone 3.1)
+    @Published public var isShowingQualityPicker: Bool = false
+    @Published public var qualityPickerTargetResource: WebpageResource? = nil
+    @Published public var qualityPickerTargetCandidate: BrowserMediaCandidate? = nil
+    @Published public var qualityPickerOptions: [StreamQualityOption] = []
+    @Published public var selectedQualityOption: StreamQualityOption? = nil
+    @Published public var isInspectingQualities: Bool = false
+    @Published public var qualityInspectionError: String? = nil
+    @Published public var qualityPickerFilename: String = ""
+
     public weak var downloadDelegate: BrowserDownloadDelegate?
     public weak var magnetDelegate: (any BrowserMagnetDelegate)?
     public var onDownloadInitiated: (() -> Void)? = nil
@@ -1074,7 +1084,11 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         isShowingResourceInspector = false
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
             guard let self = self else { return }
-            self.promptDownload(for: resource)
+            if resource.isStreamingManifest && resource.hlsVariantPreferences == nil {
+                self.presentQualityPicker(for: resource)
+            } else {
+                self.promptDownload(for: resource)
+            }
         }
     }
 
@@ -1087,9 +1101,14 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                 suggestedFilename: suggestedFilename,
                 resourceType: .video,
                 requestContext: requestContext ?? decision.candidate.requestContext,
-                manifestText: cachedText
+                manifestText: cachedText,
+                hlsVariantPreferences: decision.candidate.hlsVariantPreferences
             )
-            self.promptStreamingDownload(for: res)
+            if res.hlsVariantPreferences != nil {
+                self.promptStreamingDownload(for: res)
+            } else {
+                self.presentQualityPicker(for: res)
+            }
 
         case .mseCapture(let candidate):
             #if canImport(WebKit)
@@ -1341,6 +1360,148 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         isPreparingStreaming = false
         isExecutingStreaming = false
         isShowingStreamingConfirmation = false
+    }
+
+    // MARK: - Interactive Stream Quality Picker (Phase 3 Milestone 3.1)
+
+    public func presentQualityPicker(for resource: WebpageResource) {
+        qualityPickerTargetResource = resource
+        qualityPickerTargetCandidate = nil
+        let baseFilename = resource.suggestedFilename.isEmpty ? "video.mp4" : resource.suggestedFilename
+        qualityPickerFilename = baseFilename
+        qualityPickerOptions = []
+        selectedQualityOption = nil
+        qualityInspectionError = nil
+        isInspectingQualities = true
+        isShowingQualityPicker = true
+
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                let options = try await StreamQualityInspector.inspect(
+                    manifestText: resource.manifestText ?? "",
+                    url: resource.url,
+                    mimeType: resource.mimeType
+                )
+                self.qualityPickerOptions = options
+                self.selectedQualityOption = options.first
+                self.isInspectingQualities = false
+            } catch {
+                self.qualityInspectionError = error.localizedDescription
+                self.isInspectingQualities = false
+            }
+        }
+    }
+
+    public func presentQualityPicker(for candidate: BrowserMediaCandidate) {
+        qualityPickerTargetCandidate = candidate
+        let url = candidate.url ?? URL(string: candidate.rawURL)
+        let baseFilename = candidate.suggestedFilename.isEmpty ? (url.map { BrowserURLResolver.suggestedFilename(from: $0) } ?? "video.mp4") : candidate.suggestedFilename
+        qualityPickerFilename = baseFilename
+        qualityPickerOptions = []
+        selectedQualityOption = nil
+        qualityInspectionError = nil
+        isInspectingQualities = true
+        isShowingQualityPicker = true
+
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            guard let targetURL = url else {
+                self.qualityInspectionError = "Invalid streaming candidate URL."
+                self.isInspectingQualities = false
+                return
+            }
+            do {
+                let options = try await StreamQualityInspector.inspect(
+                    manifestText: candidate.cachedManifestText ?? "",
+                    url: targetURL,
+                    mimeType: candidate.mimeType
+                )
+                self.qualityPickerOptions = options
+                self.selectedQualityOption = options.first
+                self.isInspectingQualities = false
+            } catch {
+                self.qualityInspectionError = error.localizedDescription
+                self.isInspectingQualities = false
+            }
+        }
+    }
+
+    public func selectQualityOption(_ option: StreamQualityOption) {
+        selectedQualityOption = option
+        let base = (qualityPickerFilename as NSString).deletingPathExtension
+        if option.isAudioOnly {
+            qualityPickerFilename = "\(base).m4a"
+        } else {
+            qualityPickerFilename = "\(base).mp4"
+        }
+    }
+
+    public func confirmQualitySelectionAndDownload() {
+        isShowingQualityPicker = false
+        let filename = qualityPickerFilename.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if let resource = qualityPickerTargetResource {
+            var prefs = resource.hlsVariantPreferences
+            if let selected = selectedQualityOption {
+                if selected.manifestKind == .hls {
+                    prefs = HLSVariantSelectionPreferences(
+                        maximumBandwidth: Int(selected.bandwidth),
+                        maximumWidth: selected.resolution?.width,
+                        maximumHeight: selected.resolution?.height,
+                        exactURI: selected.uri
+                    )
+                }
+            }
+
+            let configuredResource = WebpageResource(
+                id: resource.id,
+                url: resource.url,
+                title: filename.isEmpty ? resource.title : filename,
+                suggestedFilename: filename.isEmpty ? resource.suggestedFilename : filename,
+                resourceType: selectedQualityOption?.isAudioOnly == true ? .audio : .video,
+                mimeType: resource.mimeType,
+                estimatedSize: selectedQualityOption?.estimatedSizeBytes ?? resource.estimatedSize,
+                isSupported: true,
+                requestContext: resource.requestContext,
+                manifestText: resource.manifestText,
+                hlsVariantPreferences: prefs,
+                dashVideoRepresentationID: selectedQualityOption?.dashVideoRepresentationID,
+                dashAudioRepresentationID: selectedQualityOption?.dashAudioRepresentationID
+            )
+
+            promptStreamingDownload(for: configuredResource, customFilename: filename)
+        } else if let candidate = qualityPickerTargetCandidate, let url = candidate.url ?? URL(string: candidate.rawURL) {
+            var prefs = candidate.hlsVariantPreferences
+            if let selected = selectedQualityOption {
+                if selected.manifestKind == .hls {
+                    prefs = HLSVariantSelectionPreferences(
+                        maximumBandwidth: Int(selected.bandwidth),
+                        maximumWidth: selected.resolution?.width,
+                        maximumHeight: selected.resolution?.height,
+                        exactURI: selected.uri
+                    )
+                }
+            }
+
+            let configuredResource = WebpageResource(
+                id: candidate.id,
+                url: url,
+                title: filename.isEmpty ? (candidate.suggestedFilename.isEmpty ? "video.mp4" : candidate.suggestedFilename) : filename,
+                suggestedFilename: filename.isEmpty ? (candidate.suggestedFilename.isEmpty ? "video.mp4" : candidate.suggestedFilename) : filename,
+                resourceType: selectedQualityOption?.isAudioOnly == true ? .audio : .video,
+                mimeType: candidate.mimeType,
+                estimatedSize: selectedQualityOption?.estimatedSizeBytes,
+                isSupported: true,
+                requestContext: candidate.requestContext,
+                manifestText: candidate.cachedManifestText,
+                hlsVariantPreferences: prefs,
+                dashVideoRepresentationID: selectedQualityOption?.dashVideoRepresentationID,
+                dashAudioRepresentationID: selectedQualityOption?.dashAudioRepresentationID
+            )
+
+            promptStreamingDownload(for: configuredResource, customFilename: filename)
+        }
     }
 
     public func presentMagnetLink(_ magnet: MagnetLink, sourcePageURL: URL?) {
@@ -2394,6 +2555,9 @@ public struct BrowserView: View {
         .sheet(isPresented: $viewModel.isShowingResourceInspector) {
             BrowserResourceInspectorSheet(viewModel: viewModel)
         }
+        .sheet(isPresented: $viewModel.isShowingQualityPicker) {
+            StreamQualityPickerSheet(viewModel: viewModel)
+        }
         .sheet(isPresented: $viewModel.isShowingMagnetSheet) {
             BrowserMagnetConfirmationSheet(viewModel: viewModel)
         }
@@ -2582,6 +2746,7 @@ public struct BrowserView: View {
     private var isModalPresented: Bool {
         viewModel.isShowingDownloadSheet ||
         viewModel.isShowingResourceInspector ||
+        viewModel.isShowingQualityPicker ||
         viewModel.isShowingMagnetSheet ||
         viewModel.isShowingTabSwitcher
     }
@@ -3279,6 +3444,41 @@ public struct BrowserDownloadSheet: View {
                                 Text(mime)
                                     .font(.caption)
                                     .foregroundColor(.secondary)
+                            }
+                        }
+                    }
+
+                    if candidate.kind == .hlsManifest || candidate.kind == .dashManifest || candidate.url?.pathExtension.lowercased() == "m3u8" || candidate.url?.pathExtension.lowercased() == "mpd" {
+                        Section(header: Text("Stream Resolution"), footer: Text("Choose from available multi-variant resolutions or download audio only.")) {
+                            Button {
+                                viewModel.isShowingDownloadSheet = false
+                                if let res = viewModel.activeDownloadResource {
+                                    viewModel.presentQualityPicker(for: res)
+                                } else {
+                                    viewModel.presentQualityPicker(for: candidate)
+                                }
+                            } label: {
+                                HStack {
+                                    Label("Select Stream Quality...", systemImage: "slider.horizontal.3")
+                                        .font(.subheadline.weight(.medium))
+                                    Spacer()
+                                    if let selected = viewModel.selectedQualityOption {
+                                        Text(selected.qualityBadge)
+                                            .font(.caption.bold())
+                                            .foregroundColor(.white)
+                                            .padding(.horizontal, 8)
+                                            .padding(.vertical, 3)
+                                            .background(selected.badgeColor)
+                                            .cornerRadius(5)
+                                    } else {
+                                        Text("Choose")
+                                            .font(.caption)
+                                            .foregroundColor(.secondary)
+                                    }
+                                    Image(systemName: "chevron.right")
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                }
                             }
                         }
                     }

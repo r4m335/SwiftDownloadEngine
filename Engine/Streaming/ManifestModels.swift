@@ -173,7 +173,7 @@ public struct HLSInitializationMap: Codable, Sendable, Equatable {
     }
 }
 
-public struct HLSVariant: Codable, Sendable, Equatable {
+public struct HLSVariant: Codable, Sendable, Equatable, Hashable {
     public let uri: URL
     public let bandwidth: Int
     public let averageBandwidth: Int?

@@ -6,17 +6,20 @@ public struct HLSVariantSelectionPreferences: Sendable, Equatable, Hashable {
     public let maximumWidth: Int?
     public let maximumHeight: Int?
     public let preferredCodecPrefix: String?
+    public let exactURI: URL?
 
     public init(
         maximumBandwidth: Int? = nil,
         maximumWidth: Int? = nil,
         maximumHeight: Int? = nil,
-        preferredCodecPrefix: String? = nil
+        preferredCodecPrefix: String? = nil,
+        exactURI: URL? = nil
     ) {
         self.maximumBandwidth = maximumBandwidth
         self.maximumWidth = maximumWidth
         self.maximumHeight = maximumHeight
         self.preferredCodecPrefix = preferredCodecPrefix?.lowercased()
+        self.exactURI = exactURI
     }
 }
 
@@ -47,6 +50,9 @@ public enum HLSVariantSelector {
             throw HLSVariantSelectionError.noVariants
         }
         let matching = master.variants.filter { variant in
+            if let exactURI = preferences.exactURI, variant.uri != exactURI {
+                return false
+            }
             if let maximumBandwidth = preferences.maximumBandwidth, variant.bandwidth > maximumBandwidth {
                 return false
             }

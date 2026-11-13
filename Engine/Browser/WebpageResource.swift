@@ -41,6 +41,10 @@ public struct WebpageResource: Identifiable, Hashable, Sendable {
     public let manifestText: String?
     /// Optional variant selection preferences for multi-variant streaming manifests (e.g. 1080p, 720p).
     public let hlsVariantPreferences: HLSVariantSelectionPreferences?
+    /// Optional DASH video representation ID selected by the user.
+    public let dashVideoRepresentationID: String?
+    /// Optional DASH audio representation ID selected by the user.
+    public let dashAudioRepresentationID: String?
 
     /// Manifest candidates are intentionally kept outside the ordinary
     /// `isSupported` download path. They require planning and coordinator-
@@ -141,7 +145,9 @@ public struct WebpageResource: Identifiable, Hashable, Sendable {
         unsupportedReason: String? = nil,
         requestContext: BrowserRequestContext? = nil,
         manifestText: String? = nil,
-        hlsVariantPreferences: HLSVariantSelectionPreferences? = nil
+        hlsVariantPreferences: HLSVariantSelectionPreferences? = nil,
+        dashVideoRepresentationID: String? = nil,
+        dashAudioRepresentationID: String? = nil
     ) {
         self.id = id
         self.url = url
@@ -155,6 +161,8 @@ public struct WebpageResource: Identifiable, Hashable, Sendable {
         self.requestContext = requestContext
         self.manifestText = manifestText
         self.hlsVariantPreferences = hlsVariantPreferences
+        self.dashVideoRepresentationID = dashVideoRepresentationID
+        self.dashAudioRepresentationID = dashAudioRepresentationID
     }
 }
 
