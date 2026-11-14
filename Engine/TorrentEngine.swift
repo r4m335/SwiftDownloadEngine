@@ -284,6 +284,9 @@ public actor TorrentEngine {
             throw TorrentEngineError.bridgeError("Failed to fetch status for added magnet torrent.")
         }
         var task = updateTask(from: status, source: magnetURI)
+        if !displayName.isEmpty && (status.name.isEmpty || status.name == hash) {
+            task.name = displayName
+        }
         task.isSequentialDownload = isSequential
         tasks[hash.lowercased()] = task
         return task
@@ -332,6 +335,9 @@ public actor TorrentEngine {
             throw TorrentEngineError.bridgeError("Failed to fetch status for added file torrent.")
         }
         var task = updateTask(from: status, source: fileURL.lastPathComponent)
+        if !displayName.isEmpty && (status.name.isEmpty || status.name == hash) {
+            task.name = displayName
+        }
         task.isSequentialDownload = isSequential
         tasks[hash.lowercased()] = task
         return task
@@ -716,7 +722,7 @@ public actor TorrentEngine {
         if var existing = tasks[key] {
             existing.state = state
             existing.progress = progress
-            if !status.name.isEmpty {
+            if !status.name.isEmpty && status.name != key {
                 existing.name = status.name
             }
             existing.errorMessage = status.errorMessage
@@ -724,9 +730,18 @@ public actor TorrentEngine {
             tasks[key] = existing
             return existing
         } else {
+            let fallbackName: String = {
+                if !status.name.isEmpty && status.name != key {
+                    return status.name
+                }
+                if let src = source, let dn = TorrentMetadataParser.extractDisplayName(from: src) {
+                    return dn
+                }
+                return key
+            }()
             let task = TorrentTask(
                 source: source ?? "magnet:?xt=urn:btih:\(key)",
-                name: status.name.isEmpty ? key : status.name,
+                name: fallbackName,
                 savePath: saveURL,
                 state: state,
                 progress: progress,
