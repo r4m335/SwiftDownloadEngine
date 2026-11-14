@@ -23,6 +23,9 @@ public final class LIDPlaybackEngine: NSObject, ObservableObject {
     @Published public private(set) var isMuted: Bool = false
     @Published public private(set) var currentSource: LIDPlayerSource? = nil
 
+    /// Track manager handling audio tracks, subtitles, and external cue rendering.
+    public let trackManager: LIDTrackManager
+
     #if canImport(AVFoundation)
     public private(set) var player: AVPlayer?
     private var playerItem: AVPlayerItem?
@@ -36,9 +39,21 @@ public final class LIDPlaybackEngine: NSObject, ObservableObject {
     private let historyStore: LIDPlaybackHistoryStore
     private var lastRecordedSecond: Int = 0
 
-    public init(historyStore: LIDPlaybackHistoryStore = .shared) {
+    public init(
+        historyStore: LIDPlaybackHistoryStore = .shared,
+        trackManager: LIDTrackManager? = nil
+    ) {
         self.historyStore = historyStore
+        self.trackManager = trackManager ?? LIDTrackManager()
         super.init()
+
+        LIDNowPlayingCoordinator.shared.setupRemoteCommands(
+            onPlay: { [weak self] in self?.play() },
+            onPause: { [weak self] in self?.pause() },
+            onTogglePlayPause: { [weak self] in self?.togglePlayPause() },
+            onSeekTo: { [weak self] target in self?.seek(to: target) },
+            onSkip: { [weak self] delta in self?.seekBy(offsetSeconds: delta) }
+        )
     }
 
     deinit {
@@ -67,6 +82,7 @@ public final class LIDPlaybackEngine: NSObject, ObservableObject {
         self.durationSeconds = 0.0
         self.bufferedDurationSeconds = 0.0
         self.metadata = LIDMediaMetadata(title: source.title)
+        self.trackManager.reset()
 
         #if canImport(AVFoundation)
         let asset: AVURLAsset
@@ -82,6 +98,7 @@ public final class LIDPlaybackEngine: NSObject, ObservableObject {
         }
 
         let item = AVPlayerItem(asset: asset)
+        item.audioTimePitchAlgorithm = .spectral
         self.playerItem = item
 
         let avPlayer = AVPlayer(playerItem: item)
@@ -108,6 +125,14 @@ public final class LIDPlaybackEngine: NSObject, ObservableObject {
         guard let player = player else { return }
         player.rate = Float(playbackSpeed.rawValue)
         playbackState = .playing
+        if let source = currentSource {
+            LIDNowPlayingCoordinator.shared.updateNowPlaying(
+                title: source.title,
+                duration: durationSeconds,
+                currentTime: currentPositionSeconds,
+                playbackRate: Float(playbackSpeed.rawValue)
+            )
+        }
         #endif
     }
 
@@ -118,6 +143,14 @@ public final class LIDPlaybackEngine: NSObject, ObservableObject {
         player.pause()
         playbackState = .paused
         saveCurrentPosition()
+        if let source = currentSource {
+            LIDNowPlayingCoordinator.shared.updateNowPlaying(
+                title: source.title,
+                duration: durationSeconds,
+                currentTime: currentPositionSeconds,
+                playbackRate: 0.0
+            )
+        }
         #endif
     }
 
@@ -197,6 +230,8 @@ public final class LIDPlaybackEngine: NSObject, ObservableObject {
     @MainActor
     public func stop() {
         saveCurrentPosition()
+        LIDNowPlayingCoordinator.shared.clearNowPlaying()
+        trackManager.reset()
         #if canImport(AVFoundation)
         if let token = timeObserverToken, let player = player {
             player.removeTimeObserver(token)
@@ -239,6 +274,7 @@ public final class LIDPlaybackEngine: NSObject, ObservableObject {
                     let dur = (rawDur.isFinite && !rawDur.isNaN && rawDur > 0) ? rawDur : 0.0
                     self.durationSeconds = dur
                     self.extractMetadata(from: observedItem, title: source.title)
+                    self.trackManager.populateTracks(from: observedItem)
 
                     // Resume check
                     if resumeFromHistory, let mediaID = source.url?.absoluteString {
@@ -307,6 +343,7 @@ public final class LIDPlaybackEngine: NSObject, ObservableObject {
             let sec = time.seconds
             if sec.isFinite && !sec.isNaN {
                 self.currentPositionSeconds = sec
+                self.trackManager.updatePosition(sec)
                 let intSec = Int(sec)
                 // Periodically persist progress every 5 seconds
                 if intSec > 0 && intSec % 5 == 0 && intSec != self.lastRecordedSecond {

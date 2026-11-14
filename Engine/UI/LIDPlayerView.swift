@@ -7,6 +7,10 @@ import SwiftUI
 import AVFoundation
 #endif
 
+#if canImport(AVKit)
+import AVKit
+#endif
+
 #if canImport(WebKit)
 import WebKit
 #endif
@@ -15,9 +19,9 @@ import WebKit
 import UIKit
 #endif
 
-#if canImport(AVFoundation) && canImport(UIKit)
-/// Custom UIView whose backing CoreAnimation layer is an AVPlayerLayer.
-public final class LIDPlayerLayerView: UIView {
+#if canImport(AVFoundation) && canImport(UIKit) && canImport(AVKit)
+/// Custom UIView whose backing CoreAnimation layer is an AVPlayerLayer with PiP support.
+public final class LIDPlayerLayerView: UIView, AVPictureInPictureControllerDelegate {
     override public class var layerClass: AnyClass {
         AVPlayerLayer.self
     }
@@ -25,16 +29,40 @@ public final class LIDPlayerLayerView: UIView {
     public var playerLayer: AVPlayerLayer {
         layer as! AVPlayerLayer
     }
+
+    public private(set) var pipController: AVPictureInPictureController?
+
+    public func setupPiP() {
+        guard pipController == nil, AVPictureInPictureController.isPictureInPictureSupported() else { return }
+        pipController = AVPictureInPictureController(playerLayer: playerLayer)
+        pipController?.delegate = self
+    }
+
+    public func togglePiP() {
+        setupPiP()
+        guard let pip = pipController else { return }
+        if pip.isPictureInPictureActive {
+            pip.stopPictureInPicture()
+        } else {
+            pip.startPictureInPicture()
+        }
+    }
 }
 
-/// Hardware-accelerated native AVPlayerLayer representable.
+/// Hardware-accelerated native AVPlayerLayer representable with PiP handle.
 public struct LIDNativePlayerLayerView: UIViewRepresentable {
     public let player: AVPlayer?
     public let videoGravity: AVLayerVideoGravity
+    public let onLayerReady: ((LIDPlayerLayerView) -> Void)?
 
-    public init(player: AVPlayer?, videoGravity: AVLayerVideoGravity = .resizeAspect) {
+    public init(
+        player: AVPlayer?,
+        videoGravity: AVLayerVideoGravity = .resizeAspect,
+        onLayerReady: ((LIDPlayerLayerView) -> Void)? = nil
+    ) {
         self.player = player
         self.videoGravity = videoGravity
+        self.onLayerReady = onLayerReady
     }
 
     public func makeUIView(context: Context) -> LIDPlayerLayerView {
@@ -42,18 +70,21 @@ public struct LIDNativePlayerLayerView: UIViewRepresentable {
         view.backgroundColor = .black
         view.playerLayer.player = player
         view.playerLayer.videoGravity = videoGravity
+        view.setupPiP()
+        onLayerReady?(view)
         return view
     }
 
     public func updateUIView(_ uiView: LIDPlayerLayerView, context: Context) {
         uiView.playerLayer.player = player
         uiView.playerLayer.videoGravity = videoGravity
+        uiView.setupPiP()
     }
 }
 #endif
 
-/// Dedicated native VLC-style media player with gesture controls (volume/brightness swipes,
-/// horizontal seek, double-tap 10s skip, aspect ratio cycling, and speed adjustment).
+/// Dedicated native VLC-style media player with gesture controls, PiP, audio track selection,
+/// external/embedded subtitles, synchronization delay adjustment, and interactive lock mode.
 public struct LIDPlayerView: View {
     public let url: URL
     public let title: String
@@ -62,11 +93,21 @@ public struct LIDPlayerView: View {
     @StateObject private var engine = LIDPlaybackEngine.shared
     @Environment(\.presentationMode) private var presentationMode
 
+    // Controls state
     @State private var showControls: Bool = true
     @State private var controlsTimer: Timer? = nil
+    @State private var isControlsLocked: Bool = false
     @State private var aspectRatio: LIDAspectRatio = .original
     @State private var isDraggingScrubber: Bool = false
     @State private var scrubPosition: Double = 0.0
+    @State private var showRemainingTime: Bool = false
+    @State private var zoomScale: CGFloat = 1.0
+
+    // Sheet presentations
+    @State private var showTrackSelectionSheet: Bool = false
+    @State private var showSubtitleSyncSheet: Bool = false
+    @State private var externalSubtitlePathInput: String = ""
+    @State private var showExternalSubtitlePrompt: Bool = false
 
     // Gesture state HUD overlays
     @State private var brightnessLevel: Double = 0.5
@@ -75,8 +116,13 @@ public struct LIDPlayerView: View {
     @State private var showVolumeHUD: Bool = false
     @State private var seekGestureOffset: Double = 0.0
     @State private var showSeekHUD: Bool = false
+    @State private var seekHUDText: String = ""
     @State private var isLongPressingSpeedBoost: Bool = false
     @State private var previousSpeedBeforeBoost: LIDPlaybackSpeed = .speed1_00
+
+    #if canImport(AVFoundation) && canImport(UIKit) && canImport(AVKit)
+    @State private var layerViewRef: LIDPlayerLayerView? = nil
+    #endif
 
     public init(url: URL, title: String? = nil, onDismiss: (() -> Void)? = nil) {
         self.url = url
@@ -107,27 +153,94 @@ public struct LIDPlayerView: View {
             Color.black
                 .edgesIgnoringSafeArea(.all)
 
-            #if canImport(AVFoundation) && canImport(UIKit)
-            // Native Hardware-Accelerated Video Layer
-            LIDNativePlayerLayerView(player: engine.player, videoGravity: videoGravity)
-                .edgesIgnoringSafeArea(.all)
-                .onTapGesture {
+            #if canImport(AVFoundation) && canImport(UIKit) && canImport(AVKit)
+            // Native Hardware-Accelerated Video Layer with Interactive Zoom
+            LIDNativePlayerLayerView(player: engine.player, videoGravity: videoGravity) { layer in
+                self.layerViewRef = layer
+            }
+            .scaleEffect(zoomScale)
+            .edgesIgnoringSafeArea(.all)
+            .gesture(
+                MagnificationGesture()
+                    .onChanged { scale in
+                        zoomScale = max(0.8, min(3.0, scale))
+                    }
+                    .onEnded { _ in
+                        if zoomScale < 1.05 && zoomScale > 0.95 {
+                            zoomScale = 1.0
+                        }
+                    }
+            )
+            .onTapGesture {
+                if !isControlsLocked {
                     toggleControlsVisibility()
                 }
+            }
             #else
             fallbackView
             #endif
 
-            // Gesture Detection Layer (Splits left/right half for vertical gestures)
-            gestureOverlayView
+            // Subtitle Display Overlay
+            if let cueText = engine.trackManager.activeCueText, !cueText.isEmpty {
+                VStack {
+                    Spacer()
+                    Text(cueText)
+                        .font(.system(size: 16, weight: .bold))
+                        .foregroundColor(.white)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 8)
+                        .background(Color.black.opacity(0.75))
+                        .cornerRadius(8)
+                        .padding(.horizontal, 24)
+                        .padding(.bottom, showControls && !isControlsLocked ? 95 : 32)
+                }
+                .allowsHitTesting(false)
+            }
+
+            // Gesture Detection Layer (Disabled when locked)
+            if !isControlsLocked {
+                gestureOverlayView
+            }
 
             // HUD Feedback Overlays (Brightness, Volume, Seek, 2x Boost)
             hudOverlayView
 
-            // VLC-style Controls Overlay
-            if showControls {
+            // Controls Overlay
+            if showControls && !isControlsLocked {
                 controlsOverlayView
                     .transition(.opacity)
+            }
+
+            // Floating Lock / Unlock Button when locked
+            if isControlsLocked {
+                VStack {
+                    HStack {
+                        Button {
+                            withAnimation {
+                                isControlsLocked = false
+                                showControls = true
+                                resetControlsTimer()
+                            }
+                        } label: {
+                            HStack(spacing: 6) {
+                                Image(systemName: "lock.fill")
+                                Text("Locked (Tap to Unlock)")
+                                    .font(.caption.bold())
+                            }
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 8)
+                            .background(Color.black.opacity(0.8))
+                            .foregroundColor(.yellow)
+                            .cornerRadius(20)
+                        }
+                        .padding(.leading, 20)
+                        .padding(.top, 24)
+
+                        Spacer()
+                    }
+                    Spacer()
+                }
             }
         }
         .onAppear {
@@ -140,6 +253,12 @@ public struct LIDPlayerView: View {
         .onDisappear {
             engine.stop()
             controlsTimer?.invalidate()
+        }
+        .sheet(isPresented: $showTrackSelectionSheet) {
+            trackSelectionSheetView
+        }
+        .sheet(isPresented: $showSubtitleSyncSheet) {
+            subtitleSyncSheetView
         }
     }
 
@@ -249,53 +368,56 @@ public struct LIDPlayerView: View {
                     .foregroundColor(.white)
                     .padding(.horizontal, 16)
                     .padding(.vertical, 10)
-                    .background(Color.black.opacity(0.8))
+                    .background(Color.black.opacity(0.75))
                     .cornerRadius(12)
+                    .padding(.top, 60)
             }
+
+            Spacer()
         }
+        .allowsHitTesting(false)
     }
 
     private func hudPill(icon: String, label: String, value: Double) -> some View {
-        HStack(spacing: 12) {
-            Image(systemName: icon)
-                .foregroundColor(.white)
-            ProgressView(value: value, total: 1.0)
-                .accentColor(.blue)
-                .frame(width: 120)
-            Text("\(Int(value * 100))%")
-                .font(.caption.bold())
-                .foregroundColor(.white)
+        VStack(spacing: 8) {
+            HStack(spacing: 8) {
+                Image(systemName: icon)
+                    .font(.system(size: 20))
+                    .foregroundColor(.white)
+                Text(label)
+                    .font(.caption.bold())
+                    .foregroundColor(.white)
+            }
+            GeometryReader { p in
+                ZStack(alignment: .leading) {
+                    Capsule()
+                        .fill(Color.white.opacity(0.3))
+                        .frame(height: 6)
+                    Capsule()
+                        .fill(Color.white)
+                        .frame(width: max(0, min(CGFloat(value) * p.size.width, p.size.width)), height: 6)
+                }
+            }
+            .frame(width: 140, height: 6)
         }
         .padding(.horizontal, 16)
-        .padding(.vertical, 10)
-        .background(Color.black.opacity(0.8))
-        .cornerRadius(20)
+        .padding(.vertical, 12)
+        .background(Color.black.opacity(0.75))
+        .cornerRadius(14)
+        .padding(.top, 60)
     }
 
-    @State private var temporaryHUDText: String? = nil
-    private func showTemporaryHUD(_ text: String) {
-        temporaryHUDText = text
-        showSeekHUD = true
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
-            showSeekHUD = false
-        }
-    }
-
-    private var seekHUDText: String {
-        temporaryHUDText ?? "\(formatTime(engine.currentPositionSeconds)) / \(formatTime(engine.durationSeconds))"
-    }
-
-    // MARK: - Controls Overlay View
+    // MARK: - VLC-Style Controls Overlay
 
     private var controlsOverlayView: some View {
         VStack {
             // Header Bar
-            HStack(spacing: 16) {
+            HStack(spacing: 12) {
                 Button {
                     dismiss()
                 } label: {
-                    Image(systemName: "chevron.down")
-                        .font(.system(size: 18, weight: .bold))
+                    Image(systemName: "xmark")
+                        .font(.system(size: 14, weight: .bold))
                         .foregroundColor(.white)
                         .padding(8)
                         .background(Color.black.opacity(0.5))
@@ -309,6 +431,61 @@ public struct LIDPlayerView: View {
 
                 Spacer()
 
+                // Picture-in-Picture Button
+                #if canImport(AVFoundation) && canImport(UIKit) && canImport(AVKit)
+                if AVPictureInPictureController.isPictureInPictureSupported() {
+                    Button {
+                        layerViewRef?.togglePiP()
+                    } label: {
+                        Image(systemName: "pip.enter")
+                            .font(.system(size: 15, weight: .semibold))
+                            .foregroundColor(.white)
+                            .padding(6)
+                            .background(Color.black.opacity(0.4))
+                            .clipShape(Circle())
+                    }
+                }
+                #endif
+
+                // Subtitles & Audio Track Selector
+                Button {
+                    showTrackSelectionSheet = true
+                } label: {
+                    Image(systemName: "captions.bubble.fill")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundColor(.white)
+                        .padding(6)
+                        .background(Color.black.opacity(0.4))
+                        .clipShape(Circle())
+                }
+
+                // Subtitle Delay / Sync Adjuster
+                Button {
+                    showSubtitleSyncSheet = true
+                } label: {
+                    Image(systemName: "timer")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundColor(.white)
+                        .padding(6)
+                        .background(Color.black.opacity(0.4))
+                        .clipShape(Circle())
+                }
+
+                // Lock Controls Button
+                Button {
+                    withAnimation {
+                        isControlsLocked = true
+                        showControls = false
+                    }
+                } label: {
+                    Image(systemName: "lock")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundColor(.white)
+                        .padding(6)
+                        .background(Color.black.opacity(0.4))
+                        .clipShape(Circle())
+                }
+
                 // Aspect Ratio Selector Button
                 Button {
                     cycleAspectRatio()
@@ -321,13 +498,6 @@ public struct LIDPlayerView: View {
                         .foregroundColor(.white)
                         .cornerRadius(6)
                 }
-
-                // Close / Done
-                Button("Done") {
-                    dismiss()
-                }
-                .font(.system(size: 15, weight: .semibold))
-                .foregroundColor(.white)
             }
             .padding(.horizontal, 16)
             .padding(.top, 12)
@@ -406,9 +576,21 @@ public struct LIDPlayerView: View {
                     )
                     .accentColor(.blue)
 
-                    Text(formatTime(engine.durationSeconds))
-                        .font(.system(size: 12, weight: .medium, design: .monospaced))
-                        .foregroundColor(.white.opacity(0.8))
+                    // Toggle duration between total time and remaining time
+                    Button {
+                        showRemainingTime.toggle()
+                    } label: {
+                        if showRemainingTime {
+                            let rem = max(0.0, engine.durationSeconds - (isDraggingScrubber ? scrubPosition : engine.currentPositionSeconds))
+                            Text("-" + formatTime(rem))
+                                .font(.system(size: 12, weight: .medium, design: .monospaced))
+                                .foregroundColor(.white.opacity(0.8))
+                        } else {
+                            Text(formatTime(engine.durationSeconds))
+                                .font(.system(size: 12, weight: .medium, design: .monospaced))
+                                .foregroundColor(.white.opacity(0.8))
+                        }
+                    }
                 }
 
                 // Speed, Mute, and Specs Bar
@@ -462,25 +644,170 @@ public struct LIDPlayerView: View {
         }
     }
 
+    // MARK: - Track Selection Sheet
+
+    private var trackSelectionSheetView: some View {
+        NavigationView {
+            List {
+                // Audio Tracks Section
+                Section(header: Text("Audio Tracks")) {
+                    if engine.trackManager.availableAudioTracks.isEmpty {
+                        Text("Default Audio Track")
+                            .foregroundColor(.secondary)
+                    } else {
+                        ForEach(engine.trackManager.availableAudioTracks) { track in
+                            Button {
+                                engine.trackManager.selectAudioTrack(track)
+                            } label: {
+                                HStack {
+                                    Text(track.displayName)
+                                        .foregroundColor(.primary)
+                                    Spacer()
+                                    if engine.trackManager.selectedAudioTrack?.id == track.id {
+                                        Image(systemName: "checkmark")
+                                            .foregroundColor(.blue)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Subtitle Tracks Section
+                Section(header: Text("Subtitles")) {
+                    ForEach(engine.trackManager.availableSubtitleTracks) { track in
+                        Button {
+                            engine.trackManager.selectSubtitleTrack(track)
+                        } label: {
+                            HStack {
+                                Text(track.displayName)
+                                    .foregroundColor(.primary)
+                                Spacer()
+                                if engine.trackManager.selectedSubtitleTrack.id == track.id {
+                                    Image(systemName: "checkmark")
+                                        .foregroundColor(.blue)
+                                }
+                            }
+                        }
+                    }
+
+                    // Add External Subtitle Action
+                    Button {
+                        showExternalSubtitlePrompt = true
+                    } label: {
+                        Label("Add External Subtitle (.srt / .vtt)", systemImage: "plus.circle")
+                            .foregroundColor(.blue)
+                    }
+                }
+
+                // Subtitle Delay Quick Access
+                Section {
+                    Button {
+                        showTrackSelectionSheet = false
+                        showSubtitleSyncSheet = true
+                    } label: {
+                        HStack {
+                            Label("Adjust Subtitle Sync", systemImage: "timer")
+                            Spacer()
+                            Text(String(format: "%+.1fs", engine.trackManager.subtitleDelay))
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Audio & Subtitles")
+            #if os(iOS)
+            .navigationBarTitleDisplayMode(.inline)
+            #endif
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Done") {
+                        showTrackSelectionSheet = false
+                    }
+                }
+            }
+        }
+    }
+
+    // MARK: - Subtitle Delay Synchronization Sheet
+
+    private var subtitleSyncSheetView: some View {
+        NavigationView {
+            VStack(spacing: 24) {
+                Text("Subtitle Delay Offset")
+                    .font(.headline)
+                    .padding(.top, 20)
+
+                Text(String(format: "%+.1f s", engine.trackManager.subtitleDelay))
+                    .font(.system(size: 40, weight: .bold, design: .monospaced))
+                    .foregroundColor(engine.trackManager.subtitleDelay == 0 ? .primary : .blue)
+
+                Text(engine.trackManager.subtitleDelay > 0 ? "Subtitles appear later" : (engine.trackManager.subtitleDelay < 0 ? "Subtitles appear earlier" : "Synchronized"))
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+
+                HStack(spacing: 12) {
+                    Button("-0.5s") {
+                        engine.trackManager.adjustSubtitleDelay(by: -0.5)
+                    }
+                    .buttonStyle(.bordered)
+
+                    Button("-0.1s") {
+                        engine.trackManager.adjustSubtitleDelay(by: -0.1)
+                    }
+                    .buttonStyle(.bordered)
+
+                    Button("Reset") {
+                        engine.trackManager.subtitleDelay = 0.0
+                    }
+                    .buttonStyle(.borderedProminent)
+
+                    Button("+0.1s") {
+                        engine.trackManager.adjustSubtitleDelay(by: 0.1)
+                    }
+                    .buttonStyle(.bordered)
+
+                    Button("+0.5s") {
+                        engine.trackManager.adjustSubtitleDelay(by: 0.5)
+                    }
+                    .buttonStyle(.bordered)
+                }
+
+                Spacer()
+            }
+            .padding()
+            .navigationTitle("Subtitle Sync")
+            #if os(iOS)
+            .navigationBarTitleDisplayMode(.inline)
+            #endif
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Done") {
+                        showSubtitleSyncSheet = false
+                    }
+                }
+            }
+        }
+    }
+
+    // MARK: - Helper Views & Methods
+
     private var fallbackView: some View {
         VStack(spacing: 16) {
-            Image(systemName: "play.circle.fill")
-                .font(.system(size: 64))
-                .foregroundColor(.blue)
+            Image(systemName: "film")
+                .font(.system(size: 48))
+                .foregroundColor(.white)
             Text(title)
                 .font(.headline)
                 .foregroundColor(.white)
-            Text(url.absoluteString)
+            Text(url.lastPathComponent)
                 .font(.caption)
                 .foregroundColor(.gray)
-                .lineLimit(2)
         }
-        .padding()
     }
 
-    // MARK: - Actions
-
     private func dismiss() {
+        engine.stop()
         if let onDismiss = onDismiss {
             onDismiss()
         } else {
@@ -489,11 +816,21 @@ public struct LIDPlayerView: View {
     }
 
     private func toggleControlsVisibility() {
-        withAnimation(.easeInOut(duration: 0.2)) {
+        withAnimation(.easeInOut(duration: 0.25)) {
             showControls.toggle()
         }
         if showControls {
             resetControlsTimer()
+        } else {
+            controlsTimer?.invalidate()
+        }
+    }
+
+    private func showTemporaryHUD(_ text: String) {
+        seekHUDText = text
+        showSeekHUD = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+            showSeekHUD = false
         }
     }
 
@@ -501,7 +838,7 @@ public struct LIDPlayerView: View {
         controlsTimer?.invalidate()
         controlsTimer = Timer.scheduledTimer(withTimeInterval: 3.5, repeats: false) { _ in
             withAnimation(.easeInOut(duration: 0.3)) {
-                if engine.playbackState.isPlaying {
+                if engine.playbackState.isPlaying && !isControlsLocked {
                     showControls = false
                 }
             }
@@ -513,6 +850,7 @@ public struct LIDPlayerView: View {
         if let idx = all.firstIndex(of: aspectRatio) {
             let next = all[(idx + 1) % all.count]
             aspectRatio = next
+            zoomScale = 1.0
             showTemporaryHUD(next.rawValue)
         }
     }
