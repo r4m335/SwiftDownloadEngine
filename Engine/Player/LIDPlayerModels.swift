@@ -311,6 +311,10 @@ public enum LIDPlaybackSpeed: Double, CaseIterable, Sendable {
         case .speed4_00: return "4.0×"
         }
     }
+
+    public var rate: Float {
+        Float(rawValue)
+    }
 }
 
 /// Video aspect ratio display modes.
