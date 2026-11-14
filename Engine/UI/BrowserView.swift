@@ -3516,7 +3516,7 @@ public struct BrowserView: View {
                 }
                 .accessibilityLabel("Back")
                 .disabled(!viewModel.canGoBack)
-                .frame(minWidth: 44, minHeight: 44)
+                .frame(maxWidth: .infinity, minHeight: 44)
 
                 // Forward Button
                 Button {
@@ -3527,7 +3527,7 @@ public struct BrowserView: View {
                 }
                 .accessibilityLabel("Forward")
                 .disabled(!viewModel.canGoForward)
-                .frame(minWidth: 44, minHeight: 44)
+                .frame(maxWidth: .infinity, minHeight: 44)
 
                 // Home Button
                 Button {
@@ -3537,7 +3537,7 @@ public struct BrowserView: View {
                         .font(.system(size: 18))
                 }
                 .accessibilityLabel("Home")
-                .frame(minWidth: 44, minHeight: 44)
+                .frame(maxWidth: .infinity, minHeight: 44)
 
                 // Tab overview button with live count badge
                 Button {
@@ -3555,78 +3555,7 @@ public struct BrowserView: View {
                 }
                 .accessibilityLabel("Tabs (\(viewModel.tabs.count) open)")
                 .disabled(viewModel.tabs.isEmpty)
-                .frame(minWidth: 44, minHeight: 44)
-
-                // Bookmarks & History Button (Workstream B Milestone B.1)
-                Button {
-                    viewModel.showBookmarksAndHistory()
-                } label: {
-                    Image(systemName: "book")
-                        .font(.system(size: 18))
-                }
-                .accessibilityLabel("Bookmarks and History")
-                .frame(minWidth: 44, minHeight: 44)
-
-                // Active Downloads Indicator (Workstream B Milestone B.1)
-                Button {
-                    viewModel.openDownloads()
-                } label: {
-                    ZStack(alignment: .topTrailing) {
-                        Image(systemName: viewModel.activeDownloadCount > 0 ? "arrow.down.circle.fill" : "arrow.down.circle")
-                            .font(.system(size: 18))
-                            .foregroundColor(viewModel.activeDownloadCount > 0 ? .blue : .primary)
-
-                        if viewModel.activeDownloadCount > 0 {
-                            Text("\(viewModel.activeDownloadCount)")
-                                .font(.system(size: 9, weight: .bold))
-                                .foregroundColor(.white)
-                                .padding(.horizontal, 4)
-                                .padding(.vertical, 1)
-                                .background(Color.blue)
-                                .clipShape(Capsule())
-                                .offset(x: 8, y: -6)
-                        }
-                    }
-                }
-                .accessibilityLabel("Downloads (\(viewModel.activeDownloadCount) active)")
-                .frame(minWidth: 44, minHeight: 44)
-
-                // Find Resources Button
-                Button {
-                    viewModel.openResourceInspector()
-                } label: {
-                    ZStack(alignment: .topTrailing) {
-                        Image(systemName: "doc.text.magnifyingglass")
-                            .font(.system(size: 18))
-                            .foregroundColor(viewModel.currentURL != nil ? .blue : .secondary)
-
-                        if viewModel.detectedMediaCount > 0 {
-                            Text("\(viewModel.detectedMediaCount)")
-                                .font(.system(size: 9, weight: .bold))
-                                .foregroundColor(.white)
-                                .padding(.horizontal, 4)
-                                .padding(.vertical, 1)
-                                .background(Color.red)
-                                .clipShape(Capsule())
-                                .offset(x: 8, y: -6)
-                        }
-                    }
-                }
-                .accessibilityLabel("Resources (\(viewModel.detectedMediaCount) detected)")
-                .disabled(viewModel.currentURL == nil)
-                .frame(minWidth: 44, minHeight: 44)
-
-                // Desktop Mode Toggle Button (Phase 3 Milestone 3.4)
-                Button {
-                    viewModel.toggleDesktopMode()
-                } label: {
-                    Image(systemName: viewModel.isCurrentTabDesktopMode ? "desktopcomputer" : "iphone")
-                        .font(.system(size: 18))
-                        .foregroundColor(viewModel.isCurrentTabDesktopMode ? .blue : .primary)
-                }
-                .accessibilityLabel(viewModel.isCurrentTabDesktopMode ? "Request Mobile Website" : "Request Desktop Website")
-                .disabled(viewModel.currentURL == nil)
-                .frame(minWidth: 44, minHeight: 44)
+                .frame(maxWidth: .infinity, minHeight: 44)
 
                 // Dynamic Reload / Stop Button
                 Button {
@@ -3641,7 +3570,11 @@ public struct BrowserView: View {
                 }
                 .accessibilityLabel(viewModel.isLoading ? "Stop" : "Reload")
                 .disabled(viewModel.currentURL == nil && !viewModel.isLoading)
-                .frame(minWidth: 44, minHeight: 44)
+                .frame(maxWidth: .infinity, minHeight: 44)
+
+                // Vertical Three-Dot (⋮) Overflow Menu
+                overflowMenu
+                    .frame(maxWidth: .infinity, minHeight: 44)
             }
             .frame(maxWidth: .infinity)
             .padding(.horizontal, 4)
@@ -3652,6 +3585,83 @@ public struct BrowserView: View {
             #endif
             Divider()
         }
+    }
+
+    // MARK: - Overflow Menu (⋮)
+
+    @ViewBuilder
+    private var overflowMenu: some View {
+        Menu {
+            // Desktop / Mobile Mode Toggle
+            Button {
+                viewModel.toggleDesktopMode()
+            } label: {
+                Label(
+                    viewModel.isCurrentTabDesktopMode ? "Request Mobile Site" : "Request Desktop Site",
+                    systemImage: viewModel.isCurrentTabDesktopMode ? "iphone" : "desktopcomputer"
+                )
+            }
+            .disabled(viewModel.currentURL == nil)
+
+            // Bookmarks & History
+            Button {
+                viewModel.showBookmarksAndHistory()
+            } label: {
+                Label("Bookmarks & History", systemImage: "book")
+            }
+
+            // Downloads Queue
+            Button {
+                viewModel.openDownloads()
+            } label: {
+                if viewModel.activeDownloadCount > 0 {
+                    Label("Downloads (\(viewModel.activeDownloadCount))", systemImage: "arrow.down.circle")
+                } else {
+                    Label("Downloads", systemImage: "arrow.down.circle")
+                }
+            }
+
+            // Find Resources / Media Grabber
+            Button {
+                viewModel.openResourceInspector()
+            } label: {
+                if viewModel.detectedMediaCount > 0 {
+                    Label("Find Resources (\(viewModel.detectedMediaCount))", systemImage: "doc.text.magnifyingglass")
+                } else {
+                    Label("Find Resources", systemImage: "doc.text.magnifyingglass")
+                }
+            }
+            .disabled(viewModel.currentURL == nil)
+        } label: {
+            ZStack(alignment: .topTrailing) {
+                Image(systemName: "ellipsis")
+                    .rotationEffect(.degrees(90))
+                    .font(.system(size: 18, weight: .semibold))
+
+                // Priority Badge Indicator: Red for detected media, Blue for active downloads
+                if viewModel.detectedMediaCount > 0 {
+                    Text("\(viewModel.detectedMediaCount)")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 4)
+                        .padding(.vertical, 1)
+                        .background(Color.red)
+                        .clipShape(Capsule())
+                        .offset(x: 8, y: -6)
+                } else if viewModel.activeDownloadCount > 0 {
+                    Text("\(viewModel.activeDownloadCount)")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 4)
+                        .padding(.vertical, 1)
+                        .background(Color.blue)
+                        .clipShape(Capsule())
+                        .offset(x: 8, y: -6)
+                }
+            }
+            .frame(minWidth: 44, minHeight: 44)
+        }
+        .accessibilityLabel("More Options")
     }
 }
 
