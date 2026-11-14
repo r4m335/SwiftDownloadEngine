@@ -45,6 +45,7 @@ public struct SettingsView: View {
     // Content Shields & Ad Blocking (Phase 3 Milestone 3.2)
     @State private var isAdBlockerEnabled: Bool = true
     @State private var isPopupBlockerEnabled: Bool = true
+    @State private var selectedSearchEngine: BrowserSearchEngine = .duckDuckGo
 
     // Download File Categorization (Phase 3 Milestone 3.3)
     @State private var isAutomaticCategorizationEnabled: Bool = true
@@ -364,6 +365,18 @@ public struct SettingsView: View {
                     }
                 }
 
+                // Section 9B: Browser & Search Engine (Workstream B Milestone B.1)
+                Section(
+                    header: Text("Browser & Search Engine"),
+                    footer: Text("Choose the default search engine used for address bar queries when a full URL is not entered.")
+                ) {
+                    Picker("Default Search Engine", selection: $selectedSearchEngine) {
+                        ForEach(BrowserSearchEngine.allCases) { engine in
+                            Text(engine.displayName).tag(engine)
+                        }
+                    }
+                }
+
                 // Section 10: Download Scheduler (iOS Native URLSession & Local Notifications)
                 Section(
                     header: Text("Download Scheduler"),
@@ -476,6 +489,7 @@ public struct SettingsView: View {
 
         self.isAdBlockerEnabled = settings.isAdBlockerEnabled
         self.isPopupBlockerEnabled = settings.isPopupBlockerEnabled
+        self.selectedSearchEngine = settings.browserSearchEngine
         self.isAutomaticCategorizationEnabled = settings.isAutomaticCategorizationEnabled
 
         if let rule = viewModel.scheduleRules.first {
@@ -516,7 +530,9 @@ public struct SettingsView: View {
             adBlockerWhitelistedDomains: viewModel.appSettings.adBlockerWhitelistedDomains,
             isAutomaticCategorizationEnabled: isAutomaticCategorizationEnabled,
             customCategoryFolders: viewModel.appSettings.customCategoryFolders,
-            defaultDownloadDirectoryBookmark: viewModel.appSettings.defaultDownloadDirectoryBookmark
+            defaultDownloadDirectoryBookmark: viewModel.appSettings.defaultDownloadDirectoryBookmark,
+            downloadSortOrder: viewModel.appSettings.downloadSortOrder,
+            browserSearchEngine: selectedSearchEngine
         )
 
         var currentRule = viewModel.scheduleRules.first ?? ScheduleRule()

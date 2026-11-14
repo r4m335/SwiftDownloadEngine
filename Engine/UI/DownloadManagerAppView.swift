@@ -42,6 +42,8 @@ public struct DownloadManagerAppView: View {
             }, onOpenAddDownload: { url in
                 addURLPrefill = url.absoluteString
                 selectedTab = 2
+            }, onOpenDownloads: {
+                selectedTab = 0
             })
                 .tabItem {
                     Label("Browser", systemImage: "globe")

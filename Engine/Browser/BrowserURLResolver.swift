@@ -1,12 +1,15 @@
 import Foundation
 
 /// Defines supported search engines for non-URL queries in the browser.
-public enum BrowserSearchEngine: String, CaseIterable, Identifiable {
+public enum BrowserSearchEngine: String, CaseIterable, Identifiable, Codable, Sendable {
     case duckDuckGo = "DuckDuckGo"
     case google = "Google"
     case bing = "Bing"
+    case brave = "Brave"
 
     public var id: String { rawValue }
+
+    public var displayName: String { rawValue }
 
     public var queryPrefix: String {
         switch self {
@@ -16,6 +19,8 @@ public enum BrowserSearchEngine: String, CaseIterable, Identifiable {
             return "https://www.google.com/search?q="
         case .bing:
             return "https://www.bing.com/search?q="
+        case .brave:
+            return "https://search.brave.com/search?q="
         }
     }
 }

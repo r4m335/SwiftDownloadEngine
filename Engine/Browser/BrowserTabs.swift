@@ -16,6 +16,8 @@ public struct BrowserTabState: Identifiable, Equatable, Sendable {
     public var estimatedProgress: Double
     public var isDesktopMode: Bool
     public var isIncognito: Bool
+    public var createdAt: Date
+    public var previewUpdatedAt: Date?
 
     public init(
         id: UUID = UUID(),
@@ -26,7 +28,9 @@ public struct BrowserTabState: Identifiable, Equatable, Sendable {
         canGoForward: Bool = false,
         estimatedProgress: Double = 0,
         isDesktopMode: Bool = false,
-        isIncognito: Bool = false
+        isIncognito: Bool = false,
+        createdAt: Date = Date(),
+        previewUpdatedAt: Date? = nil
     ) {
         self.id = id
         self.url = url
@@ -37,6 +41,8 @@ public struct BrowserTabState: Identifiable, Equatable, Sendable {
         self.estimatedProgress = estimatedProgress
         self.isDesktopMode = isDesktopMode
         self.isIncognito = isIncognito
+        self.createdAt = createdAt
+        self.previewUpdatedAt = previewUpdatedAt
     }
 
     public var displayName: String {

@@ -29,7 +29,7 @@ public enum DownloadSortOrder: String, CaseIterable, Identifiable, Codable, Send
 /// Codable user-facing preferences stored in UserDefaults (@AppStorage).
 /// Features a `version` field for seamless migrations across app updates.
 public struct AppSettings: Codable, Sendable, Equatable {
-    public static let currentVersion: Int = 4
+    public static let currentVersion: Int = 5
     public static let userDefaultsKey = "com.r4m335.SwiftDownloadEngine.AppSettings"
 
     public var version: Int
@@ -62,6 +62,9 @@ public struct AppSettings: Codable, Sendable, Equatable {
     // Interactive Download Sorting (Phase 4 Milestone 4.4)
     public var downloadSortOrder: DownloadSortOrder
 
+    // Browser Search Engine & Navigation (Workstream B Milestone B.1)
+    public var browserSearchEngine: BrowserSearchEngine
+
     public static let `default` = AppSettings(
         version: currentVersion,
         maxConcurrentDownloads: 3,
@@ -85,7 +88,8 @@ public struct AppSettings: Codable, Sendable, Equatable {
         isAutomaticCategorizationEnabled: true,
         customCategoryFolders: [:],
         defaultDownloadDirectoryBookmark: nil,
-        downloadSortOrder: .dateAddedDesc
+        downloadSortOrder: .dateAddedDesc,
+        browserSearchEngine: .duckDuckGo
     )
 
     public init(
@@ -111,7 +115,8 @@ public struct AppSettings: Codable, Sendable, Equatable {
         isAutomaticCategorizationEnabled: Bool = true,
         customCategoryFolders: [String: String] = [:],
         defaultDownloadDirectoryBookmark: Data? = nil,
-        downloadSortOrder: DownloadSortOrder = .dateAddedDesc
+        downloadSortOrder: DownloadSortOrder = .dateAddedDesc,
+        browserSearchEngine: BrowserSearchEngine = .duckDuckGo
     ) {
         self.version = version
         self.maxConcurrentDownloads = max(1, maxConcurrentDownloads)
@@ -136,6 +141,7 @@ public struct AppSettings: Codable, Sendable, Equatable {
         self.customCategoryFolders = customCategoryFolders
         self.defaultDownloadDirectoryBookmark = defaultDownloadDirectoryBookmark
         self.downloadSortOrder = downloadSortOrder
+        self.browserSearchEngine = browserSearchEngine
     }
 
     public init(from decoder: Decoder) throws {
@@ -163,6 +169,7 @@ public struct AppSettings: Codable, Sendable, Equatable {
         self.customCategoryFolders = try container.decodeIfPresent([String: String].self, forKey: .customCategoryFolders) ?? [:]
         self.defaultDownloadDirectoryBookmark = try container.decodeIfPresent(Data.self, forKey: .defaultDownloadDirectoryBookmark)
         self.downloadSortOrder = try container.decodeIfPresent(DownloadSortOrder.self, forKey: .downloadSortOrder) ?? .dateAddedDesc
+        self.browserSearchEngine = try container.decodeIfPresent(BrowserSearchEngine.self, forKey: .browserSearchEngine) ?? .duckDuckGo
     }
 
     /// Resolves the effective subfolder name for a category.

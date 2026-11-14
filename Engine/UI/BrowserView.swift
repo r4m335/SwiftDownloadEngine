@@ -40,6 +40,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
     @Published public private(set) var tabs: [BrowserTabState] = []
     @Published public private(set) var activeTabID: UUID?
     @Published public var isShowingTabSwitcher: Bool = false
+    @Published public var isShowingBookmarksAndHistory: Bool = false
     @Published public var externalAppLinkPrompt: BrowserExternalAppLink?
 
     // Download modal state
@@ -165,6 +166,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
     public weak var magnetDelegate: (any BrowserMagnetDelegate)?
     public var onDownloadInitiated: (() -> Void)? = nil
     public var onOpenAddDownload: ((URL) -> Void)? = nil
+    public var onOpenDownloads: (() -> Void)? = nil
 
     private var tabManager = BrowserTabManager()
     private var mediaCandidateCatalogs: [UUID: BrowserMediaCandidateCatalog] = [:]
@@ -212,6 +214,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         magnetDelegate: (any BrowserMagnetDelegate)? = nil,
         onDownloadInitiated: (() -> Void)? = nil,
         onOpenAddDownload: ((URL) -> Void)? = nil,
+        onOpenDownloads: (() -> Void)? = nil,
         streamingOrchestrator: StreamingDownloadOrchestrator? = nil,
         streamingDestinationDirectoryURL: URL? = nil
     ) {
@@ -219,6 +222,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         self.magnetDelegate = magnetDelegate
         self.onDownloadInitiated = onDownloadInitiated
         self.onOpenAddDownload = onOpenAddDownload
+        self.onOpenDownloads = onOpenDownloads
         let orchestrator = streamingOrchestrator ?? StreamingDownloadOrchestrator.shared
         if let orchestrator, let vm = downloadDelegate as? DownloadManagerViewModel {
             Task {
@@ -235,6 +239,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         self.isAdBlockerEnabled = initialSettings.isAdBlockerEnabled
         self.isPopupBlockerEnabled = initialSettings.isPopupBlockerEnabled
         self.adBlockerWhitelistedDomains = Set(initialSettings.adBlockerWhitelistedDomains)
+        self.selectedSearchEngine = initialSettings.browserSearchEngine
 
         super.init()
 
@@ -362,6 +367,38 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         #endif
     }
 
+    public func showBookmarksAndHistory() {
+        isShowingBookmarksAndHistory = true
+    }
+
+    public func setSearchEngine(_ engine: BrowserSearchEngine) {
+        self.selectedSearchEngine = engine
+        var settings = AppSettings.load()
+        settings.browserSearchEngine = engine
+        settings.save()
+    }
+
+    public func openDownloads() {
+        if let onOpenDownloads {
+            onOpenDownloads()
+        } else {
+            isShowingDownloadSheet = true
+        }
+    }
+
+    public var activeDownloadCount: Int {
+        guard let vm = downloadDelegate as? DownloadManagerViewModel else { return 0 }
+        return vm.unifiedTransfers.filter { $0.state == .downloading }.count
+    }
+
+    public var activeDownloadProgress: Double {
+        guard let vm = downloadDelegate as? DownloadManagerViewModel else { return 0.0 }
+        let active = vm.unifiedTransfers.filter { $0.state == .downloading }
+        guard !active.isEmpty else { return 0.0 }
+        let sum = active.reduce(0.0) { $0 + $1.progress }
+        return sum / Double(active.count)
+    }
+
     public func closeAllIncognitoTabs() {
         let incognitoIDs = tabs.filter(\.isIncognito).map(\.id)
         for id in incognitoIDs {
@@ -383,6 +420,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
     @discardableResult
     public func closeTab(_ id: UUID) -> UUID? {
         let isIncognito = tabManager.tab(withID: id)?.isIncognito ?? false
+        BrowserTabPreviewCache.shared.removePreview(for: id)
         #if canImport(WebKit)
         cancelBlobCapture(for: id)
         cancelMSECapture(for: id)
@@ -599,6 +637,19 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         tab.estimatedProgress = webView.estimatedProgress
         _ = tabManager.updateTab(tab)
         publishTabState()
+        if !isLoading, let effectiveURL = tab.url, effectiveURL.absoluteString != "about:blank" {
+            BrowserHistoryStore.shared.recordVisit(url: effectiveURL, title: tab.title, isIncognito: tab.isIncognito)
+            #if canImport(UIKit)
+            let tabIncognito = tab.isIncognito
+            webView.takeSnapshot(with: nil) { [weak self] image, _ in
+                guard let image, let data = image.jpegData(compressionQuality: 0.6) else { return }
+                BrowserTabPreviewCache.shared.setPreview(data, for: tabID, isIncognito: tabIncognito)
+                DispatchQueue.main.async {
+                    self?.publishTabState()
+                }
+            }
+            #endif
+        }
         if tabID == activeTabID {
             self.webView = webView
             syncActiveTabState()
@@ -2985,26 +3036,30 @@ public struct BrowserView: View {
         downloadDelegate: BrowserDownloadDelegate? = nil,
         magnetDelegate: (any BrowserMagnetDelegate)? = nil,
         onDownloadInitiated: (() -> Void)? = nil,
-        onOpenAddDownload: ((URL) -> Void)? = nil
+        onOpenAddDownload: ((URL) -> Void)? = nil,
+        onOpenDownloads: (() -> Void)? = nil
     ) {
         _viewModel = StateObject(wrappedValue: BrowserViewModel(
             downloadDelegate: downloadDelegate,
             magnetDelegate: magnetDelegate,
             onDownloadInitiated: onDownloadInitiated,
-            onOpenAddDownload: onOpenAddDownload
+            onOpenAddDownload: onOpenAddDownload,
+            onOpenDownloads: onOpenDownloads
         ))
     }
 
     public init(
         viewModel: DownloadManagerViewModel,
         onDownloadInitiated: (() -> Void)? = nil,
-        onOpenAddDownload: ((URL) -> Void)? = nil
+        onOpenAddDownload: ((URL) -> Void)? = nil,
+        onOpenDownloads: (() -> Void)? = nil
     ) {
         _viewModel = StateObject(wrappedValue: BrowserViewModel(
             downloadDelegate: viewModel,
             magnetDelegate: viewModel,
             onDownloadInitiated: onDownloadInitiated,
             onOpenAddDownload: onOpenAddDownload,
+            onOpenDownloads: onOpenDownloads,
             streamingOrchestrator: StreamingDownloadOrchestrator.shared,
             streamingDestinationDirectoryURL: viewModel.downloadsDirectoryURL
         ))
@@ -3113,6 +3168,9 @@ public struct BrowserView: View {
         }
         .sheet(isPresented: $viewModel.isShowingTabSwitcher) {
             BrowserTabSwitcherView(viewModel: viewModel)
+        }
+        .sheet(isPresented: $viewModel.isShowingBookmarksAndHistory) {
+            BrowserBookmarksAndHistoryView(viewModel: viewModel)
         }
         .sheet(isPresented: $isShowingDiagnosticLogs) {
             DiagnosticLogView(configuration: viewModel.activeEngineConfiguration)
@@ -3481,15 +3539,56 @@ public struct BrowserView: View {
                 .accessibilityLabel("Home")
                 .frame(minWidth: 44, minHeight: 44)
 
-                // Tab overview button; edge gestures are an additional path.
+                // Tab overview button with live count badge
                 Button {
                     viewModel.showTabSwitcher()
                 } label: {
-                    Image(systemName: "square.on.square")
+                    ZStack {
+                        Image(systemName: "square.on.square")
+                            .font(.system(size: 18))
+                        if !viewModel.tabs.isEmpty {
+                            Text("\(viewModel.tabs.count)")
+                                .font(.system(size: 9, weight: .bold))
+                                .offset(x: 1, y: 1)
+                        }
+                    }
+                }
+                .accessibilityLabel("Tabs (\(viewModel.tabs.count) open)")
+                .disabled(viewModel.tabs.isEmpty)
+                .frame(minWidth: 44, minHeight: 44)
+
+                // Bookmarks & History Button (Workstream B Milestone B.1)
+                Button {
+                    viewModel.showBookmarksAndHistory()
+                } label: {
+                    Image(systemName: "book")
                         .font(.system(size: 18))
                 }
-                .accessibilityLabel("Tabs")
-                .disabled(viewModel.tabs.isEmpty)
+                .accessibilityLabel("Bookmarks and History")
+                .frame(minWidth: 44, minHeight: 44)
+
+                // Active Downloads Indicator (Workstream B Milestone B.1)
+                Button {
+                    viewModel.openDownloads()
+                } label: {
+                    ZStack(alignment: .topTrailing) {
+                        Image(systemName: viewModel.activeDownloadCount > 0 ? "arrow.down.circle.fill" : "arrow.down.circle")
+                            .font(.system(size: 18))
+                            .foregroundColor(viewModel.activeDownloadCount > 0 ? .blue : .primary)
+
+                        if viewModel.activeDownloadCount > 0 {
+                            Text("\(viewModel.activeDownloadCount)")
+                                .font(.system(size: 9, weight: .bold))
+                                .foregroundColor(.white)
+                                .padding(.horizontal, 4)
+                                .padding(.vertical, 1)
+                                .background(Color.blue)
+                                .clipShape(Capsule())
+                                .offset(x: 8, y: -6)
+                        }
+                    }
+                }
+                .accessibilityLabel("Downloads (\(viewModel.activeDownloadCount) active)")
                 .frame(minWidth: 44, minHeight: 44)
 
                 // Find Resources Button
@@ -3529,15 +3628,19 @@ public struct BrowserView: View {
                 .disabled(viewModel.currentURL == nil)
                 .frame(minWidth: 44, minHeight: 44)
 
-                // Reload Button
+                // Dynamic Reload / Stop Button
                 Button {
-                    viewModel.reload()
+                    if viewModel.isLoading {
+                        viewModel.stopLoading()
+                    } else {
+                        viewModel.reload()
+                    }
                 } label: {
-                    Image(systemName: "arrow.clockwise")
+                    Image(systemName: viewModel.isLoading ? "xmark" : "arrow.clockwise")
                         .font(.system(size: 18))
                 }
-                .accessibilityLabel("Reload")
-                .disabled(viewModel.currentURL == nil)
+                .accessibilityLabel(viewModel.isLoading ? "Stop" : "Reload")
+                .disabled(viewModel.currentURL == nil && !viewModel.isLoading)
                 .frame(minWidth: 44, minHeight: 44)
             }
             .frame(maxWidth: .infinity)
@@ -3653,11 +3756,16 @@ public struct BrowserHomeView: View {
     }
 }
 
-// MARK: - Browser Tab Switcher
+// MARK: - Browser Tab Switcher (Visual 2-Column Grid)
 
 public struct BrowserTabSwitcherView: View {
     @ObservedObject public var viewModel: BrowserViewModel
     @Environment(\.dismiss) private var dismiss
+
+    private let columns = [
+        GridItem(.flexible(), spacing: 14),
+        GridItem(.flexible(), spacing: 14)
+    ]
 
     public init(viewModel: BrowserViewModel) {
         self.viewModel = viewModel
@@ -3666,12 +3774,29 @@ public struct BrowserTabSwitcherView: View {
     public var body: some View {
         NavigationView {
             ScrollView {
-                LazyVStack(spacing: 12) {
-                    ForEach(viewModel.tabs) { tab in
-                        tabCard(for: tab)
+                VStack(spacing: 16) {
+                    if viewModel.tabs.isEmpty {
+                        VStack(spacing: 12) {
+                            Spacer(minLength: 40)
+                            Image(systemName: "square.on.square.dashed")
+                                .font(.system(size: 48))
+                                .foregroundColor(.secondary)
+                            Text("No Open Tabs")
+                                .font(.headline)
+                            Text("Open a new tab to begin browsing.")
+                                .font(.subheadline)
+                                .foregroundColor(.secondary)
+                            Spacer(minLength: 40)
+                        }
+                    } else {
+                        LazyVGrid(columns: columns, spacing: 14) {
+                            ForEach(viewModel.tabs) { tab in
+                                tabGridCard(for: tab)
+                            }
+                        }
                     }
 
-                    VStack(spacing: 8) {
+                    VStack(spacing: 10) {
                         HStack(spacing: 12) {
                             Button {
                                 viewModel.createNewTab(isIncognito: false)
@@ -3700,16 +3825,17 @@ public struct BrowserTabSwitcherView: View {
                                 viewModel.closeAllIncognitoTabs()
                             } label: {
                                 Label("Close All Private Tabs", systemImage: "trash")
-                                    .font(.caption)
+                                    .font(.caption.weight(.semibold))
                                     .foregroundColor(.purple)
                             }
                             .padding(.top, 4)
                         }
                     }
+                    .padding(.top, 8)
                 }
                 .padding(16)
             }
-            .navigationTitle("Tabs")
+            .navigationTitle("Tabs (\(viewModel.tabs.count))")
             #if canImport(UIKit)
             .navigationBarTitleDisplayMode(.inline)
             #endif
@@ -3725,82 +3851,145 @@ public struct BrowserTabSwitcherView: View {
     }
 
     @ViewBuilder
-    private func tabCard(for tab: BrowserTabState) -> some View {
-        HStack(spacing: 12) {
-            Button {
-                _ = viewModel.selectTab(tab.id)
-                dismiss()
-            } label: {
-                VStack(alignment: .leading, spacing: 5) {
-                    HStack(spacing: 6) {
-                        if tab.id == viewModel.activeTabID {
-                            Image(systemName: "checkmark.circle.fill")
-                                .foregroundColor(tab.isIncognito ? .purple : .blue)
-                        }
-                        if tab.isIncognito {
-                            HStack(spacing: 3) {
-                                Image(systemName: "eyeglasses")
-                                    .font(.system(size: 11, weight: .bold))
-                                Text("Private")
-                                    .font(.system(size: 10, weight: .bold))
-                            }
+    private func tabGridCard(for tab: BrowserTabState) -> some View {
+        let isActive = tab.id == viewModel.activeTabID
+        let previewData = BrowserTabPreviewCache.shared.preview(for: tab.id)
+
+        Button {
+            _ = viewModel.selectTab(tab.id)
+            dismiss()
+        } label: {
+            VStack(alignment: .leading, spacing: 0) {
+                // Card Header
+                HStack(spacing: 6) {
+                    if tab.isIncognito {
+                        Image(systemName: "eyeglasses")
+                            .font(.system(size: 11, weight: .bold))
                             .foregroundColor(.purple)
-                            .padding(.horizontal, 5)
-                            .padding(.vertical, 2)
-                            .background(Color.purple.opacity(0.18))
-                            .cornerRadius(4)
-                        }
-                        if tab.isDesktopMode {
-                            Image(systemName: "desktopcomputer")
-                                .font(.caption.bold())
-                                .foregroundColor(.blue)
-                        }
-                        Text(tab.displayName)
-                            .font(.headline)
-                            .lineLimit(1)
-                        Spacer(minLength: 0)
+                    } else {
+                        Image(systemName: "globe")
+                            .font(.system(size: 11))
+                            .foregroundColor(.blue)
                     }
 
+                    Text(tab.displayName)
+                        .font(.system(size: 12, weight: .semibold))
+                        .lineLimit(1)
+                        .foregroundColor(.primary)
+
+                    Spacer(minLength: 0)
+
+                    Button {
+                        close(tab.id)
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.system(size: 15))
+                            .foregroundColor(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Close \(tab.displayName)")
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 8)
+                #if canImport(UIKit)
+                .background(Color(UIColor.secondarySystemBackground))
+                #else
+                .background(Color.secondary.opacity(0.12))
+                #endif
+
+                Divider()
+
+                // Card Thumbnail / Preview Body
+                ZStack {
+                    #if canImport(UIKit)
+                    if let previewData, let uiImage = UIImage(data: previewData) {
+                        Image(uiImage: uiImage)
+                            .resizable()
+                            .scaledToFill()
+                            .frame(maxWidth: .infinity, maxHeight: 115)
+                            .clipped()
+                    } else {
+                        placeholderPreview(for: tab)
+                    }
+                    #else
+                    placeholderPreview(for: tab)
+                    #endif
+                }
+                .frame(maxWidth: .infinity, minHeight: 115, maxHeight: 115)
+                .background(tab.isIncognito ? Color.purple.opacity(0.06) : Color.secondary.opacity(0.04))
+
+                Divider()
+
+                // Card Footer
+                HStack(spacing: 4) {
                     Text(displayURL(for: tab))
-                        .font(.caption)
+                        .font(.system(size: 10))
                         .foregroundColor(.secondary)
                         .lineLimit(1)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .buttonStyle(.plain)
 
-            Button {
-                close(tab.id)
-            } label: {
-                Image(systemName: "xmark.circle.fill")
-                    .font(.title3)
-                    .foregroundColor(.secondary)
+                    Spacer(minLength: 0)
+
+                    if tab.isDesktopMode {
+                        Image(systemName: "desktopcomputer")
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundColor(.blue)
+                    }
+
+                    if tab.isIncognito {
+                        Text("Private")
+                            .font(.system(size: 8, weight: .bold))
+                            .foregroundColor(.purple)
+                            .padding(.horizontal, 4)
+                            .padding(.vertical, 1)
+                            .background(Color.purple.opacity(0.16))
+                            .clipShape(Capsule())
+                    }
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                #if canImport(UIKit)
+                .background(Color(UIColor.secondarySystemBackground))
+                #else
+                .background(Color.secondary.opacity(0.12))
+                #endif
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Close (tab.displayName)")
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+            .overlay(
+                RoundedRectangle(cornerRadius: 12)
+                    .stroke(
+                        isActive
+                            ? (tab.isIncognito ? Color.purple : Color.blue)
+                            : (tab.isIncognito ? Color.purple.opacity(0.3) : Color.secondary.opacity(0.2)),
+                        lineWidth: isActive ? 2.5 : 1
+                    )
+            )
+            .shadow(color: Color.black.opacity(0.06), radius: 4, x: 0, y: 2)
         }
-        .padding(14)
-        .background(
-            RoundedRectangle(cornerRadius: 12)
-                .fill(
-                    tab.isIncognito
-                        ? (tab.id == viewModel.activeTabID ? Color.purple.opacity(0.18) : Color.purple.opacity(0.08))
-                        : (tab.id == viewModel.activeTabID ? Color.blue.opacity(0.12) : Color.secondary.opacity(0.1))
-                )
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 12)
-                .stroke(tab.isIncognito ? Color.purple.opacity(0.3) : Color.clear, lineWidth: 1)
-        )
+        .buttonStyle(.plain)
         .simultaneousGesture(
             DragGesture(minimumDistance: 20)
                 .onEnded { value in
-                    guard value.translation.height < -60,
+                    guard value.translation.height < -50,
                           abs(value.translation.height) > abs(value.translation.width) else { return }
                     close(tab.id)
                 }
         )
+    }
+
+    @ViewBuilder
+    private func placeholderPreview(for tab: BrowserTabState) -> some View {
+        VStack(spacing: 6) {
+            Image(systemName: tab.isIncognito ? "eyeglasses" : "globe")
+                .font(.system(size: 26))
+                .foregroundColor(tab.isIncognito ? .purple.opacity(0.7) : .blue.opacity(0.7))
+
+            Text(tab.url?.host ?? (tab.isIncognito ? "Private Tab" : "New Tab"))
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(.secondary)
+                .lineLimit(1)
+                .padding(.horizontal, 8)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private func close(_ tabID: UUID) {

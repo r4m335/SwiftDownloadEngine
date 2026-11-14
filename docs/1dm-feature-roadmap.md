@@ -290,8 +290,9 @@ To bridge the remaining functional distance without compromising stability or vi
 
 **Goal:** Elevate the integrated browser into a modern, private, and secure mobile browsing powerhouse with unified media discovery and download integration.
 
-### Milestone B.1: Browser Fundamentals & Tab Management
+### Milestone B.1: Browser Fundamentals & Tab Management [Completed]
 - **Objective:** Complete mobile browser experience with rich multi-tab management.
+- **Current State:** Implemented & verified. Pure Swift models (`BrowserTabState`, `BrowserTabPreviewCache`, `BrowserBookmarkStore`, `BrowserBookmarkFolder`, `BrowserBookmarkItem`, `BrowserHistoryStore`, `BrowserHistoryVisit`), 2-column visual thumbnail grid (`LazyVGrid`) with live snapshots, tab switching/closing, strict ephemeral memory-only caching for incognito tabs (`WKWebsiteDataStore.nonPersistent()`), full navigation controls (back, forward, reload, stop, home, swipe navigation), smart address bar with URL/search detection and search engine selection (DuckDuckGo, Google, Bing, Brave) persisted in `AppSettings` (schema v5), desktop mode (`customUserAgent`), hierarchical bookmarks with folder nesting, search, and sorting (A-Z/newest), persistent history store with chronological grouping ("Today", "Yesterday", "Last 7 Days", "Older") and strict incognito exclusion invariant, and live download indicator badge/progress in the browser navigation toolbar linked to `DownloadManagerViewModel`.
 - **Scope:**
   - Multi-tab browsing with 2-column visual thumbnail grid and preview caching.
   - Full navigation controls: Back, forward, refresh, stop, home.
