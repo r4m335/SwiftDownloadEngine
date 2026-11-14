@@ -1155,206 +1155,229 @@ public actor DownloadCoordinator {
         )
         try await persistenceStore.save(initialRecord)
 
+        let maxAttempts = max(1, request.retryCount + 1)
+        var attempt = 0
         var acquiredPermit = false
 
-        do {
-            updateProgress(
-                downloadID: request.id,
-                state: .probing,
-                bytesReceived: 0,
-                totalBytes: nil,
-                completedSegments: 0,
-                totalSegments: 1,
-                handler: handler
-            )
-
-            let probe = HTTPRangeProbe(session: session)
-            let probeResult: HTTPRangeProbeResult
-            do {
-                probeResult = try await probe.probe(configuration: HTTPRangeProbeConfiguration(
-                    url: request.url,
-                    customHeaders: request.headers,
-                    allowsCellularAccess: request.networkPolicy.allowsCellularAccess
-                ))
-            } catch let probeError as HTTPRangeProbeError {
-                switch probeError {
-                case .unauthorized(let u):
-                    throw DownloadCoordinatorError.tokenExpired(url: u)
-                case .forbidden(let u):
-                    let cooldown = Date().addingTimeInterval(300)
-                    throw DownloadCoordinatorError.accessDenied(url: u, cooldownUntil: cooldown)
-                case .resourceNotFound(let u):
-                    throw DownloadCoordinatorError.linkExpired(url: u)
-                case .rateLimited(let u, let sec):
-                    throw DownloadCoordinatorError.rateLimited(url: u, retryAfter: sec)
-                default:
-                    throw probeError
-                }
-            }
-
-            let totalSize = probeResult.totalSize ?? 0
-            if totalSize > 0 {
-                initialRecord.totalSize = totalSize
-                initialRecord.segments[0].endOffset = totalSize - 1
-                initialRecord.segments[0].length = totalSize
-                do {
-                    try await persistenceStore.save(initialRecord)
-                } catch {
-                    PipelineLogger.shared.log("[DownloadCoordinator] Warning: Failed to persist segment checkpoint after probe for \(request.id): \(error.localizedDescription)")
-                }
-            }
-
-            var segmentRequest = URLRequest(url: probeResult.finalURL)
-            segmentRequest.httpMethod = "GET"
-            segmentRequest.setValue("identity", forHTTPHeaderField: "Accept-Encoding")
-            let safeHeaders = BrowserHeaderFilter.stripCredentialsOnRedirect(
-                headers: request.headers,
-                from: request.url,
-                to: probeResult.finalURL
-            )
-            for (name, value) in BrowserHeaderFilter.sanitizeHeaders(safeHeaders) {
-                if name.caseInsensitiveCompare("Accept-Encoding") != .orderedSame &&
-                   name.caseInsensitiveCompare("Range") != .orderedSame {
-                    segmentRequest.setValue(value, forHTTPHeaderField: name)
-                }
-            }
-            segmentRequest = DownloadRequestEnricher.enrich(segmentRequest)
-
-            let redirectDelegate = DownloadResourceRedirectDelegate(
-                originalURL: request.url,
-                headers: safeHeaders
-            )
-
-            try await requestBudget.acquire(
-                downloadID: request.id,
-                maxPerDownload: request.maxConcurrentRequests,
-                host: request.url.host
-            )
-            acquiredPermit = true
-
-            updateProgress(
-                downloadID: request.id,
-                state: .downloading,
-                bytesReceived: 0,
-                totalBytes: totalSize > 0 ? totalSize : nil,
-                completedSegments: 0,
-                totalSegments: 1,
-                handler: handler
-            )
-
-            // Stream directly to disk using URLSession.download(for:delegate:) instead of loading into RAM
-            let (tempDownloadedURL, response) = try await session.download(for: segmentRequest, delegate: redirectDelegate)
-            defer { try? FileManager.default.removeItem(at: tempDownloadedURL) }
+        while true {
             try Task.checkCancellation()
-
-            if acquiredPermit {
-                await requestBudget.release(downloadID: request.id, host: request.url.host)
-                acquiredPermit = false
-            }
-
-            guard let httpResponse = response as? HTTPURLResponse else {
-                throw DownloadCoordinatorError.unexpectedSingleStreamError(reason: "Segment resource did not return an HTTP response")
-            }
-            if httpResponse.statusCode == 401 {
-                throw DownloadCoordinatorError.tokenExpired(url: request.url)
-            }
-            if httpResponse.statusCode == 403 {
-                let cooldown = Date().addingTimeInterval(300)
-                throw DownloadCoordinatorError.accessDenied(url: request.url, cooldownUntil: cooldown)
-            }
-            if httpResponse.statusCode == 404 || httpResponse.statusCode == 410 {
-                throw DownloadCoordinatorError.linkExpired(url: request.url)
-            }
-            if httpResponse.statusCode == 429 {
-                let retryAfter = HTTPRangeProbe.parseRetryAfter(httpResponse.value(forHTTPHeaderField: "Retry-After"))
-                throw DownloadCoordinatorError.rateLimited(url: request.url, retryAfter: retryAfter)
-            }
-            guard (200...299).contains(httpResponse.statusCode) else {
-                throw DownloadCoordinatorError.unexpectedSingleStreamError(
-                    reason: "Segment resource returned HTTP \(httpResponse.statusCode)"
-                )
-            }
-
-            let attrs = try FileManager.default.attributesOfItem(atPath: tempDownloadedURL.path)
-            let receivedBytes = (attrs[.size] as? NSNumber)?.int64Value ?? 0
-            guard receivedBytes > 0 else {
-                throw DownloadCoordinatorError.unexpectedSingleStreamError(reason: "Segment resource returned 0 bytes")
-            }
-            if totalSize > 0 && receivedBytes != totalSize {
-                throw SegmentDownloaderError.bodyLengthMismatch(expected: totalSize, actual: receivedBytes)
-            }
-
-            let parentDir = request.destinationURL.deletingLastPathComponent()
             do {
-                try DownloadManagerViewModel.ensureDirectoryExistsAndWritable(parentDir)
-            } catch {
-                let nsErr = error as NSError
-                PipelineLogger.shared.log("[DownloadCoordinator] Operation: createDirectory, Path: \(parentDir.path), Domain: \(nsErr.domain), Code: \(nsErr.code), Description: \(nsErr.localizedDescription), UserInfo: \(nsErr.userInfo)")
-                throw error
-            }
+                updateProgress(
+                    downloadID: request.id,
+                    state: .probing,
+                    bytesReceived: 0,
+                    totalBytes: nil,
+                    completedSegments: 0,
+                    totalSegments: 1,
+                    handler: handler
+                )
 
-            // Safe atomic publication: Stage inside destination directory, then atomically replace without deleting target first
-            let stagingURL = parentDir.appendingPathComponent(".stage-\(request.id)-\(UUID().uuidString).tmp")
-            try FileManager.default.moveItem(at: tempDownloadedURL, to: stagingURL)
-            defer { try? FileManager.default.removeItem(at: stagingURL) }
-
-            #if canImport(Darwin)
-            if FileManager.default.fileExists(atPath: request.destinationURL.path) {
+                let probe = HTTPRangeProbe(session: session)
+                let probeResult: HTTPRangeProbeResult
                 do {
-                    _ = try FileManager.default.replaceItemAt(request.destinationURL, withItemAt: stagingURL, backupItemName: nil, options: [])
+                    probeResult = try await probe.probe(configuration: HTTPRangeProbeConfiguration(
+                        url: request.url,
+                        customHeaders: request.headers,
+                        allowsCellularAccess: request.networkPolicy.allowsCellularAccess
+                    ))
+                } catch let probeError as HTTPRangeProbeError {
+                    switch probeError {
+                    case .unauthorized(let u):
+                        throw DownloadCoordinatorError.tokenExpired(url: u)
+                    case .forbidden(let u):
+                        let cooldown = Date().addingTimeInterval(300)
+                        throw DownloadCoordinatorError.accessDenied(url: u, cooldownUntil: cooldown)
+                    case .resourceNotFound(let u):
+                        throw DownloadCoordinatorError.linkExpired(url: u)
+                    case .rateLimited(let u, let sec):
+                        throw DownloadCoordinatorError.rateLimited(url: u, retryAfter: sec)
+                    default:
+                        throw probeError
+                    }
+                }
+
+                let totalSize = probeResult.totalSize ?? 0
+                if totalSize > 0 {
+                    initialRecord.totalSize = totalSize
+                    initialRecord.segments[0].endOffset = totalSize - 1
+                    initialRecord.segments[0].length = totalSize
+                    do {
+                        try await persistenceStore.save(initialRecord)
+                    } catch {
+                        PipelineLogger.shared.log("[DownloadCoordinator] Warning: Failed to persist segment checkpoint after probe for \(request.id): \(error.localizedDescription)")
+                    }
+                }
+
+                var segmentRequest = URLRequest(url: probeResult.finalURL)
+                segmentRequest.httpMethod = "GET"
+                segmentRequest.setValue("identity", forHTTPHeaderField: "Accept-Encoding")
+                let safeHeaders = BrowserHeaderFilter.stripCredentialsOnRedirect(
+                    headers: request.headers,
+                    from: request.url,
+                    to: probeResult.finalURL
+                )
+                for (name, value) in BrowserHeaderFilter.sanitizeHeaders(safeHeaders) {
+                    if name.caseInsensitiveCompare("Accept-Encoding") != .orderedSame &&
+                       name.caseInsensitiveCompare("Range") != .orderedSame {
+                        segmentRequest.setValue(value, forHTTPHeaderField: name)
+                    }
+                }
+                segmentRequest = DownloadRequestEnricher.enrich(segmentRequest)
+
+                let redirectDelegate = DownloadResourceRedirectDelegate(
+                    originalURL: request.url,
+                    headers: safeHeaders
+                )
+
+                try await requestBudget.acquire(
+                    downloadID: request.id,
+                    maxPerDownload: request.maxConcurrentRequests,
+                    host: request.url.host
+                )
+                acquiredPermit = true
+
+                updateProgress(
+                    downloadID: request.id,
+                    state: .downloading,
+                    bytesReceived: 0,
+                    totalBytes: totalSize > 0 ? totalSize : nil,
+                    completedSegments: 0,
+                    totalSegments: 1,
+                    handler: handler
+                )
+
+                // Stream directly to disk using URLSession.download(for:delegate:) instead of loading into RAM
+                let (tempDownloadedURL, response) = try await session.download(for: segmentRequest, delegate: redirectDelegate)
+                defer { try? FileManager.default.removeItem(at: tempDownloadedURL) }
+                try Task.checkCancellation()
+
+                if acquiredPermit {
+                    await requestBudget.release(downloadID: request.id, host: request.url.host)
+                    acquiredPermit = false
+                }
+
+                guard let httpResponse = response as? HTTPURLResponse else {
+                    throw DownloadCoordinatorError.unexpectedSingleStreamError(reason: "Segment resource did not return an HTTP response")
+                }
+                if httpResponse.statusCode == 401 {
+                    throw DownloadCoordinatorError.tokenExpired(url: request.url)
+                }
+                if httpResponse.statusCode == 403 {
+                    let cooldown = Date().addingTimeInterval(300)
+                    throw DownloadCoordinatorError.accessDenied(url: request.url, cooldownUntil: cooldown)
+                }
+                if httpResponse.statusCode == 404 || httpResponse.statusCode == 410 {
+                    throw DownloadCoordinatorError.linkExpired(url: request.url)
+                }
+                if httpResponse.statusCode == 429 {
+                    let retryAfter = HTTPRangeProbe.parseRetryAfter(httpResponse.value(forHTTPHeaderField: "Retry-After"))
+                    throw DownloadCoordinatorError.rateLimited(url: request.url, retryAfter: retryAfter)
+                }
+                guard (200...299).contains(httpResponse.statusCode) else {
+                    throw DownloadCoordinatorError.unexpectedSingleStreamError(
+                        reason: "Segment resource returned HTTP \(httpResponse.statusCode)"
+                    )
+                }
+
+                let attrs = try FileManager.default.attributesOfItem(atPath: tempDownloadedURL.path)
+                let receivedBytes = (attrs[.size] as? NSNumber)?.int64Value ?? 0
+                guard receivedBytes > 0 else {
+                    throw DownloadCoordinatorError.unexpectedSingleStreamError(reason: "Segment resource returned 0 bytes")
+                }
+                if totalSize > 0 && receivedBytes != totalSize {
+                    throw SegmentDownloaderError.bodyLengthMismatch(expected: totalSize, actual: receivedBytes)
+                }
+
+                let parentDir = request.destinationURL.deletingLastPathComponent()
+                do {
+                    try DownloadManagerViewModel.ensureDirectoryExistsAndWritable(parentDir)
                 } catch {
-                    _ = try? FileManager.default.removeItem(at: request.destinationURL)
+                    let nsErr = error as NSError
+                    PipelineLogger.shared.log("[DownloadCoordinator] Operation: createDirectory, Path: \(parentDir.path), Domain: \(nsErr.domain), Code: \(nsErr.code), Description: \(nsErr.localizedDescription), UserInfo: \(nsErr.userInfo)")
+                    throw error
+                }
+
+                // Safe atomic publication: Stage inside destination directory, then atomically replace without deleting target first
+                let stagingURL = parentDir.appendingPathComponent(".stage-\(request.id)-\(UUID().uuidString).tmp")
+                try FileManager.default.moveItem(at: tempDownloadedURL, to: stagingURL)
+                defer { try? FileManager.default.removeItem(at: stagingURL) }
+
+                #if canImport(Darwin)
+                if FileManager.default.fileExists(atPath: request.destinationURL.path) {
+                    do {
+                        _ = try FileManager.default.replaceItemAt(request.destinationURL, withItemAt: stagingURL, backupItemName: nil, options: [])
+                    } catch {
+                        _ = try? FileManager.default.removeItem(at: request.destinationURL)
+                        try FileManager.default.moveItem(at: stagingURL, to: request.destinationURL)
+                    }
+                } else {
                     try FileManager.default.moveItem(at: stagingURL, to: request.destinationURL)
                 }
-            } else {
+                #else
+                if FileManager.default.fileExists(atPath: request.destinationURL.path) {
+                    _ = try? FileManager.default.removeItem(at: request.destinationURL)
+                }
                 try FileManager.default.moveItem(at: stagingURL, to: request.destinationURL)
-            }
-            #else
-            if FileManager.default.fileExists(atPath: request.destinationURL.path) {
-                _ = try? FileManager.default.removeItem(at: request.destinationURL)
-            }
-            try FileManager.default.moveItem(at: stagingURL, to: request.destinationURL)
-            #endif
+                #endif
 
-            var completedRecord = initialRecord
-            completedRecord.totalSize = receivedBytes
-            completedRecord.segments[0].completedBytes = receivedBytes
-            completedRecord.segments[0].length = receivedBytes
-            completedRecord.segments[0].endOffset = max(0, receivedBytes - 1)
-            completedRecord.transition(to: .completed)
-            try await persistenceStore.save(completedRecord)
+                var completedRecord = initialRecord
+                completedRecord.totalSize = receivedBytes
+                completedRecord.segments[0].completedBytes = receivedBytes
+                completedRecord.segments[0].length = receivedBytes
+                completedRecord.segments[0].endOffset = max(0, receivedBytes - 1)
+                completedRecord.transition(to: .completed)
+                try await persistenceStore.save(completedRecord)
 
-            updateProgress(
-                downloadID: request.id,
-                state: .completed,
-                bytesReceived: receivedBytes,
-                totalBytes: receivedBytes,
-                completedSegments: 1,
-                totalSegments: 1,
-                handler: handler
-            )
-        } catch is CancellationError {
-            if acquiredPermit {
-                await requestBudget.release(downloadID: request.id, host: request.url.host)
-                acquiredPermit = false
-            }
-            do {
-                try await persistenceStore.updateState(tag: request.id, state: .cancelled)
+                updateProgress(
+                    downloadID: request.id,
+                    state: .completed,
+                    bytesReceived: receivedBytes,
+                    totalBytes: receivedBytes,
+                    completedSegments: 1,
+                    totalSegments: 1,
+                    handler: handler
+                )
+                return
+            } catch is CancellationError {
+                if acquiredPermit {
+                    await requestBudget.release(downloadID: request.id, host: request.url.host)
+                    acquiredPermit = false
+                }
+                do {
+                    try await persistenceStore.updateState(tag: request.id, state: .cancelled)
+                } catch {
+                    PipelineLogger.shared.log("[DownloadCoordinator] Failed to update persistence state to .cancelled for \(request.id): \(error.localizedDescription)")
+                }
+                throw CancellationError()
             } catch {
-                PipelineLogger.shared.log("[DownloadCoordinator] Failed to update persistence state to .cancelled for \(request.id): \(error.localizedDescription)")
+                if acquiredPermit {
+                    await requestBudget.release(downloadID: request.id, host: request.url.host)
+                    acquiredPermit = false
+                }
+                attempt += 1
+                if attempt < maxAttempts && HTTPRetryPolicy.isRetryable(error) {
+                    PipelineLogger.shared.log("[DownloadCoordinator] Segment \(request.id) encountered retryable error (\(error.localizedDescription)). Retrying attempt \(attempt + 1)/\(maxAttempts)...")
+                    if HTTPRetryPolicy.shouldWaitForConnectivity(error) {
+                        try? await connectivityGate.waitUntilAvailable(
+                            allowsCellular: request.networkPolicy.allowsCellularAccess
+                        )
+                    }
+                    let delaySeconds: Double
+                    if case DownloadCoordinatorError.rateLimited(_, let retryAfter) = error, let sec = retryAfter {
+                        delaySeconds = min(60.0, max(1.0, sec))
+                    } else {
+                        delaySeconds = min(2.0, Double(attempt) * 0.5)
+                    }
+                    try? await Task.sleep(nanoseconds: UInt64(delaySeconds * 1_000_000_000))
+                    continue
+                }
+                do {
+                    try await persistenceStore.updateState(tag: request.id, state: .failed(reason: error.localizedDescription))
+                } catch {
+                    PipelineLogger.shared.log("[DownloadCoordinator] Failed to update persistence state to .failed for \(request.id): \(error.localizedDescription)")
+                }
+                throw error
             }
-            throw CancellationError()
-        } catch {
-            if acquiredPermit {
-                await requestBudget.release(downloadID: request.id, host: request.url.host)
-                acquiredPermit = false
-            }
-            do {
-                try await persistenceStore.updateState(tag: request.id, state: .failed(reason: error.localizedDescription))
-            } catch {
-                PipelineLogger.shared.log("[DownloadCoordinator] Failed to update persistence state to .failed for \(request.id): \(error.localizedDescription)")
-            }
-            throw error
         }
     }
 

@@ -1803,6 +1803,38 @@ final class StreamingDownloadOrchestratorTests: XCTestCase {
         XCTAssertEqual(calls, 2)
     }
 
+    func testTransientNetworkLossTriggersRetryAndSucceeds() async throws {
+        let manifestURL = URL(string: "https://video.example/network-loss.m3u8")!
+        let playlist = """
+        #EXTM3U
+        #EXT-X-PLAYLIST-TYPE:VOD
+        #EXTINF:2,
+        segment1.ts
+        #EXT-X-ENDLIST
+        """
+        let loader = RecordingManifestLoader(data: Data(playlist.utf8), finalURL: manifestURL, mimeType: "application/vnd.apple.mpegurl")
+        let networkLostError = NSError(
+            domain: NSURLErrorDomain,
+            code: -1005,
+            userInfo: [NSLocalizedDescriptionKey: "The network connection was lost."]
+        )
+        let executor = FaultInjectingSegmentExecutor(failureCount: 1, errorToThrow: networkLostError)
+        let orchestrator = StreamingDownloadOrchestrator(manifestLoader: loader, segmentExecutor: executor)
+
+        let candidate = try StreamingManifestCandidate(url: manifestURL)
+        let proposal = try await orchestrator.prepare(candidate: candidate)
+        let destination = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+
+        let result = try await orchestrator.execute(proposal, approved: true, destinationDirectory: destination)
+        XCTAssertEqual(result.completedSegments.count, 1)
+
+        // Manifest is not re-fetched on transport error (unlike token refresh), but segment is retried
+        let loadCount = await loader.loadCount
+        XCTAssertEqual(loadCount, 1)
+        let calls = await executor.executeCalls
+        XCTAssertEqual(calls, 2)
+    }
+
     func testZeroByteSegmentFileThrowsSegmentTransferFailed() async throws {
         let manifestURL = URL(string: "https://video.example/zero-byte.m3u8")!
         let playlist = """

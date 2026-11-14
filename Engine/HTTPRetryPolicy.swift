@@ -43,6 +43,26 @@ enum HTTPRetryPolicy {
             }
         }
 
+        if let coordError = error as? DownloadCoordinatorError {
+            switch coordError {
+            case .rateLimited:
+                return true
+            case .unexpectedSingleStreamError(let reason):
+                let lower = reason.lowercased()
+                for code in 500...599 {
+                    if lower.contains("\(code)") {
+                        return true
+                    }
+                }
+                if lower.contains("connection") || lower.contains("reset") || lower.contains("timed out") || lower.contains("timeout") {
+                    return true
+                }
+                return false
+            default:
+                return false
+            }
+        }
+
         if let urlError = error as? URLError {
             if isRetryableNetworkCode(urlError.code.rawValue) {
                 return true
@@ -68,6 +88,12 @@ enum HTTPRetryPolicy {
                 }
             }
             return false
+        }
+
+        if let underlying = nsError.userInfo[NSUnderlyingErrorKey] as? Error {
+            if isRetryable(underlying) {
+                return true
+            }
         }
         return false
     }
@@ -125,15 +151,22 @@ enum HTTPRetryPolicy {
     }
 
     static func shouldWaitForConnectivity(_ error: Error) -> Bool {
-        guard let urlError = error as? URLError else {
-            if let probeError = error as? HTTPRangeProbeError,
-               case .networkError(_, let code) = probeError,
-               let code {
-                return isOfflineNetworkCode(code)
-            }
-            return false
+        if let urlError = error as? URLError {
+            return isOfflineNetworkCode(urlError.code.rawValue)
         }
-        return isOfflineNetworkCode(urlError.code.rawValue)
+        if let probeError = error as? HTTPRangeProbeError,
+           case .networkError(_, let code) = probeError,
+           let code {
+            return isOfflineNetworkCode(code)
+        }
+        let nsError = error as NSError
+        if nsError.domain == NSURLErrorDomain {
+            return isOfflineNetworkCode(nsError.code)
+        }
+        if let underlying = nsError.userInfo[NSUnderlyingErrorKey] as? Error {
+            return shouldWaitForConnectivity(underlying)
+        }
+        return false
     }
 
     private static func isRetryableNetworkCode(_ code: Int) -> Bool {

@@ -451,23 +451,37 @@ public final class DownloadCoordinatorSegmentExecutor: StreamingSegmentExecutor,
             unregisterActiveRequest(transferID: request.identity.transferID, requestID: request.identity.value)
         }
 
-        do {
-            try await coordinator.start(downloadRequest) { snapshot in
-                progress?(snapshot.fractionCompleted)
+        var attempts = 0
+        let maxAttempts = max(1, retryCount + 1)
+        while true {
+            attempts += 1
+            do {
+                try await coordinator.start(downloadRequest) { snapshot in
+                    progress?(snapshot.fractionCompleted)
+                }
+                guard FileManager.default.fileExists(atPath: request.destinationURL.path) else {
+                    PipelineLogger.shared.log("[DownloadCoordinatorSegmentExecutor] Missing output file for segment \(request.identity.order) at \(request.destinationURL.path)")
+                    throw StreamingDownloadOrchestratorError.segmentTransferFailed(order: request.identity.order)
+                }
+                let fileSize = FileManager.default.fileSize(atPath: request.destinationURL.path) ?? 0
+                guard fileSize > 0 else {
+                    PipelineLogger.shared.log("[DownloadCoordinatorSegmentExecutor] Empty output file (0 bytes) for segment \(request.identity.order)")
+                    throw StreamingDownloadOrchestratorError.segmentTransferFailed(order: request.identity.order)
+                }
+                PipelineLogger.shared.log("[DownloadCoordinatorSegmentExecutor] Completed segment \(request.identity.order) (\(fileSize) bytes)")
+                return
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                if attempts < maxAttempts && HTTPRetryPolicy.isRetryable(error) {
+                    PipelineLogger.shared.log("[DownloadCoordinatorSegmentExecutor] Segment \(request.identity.order) encountered retryable error (\(error.localizedDescription)). Retrying attempt \(attempts + 1)/\(maxAttempts)...")
+                    let delay = min(2.0, Double(attempts) * 0.5)
+                    try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                    continue
+                }
+                PipelineLogger.shared.log("[DownloadCoordinatorSegmentExecutor] Failed segment \(request.identity.order): \(error)")
+                throw error
             }
-            guard FileManager.default.fileExists(atPath: request.destinationURL.path) else {
-                PipelineLogger.shared.log("[DownloadCoordinatorSegmentExecutor] Missing output file for segment \(request.identity.order) at \(request.destinationURL.path)")
-                throw StreamingDownloadOrchestratorError.segmentTransferFailed(order: request.identity.order)
-            }
-            let fileSize = FileManager.default.fileSize(atPath: request.destinationURL.path) ?? 0
-            guard fileSize > 0 else {
-                PipelineLogger.shared.log("[DownloadCoordinatorSegmentExecutor] Empty output file (0 bytes) for segment \(request.identity.order)")
-                throw StreamingDownloadOrchestratorError.segmentTransferFailed(order: request.identity.order)
-            }
-            PipelineLogger.shared.log("[DownloadCoordinatorSegmentExecutor] Completed segment \(request.identity.order) (\(fileSize) bytes)")
-        } catch {
-            PipelineLogger.shared.log("[DownloadCoordinatorSegmentExecutor] Failed segment \(request.identity.order): \(error)")
-            throw error
         }
     }
 
@@ -2342,45 +2356,61 @@ public actor StreamingDownloadOrchestrator {
             destinationURL: destinationURL
         )
 
-        do {
-            try await segmentExecutor.execute(request, progress: nil)
-        } catch is CancellationError {
-            throw StreamingDownloadOrchestratorError.cancelled
-        } catch let err as StreamingDownloadOrchestratorError where err == .cancelled {
-            throw err
-        } catch {
-            guard shouldAttemptTokenRefresh(for: error) else {
-                PipelineLogger.shared.log("\(pipelineTag) Segment \(resource.identity.order) failed with non-refreshable error: \(error.localizedDescription)")
-                throw StreamingDownloadOrchestratorError.segmentTransferFailed(order: resource.identity.order)
-            }
-            // Retry once with refreshed manifest tokens in case the session expired during pause
-            PipelineLogger.shared.log("\(pipelineTag) Segment \(resource.identity.order) encountered authorization/expiration error: \(error.localizedDescription). Attempting token refresh...")
-            if let candidate = candidatesByTransfer[proposal.transferID] {
-                let candidateMIME = candidate.mimeType ?? ""
-                let metadataFingerprint = EngineSHA256.hash(
-                    data: Data((candidate.url.absoluteString + "|" + candidateMIME).utf8)
-                )
-                proposals.removeValue(forKey: metadataFingerprint)
-                if let freshProposal = try? await prepare(candidate: candidate),
-                   let freshResource = freshProposal.resources.first(where: { $0.identity.order == resource.identity.order }) {
-                    PipelineLogger.shared.log("\(pipelineTag) Successfully refreshed manifest. Retrying segment \(resource.identity.order)...")
-                    let freshRequest = StreamingSegmentTransferRequest(
-                        identity: freshResource.identity,
-                        url: freshResource.url,
-                        headers: requestHeaders(for: freshResource, manifest: freshProposal.manifest),
-                        byteRange: freshResource.byteRange,
-                        destinationURL: destinationURL
+        var attempts = 0
+        let maxAttempts = max(1, (configuration.maxRetryAttempts > 0 ? configuration.maxRetryAttempts + 1 : 3))
+
+        while true {
+            try Task.checkCancellation()
+            do {
+                try await segmentExecutor.execute(request, progress: nil)
+                break
+            } catch is CancellationError {
+                throw StreamingDownloadOrchestratorError.cancelled
+            } catch let err as StreamingDownloadOrchestratorError where err == .cancelled {
+                throw err
+            } catch {
+                attempts += 1
+                if attempts < maxAttempts && HTTPRetryPolicy.isRetryable(error) {
+                    PipelineLogger.shared.log("\(pipelineTag) Segment \(resource.identity.order) encountered transient network error: \(error.localizedDescription). Retrying attempt \(attempts + 1)/\(maxAttempts)...")
+                    let backoff = min(2.0, Double(attempts) * 0.5)
+                    try? await Task.sleep(nanoseconds: UInt64(backoff * 1_000_000_000))
+                    continue
+                }
+
+                guard shouldAttemptTokenRefresh(for: error) else {
+                    PipelineLogger.shared.log("\(pipelineTag) Segment \(resource.identity.order) failed with non-refreshable error: \(error.localizedDescription)")
+                    throw StreamingDownloadOrchestratorError.segmentTransferFailed(order: resource.identity.order)
+                }
+                // Retry once with refreshed manifest tokens in case the session expired during pause
+                PipelineLogger.shared.log("\(pipelineTag) Segment \(resource.identity.order) encountered authorization/expiration error: \(error.localizedDescription). Attempting token refresh...")
+                if let candidate = candidatesByTransfer[proposal.transferID] {
+                    let candidateMIME = candidate.mimeType ?? ""
+                    let metadataFingerprint = EngineSHA256.hash(
+                        data: Data((candidate.url.absoluteString + "|" + candidateMIME).utf8)
                     )
-                    do {
-                        try await segmentExecutor.execute(freshRequest, progress: nil)
-                    } catch {
+                    proposals.removeValue(forKey: metadataFingerprint)
+                    if let freshProposal = try? await prepare(candidate: candidate),
+                       let freshResource = freshProposal.resources.first(where: { $0.identity.order == resource.identity.order }) {
+                        PipelineLogger.shared.log("\(pipelineTag) Successfully refreshed manifest. Retrying segment \(resource.identity.order)...")
+                        let freshRequest = StreamingSegmentTransferRequest(
+                            identity: freshResource.identity,
+                            url: freshResource.url,
+                            headers: requestHeaders(for: freshResource, manifest: freshProposal.manifest),
+                            byteRange: freshResource.byteRange,
+                            destinationURL: destinationURL
+                        )
+                        do {
+                            try await segmentExecutor.execute(freshRequest, progress: nil)
+                            break
+                        } catch {
+                            throw StreamingDownloadOrchestratorError.segmentTransferFailed(order: resource.identity.order)
+                        }
+                    } else {
                         throw StreamingDownloadOrchestratorError.segmentTransferFailed(order: resource.identity.order)
                     }
                 } else {
                     throw StreamingDownloadOrchestratorError.segmentTransferFailed(order: resource.identity.order)
                 }
-            } else {
-                throw StreamingDownloadOrchestratorError.segmentTransferFailed(order: resource.identity.order)
             }
         }
 

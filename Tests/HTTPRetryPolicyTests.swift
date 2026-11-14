@@ -109,4 +109,24 @@ final class HTTPRetryPolicyTests: XCTestCase {
         )
         XCTAssertFalse(HTTPRetryPolicy.isRetryable(nonRetryableUnknown))
     }
+
+    func testCoordinatorErrorsAndUnderlyingNetworkErrors() {
+        let dummyURL = URL(string: "https://example.com/segment.ts")!
+        XCTAssertTrue(HTTPRetryPolicy.isRetryable(DownloadCoordinatorError.rateLimited(url: dummyURL, retryAfter: 2)))
+        XCTAssertTrue(HTTPRetryPolicy.isRetryable(DownloadCoordinatorError.unexpectedSingleStreamError(reason: "Segment resource returned HTTP 503")))
+        XCTAssertTrue(HTTPRetryPolicy.isRetryable(DownloadCoordinatorError.unexpectedSingleStreamError(reason: "connection reset")))
+        XCTAssertFalse(HTTPRetryPolicy.isRetryable(DownloadCoordinatorError.tokenExpired(url: dummyURL)))
+        XCTAssertFalse(HTTPRetryPolicy.isRetryable(DownloadCoordinatorError.accessDenied(url: dummyURL, cooldownUntil: Date())))
+        XCTAssertFalse(HTTPRetryPolicy.isRetryable(DownloadCoordinatorError.linkExpired(url: dummyURL)))
+
+        // -1005 network connection lost
+        let lostConnectionError = NSError(domain: NSURLErrorDomain, code: -1005, userInfo: [NSLocalizedDescriptionKey: "The network connection was lost."])
+        XCTAssertTrue(HTTPRetryPolicy.isRetryable(lostConnectionError))
+        XCTAssertTrue(HTTPRetryPolicy.shouldWaitForConnectivity(lostConnectionError))
+
+        // Underlying error wrapped inside NSError
+        let wrappedLost = NSError(domain: "CustomDomain", code: 999, userInfo: [NSUnderlyingErrorKey: lostConnectionError])
+        XCTAssertTrue(HTTPRetryPolicy.isRetryable(wrappedLost))
+        XCTAssertTrue(HTTPRetryPolicy.shouldWaitForConnectivity(wrappedLost))
+    }
 }
