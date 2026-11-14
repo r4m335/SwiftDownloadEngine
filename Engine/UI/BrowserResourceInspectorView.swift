@@ -45,8 +45,6 @@ public struct BrowserResourceInspectorSheet: View {
     @State private var selectedCategory: WebpageResourceType? = nil
     @State private var showsAllResources = false
     @State private var searchText: String = ""
-    @State private var isDownloadingBatch: Bool = false
-    @State private var batchErrorMessage: String? = nil
     @State private var previewItem: MediaPreviewItem? = nil
 
     public init(viewModel: BrowserViewModel) {
@@ -183,11 +181,6 @@ public struct BrowserResourceInspectorSheet: View {
                 } else if !filteredResources.isEmpty {
                     resourceList
                 }
-
-                // Batch Download Footer (when items are selected)
-                if !viewModel.selectedResourceIDs.isEmpty {
-                    batchDownloadFooter
-                }
             }
             .navigationTitle("Find Resources")
             #if canImport(UIKit)
@@ -210,10 +203,6 @@ public struct BrowserResourceInspectorSheet: View {
             }
             .onAppear {
                 viewModel.expandStreamingManifests()
-                if viewModel.selectedResourceIDs.isEmpty,
-                   let manifest = filteredResources.first(where: { $0.isStreamingManifest }) {
-                    viewModel.selectedResourceIDs.insert(manifest.id)
-                }
             }
             .sheet(item: $previewItem) { item in
                 #if canImport(AVKit) && canImport(UIKit) && (os(iOS) || os(tvOS) || targetEnvironment(macCatalyst))
@@ -305,65 +294,36 @@ public struct BrowserResourceInspectorSheet: View {
     // MARK: - Search & Selection Header
 
     private var searchAndSelectionHeader: some View {
-        HStack(spacing: 8) {
-            HStack(spacing: 6) {
-                Image(systemName: "magnifyingglass")
-                    .foregroundColor(.secondary)
-                    .font(.system(size: 14))
+        HStack(spacing: 6) {
+            Image(systemName: "magnifyingglass")
+                .foregroundColor(.secondary)
+                .font(.system(size: 14))
 
-                TextField("Filter by name or extension", text: $searchText)
-                    #if canImport(UIKit)
-                    .autocapitalization(.none)
-                    #endif
-                    .disableAutocorrection(true)
+            TextField("Filter by name or extension", text: $searchText)
+                #if canImport(UIKit)
+                .autocapitalization(.none)
+                #endif
+                .disableAutocorrection(true)
 
-                if !searchText.isEmpty {
-                    Button {
-                        searchText = ""
-                    } label: {
-                        Image(systemName: "xmark.circle.fill")
-                            .foregroundColor(.secondary)
-                            .font(.system(size: 14))
-                    }
+            if !searchText.isEmpty {
+                Button {
+                    searchText = ""
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundColor(.secondary)
+                        .font(.system(size: 14))
                 }
             }
-            .padding(8)
-            #if canImport(UIKit)
-            .background(Color(UIColor.systemBackground))
-            #else
-            .background(Color.primary.opacity(0.05))
-            #endif
-            .cornerRadius(8)
-
-            // Select All / Deselect All
-            Button {
-                toggleSelectAll()
-            } label: {
-                Text(areAllFilteredSelected ? "Deselect All" : "Select All")
-                    .font(.caption.weight(.medium))
-            }
         }
+        .padding(8)
+        #if canImport(UIKit)
+        .background(Color(UIColor.systemBackground))
+        #else
+        .background(Color.primary.opacity(0.05))
+        #endif
+        .cornerRadius(8)
         .padding(.horizontal, 16)
         .padding(.vertical, 8)
-    }
-
-    private var areAllFilteredSelected: Bool {
-        let supported = filteredResources.filter { $0.isSupported || $0.isStreamingManifest }
-        guard !supported.isEmpty else { return false }
-        return supported.allSatisfy { viewModel.selectedResourceIDs.contains($0.id) }
-    }
-
-    private func toggleSelectAll() {
-        let supported = filteredResources.filter { $0.isSupported || $0.isStreamingManifest }
-        if areAllFilteredSelected {
-            for item in supported {
-                viewModel.selectedResourceIDs.remove(item.id)
-            }
-        } else {
-            for item in supported {
-                viewModel.selectedResourceIDs.insert(item.id)
-            }
-        }
     }
 
     // MARK: - Resource List
@@ -386,22 +346,13 @@ public struct BrowserResourceInspectorSheet: View {
         }
         let quality = hlsMasterQualitySummaries[resource.id]
         let variant = variantMetadataMap[resource.id]
-        let isSelected = viewModel.selectedResourceIDs.contains(resource.id)
 
         ResourceRowView(
             resource: resource,
             candidate: cand,
             qualitySummary: quality,
             variantItem: variant,
-            isSelected: isSelected,
-            onToggleSelect: {
-                if viewModel.selectedResourceIDs.contains(resource.id) {
-                    viewModel.selectedResourceIDs.remove(resource.id)
-                } else {
-                    viewModel.selectedResourceIDs.insert(resource.id)
-                }
-            },
-            onDownload: {
+            onSelect: {
                 if resource.isSegmentChunk {
                     viewModel.blobCaptureErrorMessage = "This is a streaming segment chunk. Download the playlist manifest (.m3u8 or .mpd) instead."
                 } else {
@@ -409,7 +360,12 @@ public struct BrowserResourceInspectorSheet: View {
                 }
             },
             onPreview: {
-                previewItem = MediaPreviewItem(url: resource.url, title: resource.title)
+                let title = resource.suggestedFilename.isEmpty ? resource.title : resource.suggestedFilename
+                previewItem = MediaPreviewItem(url: resource.url, title: title)
+            },
+            onOpenBrowser: {
+                presentationMode.wrappedValue.dismiss()
+                viewModel.load(url: resource.url)
             }
         )
     }
@@ -481,73 +437,6 @@ public struct BrowserResourceInspectorSheet: View {
             Spacer()
         }
     }
-
-    // MARK: - Batch Download Footer
-
-    private var batchDownloadFooter: some View {
-        VStack(spacing: 8) {
-            if let err = batchErrorMessage {
-                Text(err)
-                    .font(.caption)
-                    .foregroundColor(.red)
-            }
-
-            if viewModel.discoveredResources.contains(where: {
-                viewModel.selectedResourceIDs.contains($0.id) && $0.requestContext != nil
-            }) {
-                Toggle("Use browser session credentials", isOn: $viewModel.useBrowserCredentials)
-                    .font(.caption)
-            }
-
-            Button {
-                startBatchDownload()
-            } label: {
-                HStack {
-                    Spacer()
-                    if isDownloadingBatch {
-                        ProgressView()
-                            .padding(.trailing, 8)
-                    }
-                    Text("Download Selected (\(viewModel.selectedResourceIDs.count))")
-                        .bold()
-                    Spacer()
-                }
-                .padding(12)
-                .background(Color.blue)
-                .foregroundColor(.white)
-                .cornerRadius(10)
-            }
-            .disabled(isDownloadingBatch)
-        }
-        .padding(16)
-        #if canImport(UIKit)
-        .background(Color(UIColor.secondarySystemBackground))
-        #else
-        .background(Color.secondary.opacity(0.1))
-        #endif
-    }
-
-    private func startBatchDownload() {
-        batchErrorMessage = nil
-        isDownloadingBatch = true
-
-        Task { @MainActor in
-            do {
-                try await viewModel.downloadSelectedResources()
-                isDownloadingBatch = false
-                if let err = viewModel.blobCaptureErrorMessage ?? viewModel.streamingErrorMessage {
-                    batchErrorMessage = err
-                } else {
-                    presentationMode.wrappedValue.dismiss()
-                }
-            } catch {
-                let errorMsg = error.localizedDescription
-                batchErrorMessage = errorMsg
-                viewModel.blobCaptureErrorMessage = errorMsg
-                isDownloadingBatch = false
-            }
-        }
-    }
 }
 
 // MARK: - Resource Row Component
@@ -557,18 +446,36 @@ public struct ResourceRowView: View {
     public let candidate: BrowserMediaCandidate?
     public let qualitySummary: String?
     public let variantItem: HLSVariantStreamItem?
-    public let isSelected: Bool
-    public let onToggleSelect: () -> Void
-    public let onDownload: () -> Void
+    public let onSelect: () -> Void
     public let onPreview: (() -> Void)?
+    public let onOpenBrowser: (() -> Void)?
 
     public init(
         resource: WebpageResource,
         candidate: BrowserMediaCandidate? = nil,
         qualitySummary: String? = nil,
         variantItem: HLSVariantStreamItem? = nil,
-        isSelected: Bool,
-        onToggleSelect: @escaping () -> Void,
+        onSelect: @escaping () -> Void,
+        onPreview: (() -> Void)? = nil,
+        onOpenBrowser: (() -> Void)? = nil
+    ) {
+        self.resource = resource
+        self.candidate = candidate
+        self.qualitySummary = qualitySummary
+        self.variantItem = variantItem
+        self.onSelect = onSelect
+        self.onPreview = onPreview
+        self.onOpenBrowser = onOpenBrowser
+    }
+
+    /// Backward-compatible initializer for existing callers
+    public init(
+        resource: WebpageResource,
+        candidate: BrowserMediaCandidate? = nil,
+        qualitySummary: String? = nil,
+        variantItem: HLSVariantStreamItem? = nil,
+        isSelected: Bool = false,
+        onToggleSelect: @escaping () -> Void = {},
         onDownload: @escaping () -> Void,
         onPreview: (() -> Void)? = nil
     ) {
@@ -576,152 +483,160 @@ public struct ResourceRowView: View {
         self.candidate = candidate
         self.qualitySummary = qualitySummary
         self.variantItem = variantItem
-        self.isSelected = isSelected
-        self.onToggleSelect = onToggleSelect
-        self.onDownload = onDownload
+        self.onSelect = onDownload
         self.onPreview = onPreview
+        self.onOpenBrowser = nil
     }
 
-    private var isMediaSourceBlob: Bool {
-        let isBlob = resource.url.scheme?.lowercased() == "blob"
-        let isGenericMime = resource.mimeType == nil || resource.mimeType?.isEmpty == true || resource.mimeType == "application/octet-stream" || resource.mimeType == "application/x-mediasource"
-        return isBlob && (isGenericMime || resource.isMediaSourceBlob || candidate?.blobKind == .mediaSource || candidate?.kind == .mediaSource)
+    public var fileIconName: String {
+        switch resource.resourceType {
+        case .video: return "film"
+        case .audio: return "music.note"
+        case .document: return "doc.text.fill"
+        case .archive: return "doc.zipper"
+        case .image: return "photo.fill"
+        case .other: return "doc.fill"
+        }
     }
 
-    private var hasManifest: Bool {
-        candidate?.associatedManifestURL != nil
+    private var fileIconColor: Color {
+        switch resource.resourceType {
+        case .video: return .blue
+        case .audio: return .orange
+        case .document: return .purple
+        case .archive: return .red
+        case .image: return .green
+        case .other: return .secondary
+        }
+    }
+
+    public var displayFilename: String {
+        if !resource.suggestedFilename.isEmpty {
+            return resource.suggestedFilename
+        }
+        return resource.title.isEmpty ? "download" : resource.title
+    }
+
+    public var displayFileSize: String {
+        if let bytes = variantItem?.estimatedSizeBytes {
+            return "~\(StreamQualityOption.formatByteSize(bytes))"
+        }
+        if let text = variantItem?.estimatedSizeText, !text.isEmpty && text != "Size unavailable" {
+            return text
+        }
+        if let size = resource.estimatedSize, size > 0 {
+            return StreamQualityOption.formatByteSize(size)
+        }
+        return "Size unknown"
+    }
+
+    public var isPlayable: Bool {
+        let isHLS = resource.isStreamingManifest && (resource.url.pathExtension.lowercased() == "m3u8" || resource.mimeType?.lowercased().contains("mpegurl") == true)
+        let isPlayableDirect = (resource.resourceType == .video || resource.resourceType == .audio) &&
+            !resource.isSegmentChunk &&
+            resource.isSupported &&
+            resource.url.pathExtension.lowercased() != "mpd"
+        return onPreview != nil && (isHLS || isPlayableDirect)
+    }
+
+    public var isOrdinaryWebpage: Bool {
+        let ext = resource.url.pathExtension.lowercased()
+        let mime = resource.mimeType?.lowercased() ?? ""
+        return ext == "html" || ext == "htm" || mime.contains("text/html")
     }
 
     public var body: some View {
-        HStack(alignment: .top, spacing: 12) {
-            // Selection Checkbox (if supported and downloadable)
-            if (resource.isSupported || resource.isStreamingManifest || isMediaSourceBlob) && !resource.isSegmentChunk {
-                Button(action: onToggleSelect) {
-                    Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
-                        .foregroundColor(isSelected ? .blue : .secondary)
+        Button(action: onSelect) {
+            HStack(alignment: .center, spacing: 12) {
+                // File-type Icon with subtle rounded background
+                ZStack {
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(fileIconColor.opacity(0.14))
+                        .frame(width: 40, height: 40)
+                    Image(systemName: fileIconName)
                         .font(.system(size: 20))
+                        .foregroundColor(fileIconColor)
                 }
-                .buttonStyle(PlainButtonStyle())
-                .padding(.top, 2)
-            } else {
-                Image(systemName: "exclamationmark.circle")
-                    .foregroundColor(.orange)
-                    .font(.system(size: 20))
-                    .padding(.top, 2)
-            }
 
-            // Resource Icon
-            Image(systemName: resource.resourceType.systemImage)
-                .font(.system(size: 24))
-                .foregroundColor(.blue)
-                .frame(width: 30)
-                .padding(.top, 2)
-
-            // Resource Metadata
-            VStack(alignment: .leading, spacing: 4) {
-                Text(resource.title)
-                    .font(.subheadline.weight(.semibold))
-                    .lineLimit(2)
-
-                if let variant = variantItem {
-                    // Variant Specifications Line (e.g. 1920 × 1080 • 6.2 Mbps • ~estimated size)
-                    let resStr = variant.resolutionText ?? (variant.resolution.map { "\($0.width) × \($0.height)" } ?? "")
-                    let sizeStr = variant.estimatedSizeText ?? (variant.estimatedSizeBytes.map { "~\(StreamQualityOption.formatByteSize($0))" } ?? "Size unavailable")
-                    let specsParts: [String] = [resStr, variant.bitrateText, sizeStr].filter { !$0.isEmpty }
-                    let specsLine = specsParts.joined(separator: " • ")
-
-                    Text(specsLine)
-                        .font(.caption.weight(.medium))
+                // Middle: Filename, Size, Specs & Audio Indicator
+                VStack(alignment: .leading, spacing: 4) {
+                    // Line 1: Actual Filename as headline
+                    Text(displayFilename)
+                        .font(.subheadline.weight(.semibold))
                         .foregroundColor(.primary)
-                        .lineLimit(1)
+                        .lineLimit(2)
+                        .multilineTextAlignment(.leading)
 
+                    // Line 2: Size & Quality Specifications
                     HStack(spacing: 6) {
-                        Text(variant.qualityLabel)
-                            .font(.system(size: 10, weight: .bold))
-                            .foregroundColor(.white)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(Color.blue)
-                            .cornerRadius(4)
-
-                        if let vCodec = variant.videoCodec {
-                            textPill(vCodec)
-                        }
-
-                        if variant.hasAudio {
-                            audioPill(hasAudio: true)
-                        }
-
-                        Text(resource.suggestedFilename)
-                            .font(.caption2)
+                        Text(displayFileSize)
+                            .font(.caption.weight(.medium))
                             .foregroundColor(.secondary)
-                            .lineLimit(1)
-                    }
-                } else {
-                    Text(resource.suggestedFilename)
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
-                        .lineLimit(1)
 
-                    if let qualitySummary {
-                        Text("Available qualities: \(qualitySummary)")
-                            .font(.caption2)
-                            .foregroundColor(.secondary)
-                            .lineLimit(1)
-                    }
+                        if let variant = variantItem {
+                            Text("•")
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
 
-                    // URL & Type Badges
-                    HStack(spacing: 6) {
-                        Text(isMediaSourceBlob ? WebpageResourceType.other.rawValue : resource.resourceType.rawValue)
-                            .font(.system(size: 10, weight: .bold))
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            #if canImport(UIKit)
-                            .background(Color(UIColor.tertiarySystemBackground))
-                            #else
-                            .background(Color.secondary.opacity(0.2))
-                            #endif
-                            .cornerRadius(4)
-
-                        if resource.isStreamingManifest {
-                            let isDash = resource.url.pathExtension.lowercased() == "mpd" ||
-                                resource.mimeType?.lowercased().contains("dash") == true ||
-                                resource.manifestText?.range(of: #"<\s*(?:[A-Za-z_][A-Za-z0-9_.-]*:)?MPD(?:\s|>)"#, options: [.regularExpression, .caseInsensitive]) != nil
-                            let label = isDash ? "Ready for DASH Download" : "Ready for HLS Download"
-                            Text(label)
-                                .font(.system(size: 10, weight: .bold))
-                                .foregroundColor(.blue)
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 2)
-                                .background(Color.blue.opacity(0.15))
-                                .cornerRadius(4)
-                        } else if isMediaSourceBlob {
-                            let isDash = resource.url.pathExtension.lowercased() == "mpd" || (hasManifest && candidate?.associatedManifestURL?.pathExtension.lowercased() == "mpd")
-                            if hasManifest {
-                                Text(isDash ? "Ready for DASH Download" : "Ready for HLS Download")
-                                    .font(.system(size: 10, weight: .bold))
-                                    .foregroundColor(.blue)
-                                    .padding(.horizontal, 6)
-                                    .padding(.vertical, 2)
-                                    .background(Color.blue.opacity(0.15))
-                                    .cornerRadius(4)
-                            } else {
-                                Text("Ready for MSE Capture")
-                                    .font(.system(size: 10, weight: .bold))
-                                    .foregroundColor(.purple)
-                                    .padding(.horizontal, 6)
-                                    .padding(.vertical, 2)
-                                    .background(Color.purple.opacity(0.15))
-                                    .cornerRadius(4)
+                            if let resStr = variant.resolutionText ?? variant.resolution.map({ "\($0.width) × \($0.height)" }) {
+                                Text(resStr)
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
                             }
-                        } else if resource.url.scheme?.lowercased() == "blob" {
-                            Text("Ready for Blob Export")
+
+                            if !variant.bitrateText.isEmpty {
+                                Text("•")
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+                                Text(variant.bitrateText)
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                        } else if resource.isStreamingManifest {
+                            Text("•")
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                            Text("HLS Stream")
+                                .font(.caption)
+                                .foregroundColor(.blue)
+                        } else if let ext = FilenameExtensionHelper.split(filename: displayFilename).ext, !ext.isEmpty {
+                            Text("•")
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                            Text(ext.uppercased())
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+
+                        // Audio indicator: Small speaker icon ONLY when audio is present
+                        if let variant = variantItem, variant.hasAudio {
+                            Image(systemName: "speaker.wave.2.fill")
+                                .font(.system(size: 10))
+                                .foregroundColor(.secondary)
+                        }
+
+                        // Subtitle indicator
+                        if let variant = variantItem, variant.hasSubtitles {
+                            Image(systemName: "captions.bubble.fill")
+                                .font(.system(size: 10))
+                                .foregroundColor(.purple)
+                        }
+                    }
+
+                    // Line 3: Format Badge & Host
+                    HStack(spacing: 6) {
+                        if let variant = variantItem {
+                            Text(variant.qualityLabel)
                                 .font(.system(size: 10, weight: .bold))
-                                .foregroundColor(.green)
+                                .foregroundColor(.white)
                                 .padding(.horizontal, 6)
                                 .padding(.vertical, 2)
-                                .background(Color.green.opacity(0.15))
+                                .background(Color.blue)
                                 .cornerRadius(4)
+                        } else if let qualitySummary {
+                            Text(qualitySummary)
+                                .font(.system(size: 10, weight: .medium))
+                                .foregroundColor(.secondary)
                         }
 
                         if let host = resource.url.host {
@@ -733,136 +648,41 @@ public struct ResourceRowView: View {
                     }
                 }
 
-                // Info / Warning Badge
-                if isMediaSourceBlob && !hasManifest {
-                    HStack(alignment: .top, spacing: 4) {
-                        Image(systemName: "video.badge.waveform")
-                            .font(.system(size: 10))
-                        Text("Clear fragmented-MP4 stream. Click download to capture.")
-                            .font(.system(size: 10))
+                Spacer(minLength: 8)
+
+                // Trailing Contextual Actions
+                HStack(spacing: 10) {
+                    if isPlayable {
+                        Button {
+                            onPreview?()
+                        } label: {
+                            Image(systemName: "play.circle.fill")
+                                .font(.system(size: 26))
+                                .foregroundColor(.green)
+                        }
+                        .buttonStyle(BorderlessButtonStyle())
                     }
-                    .foregroundColor(.purple)
-                    .padding(.top, 2)
-                } else if !resource.isSupported && !resource.isStreamingManifest, let reason = resource.unsupportedReason {
-                    HStack(alignment: .top, spacing: 4) {
-                        Image(systemName: "info.circle")
-                            .font(.system(size: 10))
-                        Text(reason)
-                            .font(.system(size: 10))
+
+                    if isOrdinaryWebpage, let onOpenBrowser {
+                        Button {
+                            onOpenBrowser()
+                        } label: {
+                            Image(systemName: "safari.fill")
+                                .font(.system(size: 24))
+                                .foregroundColor(.blue)
+                        }
+                        .buttonStyle(BorderlessButtonStyle())
                     }
-                    .foregroundColor(.orange)
-                    .padding(.top, 2)
+
+                    Image(systemName: "chevron.right")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundColor(.secondary.opacity(0.6))
                 }
             }
-
-            Spacer(minLength: 8)
-
-            // Actions (Preview & Download)
-            let isHLSManifest = resource.isStreamingManifest && (resource.url.pathExtension.lowercased() == "m3u8" || resource.mimeType?.lowercased().contains("mpegurl") == true)
-            let isPlayableDirectMedia = (resource.resourceType == .video || resource.resourceType == .audio) &&
-                !resource.isSegmentChunk &&
-                !isMediaSourceBlob &&
-                resource.isSupported &&
-                resource.url.pathExtension.lowercased() != "mpd"
-            let canPreview = onPreview != nil && (isHLSManifest || isPlayableDirectMedia)
-            let canDownload = (resource.isSupported || resource.isStreamingManifest ||
-                resource.url.scheme?.lowercased() == "blob" || isMediaSourceBlob) && !resource.isSegmentChunk
-
-            HStack(spacing: 8) {
-                if canPreview {
-                    Button(action: { onPreview?() }) {
-                        Image(systemName: "play.circle.fill")
-                            .font(.system(size: 24))
-                            .foregroundColor(.green)
-                    }
-                    .buttonStyle(PlainButtonStyle())
-                }
-
-                if canDownload {
-                    Button(action: onDownload) {
-                        Image(systemName: "arrow.down.circle.fill")
-                            .font(.system(size: 24))
-                            .foregroundColor(.blue)
-                    }
-                    .buttonStyle(PlainButtonStyle())
-                }
-            }
+            .contentShape(Rectangle())
         }
+        .buttonStyle(PlainButtonStyle())
         .padding(.vertical, 4)
-    }
-
-    @ViewBuilder
-    private func variantBadges(for variant: HLSVariantStreamItem) -> some View {
-        HStack(spacing: 5) {
-            Text(variant.qualityLabel)
-                .font(.system(size: 10, weight: .bold))
-                .foregroundColor(.white)
-                .padding(.horizontal, 6)
-                .padding(.vertical, 2)
-                .background(Color.blue)
-                .cornerRadius(4)
-
-            if let resText = variant.resolutionText {
-                textPill(resText)
-            }
-
-            textPill(variant.bitrateText)
-
-            audioPill(hasAudio: variant.hasAudio)
-
-            if variant.hasSubtitles {
-                subtitlePill
-            }
-
-            if let vCodec = variant.videoCodec {
-                textPill(vCodec)
-            }
-        }
-    }
-
-    @ViewBuilder
-    private func textPill(_ text: String) -> some View {
-        Text(text)
-            .font(.system(size: 10, weight: .medium))
-            .foregroundColor(.secondary)
-            .padding(.horizontal, 5)
-            .padding(.vertical, 2)
-            #if canImport(UIKit)
-            .background(Color(UIColor.tertiarySystemBackground))
-            #else
-            .background(Color.secondary.opacity(0.15))
-            #endif
-            .cornerRadius(4)
-    }
-
-    @ViewBuilder
-    private func audioPill(hasAudio: Bool) -> some View {
-        HStack(spacing: 2) {
-            Image(systemName: hasAudio ? "speaker.wave.2.fill" : "speaker.slash")
-                .font(.system(size: 8))
-            Text(hasAudio ? "Audio" : "No Audio")
-                .font(.system(size: 10, weight: .semibold))
-        }
-        .foregroundColor(hasAudio ? .green : .secondary)
-        .padding(.horizontal, 5)
-        .padding(.vertical, 2)
-        .background(hasAudio ? Color.green.opacity(0.15) : Color.secondary.opacity(0.15))
-        .cornerRadius(4)
-    }
-
-    @ViewBuilder
-    private var subtitlePill: some View {
-        HStack(spacing: 2) {
-            Image(systemName: "captions.bubble.fill")
-                .font(.system(size: 8))
-            Text("Subtitles")
-                .font(.system(size: 10, weight: .semibold))
-        }
-        .foregroundColor(.purple)
-        .padding(.horizontal, 5)
-        .padding(.vertical, 2)
-        .background(Color.purple.opacity(0.15))
-        .cornerRadius(4)
     }
 }
 

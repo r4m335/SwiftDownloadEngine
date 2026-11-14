@@ -50,6 +50,9 @@ public struct DownloadManagerAppView: View {
 
             AddDownloadView(viewModel: viewModel, onDownloadAdded: {
                 selectedTab = 0
+            }, onOpenInBrowser: { url in
+                addURLPrefill = url.absoluteString
+                selectedTab = 1
             }, prefilledURL: addURLPrefill)
                 .tabItem {
                     Label("Add", systemImage: "plus.circle")

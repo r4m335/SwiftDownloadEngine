@@ -1256,15 +1256,21 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         isShowingResourceInspector = false
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
             guard let self = self else { return }
-            if resource.isStreamingManifest {
-                if resource.hlsVariantPreferences == nil && resource.dashVideoRepresentationID == nil {
-                    self.presentQualityPicker(for: resource)
-                } else {
-                    self.promptStreamingDownload(for: resource)
-                }
-            } else {
-                self.promptDownload(for: resource)
+            self.activeDownloadResource = resource
+            let matchedCandidate = self.mediaCandidates.first { cand in
+                cand.id == resource.id ||
+                cand.rawURL.caseInsensitiveCompare(resource.url.absoluteString) == .orderedSame ||
+                (cand.url != nil && cand.url == resource.url)
             }
+            let candidate = matchedCandidate ?? BrowserMediaCandidateClassifier.classify(resource: resource)
+            self.activeDownloadCandidate = candidate
+            self.downloadCandidateURL = resource.url
+            self.downloadCandidateFilename = resource.suggestedFilename.isEmpty ? (candidate.suggestedFilename.isEmpty ? "download" : candidate.suggestedFilename) : resource.suggestedFilename
+            self.downloadCandidateRequestContext = resource.requestContext ?? candidate.requestContext
+            self.useBrowserCredentials = (resource.requestContext != nil || candidate.requestContext != nil)
+            self.downloadCandidateThreads = 6
+            self.downloadCandidateSpeedLimitKBps = ""
+            self.isShowingDownloadSheet = true
         }
     }
 
@@ -2824,7 +2830,10 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                 suggestedFilename: finalFilename,
                 resourceType: .video,
                 requestContext: requestContext ?? effectiveContext,
-                manifestText: cachedText
+                manifestText: cachedText,
+                hlsVariantPreferences: activeDownloadResource?.hlsVariantPreferences,
+                dashVideoRepresentationID: activeDownloadResource?.dashVideoRepresentationID,
+                dashAudioRepresentationID: activeDownloadResource?.dashAudioRepresentationID
             )
             promptStreamingDownload(for: res, customFilename: finalFilename)
             return
@@ -4064,6 +4073,8 @@ public struct BrowserDownloadSheet: View {
     @Environment(\.presentationMode) private var presentationMode
     @State private var isSubmitting = false
     @State private var submitErrorMessage: String? = nil
+    @State private var baseFilename: String = ""
+    @State private var fileExtension: String = ""
 
     public var body: some View {
         NavigationView {
@@ -4137,12 +4148,48 @@ public struct BrowserDownloadSheet: View {
                     }
                 }
 
-                Section(header: Text("Destination Filename")) {
-                    TextField("filename.ext", text: $viewModel.downloadCandidateFilename)
-                        #if canImport(UIKit)
-                        .autocapitalization(.none)
-                        #endif
-                        .disableAutocorrection(true)
+                Section(
+                    header: Text("Destination Filename"),
+                    footer: Text("Saved as: \(FilenameExtensionHelper.combine(base: baseFilename, ext: fileExtension))")
+                ) {
+                    HStack(alignment: .center, spacing: 8) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Filename")
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                            TextField("Filename", text: $baseFilename)
+                                #if canImport(UIKit)
+                                .autocapitalization(.none)
+                                #endif
+                                .disableAutocorrection(true)
+                                .onChange(of: baseFilename) { newBase in
+                                    let cleanBase = FilenameExtensionHelper.sanitizeFilename(newBase)
+                                    viewModel.downloadCandidateFilename = FilenameExtensionHelper.combine(base: cleanBase, ext: fileExtension)
+                                }
+                        }
+
+                        Text(".")
+                            .font(.title3)
+                            .bold()
+                            .foregroundColor(.secondary)
+                            .padding(.top, 14)
+
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Extension")
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                            TextField("ext", text: $fileExtension)
+                                #if canImport(UIKit)
+                                .autocapitalization(.none)
+                                #endif
+                                .disableAutocorrection(true)
+                                .frame(width: 70)
+                                .onChange(of: fileExtension) { newExt in
+                                    let cleanExt = FilenameExtensionHelper.sanitizeFilename(newExt)
+                                    viewModel.downloadCandidateFilename = FilenameExtensionHelper.combine(base: baseFilename, ext: cleanExt)
+                                }
+                        }
+                    }
                 }
 
                 if viewModel.downloadCandidateRequestContext != nil {
@@ -4203,12 +4250,19 @@ public struct BrowserDownloadSheet: View {
                     }
                 }
             }
+            .onAppear {
+                let (base, ext) = FilenameExtensionHelper.split(filename: viewModel.downloadCandidateFilename)
+                baseFilename = base
+                fileExtension = ext.isEmpty ? (viewModel.activeDownloadResource?.suggestedExtension ?? "mp4") : ext
+                viewModel.downloadCandidateFilename = FilenameExtensionHelper.combine(base: baseFilename, ext: fileExtension)
+            }
         }
     }
 
     private func submitDownload() {
         submitErrorMessage = nil
         isSubmitting = true
+        viewModel.downloadCandidateFilename = FilenameExtensionHelper.combine(base: baseFilename, ext: fileExtension)
 
         Task { @MainActor in
             do {

@@ -1197,6 +1197,7 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
     @discardableResult
     public func addTorrent(
         magnetURI: String,
+        name: String? = nil,
         saveDirectoryURL: URL? = nil,
         priority: TorrentPriority? = nil,
         isSequential: Bool = false
@@ -1239,6 +1240,7 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
         do {
             let task = try await te.addTorrent(
                 magnetURI: normalizedMagnetURI,
+                name: name,
                 saveDirectoryURL: targetDir,
                 priority: resolvedPriority,
                 isSequential: isSequential
@@ -1257,6 +1259,7 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
     @discardableResult
     public func addTorrent(
         fileURL: URL,
+        name: String? = nil,
         saveDirectoryURL: URL? = nil,
         priority: TorrentPriority? = nil,
         isSequential: Bool = false
@@ -1290,6 +1293,7 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
 
             let task = try await te.addTorrent(
                 fileURL: fileURL,
+                name: name,
                 saveDirectoryURL: targetDir,
                 priority: resolvedPriority,
                 isSequential: isSequential
