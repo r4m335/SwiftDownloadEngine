@@ -306,6 +306,24 @@ NS_SWIFT_NAME(TorrentSessionBridge)
 /// Queries whether sequential piece download mode is active for the target torrent.
 - (BOOL)isSequentialDownloadForTorrentWithHash:(NSString *)infoHash NS_SWIFT_NAME(isSequentialDownload(forTorrentWithHash:));
 
+// MARK: - Milestone A.5: Piece Level Inspection & Prioritization for Sequential Swarm Streaming
+
+/// Queries whether a specific piece index has been downloaded and verified by libtorrent.
+- (BOOL)havePieceAtIndex:(NSInteger)pieceIndex
+       inTorrentWithHash:(NSString *)infoHash NS_SWIFT_NAME(havePiece(atIndex:inTorrentWithHash:));
+
+/// Sets the download priority for an individual piece within a torrent (0 = do not download, 1-6 = normal, 7 = high).
+- (BOOL)setPiecePriority:(uint8_t)priority
+                 atIndex:(NSInteger)pieceIndex
+       inTorrentWithHash:(NSString *)infoHash
+                   error:(NSError * _Nullable * _Nullable)error NS_SWIFT_NAME(setPiecePriority(_:atIndex:inTorrentWithHash:));
+
+/// Returns the piece length in bytes for a torrent, or 0 if metadata is not yet resolved.
+- (NSInteger)pieceLengthForTorrentWithHash:(NSString *)infoHash NS_SWIFT_NAME(pieceLength(forTorrentWithHash:));
+
+/// Returns the total piece count for a torrent, or 0 if metadata is not yet resolved.
+- (NSInteger)pieceCountForTorrentWithHash:(NSString *)infoHash NS_SWIFT_NAME(pieceCount(forTorrentWithHash:));
+
 /// Retrieves all trackers currently registered for the target torrent.
 - (nullable NSArray<TorrentBridgeTrackerInfo *> *)trackersForTorrentWithHash:(NSString *)infoHash NS_SWIFT_NAME(trackers(forTorrentWithHash:));
 

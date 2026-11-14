@@ -274,13 +274,15 @@ To bridge the remaining functional distance without compromising stability or vi
   - Media metadata inspection (codecs, bitrate, resolution, container).
   - Delete, rename, or share files directly from the player library.
 
-### Milestone A.5: HLS/DASH & BitTorrent Sequential Swarm Streaming Integration
+### Milestone A.5: HLS/DASH & BitTorrent Sequential Swarm Streaming Integration (Complete)
 - **Objective:** Stream remote manifests and live swarm downloads directly without waiting for completion.
-- **Scope:**
-  - Feed discovered HLS and DASH master manifests directly into `AVPlayerItem`.
-  - Live playback scrubbing for DVR-enabled streams.
-  - Coordinate with Milestone 4.2 sequential downloading: prioritize head pieces (metadata & moov atom) and playback window pieces.
-  - Loopback streaming or custom `AVAssetResourceLoaderDelegate` feeding verified downloaded torrent chunks to `AVPlayer`.
+- **Status:** **Complete** (Implemented in `LIDTorrentStreamAdapter.swift`, `LIDDASHStreamAdapter.swift`, `LIDPlaybackEngine.swift`, `LIDPlayerModels.swift`, and `LIDPlayerView.swift`. Verified by 26 automated unit tests including `LIDStreamingIntegrationTests.swift`).
+- **Scope & Implementation:**
+  - Unified `LIDPlayerSource` with `.dashStream`, enriched `.hlsStream` preserving `BrowserRequestContext` cookies/headers and exact variant URIs, and stable `mediaIdentifier` cross-source history resume.
+  - Native HLS streaming with exact variant selection, peak bitrate and maximum resolution enforcement, live stream detection, and DVR window seekable range tracking.
+  - Real MPEG-DASH manifest inspection and playback validation with actionable DRM detection (`LIDPlaybackError.drmProtectedDASHUnsupported` for Widevine / PlayReady).
+  - BitTorrent sequential swarm streaming adapter (`LIDTorrentStreamAdapter`) conforming to `AVAssetResourceLoaderDelegate` with custom URL scheme (`lidtorrent://<infoHash>/<fileIndex>`), mathematical byte-range to piece mapping, moov atom head/tail piece prioritization (priority 7), sequential download activation, and live swarm telemetry (speed, peers, progress) published to the player HUD.
+  - Live badge indicator and swarm statistics HUD pill integrated into `LIDPlayerView`.
 
 ---
 

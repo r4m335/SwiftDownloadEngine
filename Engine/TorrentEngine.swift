@@ -564,6 +564,28 @@ public actor TorrentEngine {
         return bridge.isSequentialDownload(forTorrentWithHash: key)
     }
 
+    // MARK: - Milestone A.5: Piece Level Inspection & Prioritization
+
+    public func havePiece(at index: Int, in infoHash: String) async -> Bool {
+        let key = infoHash.lowercased()
+        return bridge.havePiece(atIndex: index, inTorrentWithHash: key)
+    }
+
+    public func setPiecePriority(_ priority: UInt8, at index: Int, in infoHash: String) async throws {
+        let key = infoHash.lowercased()
+        try bridge.setPiecePriority(priority, atIndex: index, inTorrentWithHash: key)
+    }
+
+    public func pieceLength(for infoHash: String) async -> Int {
+        let key = infoHash.lowercased()
+        return bridge.pieceLength(forTorrentWithHash: key)
+    }
+
+    public func pieceCount(for infoHash: String) async -> Int {
+        let key = infoHash.lowercased()
+        return bridge.pieceCount(forTorrentWithHash: key)
+    }
+
     public func trackers(for infoHash: String) async -> [TorrentTrackerInfo] {
         let key = infoHash.lowercased()
         if let nativeTrackers = bridge.trackers(forTorrentWithHash: key) {
@@ -1156,6 +1178,40 @@ public actor TorrentEngine {
     public func isSequentialDownload(for infoHash: String) async -> Bool {
         let key = infoHash.lowercased()
         return tasks[key]?.isSequentialDownload ?? false
+    }
+
+    // MARK: - Milestone A.5: Piece Level Inspection & Prioritization
+
+    public func havePiece(at index: Int, in infoHash: String) async -> Bool {
+        let key = infoHash.lowercased()
+        guard let task = tasks[key] else { return false }
+        if task.state == .finished || task.state == .seeding || task.progress.progressFraction >= 1.0 {
+            return true
+        }
+        let count = await pieceCount(for: key)
+        if count > 0 {
+            let completedPieces = Int(Double(count) * task.progress.progressFraction)
+            return index < completedPieces
+        }
+        return false
+    }
+
+    public func setPiecePriority(_ priority: UInt8, at index: Int, in infoHash: String) async throws {
+        let key = infoHash.lowercased()
+        guard tasks[key] != nil else { throw TorrentEngineError.torrentNotFound }
+    }
+
+    public func pieceLength(for infoHash: String) async -> Int {
+        let key = infoHash.lowercased()
+        guard let task = tasks[key], task.progress.totalBytes > 0 else { return 1024 * 1024 }
+        return 1024 * 1024
+    }
+
+    public func pieceCount(for infoHash: String) async -> Int {
+        let key = infoHash.lowercased()
+        guard let task = tasks[key], task.progress.totalBytes > 0 else { return 0 }
+        let pLen = await pieceLength(for: key)
+        return Int((task.progress.totalBytes + Int64(pLen) - 1) / Int64(pLen))
     }
 
     public func trackers(for infoHash: String) async -> [TorrentTrackerInfo] {

@@ -27,8 +27,16 @@ final class LIDPlaybackEngineTests: XCTestCase {
 
         let torrentSource = LIDPlayerSource.torrentSwarm(infoHash: "0123456789abcdef", fileIndex: 0, title: "Big Buck Bunny Torrent")
         XCTAssertEqual(torrentSource.title, "Big Buck Bunny Torrent")
-        XCTAssertNil(torrentSource.url)
+        XCTAssertEqual(torrentSource.url, URL(string: "lidtorrent://0123456789abcdef/0"))
+        XCTAssertEqual(torrentSource.mediaIdentifier, "torrent://0123456789abcdef/0")
         XCTAssertTrue(torrentSource.isStreaming)
+
+        let dashURL = URL(string: "https://example.com/manifest.mpd")!
+        let dashSource = LIDPlayerSource.dashStream(manifestURL: dashURL, selectedRepresentationID: "video-1080p", title: "DASH VOD")
+        XCTAssertEqual(dashSource.title, "DASH VOD")
+        XCTAssertEqual(dashSource.url, dashURL)
+        XCTAssertEqual(dashSource.mediaIdentifier, "https://example.com/manifest.mpd#video-1080p")
+        XCTAssertTrue(dashSource.isStreaming)
     }
 
     // MARK: - 2. Playable Media Extension Classification

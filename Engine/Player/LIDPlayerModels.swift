@@ -9,8 +9,10 @@ public enum LIDPlayerSource: Equatable, Sendable {
     case localFile(url: URL, title: String)
     /// Direct HTTP/HTTPS media URL with custom headers (e.g. cookies, User-Agent, Authorization).
     case networkStream(url: URL, headers: [String: String], title: String)
-    /// Adaptive HLS manifest stream (.m3u8) with optional initial variant quality preferences.
-    case hlsStream(url: URL, variantPreferences: HLSVariantSelectionPreferences?, title: String)
+    /// Adaptive HLS manifest stream (.m3u8) with optional initial variant quality preferences and request context.
+    case hlsStream(url: URL, variantPreferences: HLSVariantSelectionPreferences?, title: String, requestContext: BrowserRequestContext? = nil)
+    /// MPEG-DASH manifest stream (.mpd) with optional selected representation and request context.
+    case dashStream(manifestURL: URL, selectedRepresentationID: String? = nil, title: String, requestContext: BrowserRequestContext? = nil)
     /// Progressive partial download file actively growing on disk.
     case partialDownload(fileURL: URL, totalExpectedBytes: Int64?, title: String)
     /// BitTorrent sequential download stream identified by info-hash and file index.
@@ -20,7 +22,8 @@ public enum LIDPlayerSource: Equatable, Sendable {
         switch self {
         case .localFile(_, let title),
              .networkStream(_, _, let title),
-             .hlsStream(_, _, let title),
+             .hlsStream(_, _, let title, _),
+             .dashStream(_, _, let title, _),
              .partialDownload(_, _, let title),
              .torrentSwarm(_, _, let title):
             return title
@@ -31,22 +34,139 @@ public enum LIDPlayerSource: Equatable, Sendable {
         switch self {
         case .localFile(let url, _),
              .networkStream(let url, _, _),
-             .hlsStream(let url, _, _),
              .partialDownload(let url, _, _):
             return url
-        case .torrentSwarm:
+        case .hlsStream(let url, let variantPreferences, _, _):
+            return variantPreferences?.exactURI ?? url
+        case .dashStream(let manifestURL, _, _, _):
+            return manifestURL
+        case .torrentSwarm(let infoHash, let fileIndex, _):
+            return URL(string: "lidtorrent://\(infoHash)/\(fileIndex)")
+        }
+    }
+
+    /// Stable unique media identifier used for history tracking and resume points.
+    public var mediaIdentifier: String {
+        switch self {
+        case .localFile(let url, _):
+            return url.standardizedFileURL.path
+        case .networkStream(let url, _, _):
+            return url.absoluteString
+        case .hlsStream(let url, let variantPreferences, _, _):
+            if let exact = variantPreferences?.exactURI {
+                return exact.absoluteString
+            }
+            return url.absoluteString
+        case .dashStream(let manifestURL, let repID, _, _):
+            if let rep = repID, !rep.isEmpty {
+                return "\(manifestURL.absoluteString)#\(rep)"
+            }
+            return manifestURL.absoluteString
+        case .partialDownload(let fileURL, _, _):
+            return fileURL.standardizedFileURL.path
+        case .torrentSwarm(let infoHash, let fileIndex, _):
+            return "torrent://\(infoHash.lowercased())/\(fileIndex)"
+        }
+    }
+
+    public var requestContext: BrowserRequestContext? {
+        switch self {
+        case .hlsStream(_, _, _, let context):
+            return context
+        case .dashStream(_, _, _, let context):
+            return context
+        case .localFile, .networkStream, .partialDownload, .torrentSwarm:
             return nil
         }
     }
 
     public var isStreaming: Bool {
         switch self {
-        case .networkStream, .hlsStream, .torrentSwarm:
+        case .networkStream, .hlsStream, .dashStream, .torrentSwarm:
             return true
         case .localFile, .partialDownload:
             return false
         }
     }
+}
+
+/// Dynamic playback error reporting categorized issues with actionable diagnostics.
+public enum LIDPlaybackError: LocalizedError, Equatable, Sendable {
+    case unsupportedSourceURL(String)
+    case avFoundationUnavailable
+    case drmProtectedDASHUnsupported(details: String)
+    case dashManifestInvalid(String)
+    case torrentNotFound(String)
+    case torrentFileNotFound(infoHash: String, fileIndex: Int)
+    case torrentStreamingTimeout(infoHash: String, pieceIndex: Int)
+    case assetLoadingFailed(String)
+
+    public var errorDescription: String? {
+        switch self {
+        case .unsupportedSourceURL(let msg):
+            return "Unsupported media source: \(msg)"
+        case .avFoundationUnavailable:
+            return "AVFoundation is not available on this platform."
+        case .drmProtectedDASHUnsupported(let details):
+            return "DRM-protected DASH stream is unsupported (Widevine/PlayReady detected): \(details)"
+        case .dashManifestInvalid(let reason):
+            return "Invalid DASH manifest: \(reason)"
+        case .torrentNotFound(let hash):
+            return "Torrent transfer not found for info-hash: \(hash)"
+        case .torrentFileNotFound(let hash, let idx):
+            return "Torrent file index \(idx) not found in torrent \(hash)."
+        case .torrentStreamingTimeout(let hash, let piece):
+            return "Torrent streaming timed out waiting for piece \(piece) in torrent \(hash)."
+        case .assetLoadingFailed(let msg):
+            return "Asset loading failed: \(msg)"
+        }
+    }
+}
+
+/// Contextual metadata for live streams, DVR windowing, DRM, and BitTorrent swarms.
+public struct LIDStreamContextInfo: Equatable, Sendable {
+    public var isLive: Bool
+    public var isDVRSeekable: Bool
+    public var dvrWindowDurationSeconds: Double
+    public var currentBitrate: Int64?
+    public var resolution: String?
+    public var swarmDownloadSpeed: Double?
+    public var swarmUploadSpeed: Double?
+    public var swarmConnectedPeers: Int?
+    public var swarmActiveSeeds: Int?
+    public var swarmProgressFraction: Double?
+    public var drmProtectionDetected: Bool
+    public var drmScheme: String?
+
+    public init(
+        isLive: Bool = false,
+        isDVRSeekable: Bool = false,
+        dvrWindowDurationSeconds: Double = 0.0,
+        currentBitrate: Int64? = nil,
+        resolution: String? = nil,
+        swarmDownloadSpeed: Double? = nil,
+        swarmUploadSpeed: Double? = nil,
+        swarmConnectedPeers: Int? = nil,
+        swarmActiveSeeds: Int? = nil,
+        swarmProgressFraction: Double? = nil,
+        drmProtectionDetected: Bool = false,
+        drmScheme: String? = nil
+    ) {
+        self.isLive = isLive
+        self.isDVRSeekable = isDVRSeekable
+        self.dvrWindowDurationSeconds = dvrWindowDurationSeconds
+        self.currentBitrate = currentBitrate
+        self.resolution = resolution
+        self.swarmDownloadSpeed = swarmDownloadSpeed
+        self.swarmUploadSpeed = swarmUploadSpeed
+        self.swarmConnectedPeers = swarmConnectedPeers
+        self.swarmActiveSeeds = swarmActiveSeeds
+        self.swarmProgressFraction = swarmProgressFraction
+        self.drmProtectionDetected = drmProtectionDetected
+        self.drmScheme = drmScheme
+    }
+
+    public static let empty = LIDStreamContextInfo()
 }
 
 /// Dynamic playback state of the LID Native Playback Engine.

@@ -888,7 +888,14 @@ public struct DownloadsView: View {
     private func openTransferFile(_ transfer: UnifiedTransfer) {
         if transfer.destinationURL.isPlayableMedia {
             playerMediaTitle = transfer.name
-            playerMediaURL = transfer.destinationURL
+            if transfer.isTorrent && !FileManager.default.fileExists(atPath: transfer.destinationURL.path) {
+                playerMediaURL = URL(string: "lidtorrent://\(transfer.id)/0")
+            } else {
+                playerMediaURL = transfer.destinationURL
+            }
+        } else if transfer.isTorrent && (transfer.name.hasSuffix(".mp4") || transfer.name.hasSuffix(".mkv") || transfer.name.hasSuffix(".mov") || transfer.name.hasSuffix(".mp3")) {
+            playerMediaTitle = transfer.name
+            playerMediaURL = URL(string: "lidtorrent://\(transfer.id)/0")
         } else {
             #if canImport(QuickLook)
             quickLookURL = transfer.destinationURL

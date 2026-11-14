@@ -86,9 +86,16 @@ public struct LIDNativePlayerLayerView: UIViewRepresentable {
 /// Dedicated native VLC-style media player with gesture controls, PiP, audio track selection,
 /// external/embedded subtitles, synchronization delay adjustment, and interactive lock mode.
 public struct LIDPlayerView: View {
-    public let url: URL
-    public let title: String
+    public let source: LIDPlayerSource
     public var onDismiss: (() -> Void)? = nil
+
+    public var url: URL {
+        source.url ?? URL(string: "lidtorrent://\(source.title)")!
+    }
+
+    public var title: String {
+        source.title
+    }
 
     @StateObject private var engine = LIDPlaybackEngine.shared
     @Environment(\.presentationMode) private var presentationMode
@@ -124,15 +131,36 @@ public struct LIDPlayerView: View {
     @State private var layerViewRef: LIDPlayerLayerView? = nil
     #endif
 
+    public init(source: LIDPlayerSource, onDismiss: (() -> Void)? = nil) {
+        self.source = source
+        self.onDismiss = onDismiss
+    }
+
     public init(url: URL, title: String? = nil, onDismiss: (() -> Void)? = nil) {
-        self.url = url
+        let rawTitle: String
         if let title = title?.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty {
-            self.title = title
+            rawTitle = title
         } else {
             let last = url.lastPathComponent.trimmingCharacters(in: .whitespacesAndNewlines)
-            self.title = last.isEmpty ? (url.host ?? "LID Media Player") : last
+            rawTitle = last.isEmpty ? (url.host ?? "LID Media Player") : last
         }
-        self.onDismiss = onDismiss
+
+        let s: LIDPlayerSource
+        let ext = url.pathExtension.lowercased()
+        if ext == "m3u8" {
+            s = .hlsStream(url: url, variantPreferences: nil, title: rawTitle)
+        } else if ext == "mpd" {
+            s = .dashStream(manifestURL: url, selectedRepresentationID: nil, title: rawTitle)
+        } else if url.scheme == "lidtorrent" {
+            let hash = url.host ?? ""
+            let idx = Int(url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))) ?? 0
+            s = .torrentSwarm(infoHash: hash, fileIndex: idx, title: rawTitle)
+        } else if url.isFileURL {
+            s = .localFile(url: url, title: rawTitle)
+        } else {
+            s = .networkStream(url: url, headers: [:], title: rawTitle)
+        }
+        self.init(source: s, onDismiss: onDismiss)
     }
 
     private var videoGravity: AVLayerVideoGravity {
@@ -244,9 +272,6 @@ public struct LIDPlayerView: View {
             }
         }
         .onAppear {
-            let source: LIDPlayerSource = url.pathExtension.lowercased() == "m3u8"
-                ? .hlsStream(url: url, variantPreferences: nil, title: title)
-                : (url.isFileURL ? .localFile(url: url, title: title) : .networkStream(url: url, headers: [:], title: title))
             engine.load(source: source, autoPlay: true, resumeFromHistory: true)
             resetControlsTimer()
         }
@@ -428,6 +453,41 @@ public struct LIDPlayerView: View {
                     .font(.subheadline.weight(.semibold))
                     .foregroundColor(.white)
                     .lineLimit(1)
+
+                if engine.streamContext.isLive {
+                    HStack(spacing: 4) {
+                        Circle()
+                            .fill(Color.red)
+                            .frame(width: 8, height: 8)
+                        Text(engine.streamContext.isDVRSeekable ? "LIVE DVR" : "LIVE")
+                            .font(.system(size: 10, weight: .black))
+                            .foregroundColor(.white)
+                    }
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(Color.red.opacity(0.85))
+                    .cornerRadius(4)
+                }
+
+                if let speed = engine.streamContext.swarmDownloadSpeed, speed > 0 {
+                    HStack(spacing: 4) {
+                        Image(systemName: "arrow.down.circle.fill")
+                            .font(.system(size: 11))
+                            .foregroundColor(.green)
+                        Text(formatSwarmSpeed(speed))
+                            .font(.system(size: 10, weight: .bold, design: .monospaced))
+                            .foregroundColor(.white)
+                        if let peers = engine.streamContext.swarmConnectedPeers, peers > 0 {
+                            Text("· \(peers)p")
+                                .font(.system(size: 10, weight: .medium))
+                                .foregroundColor(.white.opacity(0.8))
+                        }
+                    }
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(Color.black.opacity(0.5))
+                    .cornerRadius(4)
+                }
 
                 Spacer()
 
@@ -875,6 +935,26 @@ public struct LIDPlayerView: View {
             return String(format: "%02d:%02d", m, s)
         }
     }
+
+    private func formatSwarmSpeed(_ bytesPerSecond: Double) -> String {
+        guard bytesPerSecond > 0 else { return "0 B/s" }
+        if bytesPerSecond >= 1024 * 1024 {
+            return String(format: "%.1f MB/s", bytesPerSecond / (1024 * 1024))
+        } else if bytesPerSecond >= 1024 {
+            return String(format: "%.0f KB/s", bytesPerSecond / 1024)
+        } else {
+            return String(format: "%.0f B/s", bytesPerSecond)
+        }
+    }
+}
+
+public struct IdentifiablePlayerSource: Identifiable, Sendable {
+    public var id: String { source.mediaIdentifier }
+    public let source: LIDPlayerSource
+
+    public init(source: LIDPlayerSource) {
+        self.source = source
+    }
 }
 
 extension View {
@@ -897,6 +977,30 @@ extension View {
         )) { item in
             LIDPlayerView(url: item.url, title: title) {
                 url.wrappedValue = nil
+            }
+        }
+        #endif
+    }
+
+    /// Presents the full-screen LID Player configured with any `LIDPlayerSource` (file, HLS, DASH, or torrent).
+    @ViewBuilder
+    public func lidPlayerPresentation(source: Binding<LIDPlayerSource?>) -> some View {
+        #if os(iOS)
+        self.fullScreenCover(item: Binding<IdentifiablePlayerSource?>(
+            get: { source.wrappedValue.map { IdentifiablePlayerSource(source: $0) } },
+            set: { source.wrappedValue = $0?.source }
+        )) { item in
+            LIDPlayerView(source: item.source) {
+                source.wrappedValue = nil
+            }
+        }
+        #else
+        self.sheet(item: Binding<IdentifiablePlayerSource?>(
+            get: { source.wrappedValue.map { IdentifiablePlayerSource(source: $0) } },
+            set: { source.wrappedValue = $0?.source }
+        )) { item in
+            LIDPlayerView(source: item.source) {
+                source.wrappedValue = nil
             }
         }
         #endif

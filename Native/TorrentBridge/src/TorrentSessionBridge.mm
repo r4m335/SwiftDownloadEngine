@@ -1122,6 +1122,86 @@ static std::string infoHashToHex(const libtorrent::info_hash_t &ih) {
     return bool(it->second.flags() & libtorrent::torrent_flags::sequential_download);
 }
 
+// MARK: - Milestone A.5: Piece Level Inspection & Prioritization for Sequential Swarm Streaming
+
+- (BOOL)havePieceAtIndex:(NSInteger)pieceIndex inTorrentWithHash:(NSString *)infoHash {
+    std::lock_guard<std::mutex> lock(_sessionMutex);
+    std::string hex = [infoHash.lowercaseString UTF8String];
+    auto it = _torrents.find(hex);
+    if (it == _torrents.end() || !it->second.is_valid()) {
+        return NO;
+    }
+    if (pieceIndex < 0) {
+        return NO;
+    }
+    try {
+        return it->second.have_piece(libtorrent::piece_index_t(static_cast<int>(pieceIndex)));
+    } catch (...) {
+        return NO;
+    }
+}
+
+- (BOOL)setPiecePriority:(uint8_t)priority
+                 atIndex:(NSInteger)pieceIndex
+       inTorrentWithHash:(NSString *)infoHash
+                   error:(NSError * _Nullable * _Nullable)error {
+    std::lock_guard<std::mutex> lock(_sessionMutex);
+    std::string hex = [infoHash.lowercaseString UTF8String];
+    auto it = _torrents.find(hex);
+    if (it == _torrents.end() || !it->second.is_valid()) {
+        if (error) {
+            *error = [NSError errorWithDomain:@"com.r4m335.TorrentSessionBridge"
+                                         code:2007
+                                     userInfo:@{NSLocalizedDescriptionKey: @"Torrent not found"}];
+        }
+        return NO;
+    }
+    try {
+        libtorrent::download_priority_t prio(priority);
+        it->second.piece_priority(libtorrent::piece_index_t(static_cast<int>(pieceIndex)), prio);
+        return YES;
+    } catch (const std::exception &ex) {
+        if (error) {
+            *error = [NSError errorWithDomain:@"com.r4m335.TorrentSessionBridge"
+                                         code:2008
+                                     userInfo:@{NSLocalizedDescriptionKey: [NSString stringWithUTF8String:ex.what()]}];
+        }
+        return NO;
+    }
+}
+
+- (NSInteger)pieceLengthForTorrentWithHash:(NSString *)infoHash {
+    std::lock_guard<std::mutex> lock(_sessionMutex);
+    std::string hex = [infoHash.lowercaseString UTF8String];
+    auto it = _torrents.find(hex);
+    if (it == _torrents.end() || !it->second.is_valid()) {
+        return 0;
+    }
+    try {
+        auto ti = it->second.torrent_file();
+        if (!ti) return 0;
+        return ti->piece_length();
+    } catch (...) {
+        return 0;
+    }
+}
+
+- (NSInteger)pieceCountForTorrentWithHash:(NSString *)infoHash {
+    std::lock_guard<std::mutex> lock(_sessionMutex);
+    std::string hex = [infoHash.lowercaseString UTF8String];
+    auto it = _torrents.find(hex);
+    if (it == _torrents.end() || !it->second.is_valid()) {
+        return 0;
+    }
+    try {
+        auto ti = it->second.torrent_file();
+        if (!ti) return 0;
+        return ti->num_pieces();
+    } catch (...) {
+        return 0;
+    }
+}
+
 - (nullable NSArray<TorrentBridgeTrackerInfo *> *)trackersForTorrentWithHash:(NSString *)infoHash {
     std::lock_guard<std::mutex> lock(_sessionMutex);
     std::string hex = [infoHash.lowercaseString UTF8String];

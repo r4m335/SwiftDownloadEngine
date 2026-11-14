@@ -22,9 +22,13 @@ public final class LIDPlaybackEngine: NSObject, ObservableObject {
     @Published public private(set) var volume: Float = 1.0
     @Published public private(set) var isMuted: Bool = false
     @Published public private(set) var currentSource: LIDPlayerSource? = nil
+    @Published public private(set) var streamContext: LIDStreamContextInfo = .empty
 
     /// Track manager handling audio tracks, subtitles, and external cue rendering.
     public let trackManager: LIDTrackManager
+
+    /// Optional reference to the BitTorrent engine for sequential swarm streaming.
+    public var torrentEngine: TorrentEngine?
 
     #if canImport(AVFoundation)
     public private(set) var player: AVPlayer?
@@ -34,17 +38,23 @@ public final class LIDPlaybackEngine: NSObject, ObservableObject {
     private var bufferEmptyObserver: NSKeyValueObservation?
     private var likelyToKeepUpObserver: NSKeyValueObservation?
     private var loadedTimeRangesObserver: NSKeyValueObservation?
+    private var seekableTimeRangesObserver: NSKeyValueObservation?
+    private var torrentStreamAdapter: LIDTorrentStreamAdapter?
+    private var dashStreamAdapter: LIDDASHStreamAdapter?
     #endif
 
+    private var swarmStatusTask: Task<Void, Never>?
     private let historyStore: LIDPlaybackHistoryStore
     private var lastRecordedSecond: Int = 0
 
     public init(
         historyStore: LIDPlaybackHistoryStore = .shared,
-        trackManager: LIDTrackManager? = nil
+        trackManager: LIDTrackManager? = nil,
+        torrentEngine: TorrentEngine? = nil
     ) {
         self.historyStore = historyStore
         self.trackManager = trackManager ?? LIDTrackManager()
+        self.torrentEngine = torrentEngine
         super.init()
 
         LIDNowPlayingCoordinator.shared.setupRemoteCommands(
@@ -72,6 +82,11 @@ public final class LIDPlaybackEngine: NSObject, ObservableObject {
 
     // MARK: - Playback Control APIs
 
+    /// Configures the shared BitTorrent engine instance for swarm streaming.
+    public func configure(torrentEngine: TorrentEngine) {
+        self.torrentEngine = torrentEngine
+    }
+
     /// Loads and prepares a media source for playback.
     @MainActor
     public func load(source: LIDPlayerSource, autoPlay: Bool = true, resumeFromHistory: Bool = true) {
@@ -82,23 +97,70 @@ public final class LIDPlaybackEngine: NSObject, ObservableObject {
         self.durationSeconds = 0.0
         self.bufferedDurationSeconds = 0.0
         self.metadata = LIDMediaMetadata(title: source.title)
+        self.streamContext = LIDStreamContextInfo(isLive: false)
         self.trackManager.reset()
 
         #if canImport(AVFoundation)
         let asset: AVURLAsset
-        if let url = source.url {
-            var options: [String: Any] = [:]
-            if case .networkStream(_, let headers, _) = source, !headers.isEmpty {
+        var options: [String: Any] = [:]
+
+        switch source {
+        case .networkStream(let url, let headers, _):
+            if !headers.isEmpty {
                 options["AVURLAssetHTTPHeaderFieldsKey"] = headers
             }
             asset = AVURLAsset(url: url, options: options)
-        } else {
-            self.playbackState = .failed(error: "Unsupported media source URL.")
-            return
+
+        case .hlsStream(let url, let variantPreferences, _, let requestContext):
+            var targetURL = url
+            if let exact = variantPreferences?.exactURI {
+                targetURL = exact
+            }
+            if let headers = requestContext?.effectiveHeaders(for: targetURL), !headers.isEmpty {
+                options["AVURLAssetHTTPHeaderFieldsKey"] = headers
+            }
+            asset = AVURLAsset(url: targetURL, options: options)
+
+        case .dashStream(let manifestURL, let repID, _, let requestContext):
+            let adapter = LIDDASHStreamAdapter(
+                manifestURL: manifestURL,
+                selectedRepresentationID: repID,
+                requestContext: requestContext
+            )
+            self.dashStreamAdapter = adapter
+            asset = AVURLAsset(url: adapter.customSchemeURL, options: options)
+            asset.resourceLoader.setDelegate(adapter, queue: adapter.dispatchQueue)
+
+        case .torrentSwarm(let infoHash, let fileIndex, _):
+            let adapter = LIDTorrentStreamAdapter(
+                infoHash: infoHash,
+                fileIndex: fileIndex,
+                torrentEngine: torrentEngine
+            )
+            self.torrentStreamAdapter = adapter
+            asset = AVURLAsset(url: adapter.customSchemeURL, options: options)
+            asset.resourceLoader.setDelegate(adapter, queue: adapter.dispatchQueue)
+            startSwarmMonitoring(infoHash: infoHash)
+
+        case .localFile(let url, _), .partialDownload(let url, _, _):
+            asset = AVURLAsset(url: url, options: options)
         }
 
         let item = AVPlayerItem(asset: asset)
         item.audioTimePitchAlgorithm = .spectral
+
+        // Apply HLS variant preferences on the AVPlayerItem if specified
+        if case .hlsStream(_, let prefs, _, _) = source {
+            if let maxBw = prefs?.maximumBandwidth {
+                item.preferredPeakBitRate = Double(maxBw)
+            }
+            if prefs?.maximumWidth != nil || prefs?.maximumHeight != nil {
+                let w = CGFloat(prefs?.maximumWidth ?? 1920)
+                let h = CGFloat(prefs?.maximumHeight ?? 1080)
+                item.preferredMaximumResolution = CGSize(width: w, height: h)
+            }
+        }
+
         self.playerItem = item
 
         let avPlayer = AVPlayer(playerItem: item)
@@ -232,6 +294,8 @@ public final class LIDPlaybackEngine: NSObject, ObservableObject {
         saveCurrentPosition()
         LIDNowPlayingCoordinator.shared.clearNowPlaying()
         trackManager.reset()
+        swarmStatusTask?.cancel()
+        swarmStatusTask = nil
         #if canImport(AVFoundation)
         if let token = timeObserverToken, let player = player {
             player.removeTimeObserver(token)
@@ -245,6 +309,11 @@ public final class LIDPlaybackEngine: NSObject, ObservableObject {
         likelyToKeepUpObserver = nil
         loadedTimeRangesObserver?.invalidate()
         loadedTimeRangesObserver = nil
+        seekableTimeRangesObserver?.invalidate()
+        seekableTimeRangesObserver = nil
+
+        torrentStreamAdapter = nil
+        dashStreamAdapter = nil
 
         NotificationCenter.default.removeObserver(self)
 
@@ -253,6 +322,7 @@ public final class LIDPlaybackEngine: NSObject, ObservableObject {
         self.playerItem = nil
         #endif
         self.playbackState = .idle
+        self.streamContext = .empty
         self.currentSource = nil
     }
 
@@ -276,8 +346,19 @@ public final class LIDPlaybackEngine: NSObject, ObservableObject {
                     self.extractMetadata(from: observedItem, title: source.title)
                     self.trackManager.populateTracks(from: observedItem)
 
+                    let isLive = observedItem.duration.isIndefinite
+                    self.streamContext.isLive = isLive
+                    if isLive, let range = observedItem.seekableTimeRanges.first?.timeRangeValue {
+                        let dvrSec = range.duration.seconds
+                        if dvrSec.isFinite && !dvrSec.isNaN {
+                            self.streamContext.isDVRSeekable = dvrSec > 5.0
+                            self.streamContext.dvrWindowDurationSeconds = dvrSec
+                        }
+                    }
+
                     // Resume check
-                    if resumeFromHistory, let mediaID = source.url?.absoluteString {
+                    if resumeFromHistory {
+                        let mediaID = source.mediaIdentifier
                         if let resumeSec = await self.historyStore.resumePosition(mediaIdentifier: mediaID),
                            resumeSec < dur {
                             self.seek(to: resumeSec) { [weak self] _ in
@@ -334,6 +415,19 @@ public final class LIDPlaybackEngine: NSObject, ObservableObject {
                 }
             }
         }
+
+        seekableTimeRangesObserver = item.observe(\.seekableTimeRanges, options: [.initial, .new]) { [weak self] observedItem, _ in
+            Task { @MainActor [weak self] in
+                guard let self = self else { return }
+                if let range = observedItem.seekableTimeRanges.first?.timeRangeValue {
+                    let dvrSec = range.duration.seconds
+                    if dvrSec.isFinite && !dvrSec.isNaN && dvrSec > 0 {
+                        self.streamContext.isDVRSeekable = dvrSec > 5.0
+                        self.streamContext.dvrWindowDurationSeconds = dvrSec
+                    }
+                }
+            }
+        }
     }
 
     private func setupTimeObserver(for player: AVPlayer, source: LIDPlayerSource) {
@@ -382,9 +476,28 @@ public final class LIDPlaybackEngine: NSObject, ObservableObject {
     }
     #endif
 
+    private func startSwarmMonitoring(infoHash: String) {
+        swarmStatusTask?.cancel()
+        swarmStatusTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                guard let self = self, let engine = self.torrentEngine else { break }
+                if let task = await engine.task(for: infoHash) {
+                    await MainActor.run {
+                        self.streamContext.swarmDownloadSpeed = task.progress.downloadBytesPerSecond
+                        self.streamContext.swarmUploadSpeed = task.progress.uploadBytesPerSecond
+                        self.streamContext.swarmConnectedPeers = task.progress.connectedPeers
+                        self.streamContext.swarmActiveSeeds = task.progress.activeSeeds
+                        self.streamContext.swarmProgressFraction = task.progress.progressFraction
+                    }
+                }
+            }
+        }
+    }
+
     private func saveCurrentPosition() {
-        guard let source = currentSource, let url = source.url else { return }
-        let mediaID = url.absoluteString
+        guard let source = currentSource else { return }
+        let mediaID = source.mediaIdentifier
         let title = source.title
         let pos = currentPositionSeconds
         let dur = durationSeconds

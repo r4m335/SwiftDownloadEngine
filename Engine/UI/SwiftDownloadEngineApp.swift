@@ -288,6 +288,9 @@ public struct SwiftDownloadEngineApp: App {
                 configuration: engineConfig,
                 storageDirectoryURL: torrentStorage
             )
+            if let te = torrentEngine {
+                LIDPlaybackEngine.shared.configure(torrentEngine: te)
+            }
         } catch {
             print("Notice: TorrentEngine initialization skipped or deferred: \(error.localizedDescription)")
         }
