@@ -56,52 +56,8 @@ public struct BrowserBookmarksAndHistoryView: View {
                         dismiss()
                     }
                 }
-
-                if selectedMode == .bookmarks {
-                    ToolbarItem(placement: .primaryAction) {
-                        Menu {
-                            Button {
-                                addCurrentPageBookmark()
-                            } label: {
-                                Label("Bookmark Current Page", systemImage: "star")
-                            }
-                            .disabled(viewModel.currentURL == nil)
-
-                            Button {
-                                newFolderTitle = ""
-                                isShowingNewFolderDialog = true
-                            } label: {
-                                Label("New Folder", systemImage: "folder.badge.plus")
-                            }
-
-                            Menu("Sort By") {
-                                ForEach(BrowserBookmarkSort.allCases) { sort in
-                                    Button {
-                                        bookmarkSort = sort
-                                    } label: {
-                                        HStack {
-                                            Text(sort.rawValue)
-                                            if bookmarkSort == sort {
-                                                Image(systemName: "checkmark")
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        } label: {
-                            Image(systemName: "ellipsis.circle")
-                        }
-                    }
-                } else {
-                    ToolbarItem(placement: .primaryAction) {
-                        Button {
-                            isShowingClearHistoryAlert = true
-                        } label: {
-                            Text("Clear")
-                                .foregroundColor(.red)
-                        }
-                        .disabled(BrowserHistoryStore.shared.allEntries.isEmpty)
-                    }
+                ToolbarItem(placement: .primaryAction) {
+                    trailingToolbarItem
                 }
             }
             .alert("New Folder", isPresented: $isShowingNewFolderDialog) {
@@ -134,6 +90,52 @@ public struct BrowserBookmarksAndHistoryView: View {
             return last.title
         }
         return "Bookmarks"
+    }
+
+    @ViewBuilder
+    private var trailingToolbarItem: some View {
+        if selectedMode == .bookmarks {
+            Menu {
+                Button {
+                    addCurrentPageBookmark()
+                } label: {
+                    Label("Bookmark Current Page", systemImage: "star")
+                }
+                .disabled(viewModel.currentURL == nil)
+
+                Button {
+                    newFolderTitle = ""
+                    isShowingNewFolderDialog = true
+                } label: {
+                    Label("New Folder", systemImage: "folder.badge.plus")
+                }
+
+                Menu("Sort By") {
+                    ForEach(BrowserBookmarkSort.allCases) { sort in
+                        Button {
+                            bookmarkSort = sort
+                        } label: {
+                            HStack {
+                                Text(sort.rawValue)
+                                if bookmarkSort == sort {
+                                    Image(systemName: "checkmark")
+                                }
+                            }
+                        }
+                    }
+                }
+            } label: {
+                Image(systemName: "ellipsis.circle")
+            }
+        } else {
+            Button {
+                isShowingClearHistoryAlert = true
+            } label: {
+                Text("Clear")
+                    .foregroundColor(.red)
+            }
+            .disabled(BrowserHistoryStore.shared.allEntries.isEmpty)
+        }
     }
 
     private var searchField: some View {

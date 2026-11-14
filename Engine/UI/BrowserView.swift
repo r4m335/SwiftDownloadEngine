@@ -395,7 +395,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         guard let vm = downloadDelegate as? DownloadManagerViewModel else { return 0.0 }
         let active = vm.unifiedTransfers.filter { $0.state == .downloading }
         guard !active.isEmpty else { return 0.0 }
-        let sum = active.reduce(0.0) { $0 + $1.progress }
+        let sum = active.reduce(into: 0.0) { $0 += $1.progress }
         return sum / Double(active.count)
     }
 
