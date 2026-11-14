@@ -1389,6 +1389,51 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         }
     }
 
+    /// Prefills the global Add Download sheet with this resource's URL and dismisses the inspector.
+    public func sendToGlobalAddDownload(for resource: WebpageResource) {
+        isShowingResourceInspector = false
+        onOpenAddDownload?(resource.url)
+    }
+
+    /// Refreshes expired or expiring signed media tokens from the active webpage.
+    public func refreshResourceToken(for resource: WebpageResource) {
+        if let newer = mediaCandidates.first(where: { cand in
+            cand.url != nil && cand.url != resource.url &&
+            cand.url?.host == resource.url.host &&
+            cand.url?.path == resource.url.path &&
+            !cand.isExpired
+        }) {
+            if let newURL = newer.url {
+                var updatedResources = discoveredResources
+                if let idx = updatedResources.firstIndex(where: { $0.id == resource.id }) {
+                    let updated = WebpageResource(
+                        id: resource.id,
+                        url: newURL,
+                        title: resource.title,
+                        suggestedFilename: resource.suggestedFilename,
+                        resourceType: resource.resourceType,
+                        mimeType: resource.mimeType,
+                        estimatedSize: resource.estimatedSize,
+                        isSupported: resource.isSupported,
+                        unsupportedReason: resource.unsupportedReason,
+                        requestContext: newer.requestContext ?? resource.requestContext,
+                        manifestText: resource.manifestText,
+                        hlsVariantPreferences: resource.hlsVariantPreferences,
+                        dashVideoRepresentationID: resource.dashVideoRepresentationID,
+                        dashAudioRepresentationID: resource.dashAudioRepresentationID,
+                        isDRMProtected: resource.isDRMProtected,
+                        drmProtectionType: resource.drmProtectionType
+                    )
+                    updatedResources[idx] = updated
+                    discoveredResources = updatedResources
+                }
+                promptDownloadFromInspector(for: resource)
+                return
+            }
+        }
+        inspectCurrentPageResources()
+    }
+
     public func executeDecision(_ decision: BrowserDownloadDecision) {
         switch decision.action {
         case .streaming(let manifestURL, _, let suggestedFilename, let cachedText, let requestContext):

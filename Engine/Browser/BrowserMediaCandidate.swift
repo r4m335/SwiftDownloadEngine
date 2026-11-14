@@ -98,6 +98,24 @@ public struct BrowserMediaCandidate: Identifiable, Codable, Sendable, Equatable,
     public var isActionable: Bool {
         availability == .downloadable || availability == .requiresPlanning || availability == .captureCandidate
     }
+
+    /// Evaluates whether this candidate's URL has expired based on query parameters.
+    public var isExpired: Bool {
+        guard let target = url ?? finalURL else { return false }
+        return DirectMediaTransferPlanner.isURLExpired(target)
+    }
+
+    /// Evaluates whether this candidate's URL will expire within the given threshold (default 300 seconds).
+    public func isExpiringSoon(thresholdSeconds: TimeInterval = 300, now: Date = Date()) -> Bool {
+        guard let target = url ?? finalURL else { return false }
+        return DirectMediaTransferPlanner.isURLExpiringSoon(target, thresholdSeconds: thresholdSeconds, now: now)
+    }
+
+    /// Extracted expiration date from signed token parameters if present.
+    public var expirationDate: Date? {
+        guard let target = url ?? finalURL else { return nil }
+        return DirectMediaTransferPlanner.urlExpirationDate(target)
+    }
 }
 
 /// Pure classification and identity rules shared by DOM and dynamic browser

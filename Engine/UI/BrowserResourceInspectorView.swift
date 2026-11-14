@@ -21,7 +21,8 @@ public struct BrowserResourceInspectorSheet: View {
     @State private var selectedCategory: WebpageResourceType? = nil
     @State private var showsAllResources = false
     @State private var searchText: String = ""
-    @State private var previewItem: MediaPreviewItem? = nil
+    @State private var activePlaybackSource: LIDPlayerSource? = nil
+    @State private var drmWarningAlert: String? = nil
 
     public init(viewModel: BrowserViewModel) {
         self.viewModel = viewModel
@@ -180,10 +181,16 @@ public struct BrowserResourceInspectorSheet: View {
             .onAppear {
                 viewModel.expandStreamingManifests()
             }
-            .sheet(item: $previewItem) { item in
-                LIDPlayerView(url: item.url, title: item.title) {
-                    previewItem = nil
-                }
+            .lidPlayerPresentation(source: $activePlaybackSource)
+            .alert(isPresented: Binding<Bool>(
+                get: { drmWarningAlert != nil },
+                set: { if !$0 { drmWarningAlert = nil } }
+            )) {
+                Alert(
+                    title: Text("DRM-Protected Stream"),
+                    message: Text(drmWarningAlert ?? "This stream is encrypted with Digital Rights Management and cannot be played directly or downloaded."),
+                    dismissButton: .default(Text("OK"))
+                )
             }
         }
     }
@@ -301,6 +308,14 @@ public struct BrowserResourceInspectorSheet: View {
             qualitySummary: quality,
             variantItem: variant,
             onSelect: {
+                if resource.isDRMProtected || cand?.kind == .protectedMedia {
+                    drmWarningAlert = "This media stream is encrypted with Digital Rights Management (\(resource.drmProtectionType ?? "DRM")) and cannot be downloaded or captured."
+                    return
+                }
+                if resource.isExpired() {
+                    viewModel.refreshResourceToken(for: resource)
+                    return
+                }
                 if resource.isSegmentChunk {
                     viewModel.blobCaptureErrorMessage = "This is a streaming segment chunk. Download the playlist manifest (.m3u8 or .mpd) instead."
                 } else {
@@ -308,13 +323,25 @@ public struct BrowserResourceInspectorSheet: View {
                 }
             },
             onPreview: {
+                if resource.isDRMProtected || cand?.kind == .protectedMedia {
+                    drmWarningAlert = "This media stream is encrypted with Digital Rights Management (\(resource.drmProtectionType ?? "DRM")) and cannot be played directly."
+                    return
+                }
                 let title = resource.suggestedFilename.isEmpty ? resource.title : resource.suggestedFilename
-                presentationMode.wrappedValue.dismiss()
-                viewModel.loadInlineHLSPlayer(for: resource.url, title: title)
+                if let source = LIDPlayerSource.make(from: resource, title: title) {
+                    activePlaybackSource = source
+                }
             },
             onOpenBrowser: {
                 presentationMode.wrappedValue.dismiss()
                 viewModel.load(url: resource.url)
+            },
+            onOpenAddDownload: {
+                presentationMode.wrappedValue.dismiss()
+                viewModel.sendToGlobalAddDownload(for: resource)
+            },
+            onShare: {
+                viewModel.shareURL(resource.url)
             }
         )
     }
@@ -398,6 +425,8 @@ public struct ResourceRowView: View {
     public let onSelect: () -> Void
     public let onPreview: (() -> Void)?
     public let onOpenBrowser: (() -> Void)?
+    public let onOpenAddDownload: (() -> Void)?
+    public let onShare: (() -> Void)?
 
     public init(
         resource: WebpageResource,
@@ -406,7 +435,9 @@ public struct ResourceRowView: View {
         variantItem: HLSVariantStreamItem? = nil,
         onSelect: @escaping () -> Void,
         onPreview: (() -> Void)? = nil,
-        onOpenBrowser: (() -> Void)? = nil
+        onOpenBrowser: (() -> Void)? = nil,
+        onOpenAddDownload: (() -> Void)? = nil,
+        onShare: (() -> Void)? = nil
     ) {
         self.resource = resource
         self.candidate = candidate
@@ -415,6 +446,8 @@ public struct ResourceRowView: View {
         self.onSelect = onSelect
         self.onPreview = onPreview
         self.onOpenBrowser = onOpenBrowser
+        self.onOpenAddDownload = onOpenAddDownload
+        self.onShare = onShare
     }
 
     /// Backward-compatible initializer for existing callers
@@ -435,6 +468,8 @@ public struct ResourceRowView: View {
         self.onSelect = onDownload
         self.onPreview = onPreview
         self.onOpenBrowser = nil
+        self.onOpenAddDownload = nil
+        self.onShare = nil
     }
 
     public var fileIconName: String {
@@ -577,8 +612,42 @@ public struct ResourceRowView: View {
                             }
                         }
 
-                        // Line 3: Format Badge & Host
+                        // Line 3: Format Badge, DRM, Expiration, & Host
                         HStack(spacing: 6) {
+                            if resource.isDRMProtected || candidate?.kind == .protectedMedia {
+                                HStack(spacing: 3) {
+                                    Image(systemName: "lock.fill")
+                                        .font(.system(size: 8))
+                                    Text(resource.drmProtectionType ?? "DRM")
+                                        .font(.system(size: 9, weight: .bold))
+                                }
+                                .foregroundColor(.white)
+                                .padding(.horizontal, 5)
+                                .padding(.vertical, 2)
+                                .background(Color.red.opacity(0.85))
+                                .cornerRadius(4)
+                            } else if resource.isExpired() {
+                                HStack(spacing: 3) {
+                                    Image(systemName: "exclamationmark.clock.fill")
+                                        .font(.system(size: 8))
+                                    Text("Expired")
+                                        .font(.system(size: 9, weight: .bold))
+                                }
+                                .foregroundColor(.white)
+                                .padding(.horizontal, 5)
+                                .padding(.vertical, 2)
+                                .background(Color.orange)
+                                .cornerRadius(4)
+                            } else if resource.isExpiringSoon() {
+                                HStack(spacing: 3) {
+                                    Image(systemName: "clock.badge.exclamationmark")
+                                        .font(.system(size: 8))
+                                    Text("Expiring")
+                                        .font(.system(size: 9, weight: .medium))
+                                }
+                                .foregroundColor(.orange)
+                            }
+
                             if let variant = variantItem {
                                 Text(variant.qualityLabel)
                                     .font(.system(size: 10, weight: .bold))
@@ -610,7 +679,7 @@ public struct ResourceRowView: View {
 
             // Trailing Contextual Actions: Independent hit areas disjoint from row selection button
             HStack(spacing: 10) {
-                if isPlayable {
+                if isPlayable && !resource.isDRMProtected && candidate?.kind != .protectedMedia {
                     Button {
                         onPreview?()
                     } label: {
@@ -641,6 +710,47 @@ public struct ResourceRowView: View {
             }
         }
         .padding(.vertical, 4)
+        .contextMenu {
+            if !resource.isDRMProtected && candidate?.kind != .protectedMedia {
+                Button {
+                    onSelect()
+                } label: {
+                    Label("Configure Download", systemImage: "arrow.down.circle")
+                }
+
+                if let onOpenAddDownload {
+                    Button {
+                        onOpenAddDownload()
+                    } label: {
+                        Label("Open in Add Download", systemImage: "plus.circle")
+                    }
+                }
+
+                if isPlayable {
+                    Button {
+                        onPreview?()
+                    } label: {
+                        Label("Play in LID Player", systemImage: "play.circle")
+                    }
+                }
+            }
+
+            Button {
+                #if canImport(UIKit)
+                UIPasteboard.general.url = resource.url
+                #endif
+            } label: {
+                Label("Copy Stream URL", systemImage: "doc.on.doc")
+            }
+
+            if let onShare {
+                Button {
+                    onShare()
+                } label: {
+                    Label("Share...", systemImage: "square.and.arrow.up")
+                }
+            }
+        }
     }
 }
 

@@ -317,9 +317,10 @@ public enum DirectMediaTransferPlanner {
             mime == "application/dash+xml" || mime == "video/vnd.mpeg.dash.mpd"
     }
 
-    private static func isExpired(_ url: URL, now: Date) -> Bool {
+    /// Computes the expiration date from query parameters (e.g. expires, exp, x-amz-expires, end).
+    public static func urlExpirationDate(_ url: URL) -> Date? {
         guard let queryItems = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems else {
-            return false
+            return nil
         }
         var values: [String: String] = [:]
         for item in queryItems {
@@ -327,23 +328,37 @@ public enum DirectMediaTransferPlanner {
                 values[item.name.lowercased()] = value
             }
         }
-        for key in ["expires", "exp", "x-amz-expires"] {
+        for key in ["expires", "exp", "x-amz-expires", "endtime", "end"] {
             if let raw = values[key], let seconds = Double(raw) {
-                // X-Amz-Expires is a duration and only has meaning with
-                // X-Amz-Date; standalone expires/exp values are Unix times.
                 if key == "x-amz-expires",
                    let dateText = values["x-amz-date"],
                    let start = amzDate(dateText) {
                     guard seconds > 0 else { continue }
-                    return now >= start.addingTimeInterval(seconds)
+                    return start.addingTimeInterval(seconds)
                 }
                 if key != "x-amz-expires" {
                     guard seconds > 0 else { continue }
-                    return now >= Date(timeIntervalSince1970: seconds)
+                    return Date(timeIntervalSince1970: seconds)
                 }
             }
         }
-        return false
+        return nil
+    }
+
+    /// Evaluates whether the given URL has already passed its signed expiration timestamp.
+    public static func isURLExpired(_ url: URL, now: Date = Date()) -> Bool {
+        guard let exp = urlExpirationDate(url) else { return false }
+        return now >= exp
+    }
+
+    /// Evaluates whether the given URL will expire within the specified threshold (default 300 seconds).
+    public static func isURLExpiringSoon(_ url: URL, thresholdSeconds: TimeInterval = 300, now: Date = Date()) -> Bool {
+        guard let exp = urlExpirationDate(url) else { return false }
+        return now < exp && exp.timeIntervalSince(now) <= thresholdSeconds
+    }
+
+    private static func isExpired(_ url: URL, now: Date) -> Bool {
+        isURLExpired(url, now: now)
     }
 
     private static func amzDate(_ value: String) -> Date? {

@@ -182,6 +182,9 @@ public actor StreamManifestResourceExpander {
             return trimmed.isEmpty ? "video" : trimmed
         }()
 
+        let effectiveText = manifestText ?? masterResource.manifestText ?? ""
+        let drmResult = StreamDRMDetector.evaluate(manifestText: effectiveText, url: masterResource.url)
+
         var variants: [WebpageResource] = []
         var items: [HLSVariantStreamItem] = []
 
@@ -217,6 +220,9 @@ public actor StreamManifestResourceExpander {
                 exactURI: option.uri
             )
 
+            let isSupported = !drmResult.isProtected
+            let unsupportedReason = drmResult.reason
+
             let resource = WebpageResource(
                 id: variantID,
                 url: masterResource.url, // Keep pointing to master manifest URL for orchestrator planning
@@ -225,13 +231,15 @@ public actor StreamManifestResourceExpander {
                 resourceType: option.isAudioOnly ? .audio : .video,
                 mimeType: masterResource.mimeType ?? "application/vnd.apple.mpegurl",
                 estimatedSize: option.estimatedSizeBytes,
-                isSupported: true,
-                unsupportedReason: nil,
+                isSupported: isSupported,
+                unsupportedReason: unsupportedReason,
                 requestContext: masterResource.requestContext,
-                manifestText: manifestText ?? masterResource.manifestText,
+                manifestText: effectiveText,
                 hlsVariantPreferences: preferences,
                 dashVideoRepresentationID: option.dashVideoRepresentationID,
-                dashAudioRepresentationID: option.dashAudioRepresentationID
+                dashAudioRepresentationID: option.dashAudioRepresentationID,
+                isDRMProtected: drmResult.isProtected,
+                drmProtectionType: drmResult.protectionType
             )
             variants.append(resource)
 

@@ -45,6 +45,10 @@ public struct WebpageResource: Identifiable, Hashable, Sendable {
     public let dashVideoRepresentationID: String?
     /// Optional DASH audio representation ID selected by the user.
     public let dashAudioRepresentationID: String?
+    /// Whether this resource or streaming manifest was detected to contain DRM protection (FairPlay, Widevine, PlayReady).
+    public let isDRMProtected: Bool
+    /// Identified DRM encryption system if protected (e.g. "FairPlay", "Widevine", "PlayReady", "Sample-AES").
+    public let drmProtectionType: String?
 
     /// Manifest candidates are intentionally kept outside the ordinary
     /// `isSupported` download path. They require planning and coordinator-
@@ -147,7 +151,9 @@ public struct WebpageResource: Identifiable, Hashable, Sendable {
         manifestText: String? = nil,
         hlsVariantPreferences: HLSVariantSelectionPreferences? = nil,
         dashVideoRepresentationID: String? = nil,
-        dashAudioRepresentationID: String? = nil
+        dashAudioRepresentationID: String? = nil,
+        isDRMProtected: Bool = false,
+        drmProtectionType: String? = nil
     ) {
         self.id = id
         self.url = url
@@ -163,6 +169,23 @@ public struct WebpageResource: Identifiable, Hashable, Sendable {
         self.hlsVariantPreferences = hlsVariantPreferences
         self.dashVideoRepresentationID = dashVideoRepresentationID
         self.dashAudioRepresentationID = dashAudioRepresentationID
+        self.isDRMProtected = isDRMProtected
+        self.drmProtectionType = drmProtectionType
+    }
+
+    /// Evaluates whether this resource URL has already passed its signed expiration timestamp.
+    public func isExpired(now: Date = Date()) -> Bool {
+        DirectMediaTransferPlanner.isURLExpired(url, now: now)
+    }
+
+    /// Evaluates whether this resource URL will expire soon (default within 300 seconds).
+    public func isExpiringSoon(thresholdSeconds: TimeInterval = 300, now: Date = Date()) -> Bool {
+        DirectMediaTransferPlanner.isURLExpiringSoon(url, thresholdSeconds: thresholdSeconds, now: now)
+    }
+
+    /// Computed expiration date extracted from signed URL query parameters if present.
+    public var expirationDate: Date? {
+        DirectMediaTransferPlanner.urlExpirationDate(url)
     }
 
     public var suggestedExtension: String {

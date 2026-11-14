@@ -88,6 +88,48 @@ public enum LIDPlayerSource: Equatable, Sendable {
             return false
         }
     }
+
+    /// Factory converting a discovered `WebpageResource` into an appropriate native `LIDPlayerSource`
+    /// preserving variant selection preferences, origin authentication cookies, User-Agent, and Referer headers.
+    public static func make(from resource: WebpageResource, title: String? = nil) -> LIDPlayerSource? {
+        let displayTitle: String
+        if let custom = title?.trimmingCharacters(in: .whitespacesAndNewlines), !custom.isEmpty {
+            displayTitle = custom
+        } else if !resource.suggestedFilename.isEmpty {
+            displayTitle = resource.suggestedFilename
+        } else if !resource.title.isEmpty {
+            displayTitle = resource.title
+        } else {
+            displayTitle = "Media Stream"
+        }
+
+        if resource.isStreamingManifest {
+            let ext = resource.url.pathExtension.lowercased()
+            let mime = resource.mimeType?.lowercased() ?? ""
+            if ext == "mpd" || mime.contains("dash") {
+                return .dashStream(
+                    manifestURL: resource.url,
+                    selectedRepresentationID: resource.dashVideoRepresentationID,
+                    title: displayTitle,
+                    requestContext: resource.requestContext
+                )
+            } else {
+                return .hlsStream(
+                    url: resource.url,
+                    variantPreferences: resource.hlsVariantPreferences,
+                    title: displayTitle,
+                    requestContext: resource.requestContext
+                )
+            }
+        }
+
+        if resource.resourceType == .video || resource.resourceType == .audio {
+            let headers = resource.requestContext?.effectiveHeaders(for: resource.url) ?? [:]
+            return .networkStream(url: resource.url, headers: headers, title: displayTitle)
+        }
+
+        return nil
+    }
 }
 
 /// Dynamic playback error reporting categorized issues with actionable diagnostics.
