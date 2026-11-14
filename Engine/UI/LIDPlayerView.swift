@@ -1050,9 +1050,11 @@ public struct LIDPlayerView: View {
     private func resetControlsTimer() {
         controlsTimer?.invalidate()
         controlsTimer = Timer.scheduledTimer(withTimeInterval: 3.5, repeats: false) { _ in
-            withAnimation(.easeInOut(duration: 0.3)) {
-                if engine.playbackState.isPlaying && !isControlsLocked {
-                    showControls = false
+            Task { @MainActor in
+                withAnimation(.easeInOut(duration: 0.3)) {
+                    if engine.playbackState.isPlaying && !isControlsLocked {
+                        showControls = false
+                    }
                 }
             }
         }

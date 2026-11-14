@@ -70,15 +70,12 @@ public final class LIDPlaybackEngine: NSObject, ObservableObject {
 
     deinit {
         #if canImport(AVFoundation)
-        if let token = timeObserverToken, let player = player {
-            player.removeTimeObserver(token)
-        }
         statusObserver?.invalidate()
         bufferEmptyObserver?.invalidate()
         likelyToKeepUpObserver?.invalidate()
         loadedTimeRangesObserver?.invalidate()
+        seekableTimeRangesObserver?.invalidate()
         NotificationCenter.default.removeObserver(self)
-        player?.pause()
         #endif
     }
 
@@ -468,14 +465,14 @@ public final class LIDPlaybackEngine: NSObject, ObservableObject {
                     self.extractMetadata(from: observedItem, title: source.title)
                     self.trackManager.populateTracks(from: observedItem)
 
+                    let isLive = observedItem.duration.isIndefinite
+                    self.streamContext.isLive = isLive
+
                     // Track validation: if non-live stream has no tracks, report error instead of black screen
-                    if observedItem.tracks.isEmpty && !source.isLive {
+                    if observedItem.tracks.isEmpty && !isLive {
                         self.playbackState = .failed(error: "No playable audio or video tracks could be found in '\(source.title)'.")
                         return
                     }
-
-                    let isLive = observedItem.duration.isIndefinite
-                    self.streamContext.isLive = isLive
                     if isLive, let range = observedItem.seekableTimeRanges.first?.timeRangeValue {
                         let dvrSec = range.duration.seconds
                         if dvrSec.isFinite && !dvrSec.isNaN {
