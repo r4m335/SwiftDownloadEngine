@@ -61,7 +61,7 @@ public final class LIDLibraryStore: ObservableObject {
         ) {
             for case let fileURL as URL in enumerator {
                 if fileURL.isPlayableMedia {
-                    discoveredURLs.insert(fileURL)
+                    discoveredURLs.insert(fileURL.resolvingSymlinksInPath().standardizedFileURL)
                 }
             }
         }
@@ -69,7 +69,7 @@ public final class LIDLibraryStore: ObservableObject {
         // 2. Add completed transfers pointing to existent media files
         for transfer in knownTransfers {
             if transfer.state == .completed || transfer.state == .seeding {
-                let dest = transfer.destinationURL
+                let dest = transfer.destinationURL.resolvingSymlinksInPath().standardizedFileURL
                 if dest.isPlayableMedia && fm.fileExists(atPath: dest.path) {
                     discoveredURLs.insert(dest)
                 }
@@ -78,7 +78,8 @@ public final class LIDLibraryStore: ObservableObject {
 
         // 3. Transform to LIDMediaItem with history and metadata
         var items: [LIDMediaItem] = []
-        for url in discoveredURLs {
+        for rawURL in discoveredURLs {
+            let url = rawURL.resolvingSymlinksInPath().standardizedFileURL
             // Guard against deleted files
             guard fm.fileExists(atPath: url.path) else { continue }
 
@@ -110,7 +111,14 @@ public final class LIDLibraryStore: ObservableObject {
 
             // Check if record exists in history
             let records = await historyStore.historyRecords()
-            if let record = records.first(where: { $0.mediaIdentifier == absID || $0.mediaIdentifier == pathID }) {
+            if let record = records.first(where: { rec in
+                if rec.mediaIdentifier == absID || rec.mediaIdentifier == pathID { return true }
+                if let u = URL(string: rec.mediaIdentifier) {
+                    return u.resolvingSymlinksInPath().standardizedFileURL.path == pathID
+                }
+                let u = URL(fileURLWithPath: rec.mediaIdentifier).resolvingSymlinksInPath().standardizedFileURL
+                return u.path == pathID
+            }) {
                 prog = record.progressFraction
                 completed = record.isCompleted
                 if lastPos == 0.0 {
@@ -170,7 +178,7 @@ public final class LIDLibraryStore: ObservableObject {
     // MARK: - Favorites Management
 
     public func toggleFavorite(for item: LIDMediaItem) {
-        let key = item.url.path
+        let key = item.url.resolvingSymlinksInPath().standardizedFileURL.path
         if favorites.contains(key) {
             favorites.remove(key)
         } else {
@@ -181,7 +189,13 @@ public final class LIDLibraryStore: ObservableObject {
     }
 
     public func isFavorite(mediaIdentifier: String) -> Bool {
-        favorites.contains(mediaIdentifier)
+        if favorites.contains(mediaIdentifier) { return true }
+        let canonical = URL(fileURLWithPath: mediaIdentifier).resolvingSymlinksInPath().standardizedFileURL.path
+        if favorites.contains(canonical) { return true }
+        if let u = URL(string: mediaIdentifier) {
+            return favorites.contains(u.resolvingSymlinksInPath().standardizedFileURL.path)
+        }
+        return false
     }
 
     // MARK: - Playlists Management
@@ -211,7 +225,7 @@ public final class LIDLibraryStore: ObservableObject {
 
     public func addItemToPlaylist(playlistID: UUID, item: LIDMediaItem) {
         guard let idx = playlists.firstIndex(where: { $0.id == playlistID }) else { return }
-        let path = item.url.path
+        let path = item.url.resolvingSymlinksInPath().standardizedFileURL.path
         if !playlists[idx].itemPaths.contains(path) {
             playlists[idx].itemPaths.append(path)
             playlists[idx].updatedAt = Date()

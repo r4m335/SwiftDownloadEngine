@@ -58,7 +58,7 @@ final class LIDPlayerLibraryTests: XCTestCase {
     // MARK: - 2. Continue Watching & History Integration
 
     func testContinueWatchingFilter() async throws {
-        let videoFile = tempDir.appendingPathComponent("series_ep1.mp4")
+        let videoFile = tempDir.appendingPathComponent("series_ep1.mp4").resolvingSymlinksInPath().standardizedFileURL
         try "movie_bytes".write(to: videoFile, atomically: true, encoding: .utf8)
 
         let historyURL = storageDir.appendingPathComponent("hist.json")
