@@ -181,10 +181,103 @@ extension URL {
     /// Determines whether the URL refers to a playable audio or video file based on extension.
     public var isPlayableMedia: Bool {
         let ext = pathExtension.lowercased()
-        return [
-            "mp4", "m4v", "mov", "mkv", "webm", "avi",
-            "mp3", "m4a", "aac", "wav", "flac", "ogg", "opus",
-            "m3u8"
-        ].contains(ext)
+        return isVideoMedia || isAudioMedia || ext == "m3u8"
     }
+
+    /// Whether this URL points to a video container format.
+    public var isVideoMedia: Bool {
+        let ext = pathExtension.lowercased()
+        return ["mp4", "m4v", "mov", "mkv", "webm", "avi", "3gp", "ts", "m3u8"].contains(ext)
+    }
+
+    /// Whether this URL points to an audio container format.
+    public var isAudioMedia: Bool {
+        let ext = pathExtension.lowercased()
+        return ["mp3", "m4a", "aac", "wav", "flac", "ogg", "opus", "wma", "aiff"].contains(ext)
+    }
+}
+
+/// Category of playable media in the player library.
+public enum LIDMediaType: String, Codable, CaseIterable, Sendable {
+    case all = "All"
+    case video = "Video"
+    case audio = "Audio"
+}
+
+/// Item representing a discovered media file in the user's library.
+public struct LIDMediaItem: Identifiable, Equatable, Hashable, Sendable {
+    public var id: String { url.path }
+    public let url: URL
+    public var title: String
+    public let fileSize: Int64
+    public let mediaType: LIDMediaType
+    public let dateAdded: Date
+    public var durationSeconds: Double?
+    public var resolution: String?
+    public var videoCodec: String?
+    public var audioCodec: String?
+    public var isFavorite: Bool
+    public var lastPositionSeconds: Double
+    public var progressFraction: Double
+    public var isCompleted: Bool
+
+    public init(
+        url: URL,
+        title: String? = nil,
+        fileSize: Int64 = 0,
+        mediaType: LIDMediaType = .video,
+        dateAdded: Date = Date(),
+        durationSeconds: Double? = nil,
+        resolution: String? = nil,
+        videoCodec: String? = nil,
+        audioCodec: String? = nil,
+        isFavorite: Bool = false,
+        lastPositionSeconds: Double = 0.0,
+        progressFraction: Double = 0.0,
+        isCompleted: Bool = false
+    ) {
+        self.url = url
+        self.title = title ?? url.deletingPathExtension().lastPathComponent
+        self.fileSize = fileSize
+        self.mediaType = mediaType
+        self.dateAdded = dateAdded
+        self.durationSeconds = durationSeconds
+        self.resolution = resolution
+        self.videoCodec = videoCodec
+        self.audioCodec = audioCodec
+        self.isFavorite = isFavorite
+        self.lastPositionSeconds = lastPositionSeconds
+        self.progressFraction = progressFraction
+        self.isCompleted = isCompleted
+    }
+}
+
+/// User-created playlist of media files.
+public struct LIDPlaylist: Identifiable, Codable, Equatable, Sendable {
+    public let id: UUID
+    public var name: String
+    public var itemPaths: [String]
+    public let createdAt: Date
+    public var updatedAt: Date
+
+    public init(
+        id: UUID = UUID(),
+        name: String,
+        itemPaths: [String] = [],
+        createdAt: Date = Date(),
+        updatedAt: Date = Date()
+    ) {
+        self.id = id
+        self.name = name
+        self.itemPaths = itemPaths
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+    }
+}
+
+/// Playback repetition mode for playlists and queue.
+public enum LIDRepeatMode: String, CaseIterable, Sendable {
+    case off = "Off"
+    case all = "Repeat All"
+    case one = "Repeat One"
 }

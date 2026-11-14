@@ -47,6 +47,7 @@ public enum ActiveSheet: Identifiable {
     case saveToFiles(URL)
     case shareFile(URL)
     case diagnostics
+    case mediaLibrary
 
     public var id: String {
         switch self {
@@ -58,6 +59,8 @@ public enum ActiveSheet: Identifiable {
             return "shareFile_\(url.path)"
         case .diagnostics:
             return "diagnostics"
+        case .mediaLibrary:
+            return "mediaLibrary"
         }
     }
 }
@@ -408,6 +411,14 @@ public struct DownloadsView: View {
                     #endif
                 case .diagnostics:
                     DiagnosticLogView(configuration: viewModel.activeEngineConfiguration)
+                case .mediaLibrary:
+                    LIDPlayerLibraryView(
+                        baseDirectory: viewModel.downloadsDirectoryURL,
+                        knownTransfers: viewModel.unifiedTransfers,
+                        onDismiss: {
+                            activeSheet = nil
+                        }
+                    )
                 }
             }
             .alert(item: $activeAlert) { alert in
@@ -461,6 +472,7 @@ public struct DownloadsView: View {
                         primaryButton: .destructive(Text("Delete File & Remove")) {
                             Task { @MainActor in
                                 try? await viewModel.removeTransfer(id: transfer.id, deleteFiles: true)
+                                try? LIDLibraryStore.shared.deleteMediaFile(url: transfer.destinationURL)
                                 viewModel.showNotification("Removed '\(transfer.name)' and deleted file")
                             }
                         },
@@ -599,9 +611,24 @@ public struct DownloadsView: View {
 
     @ViewBuilder
     private var normalToolbarContent: some View {
+        Button {
+            activeSheet = .mediaLibrary
+        } label: {
+            Image(systemName: "film.stack")
+        }
+        .accessibilityLabel("Media Library")
+
         sortOrderMenu
 
         Menu {
+            Button {
+                activeSheet = .mediaLibrary
+            } label: {
+                Label("Media Library", systemImage: "film.stack")
+            }
+
+            Divider()
+
             Button {
                 Task { @MainActor in await viewModel.pauseAll() }
             } label: {

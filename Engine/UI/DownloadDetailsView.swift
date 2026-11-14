@@ -867,6 +867,7 @@ public struct DownloadDetailsView: View {
             Button("Delete File from Disk", role: .destructive) {
                 Task { @MainActor in
                     try? await viewModel.removeTransfer(id: transfer.id, deleteFiles: true)
+                    try? LIDLibraryStore.shared.deleteMediaFile(url: transfer.destinationURL)
                     presentationMode.wrappedValue.dismiss()
                 }
             }
