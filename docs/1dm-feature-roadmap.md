@@ -226,8 +226,9 @@ To bridge the remaining functional distance without compromising stability or vi
 
 **Goal:** Provide an integrated, hardware-accelerated, VLC-style media player for local, remote, and live swarm playback, eliminating the need to leave the application for media consumption.
 
-### Milestone A.1: Native AVFoundation Playback Engine & Core Architecture
+### Milestone A.1: Native AVFoundation Playback Engine & Core Architecture [Completed]
 - **Objective:** Robust native playback architecture handling local files, network streams, resume, and lifecycle management.
+- **Current State:** Implemented & verified. Pure Swift models (`LIDPlayerSource`, `LIDPlaybackState`, `LIDMediaMetadata`, `LIDPlaybackRecord`, `LIDPlaybackSpeed`, `LIDAspectRatio`), persistent thread-safe `LIDPlaybackHistoryStore`, native AVFoundation `LIDPlaybackEngine` with custom HTTP header injection, periodic position persistence, auto-resume, and hardware-accelerated `LIDNativePlayerLayerView`. Integrated directly into `DownloadsView` and `DownloadDetailsView`.
 - **Scope:**
   - Dedicated `LIDPlaybackEngine` actor managing `AVPlayer`, `AVPlayerItem`, and playback state transitions.
   - Local downloaded video and audio file playback.
@@ -237,8 +238,9 @@ To bridge the remaining functional distance without compromising stability or vi
   - Playback position persistence and auto-resume from last position.
   - Time observation, duration extraction, and buffer state monitoring.
 
-### Milestone A.2: VLC-Style Playback Controls & Gesture Navigation
+### Milestone A.2: VLC-Style Playback Controls & Gesture Navigation [Completed]
 - **Objective:** Full-featured playback interface with intuitive gesture navigation.
+- **Current State:** Implemented & verified. Custom SwiftUI overlay with play/pause, 10s skip, scrubber timeline, remaining/total time toggle, Padlock controls lock mode, Picture-in-Picture (`AVPictureInPictureController`), 8-step speed selector (0.25x-4.0x) with pitch correction, aspect ratio cycling, interactive pinch-to-zoom, and vertical brightness/volume swipe gestures with on-screen HUDs.
 - **Scope:**
   - Custom UI controls: Play/pause, scrubbing timeline, elapsed/remaining duration, lock controls, landscape/portrait autorotation, fullscreen, and PiP (Picture-in-Picture).
   - Multi-speed playback: 0.25x, 0.5x, 0.75x, 1.0x, 1.25x, 1.5x, 2.0x, 4.0x with pitch correction.
@@ -251,8 +253,9 @@ To bridge the remaining functional distance without compromising stability or vi
     - Pinch: Interactive scale/zoom.
     - Long press: Temporary 2x playback speed boost.
 
-### Milestone A.3: Discrete Audio Track & Subtitle Stream Selection
+### Milestone A.3: Discrete Audio Track & Subtitle Stream Selection [Completed]
 - **Objective:** Seamless switching between embedded/external audio renditions and subtitle tracks.
+- **Current State:** Implemented & verified. `LIDTrackManager` for `AVMediaSelectionGroup` audible/legible enumeration, `LIDSubtitleParser` for SRT and WebVTT formats with HTML stripping and encoding detection, live subtitle cue rendering overlay, subtitle delay synchronization adjuster (±5s in 0.1s increments), and `LIDNowPlayingCoordinator` for lock-screen `MPNowPlayingInfoCenter` and `MPRemoteCommandCenter` controls.
 - **Scope:**
   - Enumerate `AVMediaSelectionGroup` for legible (subtitles) and audible (soundtracks) characteristics.
   - Support external `.srt` / `.vtt` subtitle file loading and encoding autodetection (UTF-8, ISO-8859-1).
@@ -365,10 +368,10 @@ The shared layer centralizes:
 
 | Order | Milestone | Status |
 |---|---|---|
-| **1** | **Dedicated Native LID Player Architecture (A.1)** | **In Progress** |
-| 2 | VLC-Style Controls and Gestures (A.2) | Pending |
-| 3 | Audio & Subtitle Management (A.3) | Pending |
-| 4 | Player Library & Playback History (A.4) | Pending |
+| 1 | Dedicated Native LID Player Architecture (A.1) | **Completed** |
+| 2 | VLC-Style Controls and Gestures (A.2) | **Completed** |
+| 3 | Audio & Subtitle Management (A.3) | **Completed** |
+| 4 | Player Library & Playback History (A.4) | Next |
 | 5 | HLS/DASH & Torrent Swarm Streaming Integration (A.5) | Pending |
 | 6 | Browser Fundamentals & Tab Management (B.1) | Pending |
 | 7 | Privacy, Ad Blocking & Site Permissions (B.2) | Pending |
