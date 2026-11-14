@@ -1,6 +1,6 @@
 import Foundation
 
-public enum BrowserPermissionType: String, Sendable, CaseIterable {
+public enum BrowserPermissionType: String, Sendable, CaseIterable, Codable {
     case camera
     case microphone
     case cameraAndMicrophone
@@ -8,10 +8,10 @@ public enum BrowserPermissionType: String, Sendable, CaseIterable {
     case deviceMotion
 }
 
-public enum BrowserPermissionDecisionResult: Equatable, Sendable {
-    case grant
-    case deny
-    case prompt
+public enum BrowserPermissionDecisionResult: String, Equatable, Sendable, Codable {
+    case grant = "grant"
+    case deny = "deny"
+    case prompt = "prompt"
 }
 
 public protocol BrowserPermissionProviding: AnyObject, Sendable {

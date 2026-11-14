@@ -302,7 +302,7 @@ To bridge the remaining functional distance without compromising stability or vi
   - Hierarchical bookmarks and persistent history store.
 
 ### Milestone B.2: Privacy, Security & Site Permissions
-- **Objective:** Comprehensive protection against trackers, invasive ads, popups, and malicious redirects.
+- **Current State:** Implemented & verified. Multi-list content blocking compiled via `WKContentRuleListStore` (`lid-adblock-standard`, `lid-tracker-protection`, `lid-annoyance-blocking`, `lid-third-party-cookies`), domain exception allowlist / per-site shields toggle in navigation bar and overflow menu, rapid redirect loop detection threshold (>5 hops or cyclical repeats) with frame-busting defense script, configurable cookie policies (`allowAll`, `blockThirdParty`, `blockAll`), persistent thread-safe per-site hardware permissions (`BrowserSitePermissionsStore` for camera, microphone, geolocation), selective clear browsing data sheet (`BrowserClearDataSheet`), suspicious download executable/script warnings (`BrowserDownloadSecurityInspector`), and HTTPS invalid certificate error prompt with session overrides (`BrowserCertificateDecisionStore`).
 - **Scope:**
   - Multi-list compilation via `WKContentRuleListStore` (EasyList, EasyPrivacy, Fanboy's Annoyance).
   - Domain exception allowlist / per-site shields toggle in the navigation bar.
@@ -376,10 +376,10 @@ The shared layer centralizes:
 | 2 | VLC-Style Controls and Gestures (A.2) | **Completed** |
 | 3 | Audio & Subtitle Management (A.3) | **Completed** |
 | 4 | Player Library & Playback History (A.4) | **Completed** |
-| 5 | HLS/DASH & Torrent Swarm Streaming Integration (A.5) | Next |
-| 6 | Browser Fundamentals & Tab Management (B.1) | Pending |
-| 7 | Privacy, Ad Blocking & Site Permissions (B.2) | Pending |
-| 8 | Reader Mode & Advanced Browser Features (B.3) | Pending |
+| 5 | HLS/DASH & Torrent Swarm Streaming Integration (A.5) | **Completed** |
+| 6 | Browser Fundamentals & Tab Management (B.1) | **Completed** |
+| 7 | Privacy, Ad Blocking & Site Permissions (B.2) | **Completed** |
+| 8 | Reader Mode & Advanced Browser Features (B.3) | Next |
 | 9 | Unified Media Grabber Integration (B.4) | Pending |
 | 10 | End-to-End Integration & Physical Hardware Verification | Pending |
 

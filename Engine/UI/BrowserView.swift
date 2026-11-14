@@ -147,11 +147,20 @@ public final class BrowserViewModel: NSObject, ObservableObject {
     @Published public var qualityInspectionError: String? = nil
     @Published public var qualityPickerFilename: String = ""
 
-    // Native Content Blocking & Shields (Phase 3 Milestone 3.2)
+    // Native Content Blocking & Shields (Phase 3 Milestone 3.2 & Workstream B Milestone B.2)
     @Published public var isAdBlockerEnabled: Bool = true
+    @Published public var isTrackerBlockerEnabled: Bool = true
+    @Published public var isAnnoyanceBlockerEnabled: Bool = true
+    @Published public var cookiePolicy: BrowserCookiePolicy = .blockThirdParty
     @Published public var isPopupBlockerEnabled: Bool = true
     @Published public var adBlockerWhitelistedDomains: Set<String> = []
     @Published public var isShowingShieldSheet: Bool = false
+    @Published public var isShowingClearDataSheet: Bool = false
+
+    // Security & Permissions Prompts (Milestone B.2)
+    @Published public var certificateWarningPrompt: BrowserCertificatePrompt? = nil
+    @Published public var suspiciousDownloadPrompt: BrowserSuspiciousDownloadPrompt? = nil
+    @Published public var permissionPrompt: BrowserPermissionPrompt? = nil
 
     // User-controlled redirect & popup confirmation
     @Published public var redirectPrompt: BrowserRedirectPrompt? = nil
@@ -237,11 +246,15 @@ public final class BrowserViewModel: NSObject, ObservableObject {
 
         let initialSettings = (downloadDelegate as? DownloadManagerViewModel)?.appSettings ?? AppSettings.load()
         self.isAdBlockerEnabled = initialSettings.isAdBlockerEnabled
+        self.isTrackerBlockerEnabled = initialSettings.isTrackerBlockerEnabled
+        self.isAnnoyanceBlockerEnabled = initialSettings.isAnnoyanceBlockerEnabled
+        self.cookiePolicy = initialSettings.cookiePolicy
         self.isPopupBlockerEnabled = initialSettings.isPopupBlockerEnabled
         self.adBlockerWhitelistedDomains = Set(initialSettings.adBlockerWhitelistedDomains)
         self.selectedSearchEngine = initialSettings.browserSearchEngine
 
         super.init()
+        BrowserPermissionCoordinator.shared.provider = self
 
         #if canImport(WebKit)
         Task {
@@ -1982,6 +1995,24 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         updateActiveTabBlocker()
     }
 
+    public func setTrackerBlockerEnabled(_ enabled: Bool) {
+        isTrackerBlockerEnabled = enabled
+        persistShieldSettings()
+        updateActiveTabBlocker()
+    }
+
+    public func setAnnoyanceBlockerEnabled(_ enabled: Bool) {
+        isAnnoyanceBlockerEnabled = enabled
+        persistShieldSettings()
+        updateActiveTabBlocker()
+    }
+
+    public func setCookiePolicy(_ policy: BrowserCookiePolicy) {
+        cookiePolicy = policy
+        persistShieldSettings()
+        updateActiveTabBlocker()
+    }
+
     public func setPopupBlockerEnabled(_ enabled: Bool) {
         isPopupBlockerEnabled = enabled
         persistShieldSettings()
@@ -1990,6 +2021,9 @@ public final class BrowserViewModel: NSObject, ObservableObject {
     public func persistShieldSettings() {
         var current = AppSettings.load()
         current.isAdBlockerEnabled = isAdBlockerEnabled
+        current.isTrackerBlockerEnabled = isTrackerBlockerEnabled
+        current.isAnnoyanceBlockerEnabled = isAnnoyanceBlockerEnabled
+        current.cookiePolicy = cookiePolicy
         current.isPopupBlockerEnabled = isPopupBlockerEnabled
         current.adBlockerWhitelistedDomains = Array(adBlockerWhitelistedDomains)
         current.save()
@@ -2003,7 +2037,10 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         guard let webView = self.webView else { return }
         BrowserContentBlocker.shared.update(
             for: webView,
-            isEnabled: isAdBlockerEnabled,
+            isAdBlockerEnabled: isAdBlockerEnabled,
+            isTrackerBlockerEnabled: isTrackerBlockerEnabled,
+            isAnnoyanceBlockerEnabled: isAnnoyanceBlockerEnabled,
+            cookiePolicy: cookiePolicy,
             isCurrentDomainWhitelisted: isCurrentSiteWhitelisted
         )
         #endif
@@ -2965,6 +3002,33 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                 includeCredentials: useBrowserCredentials
             )
 
+            // Suspicious download evaluation (Milestone B.2)
+            if let warning = BrowserDownloadSecurityInspector.evaluate(url: directURL, declaredFilename: finalFilename) {
+                isShowingDownloadSheet = false
+                self.suspiciousDownloadPrompt = BrowserSuspiciousDownloadPrompt(
+                    warning: warning,
+                    onProceed: { [weak self] in
+                        guard let self else { return }
+                        Task { @MainActor in
+                            self.suspiciousDownloadPrompt = nil
+                            try? await self.downloadDelegate?.handleDownloadRequest(
+                                url: directURL,
+                                filename: finalFilename.isEmpty ? nil : finalFilename,
+                                threadCount: self.downloadCandidateThreads,
+                                speedLimitBytesPerSecond: limit,
+                                headers: effectiveHeaders
+                            )
+                            self.downloadSuccessNotification = "Download queued: \(finalFilename)"
+                            self.onDownloadInitiated?()
+                        }
+                    },
+                    onCancel: { [weak self] in
+                        self?.suspiciousDownloadPrompt = nil
+                    }
+                )
+                return
+            }
+
             do {
                 try await downloadDelegate?.handleDownloadRequest(
                     url: directURL,
@@ -3018,7 +3082,38 @@ public final class BrowserViewModel: NSObject, ObservableObject {
     }
 }
 
-extension BrowserViewModel: @unchecked Sendable, BrowserMediaURLResolver {}
+extension BrowserViewModel: @unchecked Sendable, BrowserMediaURLResolver, BrowserPermissionProviding {
+    public func requestPermission(
+        type: BrowserPermissionType,
+        originHost: String,
+        frameURL: URL?,
+        completionHandler: @escaping @Sendable (BrowserPermissionDecisionResult) -> Void
+    ) {
+        let store = BrowserSitePermissionsStore.shared
+        if let stored = store.permission(for: originHost, type: type) {
+            completionHandler(stored)
+            return
+        }
+
+        DispatchQueue.main.async { [weak self] in
+            guard let self else {
+                completionHandler(.deny)
+                return
+            }
+            self.permissionPrompt = BrowserPermissionPrompt(
+                type: type,
+                host: originHost,
+                onDecision: { decision in
+                    if decision != .prompt {
+                        store.setPermission(decision, for: originHost, type: type)
+                    }
+                    completionHandler(decision)
+                    self.permissionPrompt = nil
+                }
+            )
+        }
+    }
+}
 
 // MARK: - Browser View (SwiftUI)
 
@@ -3172,8 +3267,47 @@ public struct BrowserView: View {
         .sheet(isPresented: $viewModel.isShowingBookmarksAndHistory) {
             BrowserBookmarksAndHistoryView(viewModel: viewModel)
         }
+        .sheet(isPresented: $viewModel.isShowingClearDataSheet) {
+            BrowserClearDataSheet(viewModel: viewModel)
+        }
         .sheet(isPresented: $isShowingDiagnosticLogs) {
             DiagnosticLogView(configuration: viewModel.activeEngineConfiguration)
+        }
+        .alert(item: $viewModel.certificateWarningPrompt) { prompt in
+            Alert(
+                title: Text("Security Warning"),
+                message: Text(prompt.message),
+                primaryButton: .destructive(Text("Proceed Anyway")) {
+                    prompt.onProceed()
+                },
+                secondaryButton: .cancel(Text("Go Back (Safe)")) {
+                    prompt.onCancel()
+                }
+            )
+        }
+        .alert(item: $viewModel.suspiciousDownloadPrompt) { prompt in
+            Alert(
+                title: Text("Dangerous Download Warning"),
+                message: Text(prompt.warning.warningMessage),
+                primaryButton: .destructive(Text("Download Anyway")) {
+                    prompt.onProceed()
+                },
+                secondaryButton: .cancel(Text("Cancel")) {
+                    prompt.onCancel()
+                }
+            )
+        }
+        .alert(item: $viewModel.permissionPrompt) { prompt in
+            Alert(
+                title: Text("Permission Request"),
+                message: Text("'\(prompt.host)' wants access to your \(prompt.type.rawValue.capitalized)."),
+                primaryButton: .default(Text("Allow")) {
+                    prompt.onDecision(.grant)
+                },
+                secondaryButton: .cancel(Text("Deny")) {
+                    prompt.onDecision(.deny)
+                }
+            )
         }
         .alert(item: $viewModel.externalAppLinkPrompt) { link in
             Alert(
@@ -3632,6 +3766,16 @@ public struct BrowserView: View {
                 }
             }
             .disabled(viewModel.currentURL == nil)
+
+            // Content Shields (Milestone B.2)
+            Button {
+                viewModel.isShowingShieldSheet = true
+            } label: {
+                Label(
+                    "Content Shields",
+                    systemImage: viewModel.isCurrentSiteWhitelisted ? "shield.slash" : "shield.checkered"
+                )
+            }
         } label: {
             ZStack(alignment: .topTrailing) {
                 Image(systemName: "ellipsis")
@@ -4624,6 +4768,9 @@ final class BrowserWebViewSession {
         let diagHandler = BrowserDiagnosticWebKitHandler(tabID: tabID)
         diagHandler.install(on: config)
 
+        // Frame-busting & anti-hijack defense (Milestone B.2)
+        config.userContentController.addUserScript(BrowserFrameBustingDefense.makeUserScript())
+
         let webView = WKWebView(frame: .zero, configuration: config)
         if isDesktop {
             webView.customUserAgent = BrowserViewModel.defaultDesktopUserAgent
@@ -4643,6 +4790,7 @@ public final class BrowserWebViewCoordinator: NSObject, WKNavigationDelegate, WK
     public weak var viewModel: BrowserViewModel?
     private let tabID: UUID?
     private var progressObserver: NSKeyValueObservation?
+    private let redirectLoopDetector = BrowserRedirectLoopDetector()
 
     public init(viewModel: BrowserViewModel, tabID: UUID? = nil) {
         self.viewModel = viewModel
@@ -4720,6 +4868,8 @@ public final class BrowserWebViewCoordinator: NSObject, WKNavigationDelegate, WK
             tabID: tabID
         )
 
+        redirectLoopDetector.reset()
+
         if let host = webView.url?.host, let vm = viewModel {
             vm.recordTabOrigin(host, for: tabID)
             let isWhitelisted = BrowserDomainMatcher.isDomainWhitelisted(
@@ -4728,7 +4878,10 @@ public final class BrowserWebViewCoordinator: NSObject, WKNavigationDelegate, WK
             )
             BrowserContentBlocker.shared.update(
                 for: webView,
-                isEnabled: vm.isAdBlockerEnabled,
+                isAdBlockerEnabled: vm.isAdBlockerEnabled,
+                isTrackerBlockerEnabled: vm.isTrackerBlockerEnabled,
+                isAnnoyanceBlockerEnabled: vm.isAnnoyanceBlockerEnabled,
+                cookiePolicy: vm.cookiePolicy,
                 isCurrentDomainWhitelisted: isWhitelisted
             )
         }
@@ -4795,6 +4948,41 @@ public final class BrowserWebViewCoordinator: NSObject, WKNavigationDelegate, WK
                 "previousFailures": "\(challenge.previousFailureCount)"
             ]
         )
+        // HTTPS Certificate validation and user override handling (Milestone B.2)
+        if challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
+           let serverTrust = challenge.protectionSpace.serverTrust {
+            let host = challenge.protectionSpace.host
+            if BrowserCertificateDecisionStore.shared.isHostAllowedForSession(host) {
+                completionHandler(.useCredential, URLCredential(trust: serverTrust))
+                return
+            }
+
+            var secError: CFError?
+            let isTrusted = SecTrustEvaluateWithError(serverTrust, &secError)
+            if isTrusted {
+                completionHandler(.performDefaultHandling, nil)
+                return
+            }
+
+            let errorMsg = secError.map { CFErrorCopyDescription($0) as String }
+                ?? "The security certificate for this server is untrusted, expired, or invalid."
+
+            DispatchQueue.main.async { [weak self] in
+                self?.viewModel?.certificateWarningPrompt = BrowserCertificatePrompt(
+                    host: host,
+                    message: "Your connection to '\(host)' is not private (\(errorMsg)). Attackers might be trying to steal your credentials or personal information.",
+                    onProceed: {
+                        BrowserCertificateDecisionStore.shared.allowHostForSession(host)
+                        completionHandler(.useCredential, URLCredential(trust: serverTrust))
+                    },
+                    onCancel: {
+                        completionHandler(.cancelAuthenticationChallenge, nil)
+                    }
+                )
+            }
+            return
+        }
+
         BrowserAuthenticationHandler.shared.handleChallenge(
             challenge,
             targetPageURL: webView.url,
@@ -5117,6 +5305,21 @@ public final class BrowserWebViewCoordinator: NSObject, WKNavigationDelegate, WK
                 decisionHandler(.download)
                 return
             }
+        }
+
+        // Redirect loop detection for automatic navigations (Milestone B.2)
+        if isMainFrame && navigationAction.navigationType == .other {
+            let loopEvaluation = redirectLoopDetector.recordNavigation(url: url)
+            if loopEvaluation.isLoopDetected {
+                decisionHandler(.cancel)
+                DispatchQueue.main.async { [weak self] in
+                    self?.viewModel?.errorMessage = loopEvaluation.reason
+                    self?.viewModel?.isLoading = false
+                }
+                return
+            }
+        } else if isMainFrame && navigationAction.navigationType == .linkActivated {
+            redirectLoopDetector.reset()
         }
 
         let isPopupBlockerEnabled = viewModel?.isPopupBlockerEnabled ?? true

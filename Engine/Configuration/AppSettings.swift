@@ -26,10 +26,30 @@ public enum DownloadSortOrder: String, CaseIterable, Identifiable, Codable, Send
     }
 }
 
+/// User-configurable cookie blocking policy (Milestone B.2).
+public enum BrowserCookiePolicy: String, CaseIterable, Identifiable, Codable, Sendable {
+    case allowAll = "allowAll"
+    case blockThirdParty = "blockThirdParty"
+    case blockAll = "blockAll"
+
+    public var id: String { rawValue }
+
+    public var displayName: String {
+        switch self {
+        case .allowAll:
+            return "Allow All Cookies"
+        case .blockThirdParty:
+            return "Block Third-Party Cookies (Recommended)"
+        case .blockAll:
+            return "Block All Cookies"
+        }
+    }
+}
+
 /// Codable user-facing preferences stored in UserDefaults (@AppStorage).
 /// Features a `version` field for seamless migrations across app updates.
 public struct AppSettings: Codable, Sendable, Equatable {
-    public static let currentVersion: Int = 5
+    public static let currentVersion: Int = 6
     public static let userDefaultsKey = "com.r4m335.SwiftDownloadEngine.AppSettings"
 
     public var version: Int
@@ -49,8 +69,11 @@ public struct AppSettings: Codable, Sendable, Equatable {
     public var targetRatio: Double
     public var targetDurationMinutes: Int
 
-    // Browser Shields & Content Blocking (Phase 3 Milestone 3.2)
+    // Browser Shields & Content Blocking (Phase 3 Milestone 3.2 & Workstream B Milestone B.2)
     public var isAdBlockerEnabled: Bool
+    public var isTrackerBlockerEnabled: Bool
+    public var isAnnoyanceBlockerEnabled: Bool
+    public var cookiePolicy: BrowserCookiePolicy
     public var isPopupBlockerEnabled: Bool
     public var adBlockerWhitelistedDomains: [String]
 
@@ -83,6 +106,9 @@ public struct AppSettings: Codable, Sendable, Equatable {
         targetRatio: 1.0,
         targetDurationMinutes: 60,
         isAdBlockerEnabled: true,
+        isTrackerBlockerEnabled: true,
+        isAnnoyanceBlockerEnabled: true,
+        cookiePolicy: .blockThirdParty,
         isPopupBlockerEnabled: true,
         adBlockerWhitelistedDomains: [],
         isAutomaticCategorizationEnabled: true,
@@ -110,6 +136,9 @@ public struct AppSettings: Codable, Sendable, Equatable {
         targetRatio: Double = 1.0,
         targetDurationMinutes: Int = 60,
         isAdBlockerEnabled: Bool = true,
+        isTrackerBlockerEnabled: Bool = true,
+        isAnnoyanceBlockerEnabled: Bool = true,
+        cookiePolicy: BrowserCookiePolicy = .blockThirdParty,
         isPopupBlockerEnabled: Bool = true,
         adBlockerWhitelistedDomains: [String] = [],
         isAutomaticCategorizationEnabled: Bool = true,
@@ -135,6 +164,9 @@ public struct AppSettings: Codable, Sendable, Equatable {
         self.targetRatio = targetRatio
         self.targetDurationMinutes = targetDurationMinutes
         self.isAdBlockerEnabled = isAdBlockerEnabled
+        self.isTrackerBlockerEnabled = isTrackerBlockerEnabled
+        self.isAnnoyanceBlockerEnabled = isAnnoyanceBlockerEnabled
+        self.cookiePolicy = cookiePolicy
         self.isPopupBlockerEnabled = isPopupBlockerEnabled
         self.adBlockerWhitelistedDomains = adBlockerWhitelistedDomains
         self.isAutomaticCategorizationEnabled = isAutomaticCategorizationEnabled
@@ -163,6 +195,9 @@ public struct AppSettings: Codable, Sendable, Equatable {
         self.targetRatio = try container.decodeIfPresent(Double.self, forKey: .targetRatio) ?? 1.0
         self.targetDurationMinutes = try container.decodeIfPresent(Int.self, forKey: .targetDurationMinutes) ?? 60
         self.isAdBlockerEnabled = try container.decodeIfPresent(Bool.self, forKey: .isAdBlockerEnabled) ?? true
+        self.isTrackerBlockerEnabled = try container.decodeIfPresent(Bool.self, forKey: .isTrackerBlockerEnabled) ?? true
+        self.isAnnoyanceBlockerEnabled = try container.decodeIfPresent(Bool.self, forKey: .isAnnoyanceBlockerEnabled) ?? true
+        self.cookiePolicy = try container.decodeIfPresent(BrowserCookiePolicy.self, forKey: .cookiePolicy) ?? .blockThirdParty
         self.isPopupBlockerEnabled = try container.decodeIfPresent(Bool.self, forKey: .isPopupBlockerEnabled) ?? true
         self.adBlockerWhitelistedDomains = try container.decodeIfPresent([String].self, forKey: .adBlockerWhitelistedDomains) ?? []
         self.isAutomaticCategorizationEnabled = try container.decodeIfPresent(Bool.self, forKey: .isAutomaticCategorizationEnabled) ?? true

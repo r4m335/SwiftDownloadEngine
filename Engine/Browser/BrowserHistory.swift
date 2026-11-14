@@ -118,8 +118,16 @@ public final class BrowserHistoryStore: @unchecked Sendable {
     }
 
     public func clearAllHistory() {
+        clearHistory(since: nil)
+    }
+
+    public func clearHistory(since date: Date? = nil) {
         lock.lock()
-        entries.removeAll()
+        if let date {
+            entries.removeAll(where: { $0.visitDate >= date })
+        } else {
+            entries.removeAll()
+        }
         lock.unlock()
         save()
     }

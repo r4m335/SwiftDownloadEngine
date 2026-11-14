@@ -425,6 +425,109 @@ public enum ContentBlockerDefaultRules {
             rules: rules
         )
     }
+
+    /// Annoyance protection rules targeting cookie banners (CMPs), newsletter modals, and social widgets (Milestone B.2 - Fanboy's Annoyance).
+    public static func makeAnnoyanceBlockList(whitelistedDomains: [String] = []) -> ContentBlockerList {
+        let unless = whitelistedDomains.isEmpty ? nil : whitelistedDomains
+        var rules: [ContentBlockerRule] = []
+
+        // 1. High-frequency CMP & cookie consent network scripts
+        let cmpDomains = [
+            "*onetrust.com*",
+            "*cookiebot.com*",
+            "*quantcast.mgr.consensu.org*",
+            "*trustarc.com*",
+            "*didomi.io*",
+            "*iubenda.com*",
+            "*usercentrics.eu*",
+            "*osano.com*",
+            "*fundingchoicesmessages.google.com*"
+        ]
+        for domain in cmpDomains {
+            rules.append(ContentBlockerRule(
+                trigger: ContentBlockerTrigger(urlFilter: domain, unlessDomain: unless),
+                action: .block()
+            ))
+        }
+
+        // 2. Social widget scripts
+        let socialDomains = [
+            "*platform.twitter.com/widgets.js*",
+            "*connect.facebook.net/*/sdk.js*",
+            "*platform.linkedin.com/in.js*",
+            "*addthis.com*",
+            "*sharethis.com*"
+        ]
+        for domain in socialDomains {
+            rules.append(ContentBlockerRule(
+                trigger: ContentBlockerTrigger(urlFilter: domain, unlessDomain: unless),
+                action: .block()
+            ))
+        }
+
+        // 3. Cosmetic selectors for cookie banners, newsletter prompts, and anti-adblock modals
+        let annoyanceSelectors = [
+            "#onetrust-consent-sdk, #onetrust-banner-sdk, .onetrust-pc-dark",
+            ".cookie-banner, .cookie-notice, .cookie-consent, .cookie-law-info-bar, [id*='cookie-law']",
+            "[id*='sp_message_container'], [class*='sp_message_container']",
+            ".qc-cmp2-container, .qc-cmp-ui",
+            "[class*='didomi-popup'], [id*='didomi-notice']",
+            ".iubenda-cs-banner, .iubenda-banner",
+            ".cmpbox, .evidon-banner",
+            "[class*='newsletter-popup'], [id*='newsletter-popup'], .email-signup-modal, .omnisend-form-wrapper",
+            ".adblock-overlay, [id*='adblock-modal'], .adblock-notice, .sp-message-open"
+        ]
+        for selector in annoyanceSelectors {
+            rules.append(ContentBlockerRule(
+                trigger: ContentBlockerTrigger(urlFilter: ".*", unlessDomain: unless),
+                action: .cssDisplayNone(selector: selector)
+            ))
+        }
+
+        return ContentBlockerList(
+            identifier: "lid-annoyance-blocking",
+            name: "LID Annoyance & Cookie Notice Protection",
+            version: "1.0",
+            rules: rules
+        )
+    }
+
+    /// Third-party cookie blocking rule (Milestone B.2).
+    public static func makeThirdPartyCookieBlockList(whitelistedDomains: [String] = []) -> ContentBlockerList {
+        let unless = whitelistedDomains.isEmpty ? nil : whitelistedDomains
+        let rule = ContentBlockerRule(
+            trigger: ContentBlockerTrigger(
+                urlFilter: ".*",
+                loadType: [.thirdParty],
+                unlessDomain: unless
+            ),
+            action: .blockCookies()
+        )
+        return ContentBlockerList(
+            identifier: "lid-third-party-cookies",
+            name: "LID Third-Party Cookie Blocker",
+            version: "1.0",
+            rules: [rule]
+        )
+    }
+
+    /// Global cookie blocking rule (Milestone B.2).
+    public static func makeAllCookieBlockList(whitelistedDomains: [String] = []) -> ContentBlockerList {
+        let unless = whitelistedDomains.isEmpty ? nil : whitelistedDomains
+        let rule = ContentBlockerRule(
+            trigger: ContentBlockerTrigger(
+                urlFilter: ".*",
+                unlessDomain: unless
+            ),
+            action: .blockCookies()
+        )
+        return ContentBlockerList(
+            identifier: "lid-all-cookies",
+            name: "LID All Cookie Blocker",
+            version: "1.0",
+            rules: [rule]
+        )
+    }
 }
 
 // MARK: - Domain Normalization & Whitelisting Helpers
@@ -469,6 +572,9 @@ public final class BrowserContentBlocker: ObservableObject {
 
     public static let adBlockListID = "lid-adblock-standard"
     public static let trackerBlockListID = "lid-tracker-protection"
+    public static let annoyanceBlockListID = "lid-annoyance-blocking"
+    public static let thirdPartyCookieBlockListID = "lid-third-party-cookies"
+    public static let allCookieBlockListID = "lid-all-cookies"
 
     @Published public private(set) var isCompiling: Bool = false
     @Published public private(set) var compiledRuleLists: [String: WKContentRuleList] = [:]
@@ -495,6 +601,21 @@ public final class BrowserContentBlocker: ObservableObject {
             let trackerJSON = try trackerList.jsonString()
             let compiledTrackers = try await compileRuleList(identifier: Self.trackerBlockListID, json: trackerJSON)
             compiledRuleLists[Self.trackerBlockListID] = compiledTrackers
+
+            let annoyanceList = ContentBlockerDefaultRules.makeAnnoyanceBlockList(whitelistedDomains: whitelistedDomains)
+            let annoyanceJSON = try annoyanceList.jsonString()
+            let compiledAnnoyance = try await compileRuleList(identifier: Self.annoyanceBlockListID, json: annoyanceJSON)
+            compiledRuleLists[Self.annoyanceBlockListID] = compiledAnnoyance
+
+            let thirdPartyCookieList = ContentBlockerDefaultRules.makeThirdPartyCookieBlockList(whitelistedDomains: whitelistedDomains)
+            let thirdPartyCookieJSON = try thirdPartyCookieList.jsonString()
+            let compiledTPCookies = try await compileRuleList(identifier: Self.thirdPartyCookieBlockListID, json: thirdPartyCookieJSON)
+            compiledRuleLists[Self.thirdPartyCookieBlockListID] = compiledTPCookies
+
+            let allCookieList = ContentBlockerDefaultRules.makeAllCookieBlockList(whitelistedDomains: whitelistedDomains)
+            let allCookieJSON = try allCookieList.jsonString()
+            let compiledAllCookies = try await compileRuleList(identifier: Self.allCookieBlockListID, json: allCookieJSON)
+            compiledRuleLists[Self.allCookieBlockListID] = compiledAllCookies
 
             for (id, customList) in registeredCustomLists {
                 if let customJSON = try? customList.jsonString() {
@@ -528,31 +649,97 @@ public final class BrowserContentBlocker: ObservableObject {
 
     // MARK: - WebKit Configuration Lifecycle Attachment
 
-    /// Injects active content rule lists into a `WKWebViewConfiguration`.
+    /// Injects active content rule lists into a `WKWebViewConfiguration` with granular multi-list selection.
     public func apply(
         to configuration: WKWebViewConfiguration,
-        isEnabled: Bool,
+        isAdBlockerEnabled: Bool,
+        isTrackerBlockerEnabled: Bool,
+        isAnnoyanceBlockerEnabled: Bool,
+        cookiePolicy: BrowserCookiePolicy,
         isCurrentDomainWhitelisted: Bool
     ) {
         let userContentController = configuration.userContentController
         userContentController.removeAllContentRuleLists()
 
-        guard isEnabled, !isCurrentDomainWhitelisted else { return }
+        guard !isCurrentDomainWhitelisted else { return }
 
-        for (_, ruleList) in compiledRuleLists {
-            userContentController.add(ruleList)
+        if isAdBlockerEnabled, let list = compiledRuleLists[Self.adBlockListID] {
+            userContentController.add(list)
+        }
+        if isTrackerBlockerEnabled, let list = compiledRuleLists[Self.trackerBlockListID] {
+            userContentController.add(list)
+        }
+        if isAnnoyanceBlockerEnabled, let list = compiledRuleLists[Self.annoyanceBlockListID] {
+            userContentController.add(list)
+        }
+
+        switch cookiePolicy {
+        case .allowAll:
+            break
+        case .blockThirdParty:
+            if let list = compiledRuleLists[Self.thirdPartyCookieBlockListID] {
+                userContentController.add(list)
+            }
+        case .blockAll:
+            if let list = compiledRuleLists[Self.allCookieBlockListID] {
+                userContentController.add(list)
+            }
+        }
+
+        for (id, _) in registeredCustomLists {
+            if let list = compiledRuleLists[id] {
+                userContentController.add(list)
+            }
         }
     }
 
-    /// Dynamically enables or disables content rules for a live `WKWebView` instance.
+    /// Legacy overload for backward compatibility.
+    public func apply(
+        to configuration: WKWebViewConfiguration,
+        isEnabled: Bool,
+        isCurrentDomainWhitelisted: Bool
+    ) {
+        apply(
+            to: configuration,
+            isAdBlockerEnabled: isEnabled,
+            isTrackerBlockerEnabled: isEnabled,
+            isAnnoyanceBlockerEnabled: isEnabled,
+            cookiePolicy: .blockThirdParty,
+            isCurrentDomainWhitelisted: isCurrentDomainWhitelisted
+        )
+    }
+
+    /// Dynamically updates content rules for a live `WKWebView` instance with multi-list controls.
+    public func update(
+        for webView: WKWebView,
+        isAdBlockerEnabled: Bool,
+        isTrackerBlockerEnabled: Bool,
+        isAnnoyanceBlockerEnabled: Bool,
+        cookiePolicy: BrowserCookiePolicy,
+        isCurrentDomainWhitelisted: Bool
+    ) {
+        apply(
+            to: webView.configuration,
+            isAdBlockerEnabled: isAdBlockerEnabled,
+            isTrackerBlockerEnabled: isTrackerBlockerEnabled,
+            isAnnoyanceBlockerEnabled: isAnnoyanceBlockerEnabled,
+            cookiePolicy: cookiePolicy,
+            isCurrentDomainWhitelisted: isCurrentDomainWhitelisted
+        )
+    }
+
+    /// Legacy overload for backward compatibility.
     public func update(
         for webView: WKWebView,
         isEnabled: Bool,
         isCurrentDomainWhitelisted: Bool
     ) {
-        apply(
-            to: webView.configuration,
-            isEnabled: isEnabled,
+        update(
+            for: webView,
+            isAdBlockerEnabled: isEnabled,
+            isTrackerBlockerEnabled: isEnabled,
+            isAnnoyanceBlockerEnabled: isEnabled,
+            cookiePolicy: .blockThirdParty,
             isCurrentDomainWhitelisted: isCurrentDomainWhitelisted
         )
     }

@@ -91,4 +91,8 @@ public final class BrowserTabPreviewCache: @unchecked Sendable {
             try? fileManager.createDirectory(at: dir, withIntermediateDirectories: true)
         }
     }
+
+    public func clearAll() {
+        clearAllPreviews()
+    }
 }

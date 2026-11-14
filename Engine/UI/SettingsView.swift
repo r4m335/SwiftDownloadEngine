@@ -42,10 +42,14 @@ public struct SettingsView: View {
     @State private var snifferExtensions: String = ""
     @State private var snifferMIMETypes: String = ""
 
-    // Content Shields & Ad Blocking (Phase 3 Milestone 3.2)
+    // Content Shields & Ad Blocking (Phase 3 Milestone 3.2 & Workstream B Milestone B.2)
     @State private var isAdBlockerEnabled: Bool = true
+    @State private var isTrackerBlockerEnabled: Bool = true
+    @State private var isAnnoyanceBlockerEnabled: Bool = true
+    @State private var cookiePolicy: BrowserCookiePolicy = .blockThirdParty
     @State private var isPopupBlockerEnabled: Bool = true
     @State private var selectedSearchEngine: BrowserSearchEngine = .duckDuckGo
+    @State private var isShowingClearDataSheet: Bool = false
 
     // Download File Categorization (Phase 3 Milestone 3.3)
     @State private var isAutomaticCategorizationEnabled: Bool = true
@@ -346,13 +350,21 @@ public struct SettingsView: View {
                     }
                 }
 
-                // Section 9: Content Shields & Ad Blocking (Phase 3 Milestone 3.2)
+                // Section 9: Content Shields & Ad Blocking (Phase 3 Milestone 3.2 & Workstream B Milestone B.2)
                 Section(
                     header: Text("Content Shields & Privacy"),
-                    footer: Text("Apple WKContentRuleListStore provides hardware-accelerated ad and tracker blocking with zero JavaScript overhead.")
+                    footer: Text("Apple WKContentRuleListStore provides hardware-accelerated ad, tracker, and annoyance blocking with zero JavaScript overhead.")
                 ) {
-                    Toggle("Block Invasive Ads & Annoyances", isOn: $isAdBlockerEnabled)
+                    Toggle("Block Invasive Ads (EasyList)", isOn: $isAdBlockerEnabled)
+                    Toggle("Block Trackers & Telemetry (EasyPrivacy)", isOn: $isTrackerBlockerEnabled)
+                    Toggle("Block Annoyances & Cookie Notices", isOn: $isAnnoyanceBlockerEnabled)
                     Toggle("Block Popups & Hijack Redirects", isOn: $isPopupBlockerEnabled)
+
+                    Picker("Cookie Policy", selection: $cookiePolicy) {
+                        ForEach(BrowserCookiePolicy.allCases) { policy in
+                            Text(policy.displayName).tag(policy)
+                        }
+                    }
 
                     if !viewModel.appSettings.adBlockerWhitelistedDomains.isEmpty {
                         HStack {
@@ -362,6 +374,13 @@ public struct SettingsView: View {
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                         }
+                    }
+
+                    Button {
+                        isShowingClearDataSheet = true
+                    } label: {
+                        Label("Clear Browsing Data...", systemImage: "trash")
+                            .foregroundColor(.red)
                     }
                 }
 
@@ -452,6 +471,9 @@ public struct SettingsView: View {
             .sheet(isPresented: $showingDiagnostics) {
                 DiagnosticLogView(configuration: viewModel.activeEngineConfiguration)
             }
+            .sheet(isPresented: $isShowingClearDataSheet) {
+                BrowserClearDataSheet(viewModel: BrowserViewModel(downloadDelegate: viewModel))
+            }
             .onAppear {
                 loadCurrentSettings()
             }
@@ -488,6 +510,9 @@ public struct SettingsView: View {
         self.snifferMIMETypes = sniffer.allowedMIMETypes.joined(separator: ", ")
 
         self.isAdBlockerEnabled = settings.isAdBlockerEnabled
+        self.isTrackerBlockerEnabled = settings.isTrackerBlockerEnabled
+        self.isAnnoyanceBlockerEnabled = settings.isAnnoyanceBlockerEnabled
+        self.cookiePolicy = settings.cookiePolicy
         self.isPopupBlockerEnabled = settings.isPopupBlockerEnabled
         self.selectedSearchEngine = settings.browserSearchEngine
         self.isAutomaticCategorizationEnabled = settings.isAutomaticCategorizationEnabled
@@ -526,6 +551,9 @@ public struct SettingsView: View {
             targetRatio: targetRatio,
             targetDurationMinutes: targetDurationMinutes,
             isAdBlockerEnabled: isAdBlockerEnabled,
+            isTrackerBlockerEnabled: isTrackerBlockerEnabled,
+            isAnnoyanceBlockerEnabled: isAnnoyanceBlockerEnabled,
+            cookiePolicy: cookiePolicy,
             isPopupBlockerEnabled: isPopupBlockerEnabled,
             adBlockerWhitelistedDomains: viewModel.appSettings.adBlockerWhitelistedDomains,
             isAutomaticCategorizationEnabled: isAutomaticCategorizationEnabled,
