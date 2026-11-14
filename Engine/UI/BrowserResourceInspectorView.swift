@@ -599,13 +599,16 @@ public struct ResourceRowView: View {
                             Text("HLS Stream")
                                 .font(.caption)
                                 .foregroundColor(.blue)
-                        } else if let ext = FilenameExtensionHelper.split(filename: displayFilename).ext, !ext.isEmpty {
-                            Text("•")
-                                .font(.caption2)
-                                .foregroundColor(.secondary)
-                            Text(ext.uppercased())
-                                .font(.caption)
-                                .foregroundColor(.secondary)
+                        } else {
+                            let detectedExt = FilenameExtensionHelper.split(filename: displayFilename).ext
+                            if !detectedExt.isEmpty {
+                                Text("•")
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+                                Text(detectedExt.uppercased())
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
                         }
 
                         // Audio indicator: Small speaker icon ONLY when audio is present

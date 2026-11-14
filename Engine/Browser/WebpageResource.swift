@@ -164,6 +164,14 @@ public struct WebpageResource: Identifiable, Hashable, Sendable {
         self.dashVideoRepresentationID = dashVideoRepresentationID
         self.dashAudioRepresentationID = dashAudioRepresentationID
     }
+
+    public var suggestedExtension: String {
+        let ext = FilenameExtensionHelper.split(filename: suggestedFilename).ext
+        if !ext.isEmpty {
+            return ext
+        }
+        return FilenameExtensionHelper.detectExtension(from: url, mimeType: mimeType)
+    }
 }
 
 /// Raw candidate extracted from a DOM element or HTML tag prior to resolution.

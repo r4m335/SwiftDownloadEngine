@@ -4253,7 +4253,21 @@ public struct BrowserDownloadSheet: View {
             .onAppear {
                 let (base, ext) = FilenameExtensionHelper.split(filename: viewModel.downloadCandidateFilename)
                 baseFilename = base
-                fileExtension = ext.isEmpty ? (viewModel.activeDownloadResource?.suggestedExtension ?? "mp4") : ext
+                let defaultExt: String = {
+                    if let resExt = viewModel.activeDownloadResource?.suggestedExtension, !resExt.isEmpty {
+                        return resExt
+                    }
+                    if let candExt = viewModel.activeDownloadCandidate?.suggestedFilename {
+                        let e = FilenameExtensionHelper.split(filename: candExt).ext
+                        if !e.isEmpty { return e }
+                    }
+                    let detected = FilenameExtensionHelper.detectExtension(
+                        from: viewModel.downloadCandidateURL,
+                        mimeType: viewModel.activeDownloadCandidate?.mimeType ?? viewModel.activeDownloadResource?.mimeType
+                    )
+                    return detected.isEmpty ? "mp4" : detected
+                }()
+                fileExtension = ext.isEmpty ? defaultExt : ext
                 viewModel.downloadCandidateFilename = FilenameExtensionHelper.combine(base: baseFilename, ext: fileExtension)
             }
         }
