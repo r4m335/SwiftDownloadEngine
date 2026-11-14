@@ -2908,7 +2908,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         if let homeURL = URL(string: browserHomepage),
            !browserHomepage.isEmpty,
            browserHomepage != "about:blank" {
-            navigateTo(homeURL)
+            load(url: homeURL)
             return
         }
 

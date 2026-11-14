@@ -33,7 +33,7 @@ public struct BrowserReaderView: View {
                 themeBackgroundColor
                     .ignoresSafeArea()
 
-                #if canImport(WebKit)
+                #if canImport(WebKit) && canImport(UIKit)
                 BrowserReaderWebViewRepresentable(
                     article: article,
                     settings: settings
@@ -233,7 +233,7 @@ public struct BrowserReaderView: View {
     }
 }
 
-#if canImport(WebKit)
+#if canImport(WebKit) && canImport(UIKit)
 /// Isolated WebKit view rendering distilled Reader Mode HTML string safely.
 public struct BrowserReaderWebViewRepresentable: UIViewRepresentable {
     public let article: BrowserReaderArticle

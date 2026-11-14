@@ -407,7 +407,9 @@ public struct SettingsView: View {
                         Spacer()
                         TextField("https://...", text: $browserHomepage)
                             .multilineTextAlignment(.trailing)
+                            #if canImport(UIKit)
                             .autocapitalization(.none)
+                            #endif
                             .disableAutocorrection(true)
                     }
 

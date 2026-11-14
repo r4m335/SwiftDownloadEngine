@@ -35,9 +35,11 @@ public struct BrowserFindInPageView: View {
 
                 TextField("Find in Page...", text: $query)
                     .focused($isFieldFocused)
+                    #if canImport(UIKit)
                     .autocapitalization(.none)
-                    .disableAutocorrection(true)
                     .submitLabel(.search)
+                    #endif
+                    .disableAutocorrection(true)
                     .onSubmit {
                         onNext()
                     }
