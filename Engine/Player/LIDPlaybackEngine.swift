@@ -8,7 +8,8 @@ import Combine
 
 /// Native media playback engine managing AVFoundation player lifecycle, buffering,
 /// time observation, position persistence, and stream/file playback.
-public final class LIDPlaybackEngine: NSObject, ObservableObject, @unchecked Sendable {
+@MainActor
+public final class LIDPlaybackEngine: NSObject, ObservableObject {
 
     public static let shared = LIDPlaybackEngine()
 
@@ -130,7 +131,7 @@ public final class LIDPlaybackEngine: NSObject, ObservableObject, @unchecked Sen
     }
 
     @MainActor
-    public func seek(to seconds: Double, completion: (@Sendable (Bool) -> Void)? = nil) {
+    public func seek(to seconds: Double, completion: (@MainActor @Sendable (Bool) -> Void)? = nil) {
         let target = max(0.0, min(seconds, durationSeconds > 0 ? durationSeconds : seconds))
         #if canImport(AVFoundation)
         guard let player = player else {
@@ -243,8 +244,8 @@ public final class LIDPlaybackEngine: NSObject, ObservableObject, @unchecked Sen
                     if resumeFromHistory, let mediaID = source.url?.absoluteString {
                         if let resumeSec = await self.historyStore.resumePosition(mediaIdentifier: mediaID),
                            resumeSec < dur {
-                            self.seek(to: resumeSec) { _ in
-                                if autoPlay { self.play() }
+                            self.seek(to: resumeSec) { [weak self] _ in
+                                if autoPlay { self?.play() }
                             }
                             return
                         }
