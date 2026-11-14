@@ -41,6 +41,7 @@ To bridge the remaining functional distance without compromising stability or vi
 │   • VLC-style advanced controls, gestures, speeds, & aspect ratios     │
 │   • Discrete audio track & multi-subtitle stream selection             │
 │   • Direct HLS/DASH playback & BitTorrent sequential swarm streaming   │
+│   • VLC-powered universal media decoding engine (VLCKit / libVLC)      │
 ├────────────────────────────────────────────────────────────────────────┤
 │ Workstream B: LID Advanced Browser Modernization                       │
 │   • Enhanced multi-list ad, tracker, & cryptominer blocking            │
@@ -284,6 +285,230 @@ To bridge the remaining functional distance without compromising stability or vi
   - BitTorrent sequential swarm streaming adapter (`LIDTorrentStreamAdapter`) conforming to `AVAssetResourceLoaderDelegate` with custom URL scheme (`lidtorrent://<infoHash>/<fileIndex>`), mathematical byte-range to piece mapping, moov atom head/tail piece prioritization (priority 7), sequential download activation, and live swarm telemetry (speed, peers, progress) published to the player HUD.
   - Live badge indicator and swarm statistics HUD pill integrated into `LIDPlayerView`.
 
+### Milestone A.6: VLC-Powered Universal Media Playback Engine [Planned]
+
+- **Objective:** Resolve the current local-media compatibility limitations by integrating VideoLAN VLCKit (libVLC) behind a unified playback architecture, while retaining AVFoundation for Apple-native playback paths where it offers advantages.
+
+- **Rationale / Current Limitation:**
+  - The existing `LIDPlaybackEngine` relies entirely on AVFoundation.
+  - Standalone MPEG-TS playback currently uses a generated single-segment HLS manifest wrapper. Physical iPhone testing has shown that this approach does not reliably play the user's downloaded TS files.
+  - The current Swift package has no VLCKit dependency.
+  - The Xcode application target currently links only the local `DM_Reverse_engineering` package product.
+  - Additional TS-specific AVPlayer workarounds will not provide the broad container and codec compatibility expected from VLC.
+
+#### 1. Target Architecture
+
+Introduce a backend-independent playback architecture:
+
+```text
+                    LIDPlayerView
+                         |
+                         |
+                LIDPlaybackController
+                         |
+                         |
+                 LIDMediaEngineProtocol
+                         |
+              +----------+----------+
+              |                     |
+              |                     |
+      LIDVLCKitBackend     LIDAVFoundationBackend
+              |                     |
+          VLCKit/libVLC          AVFoundation
+              |                     |
+      Local media files        Native HLS playback
+      Broad codec support      Native PiP support
+      Audio/subtitle tracks    Apple media integration
+      Direct TS playback       Torrent streaming adapter
+              |                     |
+              +----------+----------+
+                         |
+                  Unified Player State
+```
+
+- Define `LIDMediaEngineProtocol` to standardize:
+  - Loading and unloading media.
+  - Play, pause, stop and seek.
+  - Playback speed, volume and mute.
+  - Current position, duration and buffering state.
+  - Playback errors and media metadata.
+  - Audio and subtitle track enumeration and selection.
+  - External subtitle support and synchronization.
+  - Video rendering and backend-specific presentation.
+- Implement `LIDVLCKitBackend` wrapping `VLCMediaPlayer`.
+- Implement `LIDAVFoundationBackend` adapting the existing `LIDPlaybackEngine`.
+- Introduce `LIDPlaybackController` as the single interface consumed by `LIDPlayerView`.
+- Normalize playback state, history persistence, resume behaviour, Now Playing information and remote commands.
+- Ensure backend switching releases the previous player, observers, renderers and callbacks correctly.
+- Avoid maintaining two competing global player instances.
+
+#### 2. Automatic Playback Engine Selection
+
+| Media Source | Primary Engine | Initial Policy |
+|---|---|---|
+| Local MP4, MOV, M4V | VLCKit | Default local-file backend |
+| Local MKV, AVI, WebM | VLCKit | Broad container and codec decoding |
+| Local MPEG-TS (`.ts`) | VLCKit | Direct playback without synthetic HLS wrapping |
+| Local FLV, WMV, ASF | VLCKit | Broad format support |
+| Local MPEG, MPG, VOB | VLCKit | Broad format support |
+| Local OGG, OGV, 3GP | VLCKit | Broad format support |
+| HLS (`.m3u8`) | AVFoundation | Preserve native adaptive streaming and PiP |
+| DASH (`.mpd`) | VLCKit, subject to validation | Verify representation selection, DRM and request headers |
+| BitTorrent swarm | AVFoundation | Preserve existing `LIDTorrentStreamAdapter` |
+| Direct network media | Automatic routing | Select according to verified backend capabilities |
+
+**Routing requirements:**
+
+- All completed local media files should use VLCKit by default.
+- Standalone `.ts` files must be opened directly through VLCKit.
+- Do not depend on generated HLS wrappers for VLC-supported local files.
+- Preserve the existing native HLS playback pipeline.
+- Keep BitTorrent swarm streaming on the existing AVFoundation adapter initially.
+- Do not migrate torrent streaming to VLC until a compatible streaming bridge has been implemented and tested.
+- Preserve cookies, User-Agent, Referer and other request headers when opening network media.
+- Retain explicit DRM detection and rejection for unsupported protected content.
+- Implement fallback only when the alternative backend can actually handle the source.
+
+#### 3. Preserve Existing LID Player Features
+
+The existing SwiftUI player interface must remain intact.
+
+- **Gesture controls:**
+  - Vertical brightness adjustment.
+  - Vertical volume adjustment.
+  - Horizontal seeking.
+  - Double-tap 10-second skip.
+  - Pinch-to-zoom.
+  - Temporary 2× long-press playback speed boost.
+- **Playback controls:**
+  - Play and pause.
+  - Timeline scrubbing.
+  - Playback speed selection.
+  - Aspect ratio selection.
+  - Remaining and total time display.
+- **Audio and subtitles:**
+  - Enumerate embedded audio tracks.
+  - Select audio tracks.
+  - Enumerate and select embedded subtitles.
+  - Load external SRT and WebVTT subtitles.
+  - Subtitle synchronization adjustment.
+  - Preserve existing subtitle styling controls.
+- **System integration:**
+  - Lock-screen Now Playing information.
+  - Hardware and lock-screen playback commands.
+  - Background audio where supported.
+  - Picture-in-Picture where supported by the selected backend and iOS APIs.
+- **Playback history:**
+  - Preserve `LIDPlaybackHistoryStore`.
+  - Preserve stable media identifiers.
+  - Resume playback from the last recorded position.
+  - Maintain Continue Watching and playback history functionality.
+
+Backend-specific limitations must be represented accurately. Do not advertise PiP or other features as universally supported if the selected backend cannot provide them.
+
+#### 4. VLCKit Dependency and Build Integration
+
+- Verify the official VideoLAN VLCKit distribution and its current release/tag before integration.
+- Confirm:
+  - Binary artifact availability.
+  - Package checksum.
+  - Supported architectures.
+  - Minimum iOS version.
+  - Swift Package Manager compatibility.
+  - Xcode and GitHub Actions compatibility.
+  - Static versus dynamic framework linkage.
+- Prefer the official VideoLAN distribution over unofficial wrapper packages.
+- Pin a verified release rather than assuming an example alpha version is suitable.
+- Determine whether VLCKit should be integrated into the application target, the Swift package target or a dedicated iOS integration target.
+- Keep macOS package tests and CLI builds independent of the iOS-only binary wherever possible.
+- Configure GitHub Actions to resolve, link and package the framework correctly.
+- Embed dynamic frameworks when required by the actual distribution. Do not manually copy frameworks without verifying the XCFramework linkage requirements.
+- Verify that the packaged IPA can load all required VLC runtime components.
+- Add VideoLAN copyright notices and appropriate LGPL/GPL/plugin license disclosures based on the exact binary modules being distributed.
+- Audit redistribution obligations and codec licensing considerations.
+
+#### 5. Media Compatibility Validation
+
+Test actual media files with known container and codec metadata.
+
+Target formats:
+
+- MP4
+- MKV
+- MPEG-TS
+- MOV
+- AVI
+- WebM
+- FLV
+- MPEG / MPG
+- M4V
+- 3GP
+- OGG / OGV
+- WMV / ASF
+- MP3
+- FLAC
+- AAC
+- WAV
+
+Validation must include:
+
+- H.264/AAC MPEG-TS playback.
+- MPEG-2 Transport Stream playback.
+- H.264 and HEVC MP4 playback.
+- MKV with multiple audio tracks.
+- MKV with embedded subtitles.
+- External subtitle loading.
+- Seeking and duration reporting.
+- Playback speed changes.
+- Large-file playback and memory stability.
+- Unsupported codecs and corrupted files producing meaningful errors.
+
+Container extension alone does not establish codec compatibility. Record actual codec combinations and test results.
+
+#### 6. CI and Physical Device Validation
+
+GitHub Actions must validate:
+
+1. VLCKit dependency resolution.
+2. Swift package compilation and tests.
+3. iOS simulator compilation.
+4. iOS arm64 device compilation.
+5. XCFramework architecture and linkage.
+6. Framework embedding and runtime loading.
+7. Unsigned IPA packaging.
+8. Existing torrent and download functionality regression tests.
+
+Physical iPhone testing must separately verify:
+
+- Direct playback of downloaded standalone `.ts` files.
+- MP4, MKV, AVI and WebM playback.
+- Audio-track selection.
+- Embedded and external subtitle selection.
+- Seeking and playback speed.
+- Player dismissal and reopening.
+- Background and lock-screen playback.
+- PiP where supported.
+- Large-file memory stability.
+- Existing HLS and BitTorrent streaming functionality.
+
+CI success must not be treated as proof of actual media decoding or physical-device runtime stability.
+
+#### 7. Completion Criteria
+
+- VLCKit is successfully integrated into the iOS application.
+- The VLC backend directly plays known-good standalone TS files on a physical iPhone.
+- Representative samples from the agreed container and codec combinations pass on-device validation.
+- Existing HLS playback remains functional.
+- Existing BitTorrent swarm streaming remains functional.
+- Existing player gestures and controls work across supported backends.
+- Audio and subtitle selection work correctly.
+- Playback history and resume functionality remain intact.
+- Player dismissal and reopening work reliably.
+- GitHub Actions produces a correctly packaged IPA with required VLC runtime components.
+- Appropriate licensing notices are included.
+
+**Current Status:** Planned. The current default branch does not yet contain the VLCKit dependency or backend abstraction.
+
 ---
 
 ## Dedicated Workstream B: LID Advanced Browser Modernization
@@ -449,10 +674,12 @@ flowchart TD
     end
 
     subgraph Workstream A: LID Media Player
-        MA1["A.1 VLC Controls & Gestures"]
-        MA2["A.2 Audio & Subtitle Selection"]
-        MA3["A.3 HLS/DASH Direct Stream"]
-        MA4["A.4 Torrent Swarm Streaming"]
+        MA1["A.1 AVFoundation Playback Engine"]
+        MA2["A.2 VLC Controls & Gestures"]
+        MA3["A.3 Audio & Subtitle Selection"]
+        MA4["A.4 Player Library & History"]
+        MA5["A.5 HLS/DASH & Torrent Swarm Stream"]
+        MA6["A.6 VLC-Powered Universal Media Engine"]
     end
 
     subgraph Workstream B: Browser Modernization
