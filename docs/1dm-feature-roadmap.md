@@ -264,8 +264,9 @@ To bridge the remaining functional distance without compromising stability or vi
   - Audio delay adjustment.
   - Audio-only background playback with `MPNowPlayingInfoCenter` lock-screen controls.
 
-### Milestone A.4: Player Library & Playback History
+### Milestone A.4: Player Library & Playback History [Completed]
 - **Objective:** Comprehensive in-app media management with seamless library access.
+- **Current State:** Implemented & verified. Pure Swift models (`LIDMediaItem`, `LIDPlaylist`, `LIDMediaType`, `LIDRepeatMode`), persistent `LIDLibraryStore` with favorites and playlist storage, `LIDMediaInspector` extracting containers, codecs, resolution, framerate, and audio channels via AVFoundation, `LIDPlayerLibraryView` providing All Media (with filter chips and search), Continue Watching (auto-resuming in-progress media), Playlists (create, rename, add, delete, and reorder with shuffle & play), Favorites, and Playback History with swipe-to-delete and clear all actions. Integrated with `DownloadsView` and `DownloadDetailsView`.
 - **Scope:**
   - Unified player library presenting completed downloads directly.
   - Recently played list, continue watching, playback history, and favorites.
@@ -371,8 +372,8 @@ The shared layer centralizes:
 | 1 | Dedicated Native LID Player Architecture (A.1) | **Completed** |
 | 2 | VLC-Style Controls and Gestures (A.2) | **Completed** |
 | 3 | Audio & Subtitle Management (A.3) | **Completed** |
-| 4 | Player Library & Playback History (A.4) | Next |
-| 5 | HLS/DASH & Torrent Swarm Streaming Integration (A.5) | Pending |
+| 4 | Player Library & Playback History (A.4) | **Completed** |
+| 5 | HLS/DASH & Torrent Swarm Streaming Integration (A.5) | Next |
 | 6 | Browser Fundamentals & Tab Management (B.1) | Pending |
 | 7 | Privacy, Ad Blocking & Site Permissions (B.2) | Pending |
 | 8 | Reader Mode & Advanced Browser Features (B.3) | Pending |
