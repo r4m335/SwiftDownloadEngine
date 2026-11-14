@@ -3023,7 +3023,9 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                         }
                     },
                     onCancel: { [weak self] in
-                        self?.suspiciousDownloadPrompt = nil
+                        Task { @MainActor in
+                            self?.suspiciousDownloadPrompt = nil
+                        }
                     }
                 )
                 return
@@ -3103,12 +3105,14 @@ extension BrowserViewModel: @unchecked Sendable, BrowserMediaURLResolver, Browse
             self.permissionPrompt = BrowserPermissionPrompt(
                 type: type,
                 host: originHost,
-                onDecision: { decision in
+                onDecision: { [weak self] decision in
                     if decision != .prompt {
                         store.setPermission(decision, for: originHost, type: type)
                     }
                     completionHandler(decision)
-                    self.permissionPrompt = nil
+                    Task { @MainActor in
+                        self?.permissionPrompt = nil
+                    }
                 }
             )
         }
