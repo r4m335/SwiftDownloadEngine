@@ -538,4 +538,30 @@ public struct LIDPlayerView: View {
         }
     }
 }
+
+extension View {
+    /// Presents the full-screen LID Player on iOS, falling back to sheet presentation on macOS.
+    @ViewBuilder
+    public func lidPlayerPresentation(url: Binding<URL?>, title: String) -> some View {
+        #if os(iOS)
+        self.fullScreenCover(item: Binding<IdentifiableURL?>(
+            get: { url.wrappedValue.map { IdentifiableURL(url: $0) } },
+            set: { url.wrappedValue = $0?.url }
+        )) { item in
+            LIDPlayerView(url: item.url, title: title) {
+                url.wrappedValue = nil
+            }
+        }
+        #else
+        self.sheet(item: Binding<IdentifiableURL?>(
+            get: { url.wrappedValue.map { IdentifiableURL(url: $0) } },
+            set: { url.wrappedValue = $0?.url }
+        )) { item in
+            LIDPlayerView(url: item.url, title: title) {
+                url.wrappedValue = nil
+            }
+        }
+        #endif
+    }
+}
 #endif

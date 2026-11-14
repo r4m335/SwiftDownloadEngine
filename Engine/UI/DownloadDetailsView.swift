@@ -856,14 +856,7 @@ public struct DownloadDetailsView: View {
             await monitorHLSTransferRecord(for: transfer.id)
         }
         .filePreviewSheet(item: $quickLookURL)
-        .fullScreenCover(item: Binding<IdentifiableURL?>(
-            get: { playerMediaURL.map { IdentifiableURL(url: $0) } },
-            set: { playerMediaURL = $0?.url }
-        )) { item in
-            LIDPlayerView(url: item.url, title: playerMediaTitle) {
-                playerMediaURL = nil
-            }
-        }
+        .lidPlayerPresentation(url: $playerMediaURL, title: playerMediaTitle)
         .alert("Remove Download", isPresented: $showingDeleteAlert) {
             Button("Remove Entry Only", role: .none) {
                 Task { @MainActor in

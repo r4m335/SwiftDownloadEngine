@@ -474,14 +474,7 @@ public struct DownloadsView: View {
                 }
             }
             .filePreviewSheet(item: $quickLookURL)
-            .fullScreenCover(item: Binding<IdentifiableURL?>(
-                get: { playerMediaURL.map { IdentifiableURL(url: $0) } },
-                set: { playerMediaURL = $0?.url }
-            )) { item in
-                LIDPlayerView(url: item.url, title: playerMediaTitle) {
-                    playerMediaURL = nil
-                }
-            }
+            .lidPlayerPresentation(url: $playerMediaURL, title: playerMediaTitle)
             .onAppear {
                 checkClipboardForURL()
             }
