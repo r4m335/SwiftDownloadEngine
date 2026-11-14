@@ -36,7 +36,7 @@ public struct LIDPlayerLibraryView: View {
     public var onDismiss: (() -> Void)? = nil
 
     @StateObject private var libraryStore = LIDLibraryStore.shared
-    @StateObject private var historyStore = LIDPlaybackHistoryStore.shared
+    private let historyStore = LIDPlaybackHistoryStore.shared
 
     @State private var selectedSection: LIDLibrarySection = .all
     @State private var mediaFilter: LIDMediaType = .all
@@ -70,58 +70,66 @@ public struct LIDPlayerLibraryView: View {
     }
 
     public var body: some View {
-        NavigationView {
-            VStack(spacing: 0) {
-                // Top Section Picker
-                Picker("Section", selection: $selectedSection) {
-                    ForEach(LIDLibrarySection.allCases) { sec in
-                        Text(sec.rawValue).tag(sec)
+        applyLibraryModals(
+            NavigationView {
+                VStack(spacing: 0) {
+                    // Top Section Picker
+                    Picker("Section", selection: $selectedSection) {
+                        ForEach(LIDLibrarySection.allCases) { sec in
+                            Text(sec.rawValue).tag(sec)
+                        }
                     }
-                }
-                .pickerStyle(SegmentedPickerStyle())
-                .padding(.horizontal)
-                .padding(.vertical, 8)
+                    .pickerStyle(SegmentedPickerStyle())
+                    .padding(.horizontal)
+                    .padding(.vertical, 8)
 
-                // Sub-filter for All Media
-                if selectedSection == .all {
-                    allMediaFilterBar
-                }
+                    // Sub-filter for All Media
+                    if selectedSection == .all {
+                        allMediaFilterBar
+                    }
 
-                // Main Content
-                switch selectedSection {
-                case .all:
-                    allMediaListView
-                case .continueWatching:
-                    continueWatchingListView
-                case .playlists:
-                    playlistsListView
-                case .favorites:
-                    favoritesListView
-                case .history:
-                    historyListView
-                }
-            }
-            .navigationTitle("Media Library")
-            #if os(iOS)
-            .navigationBarTitleDisplayMode(.inline)
-            #endif
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    if let dismiss = onDismiss {
-                        Button("Done") { dismiss() }
+                    // Main Content
+                    switch selectedSection {
+                    case .all:
+                        allMediaListView
+                    case .continueWatching:
+                        continueWatchingListView
+                    case .playlists:
+                        playlistsListView
+                    case .favorites:
+                        favoritesListView
+                    case .history:
+                        historyListView
                     }
                 }
-                ToolbarItem(placement: .primaryAction) {
-                    Button {
-                        Task { await refreshLibrary() }
-                    } label: {
-                        Image(systemName: "arrow.clockwise")
+                .navigationTitle("Media Library")
+                #if os(iOS)
+                .navigationBarTitleDisplayMode(.inline)
+                #endif
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        if let dismiss = onDismiss {
+                            Button("Done") { dismiss() }
+                        }
+                    }
+                    ToolbarItem(placement: .primaryAction) {
+                        Button {
+                            Task { await refreshLibrary() }
+                        } label: {
+                            Image(systemName: "arrow.clockwise")
+                        }
                     }
                 }
+                .task {
+                    await refreshLibrary()
+                }
             }
-            .task {
-                await refreshLibrary()
-            }
+        )
+    }
+
+    @ViewBuilder
+    private func applyLibraryModals<Content: View>(_ content: Content) -> some View {
+        content
             .lidPlayerPresentation(url: $activePlaybackURL, title: activePlaybackTitle)
             .sheet(item: Binding<IdentifiableURL?>(
                 get: { inspectingMediaURL.map { IdentifiableURL(url: $0) } },
@@ -183,7 +191,6 @@ public struct LIDPlayerLibraryView: View {
             } message: {
                 Text("Are you sure you want to clear your entire watch history?")
             }
-        }
     }
 
     // MARK: - Sub-Filter Bar
@@ -285,7 +292,7 @@ public struct LIDPlayerLibraryView: View {
                 }
             }
         }
-        .listStyle(InsetGroupedListStyle())
+        .libraryListStyle()
     }
 
     private var favoritesListView: some View {
@@ -361,7 +368,7 @@ public struct LIDPlayerLibraryView: View {
                         }
                     }
                 }
-                .listStyle(InsetGroupedListStyle())
+                .libraryListStyle()
             }
         }
     }
@@ -545,7 +552,7 @@ public struct LIDPlayerLibraryView: View {
                 }
             }
         }
-        .listStyle(InsetGroupedListStyle())
+        .libraryListStyle()
         .navigationTitle(playlist.name)
         .toolbar {
             #if os(iOS)
@@ -726,7 +733,7 @@ public struct LIDMediaInfoSheet: View {
                             }
                         }
                     }
-                    .listStyle(InsetGroupedListStyle())
+                    .libraryListStyle()
                 } else {
                     Text("Unable to read media properties.")
                         .foregroundColor(.secondary)
@@ -760,6 +767,17 @@ public struct LIDMediaInfoSheet: View {
                 .font(.subheadline)
         }
         .padding(.vertical, 2)
+    }
+}
+
+extension View {
+    @ViewBuilder
+    fileprivate func libraryListStyle() -> some View {
+        #if os(iOS)
+        self.listStyle(InsetGroupedListStyle())
+        #else
+        self.listStyle(PlainListStyle())
+        #endif
     }
 }
 #endif
