@@ -38,10 +38,6 @@ import AppKit
 import UniformTypeIdentifiers
 #endif
 
-#if canImport(AVKit) && canImport(UIKit) && (os(iOS) || os(tvOS) || targetEnvironment(macCatalyst))
-import AVKit
-#endif
-
 /// Screen 2: Add Download Screen enabling users to input HTTP URLs (Single URL, Batch Multi-Link, URL Pattern)
 /// or BitTorrent transfers (Magnet URIs and .torrent files).
 public struct AddDownloadView: View {
@@ -149,25 +145,19 @@ public struct AddDownloadView: View {
             }
             .onAppear { applyPrefilledURL() }
             .onChange(of: prefilledURL) { _ in applyPrefilledURL() }
-            #if canImport(AVKit) && canImport(UIKit) && (os(iOS) || os(tvOS) || targetEnvironment(macCatalyst))
             .sheet(isPresented: Binding(
                 get: { previewPlayURL != nil },
                 set: { if !$0 { previewPlayURL = nil } }
             )) {
                 if let pURL = previewPlayURL {
-                    NavigationView {
-                        AVPlayerViewRepresentable(url: pURL)
-                            .edgesIgnoringSafeArea(.all)
-                            .navigationTitle("Media Preview")
-                            .toolbar {
-                                ToolbarItem(placement: .cancellationAction) {
-                                    Button("Done") { previewPlayURL = nil }
-                                }
-                            }
+                    LIDPlayerView(
+                        url: pURL,
+                        title: filename.isEmpty ? (inspectedResult?.suggestedBaseFilename ?? "Media Preview") : filename
+                    ) {
+                        previewPlayURL = nil
                     }
                 }
             }
-            #endif
             #if canImport(UniformTypeIdentifiers)
             .fileImporter(
                 isPresented: $isShowingFileImporter,

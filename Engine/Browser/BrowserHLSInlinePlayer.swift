@@ -27,6 +27,11 @@ public enum BrowserHLSInlinePlayer: Sendable {
         let host = streamURL.host ?? "Live / On-Demand Stream"
         let escapedHost = escapeHTML(host)
         let escapedURL = escapeHTML(streamURL.absoluteString)
+        let ext = streamURL.pathExtension.lowercased()
+        let isHLS = ext == "m3u8" || streamURL.absoluteString.lowercased().contains(".m3u8")
+        let isAudio = ["mp3", "m4a", "aac", "wav", "flac", "ogg", "opus"].contains(ext)
+        let isVideo = ["mp4", "m4v", "mov", "webm", "mkv", "avi"].contains(ext)
+        let badgeText = isHLS ? "HLS Stream" : (isAudio ? "Audio Stream" : (isVideo ? "Video Stream" : "Media Stream"))
 
         return """
         <!DOCTYPE html>
@@ -172,14 +177,20 @@ public enum BrowserHLSInlinePlayer: Sendable {
                         <div class="stream-title">\(escapedTitle)</div>
                         <div class="stream-host">\(escapedHost)</div>
                     </div>
-                    <span class="badge">HLS Stream</span>
+                    <span class="badge">\(badgeText)</span>
                 </div>
 
                 <div class="video-wrapper">
                     <video id="hls-player" controls playsinline webkit-playsinline preload="auto">
                         <source src="\(escapedURL)" type="application/vnd.apple.mpegurl">
                         <source src="\(escapedURL)" type="application/x-mpegurl">
-                        Your browser does not support inline HLS playback.
+                        <source src="\(escapedURL)" type="video/mp4">
+                        <source src="\(escapedURL)" type="video/quicktime">
+                        <source src="\(escapedURL)" type="video/webm">
+                        <source src="\(escapedURL)" type="audio/mpeg">
+                        <source src="\(escapedURL)" type="audio/mp4">
+                        <source src="\(escapedURL)">
+                        Your browser does not support inline media playback.
                     </video>
                 </div>
 

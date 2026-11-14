@@ -1,9 +1,6 @@
 #if canImport(SwiftUI)
 import Foundation
 import SwiftUI
-#if canImport(AVKit)
-import AVKit
-#endif
 
 public struct MediaPreviewItem: Identifiable {
     public let id = UUID()
@@ -15,27 +12,6 @@ public struct MediaPreviewItem: Identifiable {
         self.title = title
     }
 }
-
-#if canImport(AVKit) && canImport(UIKit) && (os(iOS) || os(tvOS) || targetEnvironment(macCatalyst))
-public struct AVPlayerViewRepresentable: UIViewControllerRepresentable {
-    public let url: URL
-
-    public init(url: URL) {
-        self.url = url
-    }
-
-    public func makeUIViewController(context: Context) -> AVPlayerViewController {
-        let controller = AVPlayerViewController()
-        let player = AVPlayer(url: url)
-        controller.player = player
-        controller.showsPlaybackControls = true
-        player.play()
-        return controller
-    }
-
-    public func updateUIViewController(_ uiViewController: AVPlayerViewController, context: Context) {}
-}
-#endif
 
 /// Sheet displaying media assets, documents, and downloadable files discovered inside the active webpage.
 public struct BrowserResourceInspectorSheet: View {
@@ -205,37 +181,9 @@ public struct BrowserResourceInspectorSheet: View {
                 viewModel.expandStreamingManifests()
             }
             .sheet(item: $previewItem) { item in
-                #if canImport(AVKit) && canImport(UIKit) && (os(iOS) || os(tvOS) || targetEnvironment(macCatalyst))
-                NavigationView {
-                    AVPlayerViewRepresentable(url: item.url)
-                        .edgesIgnoringSafeArea(.all)
-                        .navigationTitle(item.title)
-                        .navigationBarTitleDisplayMode(.inline)
-                        .toolbar {
-                            ToolbarItem(placement: .cancellationAction) {
-                                Button("Done") {
-                                    previewItem = nil
-                                }
-                            }
-                        }
+                LIDPlayerView(url: item.url, title: item.title) {
+                    previewItem = nil
                 }
-                #else
-                VStack(spacing: 16) {
-                    Text("Media Preview")
-                        .font(.headline)
-                    Text(item.title)
-                        .font(.subheadline)
-                        .foregroundColor(.secondary)
-                    Text(item.url.absoluteString)
-                        .font(.caption)
-                        .lineLimit(2)
-                    Button("Close") {
-                        previewItem = nil
-                    }
-                    .buttonStyle(.borderedProminent)
-                }
-                .padding()
-                #endif
             }
         }
     }
@@ -361,7 +309,8 @@ public struct BrowserResourceInspectorSheet: View {
             },
             onPreview: {
                 let title = resource.suggestedFilename.isEmpty ? resource.title : resource.suggestedFilename
-                previewItem = MediaPreviewItem(url: resource.url, title: title)
+                presentationMode.wrappedValue.dismiss()
+                viewModel.loadInlineHLSPlayer(for: resource.url, title: title)
             },
             onOpenBrowser: {
                 presentationMode.wrappedValue.dismiss()
@@ -546,145 +495,151 @@ public struct ResourceRowView: View {
     }
 
     public var body: some View {
-        Button(action: onSelect) {
-            HStack(alignment: .center, spacing: 12) {
-                // File-type Icon with subtle rounded background
-                ZStack {
-                    RoundedRectangle(cornerRadius: 8)
-                        .fill(fileIconColor.opacity(0.14))
-                        .frame(width: 40, height: 40)
-                    Image(systemName: fileIconName)
-                        .font(.system(size: 20))
-                        .foregroundColor(fileIconColor)
-                }
+        HStack(alignment: .center, spacing: 12) {
+            // Primary row button: Icon + Filename + Specs + Spacer (opens download config sheet)
+            Button(action: onSelect) {
+                HStack(alignment: .center, spacing: 12) {
+                    // File-type Icon with subtle rounded background
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 8)
+                            .fill(fileIconColor.opacity(0.14))
+                            .frame(width: 40, height: 40)
+                        Image(systemName: fileIconName)
+                            .font(.system(size: 20))
+                            .foregroundColor(fileIconColor)
+                    }
 
-                // Middle: Filename, Size, Specs & Audio Indicator
-                VStack(alignment: .leading, spacing: 4) {
-                    // Line 1: Actual Filename as headline
-                    Text(displayFilename)
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundColor(.primary)
-                        .lineLimit(2)
-                        .multilineTextAlignment(.leading)
+                    // Middle: Filename, Size, Specs & Audio Indicator
+                    VStack(alignment: .leading, spacing: 4) {
+                        // Line 1: Actual Filename as headline
+                        Text(displayFilename)
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundColor(.primary)
+                            .lineLimit(2)
+                            .multilineTextAlignment(.leading)
 
-                    // Line 2: Size & Quality Specifications
-                    HStack(spacing: 6) {
-                        Text(displayFileSize)
-                            .font(.caption.weight(.medium))
-                            .foregroundColor(.secondary)
-
-                        if let variant = variantItem {
-                            Text("•")
-                                .font(.caption2)
+                        // Line 2: Size & Quality Specifications
+                        HStack(spacing: 6) {
+                            Text(displayFileSize)
+                                .font(.caption.weight(.medium))
                                 .foregroundColor(.secondary)
 
-                            if let resStr = variant.resolutionText ?? variant.resolution.map({ "\($0.width) × \($0.height)" }) {
-                                Text(resStr)
-                                    .font(.caption)
-                                    .foregroundColor(.secondary)
-                            }
-
-                            if !variant.bitrateText.isEmpty {
+                            if let variant = variantItem {
                                 Text("•")
                                     .font(.caption2)
                                     .foregroundColor(.secondary)
-                                Text(variant.bitrateText)
-                                    .font(.caption)
-                                    .foregroundColor(.secondary)
-                            }
-                        } else if resource.isStreamingManifest {
-                            Text("•")
-                                .font(.caption2)
-                                .foregroundColor(.secondary)
-                            Text("HLS Stream")
-                                .font(.caption)
-                                .foregroundColor(.blue)
-                        } else {
-                            let detectedExt = FilenameExtensionHelper.split(filename: displayFilename).ext
-                            if !detectedExt.isEmpty {
+
+                                if let resStr = variant.resolutionText ?? variant.resolution.map({ "\($0.width) × \($0.height)" }) {
+                                    Text(resStr)
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                }
+
+                                if !variant.bitrateText.isEmpty {
+                                    Text("•")
+                                        .font(.caption2)
+                                        .foregroundColor(.secondary)
+                                    Text(variant.bitrateText)
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                }
+                            } else if resource.isStreamingManifest {
                                 Text("•")
                                     .font(.caption2)
                                     .foregroundColor(.secondary)
-                                Text(detectedExt.uppercased())
+                                Text("HLS Stream")
                                     .font(.caption)
+                                    .foregroundColor(.blue)
+                            } else {
+                                let detectedExt = FilenameExtensionHelper.split(filename: displayFilename).ext
+                                if !detectedExt.isEmpty {
+                                    Text("•")
+                                        .font(.caption2)
+                                        .foregroundColor(.secondary)
+                                    Text(detectedExt.uppercased())
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                }
+                            }
+
+                            // Audio indicator: Small speaker icon ONLY when audio is present
+                            if let variant = variantItem, variant.hasAudio {
+                                Image(systemName: "speaker.wave.2.fill")
+                                    .font(.system(size: 10))
                                     .foregroundColor(.secondary)
+                            }
+
+                            // Subtitle indicator
+                            if let variant = variantItem, variant.hasSubtitles {
+                                Image(systemName: "captions.bubble.fill")
+                                    .font(.system(size: 10))
+                                    .foregroundColor(.purple)
                             }
                         }
 
-                        // Audio indicator: Small speaker icon ONLY when audio is present
-                        if let variant = variantItem, variant.hasAudio {
-                            Image(systemName: "speaker.wave.2.fill")
-                                .font(.system(size: 10))
-                                .foregroundColor(.secondary)
-                        }
+                        // Line 3: Format Badge & Host
+                        HStack(spacing: 6) {
+                            if let variant = variantItem {
+                                Text(variant.qualityLabel)
+                                    .font(.system(size: 10, weight: .bold))
+                                    .foregroundColor(.white)
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 2)
+                                    .background(Color.blue)
+                                    .cornerRadius(4)
+                            } else if let qualitySummary {
+                                Text(qualitySummary)
+                                    .font(.system(size: 10, weight: .medium))
+                                    .foregroundColor(.secondary)
+                            }
 
-                        // Subtitle indicator
-                        if let variant = variantItem, variant.hasSubtitles {
-                            Image(systemName: "captions.bubble.fill")
-                                .font(.system(size: 10))
-                                .foregroundColor(.purple)
+                            if let host = resource.url.host {
+                                Text(host)
+                                    .font(.system(size: 10))
+                                    .foregroundColor(.secondary)
+                                    .lineLimit(1)
+                            }
                         }
                     }
 
-                    // Line 3: Format Badge & Host
-                    HStack(spacing: 6) {
-                        if let variant = variantItem {
-                            Text(variant.qualityLabel)
-                                .font(.system(size: 10, weight: .bold))
-                                .foregroundColor(.white)
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 2)
-                                .background(Color.blue)
-                                .cornerRadius(4)
-                        } else if let qualitySummary {
-                            Text(qualitySummary)
-                                .font(.system(size: 10, weight: .medium))
-                                .foregroundColor(.secondary)
-                        }
+                    Spacer(minLength: 8)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(PlainButtonStyle())
 
-                        if let host = resource.url.host {
-                            Text(host)
-                                .font(.system(size: 10))
-                                .foregroundColor(.secondary)
-                                .lineLimit(1)
-                        }
+            // Trailing Contextual Actions: Independent hit areas disjoint from row selection button
+            HStack(spacing: 10) {
+                if isPlayable {
+                    Button {
+                        onPreview?()
+                    } label: {
+                        Image(systemName: "play.circle.fill")
+                            .font(.system(size: 26))
+                            .foregroundColor(.green)
                     }
+                    .buttonStyle(BorderlessButtonStyle())
                 }
 
-                Spacer(minLength: 8)
-
-                // Trailing Contextual Actions
-                HStack(spacing: 10) {
-                    if isPlayable {
-                        Button {
-                            onPreview?()
-                        } label: {
-                            Image(systemName: "play.circle.fill")
-                                .font(.system(size: 26))
-                                .foregroundColor(.green)
-                        }
-                        .buttonStyle(BorderlessButtonStyle())
+                if isOrdinaryWebpage, let onOpenBrowser {
+                    Button {
+                        onOpenBrowser()
+                    } label: {
+                        Image(systemName: "safari.fill")
+                            .font(.system(size: 24))
+                            .foregroundColor(.blue)
                     }
+                    .buttonStyle(BorderlessButtonStyle())
+                }
 
-                    if isOrdinaryWebpage, let onOpenBrowser {
-                        Button {
-                            onOpenBrowser()
-                        } label: {
-                            Image(systemName: "safari.fill")
-                                .font(.system(size: 24))
-                                .foregroundColor(.blue)
-                        }
-                        .buttonStyle(BorderlessButtonStyle())
-                    }
-
+                Button(action: onSelect) {
                     Image(systemName: "chevron.right")
                         .font(.caption2.weight(.semibold))
                         .foregroundColor(.secondary.opacity(0.6))
                 }
+                .buttonStyle(BorderlessButtonStyle())
             }
-            .contentShape(Rectangle())
         }
-        .buttonStyle(PlainButtonStyle())
         .padding(.vertical, 4)
     }
 }

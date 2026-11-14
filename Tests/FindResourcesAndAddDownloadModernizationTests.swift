@@ -265,4 +265,152 @@ final class FindResourcesAndAddDownloadModernizationTests: XCTestCase {
             ["Single URL", "Multiple URLs / Text Import", "URL Pattern"]
         )
     }
+
+    // MARK: - 6. URL Inspector HEAD Rejection Fallback Tests
+
+    func testURLInspectorFallbackRangeGETWhenHEADReturns405() async throws {
+        // Register custom protocol that rejects HEAD with 405 Method Not Allowed
+        // but succeeds on GET with 206 Partial Content and video/mp4
+        HEADRejectionMockProtocol.reset()
+        HEADRejectionMockProtocol.mockMIMEType = "video/mp4"
+        HEADRejectionMockProtocol.mockContentLength = 25_000_000
+
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [HEADRejectionMockProtocol.self]
+        let session = URLSession(configuration: config)
+
+        let ambiguousMediaURL = URL(string: "https://cdn.example.com/api/v1/stream_asset?id=999")!
+        let result = await URLInspector.shared.inspect(url: ambiguousMediaURL, session: session)
+
+        XCTAssertTrue(HEADRejectionMockProtocol.receivedHEAD, "Must have attempted HEAD probe first")
+        XCTAssertTrue(HEADRejectionMockProtocol.receivedGET, "Must have executed fallback GET probe after HEAD 405 rejection")
+
+        if case .playableMedia(let url, _, let ext, let mime, let size) = result.kind {
+            XCTAssertEqual(url, ambiguousMediaURL)
+            XCTAssertEqual(ext, "mp4")
+            XCTAssertEqual(mime, "video/mp4")
+            XCTAssertEqual(size, 25_000_000)
+        } else {
+            XCTFail("Expected .playableMedia after fallback GET probe, got \(result.kind)")
+        }
+    }
+
+    func testURLInspectorFallbackRangeGETWhenHEADFailsWithDirectDownload() async throws {
+        HEADRejectionMockProtocol.reset()
+        HEADRejectionMockProtocol.mockMIMEType = "application/zip"
+        HEADRejectionMockProtocol.mockContentLength = 100_000_000
+
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [HEADRejectionMockProtocol.self]
+        let session = URLSession(configuration: config)
+
+        let ambiguousDownloadURL = URL(string: "https://download.example.com/get_package?build=latest")!
+        let result = await URLInspector.shared.inspect(url: ambiguousDownloadURL, session: session)
+
+        XCTAssertTrue(HEADRejectionMockProtocol.receivedHEAD)
+        XCTAssertTrue(HEADRejectionMockProtocol.receivedGET)
+
+        if case .directDownload(_, let ext, let mime, let size) = result.kind {
+            XCTAssertEqual(ext, "zip")
+            XCTAssertEqual(mime, "application/zip")
+            XCTAssertEqual(size, 100_000_000)
+        } else {
+            XCTFail("Expected .directDownload after fallback GET probe, got \(result.kind)")
+        }
+    }
+
+    // MARK: - 7. LID Player HTML & Infrastructure Tests
+
+    func testBrowserHLSInlinePlayerSupportsDirectVideoAndAudio() {
+        // Direct MP4 Video
+        let videoURL = URL(string: "https://example.com/videos/nature.mp4")!
+        let videoHTML = BrowserHLSInlinePlayer.html(for: videoURL, title: "Nature Video")
+        XCTAssertTrue(BrowserHLSInlinePlayer.isInlinePlayerHTML(videoHTML))
+        XCTAssertTrue(videoHTML.contains("Video Stream"), "Badge should show Video Stream for mp4")
+        XCTAssertTrue(videoHTML.contains("type=\"video/mp4\""))
+        XCTAssertTrue(videoHTML.contains("#0b0f19"), "Must preserve LID dark theme")
+        XCTAssertTrue(videoHTML.contains("playsinline"))
+
+        // Direct MP3 Audio
+        let audioURL = URL(string: "https://example.com/audio/podcast.mp3")!
+        let audioHTML = BrowserHLSInlinePlayer.html(for: audioURL, title: "Podcast Episode 1")
+        XCTAssertTrue(BrowserHLSInlinePlayer.isInlinePlayerHTML(audioHTML))
+        XCTAssertTrue(audioHTML.contains("Audio Stream"), "Badge should show Audio Stream for mp3")
+        XCTAssertTrue(audioHTML.contains("type=\"audio/mpeg\""))
+
+        // HLS Stream (.m3u8)
+        let hlsURL = URL(string: "https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8")!
+        let hlsHTML = BrowserHLSInlinePlayer.html(for: hlsURL, title: "HLS Stream")
+        XCTAssertTrue(hlsHTML.contains("HLS Stream"))
+        XCTAssertTrue(hlsHTML.contains("application/vnd.apple.mpegurl"))
+    }
+}
+
+// MARK: - Mock URLProtocol for HEAD Rejection
+
+final class HEADRejectionMockProtocol: URLProtocol {
+    nonisolated(unsafe) static var receivedHEAD = false
+    nonisolated(unsafe) static var receivedGET = false
+    nonisolated(unsafe) static var mockMIMEType = "application/octet-stream"
+    nonisolated(unsafe) static var mockContentLength: Int64 = 1024
+
+    static func reset() {
+        receivedHEAD = false
+        receivedGET = false
+        mockMIMEType = "application/octet-stream"
+        mockContentLength = 1024
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool {
+        true
+    }
+
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest {
+        request
+    }
+
+    override func startLoading() {
+        guard let url = request.url else {
+            client?.urlProtocol(self, didFailWithError: URLError(.badURL))
+            return
+        }
+
+        let method = request.httpMethod?.uppercased() ?? "GET"
+
+        if method == "HEAD" {
+            Self.receivedHEAD = true
+            // Server disallows HEAD with 405 Method Not Allowed
+            let response = HTTPURLResponse(
+                url: url,
+                statusCode: 405,
+                httpVersion: "HTTP/1.1",
+                headerFields: ["Allow": "GET, POST"]
+            )!
+            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocolDidFinishLoading(self)
+        } else if method == "GET" {
+            Self.receivedGET = true
+            let headers: [String: String] = [
+                "Content-Type": Self.mockMIMEType,
+                "Content-Range": "bytes 0-0/\(Self.mockContentLength)",
+                "Content-Length": "1",
+                "Accept-Ranges": "bytes"
+            ]
+            let response = HTTPURLResponse(
+                url: url,
+                statusCode: 206,
+                httpVersion: "HTTP/1.1",
+                headerFields: headers
+            )!
+            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocol(self, didLoad: Data([0x00]))
+            client?.urlProtocolDidFinishLoading(self)
+        } else {
+            let response = HTTPURLResponse(url: url, statusCode: 501, httpVersion: "HTTP/1.1", headerFields: nil)!
+            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocolDidFinishLoading(self)
+        }
+    }
+
+    override func stopLoading() {}
 }
