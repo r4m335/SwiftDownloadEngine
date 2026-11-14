@@ -23,6 +23,8 @@ public struct DownloadDetailsView: View {
     @State private var calculatedHash: String? = nil
     @State private var hashError: String? = nil
     @State private var quickLookURL: URL? = nil
+    @State private var playerMediaURL: URL? = nil
+    @State private var playerMediaTitle: String = ""
     @State private var torrentFiles: [TorrentFileInfo] = []
     @State private var isLoadingFiles: Bool = false
     @State private var torrentTrackers: [TorrentTrackerInfo] = []
@@ -819,11 +821,22 @@ public struct DownloadDetailsView: View {
                             .foregroundColor(.green)
                     }
                 } else if transfer.state == .completed {
-                    Button {
-                        quickLookURL = transfer.destinationURL
-                    } label: {
-                        Label("Open File", systemImage: "doc.text")
-                            .foregroundColor(.blue)
+                    if transfer.destinationURL.isPlayableMedia {
+                        Button {
+                            playerMediaTitle = transfer.name
+                            playerMediaURL = transfer.destinationURL
+                        } label: {
+                            Label("Play in LID Player", systemImage: "play.circle.fill")
+                                .font(.body.weight(.semibold))
+                                .foregroundColor(.green)
+                        }
+                    } else {
+                        Button {
+                            quickLookURL = transfer.destinationURL
+                        } label: {
+                            Label("Open File", systemImage: "doc.text")
+                                .foregroundColor(.blue)
+                        }
                     }
                 }
 
@@ -843,6 +856,14 @@ public struct DownloadDetailsView: View {
             await monitorHLSTransferRecord(for: transfer.id)
         }
         .filePreviewSheet(item: $quickLookURL)
+        .fullScreenCover(item: Binding<IdentifiableURL?>(
+            get: { playerMediaURL.map { IdentifiableURL(url: $0) } },
+            set: { playerMediaURL = $0?.url }
+        )) { item in
+            LIDPlayerView(url: item.url, title: playerMediaTitle) {
+                playerMediaURL = nil
+            }
+        }
         .alert("Remove Download", isPresented: $showingDeleteAlert) {
             Button("Remove Entry Only", role: .none) {
                 Task { @MainActor in

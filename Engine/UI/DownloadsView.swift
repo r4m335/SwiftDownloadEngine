@@ -108,6 +108,8 @@ public struct DownloadsView: View {
     @State private var activeSheet: ActiveSheet? = nil
     @State private var activeAlert: ActiveAlert? = nil
     @State private var quickLookURL: URL? = nil
+    @State private var playerMediaURL: URL? = nil
+    @State private var playerMediaTitle: String = ""
     @State private var selectedDownloadForDetails: DownloadSnapshot? = nil
     @State private var selectedTransferForDetails: UnifiedTransfer? = nil
     @State private var detectedClipboardURL: URL? = nil
@@ -472,6 +474,14 @@ public struct DownloadsView: View {
                 }
             }
             .filePreviewSheet(item: $quickLookURL)
+            .fullScreenCover(item: Binding<IdentifiableURL?>(
+                get: { playerMediaURL.map { IdentifiableURL(url: $0) } },
+                set: { playerMediaURL = $0?.url }
+            )) { item in
+                LIDPlayerView(url: item.url, title: playerMediaTitle) {
+                    playerMediaURL = nil
+                }
+            }
             .onAppear {
                 checkClipboardForURL()
             }
@@ -738,7 +748,12 @@ public struct DownloadsView: View {
             viewModel.errorMessage = "File not found at '\(download.destinationURL.lastPathComponent)'."
             return
         }
-        quickLookURL = download.destinationURL
+        if download.destinationURL.isPlayableMedia {
+            playerMediaTitle = download.destinationURL.lastPathComponent
+            playerMediaURL = download.destinationURL
+        } else {
+            quickLookURL = download.destinationURL
+        }
     }
 
     private func saveToFiles(_ download: DownloadSnapshot) {
@@ -851,9 +866,14 @@ public struct DownloadsView: View {
     // MARK: - Unified Transfer Actions
 
     private func openTransferFile(_ transfer: UnifiedTransfer) {
-        #if canImport(QuickLook)
-        quickLookURL = transfer.destinationURL
-        #endif
+        if transfer.destinationURL.isPlayableMedia {
+            playerMediaTitle = transfer.name
+            playerMediaURL = transfer.destinationURL
+        } else {
+            #if canImport(QuickLook)
+            quickLookURL = transfer.destinationURL
+            #endif
+        }
     }
 
     private func saveTransferToFiles(_ transfer: UnifiedTransfer) {
