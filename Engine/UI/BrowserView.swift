@@ -5507,14 +5507,16 @@ public final class BrowserWebViewCoordinator: NSObject, WKNavigationDelegate, WK
             identifier: nil,
             previewProvider: nil
         ) { [weak self] _ in
-            guard let self, let vm = self.viewModel else { return nil }
+            guard let self, let vm = self.viewModel else {
+                return UIMenu(title: "", children: [])
+            }
 
             let openAction = UIAction(
                 title: "Open",
                 image: UIImage(systemName: "safari")
             ) { _ in
                 Task { @MainActor in
-                    vm.navigateTo(linkURL)
+                    vm.load(url: linkURL)
                 }
             }
 
