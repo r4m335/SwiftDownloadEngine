@@ -226,62 +226,155 @@ To bridge the remaining functional distance without compromising stability or vi
 
 **Goal:** Provide an integrated, hardware-accelerated, VLC-style media player for local, remote, and live swarm playback, eliminating the need to leave the application for media consumption.
 
-### Milestone A.1: Custom Playback Engine & VLC-Style Gesture Controls
+### Milestone A.1: Native AVFoundation Playback Engine & Core Architecture
+- **Objective:** Robust native playback architecture handling local files, network streams, resume, and lifecycle management.
+- **Scope:**
+  - Dedicated `LIDPlaybackEngine` actor managing `AVPlayer`, `AVPlayerItem`, and playback state transitions.
+  - Local downloaded video and audio file playback.
+  - Direct HTTP/HTTPS media playback with cookie and authentication header injection.
+  - Native HLS playlist streaming with variant selection.
+  - Partial file playback support for progressive downloads where moov atom / container data permits.
+  - Playback position persistence and auto-resume from last position.
+  - Time observation, duration extraction, and buffer state monitoring.
+
+### Milestone A.2: VLC-Style Playback Controls & Gesture Navigation
 - **Objective:** Full-featured playback interface with intuitive gesture navigation.
 - **Scope:**
-  - Gesture controls: vertical swipe on left for brightness, vertical swipe on right for volume, horizontal swipe for scrubbing.
-  - Multi-speed playback: 0.25x, 0.5x, 0.75x, 1.0x, 1.25x, 1.5x, 2.0x with pitch correction.
+  - Custom UI controls: Play/pause, scrubbing timeline, elapsed/remaining duration, lock controls, landscape/portrait autorotation, fullscreen, and PiP (Picture-in-Picture).
+  - Multi-speed playback: 0.25x, 0.5x, 0.75x, 1.0x, 1.25x, 1.5x, 2.0x, 4.0x with pitch correction.
   - Aspect ratio cycling: Original, 16:9, 4:3, Fill / Zoom-to-fill, Stretch.
-  - Double-tap forward/rewind (10s increments) with animated visual feedback.
+  - Gesture controls:
+    - Vertical swipe on left side: Screen brightness adjustment.
+    - Vertical swipe on right side: Volume adjustment.
+    - Horizontal swipe: Position scrubbing.
+    - Double tap: 10-second skip forward/backward with visual ripple feedback.
+    - Pinch: Interactive scale/zoom.
+    - Long press: Temporary 2x playback speed boost.
 
-### Milestone A.2: Discrete Audio Track & Subtitle Stream Selection
+### Milestone A.3: Discrete Audio Track & Subtitle Stream Selection
 - **Objective:** Seamless switching between embedded/external audio renditions and subtitle tracks.
 - **Scope:**
   - Enumerate `AVMediaSelectionGroup` for legible (subtitles) and audible (soundtracks) characteristics.
   - Support external `.srt` / `.vtt` subtitle file loading and encoding autodetection (UTF-8, ISO-8859-1).
   - Subtitle delay/synchronization adjuster (±5 seconds in 100ms increments).
+  - Subtitle styling (size, font color, background opacity).
+  - Audio delay adjustment.
+  - Audio-only background playback with `MPNowPlayingInfoCenter` lock-screen controls.
 
-### Milestone A.3: Direct Streaming Media Playback (HLS, DASH, Network Streams)
-- **Objective:** Stream remote manifests directly without saving to disk first.
+### Milestone A.4: Player Library & Playback History
+- **Objective:** Comprehensive in-app media management with seamless library access.
+- **Scope:**
+  - Unified player library presenting completed downloads directly.
+  - Recently played list, continue watching, playback history, and favorites.
+  - Playlist creation, reordering, and loop/shuffle playback modes.
+  - Media metadata inspection (codecs, bitrate, resolution, container).
+  - Delete, rename, or share files directly from the player library.
+
+### Milestone A.5: HLS/DASH & BitTorrent Sequential Swarm Streaming Integration
+- **Objective:** Stream remote manifests and live swarm downloads directly without waiting for completion.
 - **Scope:**
   - Feed discovered HLS and DASH master manifests directly into `AVPlayerItem`.
-  - Provide live playback scrubbing for DVR-enabled streams.
-
-### Milestone A.4: BitTorrent Swarm Streaming (Sequential Playback)
-- **Objective:** Stream downloading torrent videos in real time before the transfer is 100% complete.
-- **Scope:**
+  - Live playback scrubbing for DVR-enabled streams.
   - Coordinate with Milestone 4.2 sequential downloading: prioritize head pieces (metadata & moov atom) and playback window pieces.
-  - Mount a local loopback HTTP streaming server or custom `AVAssetResourceLoaderDelegate` reading verified downloaded torrent chunks from disk.
+  - Loopback streaming or custom `AVAssetResourceLoaderDelegate` feeding verified downloaded torrent chunks to `AVPlayer`.
 
 ---
 
 ## Dedicated Workstream B: LID Advanced Browser Modernization
 
-**Goal:** Elevate the integrated browser into a modern, private, and secure mobile browsing powerhouse.
+**Goal:** Elevate the integrated browser into a modern, private, and secure mobile browsing powerhouse with unified media discovery and download integration.
 
-### Milestone B.1: Enhanced Multi-List Ad, Tracker & Privacy Protection
-- **Objective:** Comprehensive blocking of tracking scripts, telemetry, and aggressive ad networks.
+### Milestone B.1: Browser Fundamentals & Tab Management
+- **Objective:** Complete mobile browser experience with rich multi-tab management.
+- **Scope:**
+  - Multi-tab browsing with 2-column visual thumbnail grid and preview caching.
+  - Full navigation controls: Back, forward, refresh, stop, home.
+  - Address bar with smart URL/search detection and search engine selection (DuckDuckGo, Google, Bing, Brave).
+  - Per-tab desktop mode and ephemeral incognito mode with isolated cookie/cache storage.
+  - Download progress indicator directly in browser toolbar.
+  - Hierarchical bookmarks and persistent history store.
+
+### Milestone B.2: Privacy, Security & Site Permissions
+- **Objective:** Comprehensive protection against trackers, invasive ads, popups, and malicious redirects.
 - **Scope:**
   - Multi-list compilation via `WKContentRuleListStore` (EasyList, EasyPrivacy, Fanboy's Annoyance).
   - Domain exception allowlist / per-site shields toggle in the navigation bar.
+  - Popup, redirect loop, and frame-busting defense via `WKUIDelegate` and `WKNavigationDelegate`.
+  - Cookie controls, per-site permissions (camera, microphone, location), and clear browsing data.
+  - Suspicious download warnings and HTTPS certificate error handling.
 
-### Milestone B.2: Popup, Redirect & Frame-Busting Protection
-- **Objective:** Prevent intrusive new windows, rogue app-store redirects, and background tab spams.
+### Milestone B.3: Enhanced Browser Experience & Reader Mode
+- **Objective:** Clutter-free reading, text search, and web utility workflows.
 - **Scope:**
-  - Implement strict `WKUIDelegate.webView(_:createWebViewWith:for:windowFeatures:)` approval dialogs.
-  - Detect and block rapid meta-refresh or JS redirect chains.
+  - Safari-style Reader Mode with distraction removal, typography choices (Serif/Sans), and theme customization (Light/Sepia/Dark).
+  - Find in page with highlighted occurrences and previous/next navigation.
+  - Open links in new tab, long-press link context menu, image saving, and webpage sharing.
+  - Customizable homepage and tab restoration upon app restart.
 
-### Milestone B.3: Safari Reader Mode & Text Extraction
-- **Objective:** Clutter-free article reading with distraction removal.
+### Milestone B.4: Unified Advanced Media Grabber
+- **Objective:** Industry-leading media discovery and seamless handoff to LID Player and Download Engine.
 - **Scope:**
-  - Readability.js DOM extraction pipeline into native SwiftUI reader view.
-  - Font size, typography (Serif/Sans), and theme customization (Light/Sepia/Dark).
+  - Detect video, audio, images, documents, archives, HLS/DASH manifests, and MediaSource/Blob streams.
+  - Expand HLS/DASH manifests into distinct resolution renditions.
+  - Detect discrete audio tracks and subtitle tracks.
+  - Display actual filenames, sizes, formats, and audio presence badges.
+  - Contextual actions: Play directly in native LID Player or open prefilled download configuration.
+  - Full preservation of browser cookies, User-Agent, and Referer headers across download and playback handoff.
+  - Expiring URL detection and token refresh workflows.
+  - Clear identification and user warnings for DRM-protected streams.
 
-### Milestone B.4: Modern Tab Grid & Visual Tab Management
-- **Objective:** Visual thumbnail previews and tab grouping.
-- **Scope:**
-  - Snapshot active WebViews to cached thumbnail images.
-  - Render a 2-column visual grid with swipe-to-dismiss and search open tabs.
+---
+
+## Shared Integration Architecture
+
+```text
+                 LID DOWNLOAD MANAGER
+                          |
+          +---------------+---------------+
+          |               |               |
+        Browser         Player         Downloads
+          |               |               |
+          +------- Shared Media Layer ----+
+                          |
+               Media Discovery Bridge
+                          |
+                Download Decision Layer
+                          |
+               Download Coordinator
+                          |
+          +---------------+---------------+
+          |               |               |
+       HTTP Engine    HLS/DASH Engine   Torrent Engine
+          |               |               |
+          +---------------+---------------+
+                          |
+                 Persistent Storage
+```
+
+The shared layer centralizes:
+- Media metadata & format identification.
+- Authentication, cookies, and request context.
+- Local file access & storage routing.
+- Streaming sources & playback history.
+- Seamless download-to-player and browser-to-player handoffs.
+- Resilient error reporting and recovery.
+
+---
+
+## 10-Milestone Development Sequence
+
+| Order | Milestone | Status |
+|---|---|---|
+| **1** | **Dedicated Native LID Player Architecture (A.1)** | **In Progress** |
+| 2 | VLC-Style Controls and Gestures (A.2) | Pending |
+| 3 | Audio & Subtitle Management (A.3) | Pending |
+| 4 | Player Library & Playback History (A.4) | Pending |
+| 5 | HLS/DASH & Torrent Swarm Streaming Integration (A.5) | Pending |
+| 6 | Browser Fundamentals & Tab Management (B.1) | Pending |
+| 7 | Privacy, Ad Blocking & Site Permissions (B.2) | Pending |
+| 8 | Reader Mode & Advanced Browser Features (B.3) | Pending |
+| 9 | Unified Media Grabber Integration (B.4) | Pending |
+| 10 | End-to-End Integration & Physical Hardware Verification | Pending |
 
 ---
 
