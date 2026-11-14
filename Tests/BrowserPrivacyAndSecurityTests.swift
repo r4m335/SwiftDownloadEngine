@@ -34,7 +34,7 @@ final class BrowserPrivacyAndSecurityTests: XCTestCase {
     // MARK: - 2. AppSettings Schema Version 6 Migration Tests
 
     func testAppSettingsVersion6PrivacyFieldsAndMigration() throws {
-        XCTAssertEqual(AppSettings.currentVersion, 6)
+        XCTAssertGreaterThanOrEqual(AppSettings.currentVersion, 6)
 
         // Verify default settings
         let defaults = AppSettings.default

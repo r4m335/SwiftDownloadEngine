@@ -181,6 +181,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
     // Custom Homepage & Session Persistence (Milestone B.3)
     public var browserHomepage: String = "https://duckduckgo.com"
     public var restoreTabsOnLaunch: Bool = true
+    public let sessionStore: BrowserSessionStore?
 
     // User-controlled redirect & popup confirmation
     @Published public var redirectPrompt: BrowserRedirectPrompt? = nil
@@ -245,13 +246,15 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         onOpenAddDownload: ((URL) -> Void)? = nil,
         onOpenDownloads: (() -> Void)? = nil,
         streamingOrchestrator: StreamingDownloadOrchestrator? = nil,
-        streamingDestinationDirectoryURL: URL? = nil
+        streamingDestinationDirectoryURL: URL? = nil,
+        sessionStore: BrowserSessionStore? = nil
     ) {
         self.downloadDelegate = downloadDelegate
         self.magnetDelegate = magnetDelegate
         self.onDownloadInitiated = onDownloadInitiated
         self.onOpenAddDownload = onOpenAddDownload
         self.onOpenDownloads = onOpenDownloads
+        self.sessionStore = sessionStore
         let orchestrator = streamingOrchestrator ?? StreamingDownloadOrchestrator.shared
         if let orchestrator, let vm = downloadDelegate as? DownloadManagerViewModel {
             Task {
@@ -281,7 +284,8 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         )
 
         if initialSettings.restoreTabsOnLaunch,
-           let saved = BrowserSessionStore.shared.loadSession(),
+           let sessionStore,
+           let saved = sessionStore.loadSession(),
            !saved.tabs.isEmpty {
             self.tabManager = BrowserTabManager(tabs: saved.tabs, activeTabID: saved.activeTabID)
         }
@@ -311,8 +315,8 @@ public final class BrowserViewModel: NSObject, ObservableObject {
     private func publishTabState() {
         tabs = tabManager.tabs
         activeTabID = tabManager.activeTabID
-        if restoreTabsOnLaunch {
-            BrowserSessionStore.shared.saveSession(tabs: tabManager.tabs, activeTabID: tabManager.activeTabID)
+        if restoreTabsOnLaunch, let sessionStore {
+            sessionStore.saveSession(tabs: tabManager.tabs, activeTabID: tabManager.activeTabID)
         }
     }
 
@@ -3302,7 +3306,8 @@ public struct BrowserView: View {
             magnetDelegate: magnetDelegate,
             onDownloadInitiated: onDownloadInitiated,
             onOpenAddDownload: onOpenAddDownload,
-            onOpenDownloads: onOpenDownloads
+            onOpenDownloads: onOpenDownloads,
+            sessionStore: BrowserSessionStore.shared
         ))
     }
 
@@ -3319,7 +3324,8 @@ public struct BrowserView: View {
             onOpenAddDownload: onOpenAddDownload,
             onOpenDownloads: onOpenDownloads,
             streamingOrchestrator: StreamingDownloadOrchestrator.shared,
-            streamingDestinationDirectoryURL: viewModel.downloadsDirectoryURL
+            streamingDestinationDirectoryURL: viewModel.downloadsDirectoryURL,
+            sessionStore: BrowserSessionStore.shared
         ))
     }
 
