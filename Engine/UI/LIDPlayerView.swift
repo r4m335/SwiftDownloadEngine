@@ -34,8 +34,12 @@ public final class LIDPlayerLayerView: UIView, AVPictureInPictureControllerDeleg
 
     public func setupPiP() {
         guard pipController == nil, AVPictureInPictureController.isPictureInPictureSupported() else { return }
-        pipController = AVPictureInPictureController(playerLayer: playerLayer)
-        pipController?.delegate = self
+        let controller = AVPictureInPictureController(playerLayer: playerLayer)
+        controller?.delegate = self
+        if #available(iOS 14.2, *) {
+            controller?.canStartPictureInPictureAutomaticallyFromInline = true
+        }
+        pipController = controller
     }
 
     public func togglePiP() {

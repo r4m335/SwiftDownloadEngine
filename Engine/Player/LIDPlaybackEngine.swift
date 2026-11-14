@@ -82,6 +82,35 @@ public final class LIDPlaybackEngine: NSObject, ObservableObject {
 
     // MARK: - Playback Control APIs
 
+    #if os(iOS) && canImport(AVFoundation)
+    /// Configures and activates the system audio session for media playback.
+    /// Uses `.playback` category and `.moviePlayback` mode with AirPlay and Bluetooth options,
+    /// ensuring audio plays even when the physical Silent switch is engaged, and supporting
+    /// lock-screen and background audio routing.
+    public static func configureAudioSession() {
+        do {
+            let session = AVAudioSession.sharedInstance()
+            try session.setCategory(
+                .playback,
+                mode: .moviePlayback,
+                options: [.allowAirPlay, .allowBluetooth]
+            )
+            try session.setActive(true)
+        } catch {
+            PipelineLogger.shared.log("[LIDPlaybackEngine] Audio session configuration notice: \(error.localizedDescription)")
+        }
+    }
+
+    /// Deactivates the audio session and notifies other applications that audio has completed.
+    public static func deactivateAudioSession() {
+        do {
+            try AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        } catch {
+            PipelineLogger.shared.log("[LIDPlaybackEngine] Audio session deactivation notice: \(error.localizedDescription)")
+        }
+    }
+    #endif
+
     /// Configures the shared BitTorrent engine instance for swarm streaming.
     public func configure(torrentEngine: TorrentEngine) {
         self.torrentEngine = torrentEngine
@@ -99,6 +128,12 @@ public final class LIDPlaybackEngine: NSObject, ObservableObject {
         self.metadata = LIDMediaMetadata(title: source.title)
         self.streamContext = LIDStreamContextInfo(isLive: false)
         self.trackManager.reset()
+
+        #if os(iOS) && canImport(AVFoundation)
+        if autoPlay {
+            Self.configureAudioSession()
+        }
+        #endif
 
         #if canImport(AVFoundation)
         let asset: AVURLAsset
@@ -185,6 +220,9 @@ public final class LIDPlaybackEngine: NSObject, ObservableObject {
     public func play() {
         #if canImport(AVFoundation)
         guard let player = player else { return }
+        #if os(iOS)
+        Self.configureAudioSession()
+        #endif
         player.rate = Float(playbackSpeed.rawValue)
         playbackState = .playing
         if let source = currentSource {
@@ -296,6 +334,9 @@ public final class LIDPlaybackEngine: NSObject, ObservableObject {
         trackManager.reset()
         swarmStatusTask?.cancel()
         swarmStatusTask = nil
+        #if os(iOS) && canImport(AVFoundation)
+        Self.deactivateAudioSession()
+        #endif
         #if canImport(AVFoundation)
         if let token = timeObserverToken, let player = player {
             player.removeTimeObserver(token)

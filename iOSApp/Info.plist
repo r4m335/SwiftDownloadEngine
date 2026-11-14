@@ -30,6 +30,20 @@
     <array>
         <string>com.r4m335.SwiftDownloadEngine.continued-download</string>
     </array>
+    <key>UIBackgroundModes</key>
+    <array>
+        <string>audio</string>
+    </array>
+    <key>NSCameraUsageDescription</key>
+    <string>LID Browser requires camera access when websites request photo or video capture.</string>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>LID Browser requires microphone access when websites request audio recording or voice search.</string>
+    <key>NSLocationWhenInUseUsageDescription</key>
+    <string>LID Browser requires location access when websites request your geographic location.</string>
+    <key>NSPhotoLibraryAddUsageDescription</key>
+    <string>LID Download Manager requires photo library access to save downloaded images and videos to your Camera Roll.</string>
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>LID Download Manager requires local network access to discover BitTorrent swarm peers and stream media on your local network.</string>
     <key>NSAppTransportSecurity</key>
     <dict>
         <key>NSAllowsArbitraryLoads</key>

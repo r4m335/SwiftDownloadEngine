@@ -381,7 +381,23 @@ The shared layer centralizes:
 | 7 | Privacy, Ad Blocking & Site Permissions (B.2) | **Completed** |
 | 8 | Reader Mode & Advanced Browser Features (B.3) | **Completed** |
 | 9 | Unified Media Grabber Integration (B.4) | **Completed** |
+| 9.1 | iOS Runtime Readiness (Audio Session, Auto-PiP & Info.plist) | **Completed** |
 | 10 | End-to-End Integration & Physical Hardware Verification | Next |
+
+---
+
+### Milestone 9.1: iOS Runtime Readiness & Hardware Prerequisites [Completed]
+- **Objective:** Configure required iOS background capabilities, privacy usage descriptions, audio session lifecycle, and automatic PiP transitions prior to physical hardware verification.
+- **Implementation Scope:**
+  - `iOSApp/Info.plist`: Added `UIBackgroundModes` with `audio` capability for background playback and lock-screen routing.
+  - Added justified privacy descriptions: `NSCameraUsageDescription`, `NSMicrophoneUsageDescription`, `NSLocationWhenInUseUsageDescription` (supporting B.2 site permissions without runtime SIGABRT crashes), `NSPhotoLibraryAddUsageDescription` (saving downloaded media to Photos), and `NSLocalNetworkUsageDescription` (BitTorrent local subnet peer discovery).
+  - `Engine/Player/LIDPlaybackEngine.swift`: Added `configureAudioSession()` setting `.playback` category, `.moviePlayback` mode, with `.allowAirPlay` and `.allowBluetooth` options, and `deactivateAudioSession()` upon playback stop. Ensures audio plays when the physical Silent switch is engaged.
+  - `Engine/UI/LIDPlayerView.swift`: Added `canStartPictureInPictureAutomaticallyFromInline = true` in `LIDPlayerLayerView.setupPiP()`.
+  - Added `Tests/RuntimeReadinessAndInfoTests.swift` validating Info.plist keys, background modes, and privacy declarations.
+- **Completion Criteria:**
+  - Info.plist verified via automated test suite.
+  - Media player configures audio session cleanly.
+  - Auto-PiP configured for iOS 14.2+ inline transitions.
 
 ---
 
