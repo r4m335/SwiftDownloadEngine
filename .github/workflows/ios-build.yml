@@ -586,10 +586,34 @@ jobs:
           name: LibTorrent-iOS-XCFramework
           path: Frameworks/LibTorrent.xcframework
 
+      - name: Cache VLCKit XCFramework
+        id: cache-vlckit
+        uses: actions/cache@v4
+        with:
+          path: Frameworks/VLCKit.xcframework
+          key: vlckit-4.0.0-a26-v1
+
+      - name: Download and Unpack VLCKit XCFramework
+        if: steps.cache-vlckit.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p Frameworks
+          echo "Downloading VLCKit 4.0 binary distribution from VideoLAN..."
+          curl -fL "https://download.videolan.org/cocoapods/unstable/VLCKit-4.0-20261109-1916.zip" -o vlckit.zip
+          echo "Verifying SHA-256 checksum..."
+          echo "1fec7232f88e706f44d9a015133e08d742166eb2666cb44915c9f570bf339463  vlckit.zip" | shasum -a 256 -c -
+          echo "Unpacking VLCKit.xcframework..."
+          unzip -q vlckit.zip "VLCKit.xcframework/*" -d Frameworks/
+          rm -f vlckit.zip
+
       - name: Verify Framework Presence
         run: |
           ls -la Frameworks/LibTorrent.xcframework
           lipo -info Frameworks/LibTorrent.xcframework/ios-arm64/*.a
+          if [ -d "Frameworks/VLCKit.xcframework" ]; then
+            echo "=== VLCKit XCFramework Verified ==="
+            ls -la Frameworks/VLCKit.xcframework
+            ls -la Frameworks/VLCKit.xcframework/ios-arm64
+          fi
 
       - name: Build iOS Application Target (Device - Unsigned)
         run: |
@@ -634,6 +658,16 @@ jobs:
             exit 1
           fi
           echo "Found device app bundle at: $APP_PATH"
+
+          # Embed VLCKit dynamic framework if present
+          if [ -d "Frameworks/VLCKit.xcframework/ios-arm64/VLCKit.framework" ]; then
+            mkdir -p "$APP_PATH/Frameworks"
+            if [ ! -d "$APP_PATH/Frameworks/VLCKit.framework" ]; then
+              echo "Embedding VLCKit.framework into app bundle..."
+              cp -R "Frameworks/VLCKit.xcframework/ios-arm64/VLCKit.framework" "$APP_PATH/Frameworks/"
+            fi
+          fi
+
           APP_DIR=$(dirname "$APP_PATH")
           cd "$APP_DIR"
 

@@ -5,10 +5,21 @@ import Foundation
 let frameworkRelativePath = "Frameworks/LibTorrent.xcframework"
 let hasLibTorrent = FileManager.default.fileExists(atPath: frameworkRelativePath)
 
+let vlcFrameworkRelativePath = "Frameworks/VLCKit.xcframework"
+let hasVLCKit = FileManager.default.fileExists(atPath: vlcFrameworkRelativePath)
+
+var engineDependencies: [Target.Dependency] = []
+if hasLibTorrent {
+    engineDependencies.append("LibTorrent")
+}
+if hasVLCKit {
+    engineDependencies.append("VLCKit")
+}
+
 var packageTargets: [Target] = [
     .target(
         name: "DM_Reverse_engineering",
-        dependencies: hasLibTorrent ? ["LibTorrent"] : [],
+        dependencies: engineDependencies,
         path: "Engine"
     ),
     .executableTarget(
@@ -28,6 +39,15 @@ if hasLibTorrent {
         .binaryTarget(
             name: "LibTorrent",
             path: frameworkRelativePath
+        )
+    )
+}
+
+if hasVLCKit {
+    packageTargets.append(
+        .binaryTarget(
+            name: "VLCKit",
+            path: vlcFrameworkRelativePath
         )
     )
 }

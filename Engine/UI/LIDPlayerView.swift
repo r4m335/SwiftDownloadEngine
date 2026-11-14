@@ -85,6 +85,30 @@ public struct LIDNativePlayerLayerView: UIViewRepresentable {
         uiView.setupPiP()
     }
 }
+
+/// Native VLCKit rendering view representable bridging VLCMediaPlayer.drawable
+public struct LIDVLCPlayerLayerView: UIViewRepresentable {
+    public let backend: LIDVLCKitBackend
+
+    public init(backend: LIDVLCKitBackend) {
+        self.backend = backend
+    }
+
+    public func makeUIView(context: Context) -> UIView {
+        let view = UIView()
+        view.backgroundColor = .black
+        backend.attachRenderingView(view)
+        return view
+    }
+
+    public func updateUIView(_ uiView: UIView, context: Context) {
+        backend.attachRenderingView(uiView)
+    }
+
+    public static func dismantleUIView(_ uiView: UIView, coordinator: ()) {
+        // Backend handles detachment on stop/teardown
+    }
+}
 #endif
 
 /// Dedicated native VLC-style media player with gesture controls, PiP, audio track selection,
@@ -190,9 +214,15 @@ public struct LIDPlayerView: View {
                 .edgesIgnoringSafeArea(.all)
 
             #if canImport(AVFoundation) && canImport(UIKit) && canImport(AVKit)
-            // Native Hardware-Accelerated Video Layer with Interactive Zoom
-            LIDNativePlayerLayerView(player: engine.player, videoGravity: videoGravity) { layer in
-                self.layerViewRef = layer
+            // Multi-Backend Hardware-Accelerated Video Layer (VLCKit / AVFoundation)
+            Group {
+                if engine.activeBackendType == .avFoundation {
+                    LIDNativePlayerLayerView(player: engine.player, videoGravity: videoGravity) { layer in
+                        self.layerViewRef = layer
+                    }
+                } else {
+                    LIDVLCPlayerLayerView(backend: engine.vlcBackend)
+                }
             }
             .scaleEffect(zoomScale)
             .edgesIgnoringSafeArea(.all)
