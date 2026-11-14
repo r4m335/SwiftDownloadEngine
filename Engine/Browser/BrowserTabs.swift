@@ -4,7 +4,7 @@ import Foundation
 /// The WebKit view that owns the actual navigation history is managed by the
 /// browser UI layer; this value carries the state needed by the tab overview
 /// and by the active-tab presentation.
-public struct BrowserTabState: Identifiable, Equatable, Sendable {
+public struct BrowserTabState: Identifiable, Equatable, Sendable, Codable {
     public static let defaultDesktopUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15"
 
     public let id: UUID
@@ -66,6 +66,15 @@ public struct BrowserTabManager: Sendable, Equatable {
     public init(initialTab: BrowserTabState = BrowserTabState()) {
         self.tabs = [initialTab]
         self.activeTabID = initialTab.id
+    }
+
+    public init(tabs: [BrowserTabState], activeTabID: UUID? = nil) {
+        self.tabs = tabs.isEmpty ? [BrowserTabState()] : tabs
+        if let activeTabID, self.tabs.contains(where: { $0.id == activeTabID }) {
+            self.activeTabID = activeTabID
+        } else {
+            self.activeTabID = self.tabs.first?.id
+        }
     }
 
     public var activeTab: BrowserTabState? {

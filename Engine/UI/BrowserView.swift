@@ -162,6 +162,26 @@ public final class BrowserViewModel: NSObject, ObservableObject {
     @Published public var suspiciousDownloadPrompt: BrowserSuspiciousDownloadPrompt? = nil
     @Published public var permissionPrompt: BrowserPermissionPrompt? = nil
 
+    // Safari-Style Reader Mode (Milestone B.3)
+    @Published public var isShowingReaderMode: Bool = false
+    @Published public var readerArticle: BrowserReaderArticle? = nil
+    @Published public var isExtractingReaderArticle: Bool = false
+    @Published public var readerSettings: BrowserReaderSettings = BrowserReaderSettings()
+    @Published public var readerFeedbackBanner: String? = nil
+
+    // Find in Page (Milestone B.3)
+    @Published public var isShowingFindInPage: Bool = false
+    @Published public var findInPageQuery: String = ""
+    @Published public var findInPageResult: BrowserFindInPageResult = BrowserFindInPageResult()
+
+    // Webpage & Link Sharing (Milestone B.3)
+    @Published public var isShowingShareSheet: Bool = false
+    @Published public var shareItems: [Any] = []
+
+    // Custom Homepage & Session Persistence (Milestone B.3)
+    public var browserHomepage: String = "https://duckduckgo.com"
+    public var restoreTabsOnLaunch: Bool = true
+
     // User-controlled redirect & popup confirmation
     @Published public var redirectPrompt: BrowserRedirectPrompt? = nil
     private var tabOriginChains: [UUID: Set<String>] = [:]
@@ -252,6 +272,19 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         self.isPopupBlockerEnabled = initialSettings.isPopupBlockerEnabled
         self.adBlockerWhitelistedDomains = Set(initialSettings.adBlockerWhitelistedDomains)
         self.selectedSearchEngine = initialSettings.browserSearchEngine
+        self.browserHomepage = initialSettings.browserHomepage
+        self.restoreTabsOnLaunch = initialSettings.restoreTabsOnLaunch
+        self.readerSettings = BrowserReaderSettings(
+            theme: initialSettings.readerTheme,
+            fontFamily: initialSettings.readerFontFamily,
+            fontSize: initialSettings.readerFontSize
+        )
+
+        if initialSettings.restoreTabsOnLaunch,
+           let saved = BrowserSessionStore.shared.loadSession(),
+           !saved.tabs.isEmpty {
+            self.tabManager = BrowserTabManager(tabs: saved.tabs, activeTabID: saved.activeTabID)
+        }
 
         super.init()
         BrowserPermissionCoordinator.shared.provider = self
@@ -278,6 +311,9 @@ public final class BrowserViewModel: NSObject, ObservableObject {
     private func publishTabState() {
         tabs = tabManager.tabs
         activeTabID = tabManager.activeTabID
+        if restoreTabsOnLaunch {
+            BrowserSessionStore.shared.saveSession(tabs: tabManager.tabs, activeTabID: tabManager.activeTabID)
+        }
     }
 
     private func syncActiveTabState() {
@@ -351,6 +387,17 @@ public final class BrowserViewModel: NSObject, ObservableObject {
             let session = webViewSession(for: id)
             session.webView.load(URLRequest(url: url))
             if let host = url.host {
+                recordTabOrigin(host, for: id)
+            }
+            #endif
+        } else if !isIncognito,
+                  let homeURL = URL(string: browserHomepage),
+                  !browserHomepage.isEmpty,
+                  browserHomepage != "about:blank" {
+            #if canImport(WebKit)
+            let session = webViewSession(for: id)
+            session.webView.load(URLRequest(url: homeURL))
+            if let host = homeURL.host {
                 recordTabOrigin(host, for: id)
             }
             #endif
@@ -2087,6 +2134,111 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         #endif
     }
 
+    // MARK: - Safari-Style Reader Mode (Milestone B.3)
+
+    public func toggleReaderMode() {
+        if isShowingReaderMode {
+            closeReaderMode()
+            return
+        }
+        #if canImport(WebKit)
+        guard let webView, currentURL != nil else {
+            readerFeedbackBanner = "Reader Mode is not available for this page."
+            return
+        }
+        isExtractingReaderArticle = true
+        webView.evaluateJavaScript(BrowserReaderExtractor.extractionScript) { [weak self] result, error in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.isExtractingReaderArticle = false
+                if let dict = result as? [String: Any],
+                   let article = BrowserReaderExtractor.parseExtraction(jsonDict: dict, sourceURL: self.currentURL) {
+                    self.readerArticle = article
+                    self.isShowingReaderMode = true
+                } else {
+                    let reason = (result as? [String: Any])?["reason"] as? String
+                        ?? "Reader Mode is not available for this page."
+                    self.readerFeedbackBanner = reason
+                }
+            }
+        }
+        #else
+        readerFeedbackBanner = "Reader Mode requires WebKit runtime."
+        #endif
+    }
+
+    public func closeReaderMode() {
+        isShowingReaderMode = false
+    }
+
+    // MARK: - Find in Page (Milestone B.3)
+
+    public func openFindInPage() {
+        isShowingFindInPage = true
+    }
+
+    public func closeFindInPage() {
+        isShowingFindInPage = false
+        findInPageQuery = ""
+        findInPageResult = BrowserFindInPageResult()
+        #if canImport(WebKit)
+        webView?.evaluateJavaScript(BrowserFindInPageEngine.clearHighlightsScript, completionHandler: nil)
+        #endif
+    }
+
+    public func updateFindInPageQuery(_ query: String) {
+        findInPageQuery = query
+        #if canImport(WebKit)
+        guard let webView else { return }
+        let script = BrowserFindInPageEngine.searchScript(query: query)
+        webView.evaluateJavaScript(script) { [weak self] result, _ in
+            let res = BrowserFindInPageEngine.parseResult(from: result as? [String: Any])
+            DispatchQueue.main.async {
+                self?.findInPageResult = res
+            }
+        }
+        #endif
+    }
+
+    public func findInPageNext() {
+        #if canImport(WebKit)
+        guard let webView else { return }
+        webView.evaluateJavaScript(BrowserFindInPageEngine.nextMatchScript) { [weak self] result, _ in
+            let res = BrowserFindInPageEngine.parseResult(from: result as? [String: Any])
+            DispatchQueue.main.async {
+                self?.findInPageResult = res
+            }
+        }
+        #endif
+    }
+
+    public func findInPagePrevious() {
+        #if canImport(WebKit)
+        guard let webView else { return }
+        webView.evaluateJavaScript(BrowserFindInPageEngine.previousMatchScript) { [weak self] result, _ in
+            let res = BrowserFindInPageEngine.parseResult(from: result as? [String: Any])
+            DispatchQueue.main.async {
+                self?.findInPageResult = res
+            }
+        }
+        #endif
+    }
+
+    // MARK: - Webpage & Link Sharing (Milestone B.3)
+
+    public func shareCurrentPage() {
+        guard let url = currentURL else { return }
+        let title = pageTitle.isEmpty ? (url.host ?? "Webpage") : pageTitle
+        shareItems = [url, title]
+        isShowingShareSheet = true
+    }
+
+    public func shareURL(_ url: URL, title: String? = nil) {
+        let effectiveTitle = title ?? url.host ?? "Link"
+        shareItems = [url, effectiveTitle]
+        isShowingShareSheet = true
+    }
+
     public func inspectCurrentPageResources() {
         guard let url = currentURL else {
             resourceScanError = "No active webpage is currently loaded."
@@ -2753,6 +2905,13 @@ public final class BrowserViewModel: NSObject, ObservableObject {
     }
 
     public func goHome() {
+        if let homeURL = URL(string: browserHomepage),
+           !browserHomepage.isEmpty,
+           browserHomepage != "about:blank" {
+            navigateTo(homeURL)
+            return
+        }
+
         #if canImport(WebKit)
         webView?.stopLoading()
         if let blank = URL(string: "about:blank") {
@@ -3177,6 +3336,39 @@ public struct BrowserView: View {
                 Divider()
             }
 
+            // Find in Page Search Bar (Milestone B.3)
+            if viewModel.isShowingFindInPage {
+                BrowserFindInPageView(
+                    query: Binding(
+                        get: { viewModel.findInPageQuery },
+                        set: { viewModel.updateFindInPageQuery($0) }
+                    ),
+                    result: viewModel.findInPageResult,
+                    onPrevious: { viewModel.findInPagePrevious() },
+                    onNext: { viewModel.findInPageNext() },
+                    onDone: { viewModel.closeFindInPage() }
+                )
+                .transition(.move(edge: .top).combined(with: .opacity))
+            }
+
+            // Reader Mode Feedback Banner (Milestone B.3)
+            if let banner = viewModel.readerFeedbackBanner {
+                HStack(spacing: 8) {
+                    Image(systemName: "info.circle")
+                    Text(banner)
+                        .font(.caption)
+                    Spacer()
+                    Button("Dismiss") {
+                        viewModel.readerFeedbackBanner = nil
+                    }
+                    .font(.caption.bold())
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 8)
+                .background(Color.orange.opacity(0.18))
+                .foregroundColor(.primary)
+            }
+
             // Main View Area: Home Screen, Error Screen, or Active Web View
             ZStack {
                 if viewModel.currentURL == nil {
@@ -3273,6 +3465,23 @@ public struct BrowserView: View {
         }
         .sheet(isPresented: $viewModel.isShowingClearDataSheet) {
             BrowserClearDataSheet(viewModel: viewModel)
+        }
+        .sheet(isPresented: $viewModel.isShowingReaderMode) {
+            if let article = viewModel.readerArticle {
+                BrowserReaderView(
+                    article: article,
+                    settings: $viewModel.readerSettings,
+                    onDismiss: {
+                        viewModel.closeReaderMode()
+                    },
+                    onShare: {
+                        viewModel.shareCurrentPage()
+                    }
+                )
+            }
+        }
+        .sheet(isPresented: $viewModel.isShowingShareSheet) {
+            BrowserShareSheet(items: viewModel.shareItems)
         }
         .sheet(isPresented: $isShowingDiagnosticLogs) {
             DiagnosticLogView(configuration: viewModel.activeEngineConfiguration)
@@ -3494,6 +3703,8 @@ public struct BrowserView: View {
         viewModel.isShowingResourceInspector ||
         viewModel.isShowingQualityPicker ||
         viewModel.isShowingShieldSheet ||
+        viewModel.isShowingReaderMode ||
+        viewModel.isShowingShareSheet ||
         viewModel.redirectPrompt != nil ||
         viewModel.isShowingMagnetSheet ||
         viewModel.isShowingTabSwitcher
@@ -3598,6 +3809,17 @@ public struct BrowserView: View {
                         Image(systemName: viewModel.currentURL != nil ? "arrow.clockwise" : "xmark.circle.fill")
                             .foregroundColor(.secondary)
                     }
+                }
+
+                if viewModel.currentURL != nil {
+                    Button {
+                        viewModel.toggleReaderMode()
+                    } label: {
+                        Image(systemName: "doc.plaintext")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundColor(viewModel.isShowingReaderMode ? .blue : .secondary)
+                    }
+                    .accessibilityLabel("Reader Mode")
                 }
 
                 if viewModel.detectedMediaCount > 0 {
@@ -3780,6 +4002,30 @@ public struct BrowserView: View {
                     systemImage: viewModel.isCurrentSiteWhitelisted ? "shield.slash" : "shield.checkered"
                 )
             }
+
+            // Safari-Style Reader Mode (Milestone B.3)
+            Button {
+                viewModel.toggleReaderMode()
+            } label: {
+                Label("Reader Mode", systemImage: "doc.plaintext")
+            }
+            .disabled(viewModel.currentURL == nil)
+
+            // Find in Page (Milestone B.3)
+            Button {
+                viewModel.openFindInPage()
+            } label: {
+                Label("Find in Page", systemImage: "magnifyingglass")
+            }
+            .disabled(viewModel.currentURL == nil)
+
+            // Webpage Sharing (Milestone B.3)
+            Button {
+                viewModel.shareCurrentPage()
+            } label: {
+                Label("Share Webpage...", systemImage: "square.and.arrow.up")
+            }
+            .disabled(viewModel.currentURL == nil)
         } label: {
             ZStack(alignment: .topTrailing) {
                 Image(systemName: "ellipsis")
@@ -5238,6 +5484,99 @@ public final class BrowserWebViewCoordinator: NSObject, WKNavigationDelegate, WK
             }
         }
     }
+
+#if canImport(UIKit)
+    @available(iOS 13.0, *)
+    public func webView(
+        _ webView: WKWebView,
+        contextMenuConfigurationForElement elementInfo: WKContextMenuElementInfo,
+        completionHandler: @escaping (UIContextMenuConfiguration?) -> Void
+    ) {
+        guard let linkURL = elementInfo.linkURL else {
+            completionHandler(nil)
+            return
+        }
+
+        let config = UIContextMenuConfiguration(
+            identifier: nil,
+            previewProvider: nil
+        ) { [weak self] _ in
+            guard let self, let vm = self.viewModel else { return nil }
+
+            let openAction = UIAction(
+                title: "Open",
+                image: UIImage(systemName: "safari")
+            ) { _ in
+                Task { @MainActor in
+                    vm.navigateTo(linkURL)
+                }
+            }
+
+            let openInNewTabAction = UIAction(
+                title: "Open in New Tab",
+                image: UIImage(systemName: "plus.square.on.square")
+            ) { _ in
+                Task { @MainActor in
+                    vm.createNewTab(with: linkURL, isIncognito: false)
+                }
+            }
+
+            let openInPrivateTabAction = UIAction(
+                title: "Open in Private Tab",
+                image: UIImage(systemName: "eye.slash")
+            ) { _ in
+                Task { @MainActor in
+                    vm.createNewTab(with: linkURL, isIncognito: true)
+                }
+            }
+
+            let copyAction = UIAction(
+                title: "Copy Link Address",
+                image: UIImage(systemName: "doc.on.doc")
+            ) { _ in
+                UIPasteboard.general.url = linkURL
+            }
+
+            let shareAction = UIAction(
+                title: "Share Link...",
+                image: UIImage(systemName: "square.and.arrow.up")
+            ) { _ in
+                Task { @MainActor in
+                    vm.shareURL(linkURL)
+                }
+            }
+
+            let downloadAction = UIAction(
+                title: "Download Linked File",
+                image: UIImage(systemName: "arrow.down.circle")
+            ) { _ in
+                Task { @MainActor in
+                    try? await vm.downloadDelegate?.handleDownloadRequest(
+                        url: linkURL,
+                        filename: nil,
+                        threadCount: 4,
+                        speedLimitBytesPerSecond: nil,
+                        headers: [:]
+                    )
+                }
+            }
+
+            return UIMenu(
+                title: linkURL.absoluteString,
+                children: [
+                    openAction,
+                    openInNewTabAction,
+                    openInPrivateTabAction,
+                    copyAction,
+                    shareAction,
+                    downloadAction
+                ]
+            )
+        }
+
+        completionHandler(config)
+    }
+#endif
 
 
 

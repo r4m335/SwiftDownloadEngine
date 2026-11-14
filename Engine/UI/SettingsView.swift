@@ -51,6 +51,13 @@ public struct SettingsView: View {
     @State private var selectedSearchEngine: BrowserSearchEngine = .duckDuckGo
     @State private var isShowingClearDataSheet: Bool = false
 
+    // Browser Navigation & Reader Experience (Milestone B.3)
+    @State private var browserHomepage: String = "https://duckduckgo.com"
+    @State private var restoreTabsOnLaunch: Bool = true
+    @State private var readerTheme: BrowserReaderTheme = .light
+    @State private var readerFontFamily: BrowserReaderFontFamily = .serif
+    @State private var readerFontSize: Double = 18.0
+
     // Download File Categorization (Phase 3 Milestone 3.3)
     @State private var isAutomaticCategorizationEnabled: Bool = true
     @State private var isOrganizingDownloads: Bool = false
@@ -384,16 +391,41 @@ public struct SettingsView: View {
                     }
                 }
 
-                // Section 9B: Browser & Search Engine (Workstream B Milestone B.1)
+                // Section 9B: Browser & Navigation Experience (Workstream B Milestone B.1 & B.3)
                 Section(
-                    header: Text("Browser & Search Engine"),
-                    footer: Text("Choose the default search engine used for address bar queries when a full URL is not entered.")
+                    header: Text("Browser & Navigation Experience"),
+                    footer: Text("Configure search, homepage, tab restoration, and Safari-style Reader Mode appearance.")
                 ) {
                     Picker("Default Search Engine", selection: $selectedSearchEngine) {
                         ForEach(BrowserSearchEngine.allCases) { engine in
                             Text(engine.displayName).tag(engine)
                         }
                     }
+
+                    HStack {
+                        Text("Homepage")
+                        Spacer()
+                        TextField("https://...", text: $browserHomepage)
+                            .multilineTextAlignment(.trailing)
+                            .autocapitalization(.none)
+                            .disableAutocorrection(true)
+                    }
+
+                    Toggle("Restore Tabs on App Startup", isOn: $restoreTabsOnLaunch)
+
+                    Picker("Reader Theme", selection: $readerTheme) {
+                        ForEach(BrowserReaderTheme.allCases) { theme in
+                            Text(theme.displayName).tag(theme)
+                        }
+                    }
+
+                    Picker("Reader Font", selection: $readerFontFamily) {
+                        ForEach(BrowserReaderFontFamily.allCases) { font in
+                            Text(font.displayName).tag(font)
+                        }
+                    }
+
+                    Stepper("Reader Font Size: \(Int(readerFontSize)) pt", value: $readerFontSize, in: 12...32, step: 1)
                 }
 
                 // Section 10: Download Scheduler (iOS Native URLSession & Local Notifications)
@@ -515,6 +547,11 @@ public struct SettingsView: View {
         self.cookiePolicy = settings.cookiePolicy
         self.isPopupBlockerEnabled = settings.isPopupBlockerEnabled
         self.selectedSearchEngine = settings.browserSearchEngine
+        self.browserHomepage = settings.browserHomepage
+        self.restoreTabsOnLaunch = settings.restoreTabsOnLaunch
+        self.readerTheme = settings.readerTheme
+        self.readerFontFamily = settings.readerFontFamily
+        self.readerFontSize = settings.readerFontSize
         self.isAutomaticCategorizationEnabled = settings.isAutomaticCategorizationEnabled
 
         if let rule = viewModel.scheduleRules.first {
@@ -560,7 +597,12 @@ public struct SettingsView: View {
             customCategoryFolders: viewModel.appSettings.customCategoryFolders,
             defaultDownloadDirectoryBookmark: viewModel.appSettings.defaultDownloadDirectoryBookmark,
             downloadSortOrder: viewModel.appSettings.downloadSortOrder,
-            browserSearchEngine: selectedSearchEngine
+            browserSearchEngine: selectedSearchEngine,
+            browserHomepage: browserHomepage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "https://duckduckgo.com" : browserHomepage,
+            restoreTabsOnLaunch: restoreTabsOnLaunch,
+            readerTheme: readerTheme,
+            readerFontFamily: readerFontFamily,
+            readerFontSize: readerFontSize
         )
 
         var currentRule = viewModel.scheduleRules.first ?? ScheduleRule()

@@ -46,10 +46,46 @@ public enum BrowserCookiePolicy: String, CaseIterable, Identifiable, Codable, Se
     }
 }
 
+/// Color themes available for Safari-style Reader Mode (Milestone B.3).
+public enum BrowserReaderTheme: String, CaseIterable, Identifiable, Codable, Sendable {
+    case light = "light"
+    case sepia = "sepia"
+    case gray = "gray"
+    case dark = "dark"
+
+    public var id: String { rawValue }
+
+    public var displayName: String {
+        switch self {
+        case .light: return "Light"
+        case .sepia: return "Sepia"
+        case .gray: return "Gray"
+        case .dark: return "Dark"
+        }
+    }
+}
+
+/// Font families available for Safari-style Reader Mode (Milestone B.3).
+public enum BrowserReaderFontFamily: String, CaseIterable, Identifiable, Codable, Sendable {
+    case serif = "serif"
+    case sansSerif = "sansSerif"
+    case monospace = "monospace"
+
+    public var id: String { rawValue }
+
+    public var displayName: String {
+        switch self {
+        case .serif: return "Serif (Georgia / New York)"
+        case .sansSerif: return "Sans-Serif (System / SF)"
+        case .monospace: return "Monospace (SF Mono / Menlo)"
+        }
+    }
+}
+
 /// Codable user-facing preferences stored in UserDefaults (@AppStorage).
 /// Features a `version` field for seamless migrations across app updates.
 public struct AppSettings: Codable, Sendable, Equatable {
-    public static let currentVersion: Int = 6
+    public static let currentVersion: Int = 7
     public static let userDefaultsKey = "com.r4m335.SwiftDownloadEngine.AppSettings"
 
     public var version: Int
@@ -88,6 +124,13 @@ public struct AppSettings: Codable, Sendable, Equatable {
     // Browser Search Engine & Navigation (Workstream B Milestone B.1)
     public var browserSearchEngine: BrowserSearchEngine
 
+    // Browser Navigation & Reader Experience (Workstream B Milestone B.3)
+    public var browserHomepage: String
+    public var restoreTabsOnLaunch: Bool
+    public var readerTheme: BrowserReaderTheme
+    public var readerFontFamily: BrowserReaderFontFamily
+    public var readerFontSize: Double
+
     public static let `default` = AppSettings(
         version: currentVersion,
         maxConcurrentDownloads: 3,
@@ -115,7 +158,12 @@ public struct AppSettings: Codable, Sendable, Equatable {
         customCategoryFolders: [:],
         defaultDownloadDirectoryBookmark: nil,
         downloadSortOrder: .dateAddedDesc,
-        browserSearchEngine: .duckDuckGo
+        browserSearchEngine: .duckDuckGo,
+        browserHomepage: "https://duckduckgo.com",
+        restoreTabsOnLaunch: true,
+        readerTheme: .light,
+        readerFontFamily: .serif,
+        readerFontSize: 18.0
     )
 
     public init(
@@ -145,7 +193,12 @@ public struct AppSettings: Codable, Sendable, Equatable {
         customCategoryFolders: [String: String] = [:],
         defaultDownloadDirectoryBookmark: Data? = nil,
         downloadSortOrder: DownloadSortOrder = .dateAddedDesc,
-        browserSearchEngine: BrowserSearchEngine = .duckDuckGo
+        browserSearchEngine: BrowserSearchEngine = .duckDuckGo,
+        browserHomepage: String = "https://duckduckgo.com",
+        restoreTabsOnLaunch: Bool = true,
+        readerTheme: BrowserReaderTheme = .light,
+        readerFontFamily: BrowserReaderFontFamily = .serif,
+        readerFontSize: Double = 18.0
     ) {
         self.version = version
         self.maxConcurrentDownloads = max(1, maxConcurrentDownloads)
@@ -174,6 +227,11 @@ public struct AppSettings: Codable, Sendable, Equatable {
         self.defaultDownloadDirectoryBookmark = defaultDownloadDirectoryBookmark
         self.downloadSortOrder = downloadSortOrder
         self.browserSearchEngine = browserSearchEngine
+        self.browserHomepage = browserHomepage
+        self.restoreTabsOnLaunch = restoreTabsOnLaunch
+        self.readerTheme = readerTheme
+        self.readerFontFamily = readerFontFamily
+        self.readerFontSize = readerFontSize
     }
 
     public init(from decoder: Decoder) throws {
@@ -205,6 +263,11 @@ public struct AppSettings: Codable, Sendable, Equatable {
         self.defaultDownloadDirectoryBookmark = try container.decodeIfPresent(Data.self, forKey: .defaultDownloadDirectoryBookmark)
         self.downloadSortOrder = try container.decodeIfPresent(DownloadSortOrder.self, forKey: .downloadSortOrder) ?? .dateAddedDesc
         self.browserSearchEngine = try container.decodeIfPresent(BrowserSearchEngine.self, forKey: .browserSearchEngine) ?? .duckDuckGo
+        self.browserHomepage = try container.decodeIfPresent(String.self, forKey: .browserHomepage) ?? "https://duckduckgo.com"
+        self.restoreTabsOnLaunch = try container.decodeIfPresent(Bool.self, forKey: .restoreTabsOnLaunch) ?? true
+        self.readerTheme = try container.decodeIfPresent(BrowserReaderTheme.self, forKey: .readerTheme) ?? .light
+        self.readerFontFamily = try container.decodeIfPresent(BrowserReaderFontFamily.self, forKey: .readerFontFamily) ?? .serif
+        self.readerFontSize = try container.decodeIfPresent(Double.self, forKey: .readerFontSize) ?? 18.0
     }
 
     /// Resolves the effective subfolder name for a category.

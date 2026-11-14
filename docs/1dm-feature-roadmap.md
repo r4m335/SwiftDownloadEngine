@@ -379,8 +379,8 @@ The shared layer centralizes:
 | 5 | HLS/DASH & Torrent Swarm Streaming Integration (A.5) | **Completed** |
 | 6 | Browser Fundamentals & Tab Management (B.1) | **Completed** |
 | 7 | Privacy, Ad Blocking & Site Permissions (B.2) | **Completed** |
-| 8 | Reader Mode & Advanced Browser Features (B.3) | Next |
-| 9 | Unified Media Grabber Integration (B.4) | Pending |
+| 8 | Reader Mode & Advanced Browser Features (B.3) | **Completed** |
+| 9 | Unified Media Grabber Integration (B.4) | Next |
 | 10 | End-to-End Integration & Physical Hardware Verification | Pending |
 
 ---
