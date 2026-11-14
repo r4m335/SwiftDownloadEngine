@@ -125,6 +125,10 @@ public struct LIDPlayerView: View {
     @State private var showBrightnessHUD: Bool = false
     @State private var volumeLevel: Double = 1.0
     @State private var showVolumeHUD: Bool = false
+    @State private var gestureStartBrightness: Double = 0.5
+    @State private var gestureStartVolume: Double = 1.0
+    @State private var isDraggingBrightness: Bool = false
+    @State private var isDraggingVolume: Bool = false
     @State private var seekGestureOffset: Double = 0.0
     @State private var showSeekHUD: Bool = false
     @State private var seekHUDText: String = ""
@@ -203,14 +207,19 @@ public struct LIDPlayerView: View {
                         }
                     }
             )
-            .onTapGesture {
-                if !isControlsLocked {
-                    toggleControlsVisibility()
-                }
-            }
             #else
             fallbackView
             #endif
+
+            // Loading / Buffering Spinner
+            if engine.playbackState.isLoading || engine.playbackState.isBuffering {
+                loadingOverlayView
+            }
+
+            // Error Overlay View (Displays real errors with prominent Close button)
+            if case .failed(let error) = engine.playbackState {
+                errorOverlayView(error: error)
+            }
 
             // Subtitle Display Overlay
             if let cueText = engine.trackManager.activeCueText, !cueText.isEmpty {
@@ -230,8 +239,8 @@ public struct LIDPlayerView: View {
                 .allowsHitTesting(false)
             }
 
-            // Gesture Detection Layer (Disabled when locked)
-            if !isControlsLocked {
+            // Gesture Detection Layer (Disabled when locked or in error state)
+            if !isControlsLocked && !engine.playbackState.isFailed {
                 gestureOverlayView
             }
 
@@ -239,9 +248,31 @@ public struct LIDPlayerView: View {
             hudOverlayView
 
             // Controls Overlay
-            if showControls && !isControlsLocked {
+            if showControls && !isControlsLocked && !engine.playbackState.isFailed {
                 controlsOverlayView
                     .transition(.opacity)
+            }
+
+            // Subtle fallback close button when controls are auto-hidden (so the user is never trapped)
+            if !showControls && !isControlsLocked && !engine.playbackState.isFailed {
+                VStack {
+                    HStack {
+                        Button {
+                            dismiss()
+                        } label: {
+                            Image(systemName: "xmark")
+                                .font(.system(size: 13, weight: .bold))
+                                .foregroundColor(.white.opacity(0.85))
+                                .padding(9)
+                                .background(Color.black.opacity(0.45))
+                                .clipShape(Circle())
+                        }
+                        .padding(.leading, 18)
+                        .padding(.top, 18)
+                        Spacer()
+                    }
+                    Spacer()
+                }
             }
 
             // Floating Lock / Unlock Button when locked
@@ -276,10 +307,18 @@ public struct LIDPlayerView: View {
             }
         }
         .onAppear {
+            #if canImport(UIKit)
+            brightnessLevel = Double(UIScreen.main.brightness)
+            #endif
+            volumeLevel = Double(engine.volume)
             engine.load(source: source, autoPlay: true, resumeFromHistory: true)
             resetControlsTimer()
         }
         .onDisappear {
+            if isLongPressingSpeedBoost {
+                isLongPressingSpeedBoost = false
+                engine.setPlaybackSpeed(previousSpeedBeforeBoost)
+            }
             engine.stop()
             controlsTimer?.invalidate()
         }
@@ -291,77 +330,182 @@ public struct LIDPlayerView: View {
         }
     }
 
+    // MARK: - Loading & Error Overlays
+
+    private var loadingOverlayView: some View {
+        VStack(spacing: 12) {
+            ProgressView()
+                .progressViewStyle(CircularProgressViewStyle(tint: .white))
+                .scaleEffect(1.3)
+            Text(engine.playbackState.isBuffering ? "Buffering..." : "Loading media...")
+                .font(.caption)
+                .foregroundColor(.white.opacity(0.8))
+        }
+        .padding(20)
+        .background(Color.black.opacity(0.6))
+        .cornerRadius(12)
+        .allowsHitTesting(false)
+    }
+
+    private func errorOverlayView(error: String) -> some View {
+        VStack(spacing: 16) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 42))
+                .foregroundColor(.yellow)
+            Text("Playback Error")
+                .font(.headline)
+                .foregroundColor(.white)
+            Text(error)
+                .font(.subheadline)
+                .foregroundColor(.white.opacity(0.8))
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 20)
+            HStack(spacing: 16) {
+                Button {
+                    engine.load(source: source, autoPlay: true, resumeFromHistory: false)
+                } label: {
+                    Label("Retry", systemImage: "arrow.clockwise")
+                        .font(.subheadline.bold())
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 8)
+                        .background(Color.white.opacity(0.2))
+                        .cornerRadius(8)
+                }
+                Button {
+                    dismiss()
+                } label: {
+                    Label("Close Player", systemImage: "xmark")
+                        .font(.subheadline.bold())
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 8)
+                        .background(Color.red.opacity(0.8))
+                        .cornerRadius(8)
+                }
+            }
+        }
+        .padding(24)
+        .background(Color.black.opacity(0.88))
+        .cornerRadius(16)
+        .padding(32)
+    }
+
     // MARK: - Gesture Overlay Layer
 
     private var gestureOverlayView: some View {
         GeometryReader { proxy in
-            HStack(spacing: 0) {
-                // Left Half: Brightness Swipe & Double-Tap Rewind
+            ZStack {
+                // Surface tap: Tapping anywhere on the video toggles controls visibility
                 Color.clear
                     .contentShape(Rectangle())
-                    .gesture(
-                        DragGesture(minimumDistance: 15)
-                            .onChanged { value in
-                                showControls = false
-                                showBrightnessHUD = true
-                                let delta = -Double(value.translation.height) / Double(proxy.size.height)
-                                brightnessLevel = max(0.0, min(1.0, brightnessLevel + delta * 0.05))
-                                #if canImport(UIKit)
-                                UIScreen.main.brightness = CGFloat(brightnessLevel)
-                                #endif
-                            }
-                            .onEnded { _ in
-                                DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
-                                    showBrightnessHUD = false
-                                }
-                            }
-                    )
-                    .simultaneousGesture(
-                        TapGesture(count: 2).onEnded {
-                            engine.seekBy(offsetSeconds: -10)
-                            showTemporaryHUD("⏪ 10s")
-                        }
-                    )
+                    .onTapGesture {
+                        guard !isControlsLocked else { return }
+                        toggleControlsVisibility()
+                    }
 
-                // Right Half: Volume Swipe & Double-Tap Forward
-                Color.clear
-                    .contentShape(Rectangle())
-                    .gesture(
-                        DragGesture(minimumDistance: 15)
-                            .onChanged { value in
-                                showControls = false
-                                showVolumeHUD = true
-                                let delta = -Double(value.translation.height) / Double(proxy.size.height)
-                                volumeLevel = max(0.0, min(1.0, volumeLevel + delta * 0.05))
-                                engine.setVolume(Float(volumeLevel))
-                            }
-                            .onEnded { _ in
-                                DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
-                                    showVolumeHUD = false
+                // 3-Zone Interaction Layout:
+                // Left 45%: Brightness swipe + Double-tap rewind
+                // Center 10%: Deliberate Long-press 2× speed boost
+                // Right 45%: Volume swipe + Double-tap forward
+                HStack(spacing: 0) {
+                    // Left 45%: Brightness
+                    Color.clear
+                        .frame(width: proxy.size.width * 0.45)
+                        .contentShape(Rectangle())
+                        .gesture(
+                            DragGesture(minimumDistance: 15)
+                                .onChanged { value in
+                                    guard !isControlsLocked else { return }
+                                    if !isDraggingBrightness {
+                                        isDraggingBrightness = true
+                                        #if canImport(UIKit)
+                                        gestureStartBrightness = Double(UIScreen.main.brightness)
+                                        #else
+                                        gestureStartBrightness = brightnessLevel
+                                        #endif
+                                    }
+                                    showControls = false
+                                    showBrightnessHUD = true
+                                    let delta = -Double(value.translation.height) / Double(proxy.size.height * 0.7)
+                                    let newLevel = max(0.0, min(1.0, gestureStartBrightness + delta))
+                                    brightnessLevel = newLevel
+                                    #if canImport(UIKit)
+                                    UIScreen.main.brightness = CGFloat(newLevel)
+                                    #endif
                                 }
+                                .onEnded { _ in
+                                    isDraggingBrightness = false
+                                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                                        showBrightnessHUD = false
+                                    }
+                                }
+                        )
+                        .simultaneousGesture(
+                            TapGesture(count: 2).onEnded {
+                                guard !isControlsLocked else { return }
+                                engine.seekBy(offsetSeconds: -10)
+                                showTemporaryHUD("⏪ 10s")
                             }
-                    )
-                    .simultaneousGesture(
-                        TapGesture(count: 2).onEnded {
-                            engine.seekBy(offsetSeconds: 10)
-                            showTemporaryHUD("⏩ 10s")
-                        }
-                    )
+                        )
+
+                    // Center 10%: Dedicated intentional Long-press for 2× Speed Boost
+                    Color.clear
+                        .frame(width: proxy.size.width * 0.10)
+                        .contentShape(Rectangle())
+                        .gesture(
+                            LongPressGesture(minimumDuration: 0.5)
+                                .onChanged { _ in
+                                    guard !isControlsLocked && !isDraggingBrightness && !isDraggingVolume else { return }
+                                    if !isLongPressingSpeedBoost {
+                                        isLongPressingSpeedBoost = true
+                                        previousSpeedBeforeBoost = engine.playbackSpeed
+                                        engine.setPlaybackSpeed(.speed2_00)
+                                    }
+                                }
+                                .onEnded { _ in
+                                    if isLongPressingSpeedBoost {
+                                        isLongPressingSpeedBoost = false
+                                        engine.setPlaybackSpeed(previousSpeedBeforeBoost)
+                                    }
+                                }
+                        )
+
+                    // Right 45%: Volume
+                    Color.clear
+                        .frame(width: proxy.size.width * 0.45)
+                        .contentShape(Rectangle())
+                        .gesture(
+                            DragGesture(minimumDistance: 15)
+                                .onChanged { value in
+                                    guard !isControlsLocked else { return }
+                                    if !isDraggingVolume {
+                                        isDraggingVolume = true
+                                        gestureStartVolume = Double(engine.volume)
+                                    }
+                                    showControls = false
+                                    showVolumeHUD = true
+                                    let delta = -Double(value.translation.height) / Double(proxy.size.height * 0.7)
+                                    let newLevel = max(0.0, min(1.0, gestureStartVolume + delta))
+                                    volumeLevel = newLevel
+                                    engine.setVolume(Float(newLevel))
+                                }
+                                .onEnded { _ in
+                                    isDraggingVolume = false
+                                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                                        showVolumeHUD = false
+                                    }
+                                }
+                        )
+                        .simultaneousGesture(
+                            TapGesture(count: 2).onEnded {
+                                guard !isControlsLocked else { return }
+                                engine.seekBy(offsetSeconds: 10)
+                                showTemporaryHUD("⏩ 10s")
+                            }
+                        )
+                }
             }
-            .simultaneousGesture(
-                LongPressGesture(minimumDuration: 0.6)
-                    .onChanged { _ in
-                        if !isLongPressingSpeedBoost {
-                            isLongPressingSpeedBoost = true
-                            previousSpeedBeforeBoost = engine.playbackSpeed
-                            engine.setPlaybackSpeed(.speed2_00)
-                        }
-                    }
-                    .onEnded { _ in
-                        isLongPressingSpeedBoost = false
-                        engine.setPlaybackSpeed(previousSpeedBeforeBoost)
-                    }
-            )
         }
     }
 
@@ -871,7 +1015,12 @@ public struct LIDPlayerView: View {
     }
 
     private func dismiss() {
+        if isLongPressingSpeedBoost {
+            isLongPressingSpeedBoost = false
+            engine.setPlaybackSpeed(previousSpeedBeforeBoost)
+        }
         engine.stop()
+        controlsTimer?.invalidate()
         if let onDismiss = onDismiss {
             onDismiss()
         } else {

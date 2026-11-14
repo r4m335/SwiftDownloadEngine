@@ -30,8 +30,10 @@ public final class LIDPlaybackEngine: NSObject, ObservableObject {
     /// Optional reference to the BitTorrent engine for sequential swarm streaming.
     public var torrentEngine: TorrentEngine?
 
+    private var temporaryManifestURL: URL? = nil
+
     #if canImport(AVFoundation)
-    public private(set) var player: AVPlayer?
+    @Published public private(set) var player: AVPlayer? = nil
     private var playerItem: AVPlayerItem?
     private var timeObserverToken: Any?
     private var statusObserver: NSKeyValueObservation?
@@ -111,6 +113,44 @@ public final class LIDPlaybackEngine: NSObject, ObservableObject {
     }
     #endif
 
+    // MARK: - MPEG-TS Container Inspection & Wrapping
+
+    /// Validates that the file begins with the standard MPEG-TS sync byte (0x47).
+    nonisolated public static func validateTSHeader(url: URL) -> Bool {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return false }
+        defer { try? handle.close() }
+        guard let data = try? handle.read(upToCount: 188), !data.isEmpty else { return false }
+        return data.first == 0x47
+    }
+
+    /// Generates a local single-segment HLS manifest (.m3u8) wrapper in the same directory as the .ts file
+    /// allowing AVFoundation's native HLS pipeline to demux and decode MPEG-TS on iOS.
+    private func generateTSManifestWrapper(for tsURL: URL) -> URL? {
+        do {
+            let directory = tsURL.deletingLastPathComponent()
+            let manifestName = ".\(tsURL.deletingPathExtension().lastPathComponent)_wrapper_\(UUID().uuidString.prefix(8)).m3u8"
+            let manifestURL = directory.appendingPathComponent(manifestName)
+            let relativeTSName = tsURL.lastPathComponent
+
+            let m3u8 = """
+            #EXTM3U
+            #EXT-X-VERSION:3
+            #EXT-X-TARGETDURATION:86400
+            #EXT-X-MEDIA-SEQUENCE:0
+            #EXTINF:86400.0,
+            \(relativeTSName)
+            #EXT-X-ENDLIST
+            """
+            try m3u8.write(to: manifestURL, atomically: true, encoding: .utf8)
+            self.temporaryManifestURL = manifestURL
+            PipelineLogger.shared.log("[LIDPlaybackEngine] Generated local TS playlist wrapper: \(manifestURL.path)")
+            return manifestURL
+        } catch {
+            PipelineLogger.shared.log("[LIDPlaybackEngine] Failed to write TS playlist wrapper: \(error.localizedDescription)")
+            return nil
+        }
+    }
+
     /// Configures the shared BitTorrent engine instance for swarm streaming.
     public func configure(torrentEngine: TorrentEngine) {
         self.torrentEngine = torrentEngine
@@ -128,6 +168,21 @@ public final class LIDPlaybackEngine: NSObject, ObservableObject {
         self.metadata = LIDMediaMetadata(title: source.title)
         self.streamContext = LIDStreamContextInfo(isLive: false)
         self.trackManager.reset()
+
+        // Validate local media file existence and container header
+        if case .localFile(let url, _) = source {
+            guard FileManager.default.fileExists(atPath: url.path) else {
+                self.playbackState = .failed(error: "Media file does not exist on disk: \(url.lastPathComponent)")
+                return
+            }
+
+            if url.pathExtension.lowercased() == "ts" {
+                if !Self.validateTSHeader(url: url) {
+                    self.playbackState = .failed(error: "File is not a valid MPEG-2 Transport Stream (missing 0x47 sync header).")
+                    return
+                }
+            }
+        }
 
         #if os(iOS) && canImport(AVFoundation)
         if autoPlay {
@@ -178,7 +233,28 @@ public final class LIDPlaybackEngine: NSObject, ObservableObject {
             startSwarmMonitoring(infoHash: infoHash)
 
         case .localFile(let url, _), .partialDownload(let url, _, _):
-            asset = AVURLAsset(url: url, options: options)
+            guard FileManager.default.fileExists(atPath: url.path) else {
+                self.playbackState = .failed(error: "Media file does not exist on disk: \(url.lastPathComponent)")
+                return
+            }
+
+            let ext = url.pathExtension.lowercased()
+            if ext == "ts" {
+                // Inspect TS container header (0x47 sync byte)
+                if !Self.validateTSHeader(url: url) {
+                    self.playbackState = .failed(error: "File is not a valid MPEG-2 Transport Stream (missing 0x47 sync header).")
+                    return
+                }
+
+                // AVFoundation on iOS requires an HLS playlist wrapper (.m3u8) to demux MPEG-TS containers reliably.
+                if let manifestURL = generateTSManifestWrapper(for: url) {
+                    asset = AVURLAsset(url: manifestURL, options: options)
+                } else {
+                    asset = AVURLAsset(url: url, options: options)
+                }
+            } else {
+                asset = AVURLAsset(url: url, options: options)
+            }
         }
 
         let item = AVPlayerItem(asset: asset)
@@ -223,6 +299,7 @@ public final class LIDPlaybackEngine: NSObject, ObservableObject {
         #if os(iOS)
         Self.configureAudioSession()
         #endif
+        player.play()
         player.rate = Float(playbackSpeed.rawValue)
         playbackState = .playing
         if let source = currentSource {
@@ -362,6 +439,10 @@ public final class LIDPlaybackEngine: NSObject, ObservableObject {
         self.player = nil
         self.playerItem = nil
         #endif
+        if let temp = temporaryManifestURL {
+            try? FileManager.default.removeItem(at: temp)
+            self.temporaryManifestURL = nil
+        }
         self.playbackState = .idle
         self.streamContext = .empty
         self.currentSource = nil
@@ -386,6 +467,12 @@ public final class LIDPlaybackEngine: NSObject, ObservableObject {
                     self.durationSeconds = dur
                     self.extractMetadata(from: observedItem, title: source.title)
                     self.trackManager.populateTracks(from: observedItem)
+
+                    // Track validation: if non-live stream has no tracks, report error instead of black screen
+                    if observedItem.tracks.isEmpty && !source.isLive {
+                        self.playbackState = .failed(error: "No playable audio or video tracks could be found in '\(source.title)'.")
+                        return
+                    }
 
                     let isLive = observedItem.duration.isIndefinite
                     self.streamContext.isLive = isLive
@@ -416,7 +503,10 @@ public final class LIDPlaybackEngine: NSObject, ObservableObject {
                     }
 
                 case .failed:
-                    let msg = observedItem.error?.localizedDescription ?? "Playback failed."
+                    var msg = observedItem.error?.localizedDescription ?? "Playback failed."
+                    if case .localFile(let url, _) = source, url.pathExtension.lowercased() == "ts" {
+                        msg = "MPEG-2 Transport Stream (.ts) could not be decoded. The file may contain codecs unsupported by iOS AVFoundation (such as legacy MPEG-2 video or AC-3 audio)."
+                    }
                     self.playbackState = .failed(error: msg)
 
                 case .unknown:

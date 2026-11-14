@@ -161,4 +161,80 @@ final class LIDPlaybackEngineTests: XCTestCase {
         engine.toggleMute()
         XCTAssertFalse(engine.isMuted)
     }
+
+    // MARK: - 6. MPEG-TS Container Validation & Error Handling
+
+    func testTSHeaderValidation() throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent("TSValidationTest_\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        // 1. Valid TS file (starts with 0x47 sync byte)
+        let validTSURL = tempDir.appendingPathComponent("valid.ts")
+        var validData = Data([0x47])
+        validData.append(Data(repeating: 0x00, count: 187))
+        try validData.write(to: validTSURL)
+        XCTAssertTrue(LIDPlaybackEngine.validateTSHeader(url: validTSURL), "File starting with 0x47 should be recognized as TS")
+
+        // 2. Corrupt / HTML error page saved with .ts extension (e.g. starts with "<!DOCTYPE html>")
+        let invalidTSURL = tempDir.appendingPathComponent("invalid.ts")
+        let htmlData = "<!DOCTYPE html><html><body>Error 404</body></html>".data(using: .utf8)!
+        try htmlData.write(to: invalidTSURL)
+        XCTAssertFalse(LIDPlaybackEngine.validateTSHeader(url: invalidTSURL), "Non-0x47 file must fail TS sync byte validation")
+
+        // 3. Non-existent file
+        let missingURL = tempDir.appendingPathComponent("missing.ts")
+        XCTAssertFalse(LIDPlaybackEngine.validateTSHeader(url: missingURL), "Missing file should fail validation")
+    }
+
+    // MARK: - 7. Playback State Helpers & Error Reporting
+
+    @MainActor
+    func testPlaybackStateHelpersAndFailureReporting() {
+        let idle = LIDPlaybackState.idle
+        XCTAssertFalse(idle.isLoading)
+        XCTAssertFalse(idle.isBuffering)
+        XCTAssertFalse(idle.isPlaying)
+        XCTAssertFalse(idle.isFailed)
+        XCTAssertNil(idle.errorMessage)
+
+        let loading = LIDPlaybackState.loading
+        XCTAssertTrue(loading.isLoading)
+        XCTAssertFalse(loading.isPlaying)
+        XCTAssertFalse(loading.isFailed)
+
+        let buffering = LIDPlaybackState.buffering(progress: 0.5)
+        XCTAssertTrue(buffering.isBuffering)
+        XCTAssertFalse(buffering.isFailed)
+
+        let failed = LIDPlaybackState.failed(error: "MPEG-2 Transport Stream (.ts) could not be decoded.")
+        XCTAssertTrue(failed.isFailed)
+        XCTAssertFalse(failed.isPlaying)
+        XCTAssertEqual(failed.errorMessage, "MPEG-2 Transport Stream (.ts) could not be decoded.")
+    }
+
+    // MARK: - 8. Local Missing & Invalid TS File Loading
+
+    @MainActor
+    func testLocalFileLoadingErrorHandling() {
+        let engine = LIDPlaybackEngine()
+
+        // 1. Load non-existent local file
+        let missingURL = URL(fileURLWithPath: "/tmp/non_existent_file_\(UUID().uuidString).mp4")
+        engine.load(source: .localFile(url: missingURL, title: "Missing Video"))
+        XCTAssertTrue(engine.playbackState.isFailed, "Loading missing local file must transition to failed state")
+        XCTAssertTrue(engine.playbackState.errorMessage?.contains("does not exist") ?? false)
+
+        // 2. Load invalid TS file
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent("LIDTestInvalidTS_\(UUID().uuidString)")
+        try? FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let invalidTS = tempDir.appendingPathComponent("corrupted.ts")
+        try? "Not a TS file".data(using: .utf8)?.write(to: invalidTS)
+
+        engine.load(source: .localFile(url: invalidTS, title: "Corrupted TS"))
+        XCTAssertTrue(engine.playbackState.isFailed, "Loading corrupted TS must transition to failed state")
+        XCTAssertTrue(engine.playbackState.errorMessage?.contains("0x47") ?? false)
+    }
 }

@@ -382,7 +382,29 @@ The shared layer centralizes:
 | 8 | Reader Mode & Advanced Browser Features (B.3) | **Completed** |
 | 9 | Unified Media Grabber Integration (B.4) | **Completed** |
 | 9.1 | iOS Runtime Readiness (Audio Session, Auto-PiP & Info.plist) | **Completed** |
+| 9.2 | Media Player Stability & Interaction Repair (.ts HLS wrapper, 1:1 gestures, published player, error & dismiss recovery) | **Completed** |
 | 10 | End-to-End Integration & Physical Hardware Verification | Next |
+
+---
+
+### Milestone 9.2: Media Player Stability & Interaction Repair [Completed]
+- **Objective:** Fix critical runtime defects in standalone MPEG-TS playback, gesture accumulation, speed boost interruption, published player reactivity, controls auto-hide trapping, and error reporting.
+- **Implementation Scope:**
+  - `Engine/Player/LIDPlaybackEngine.swift`:
+    - Standalone `.ts` Playback: Added `validateTSHeader` (0x47 sync byte verification) and dynamic local `.m3u8` single-segment HLS manifest wrapper (`generateTSManifestWrapper`) enabling AVFoundation's native HLS pipeline to demux and decode local TS files with hardware acceleration.
+    - Container & Codec Diagnostics: Detect unplayable/missing files or unsupported codecs (e.g. legacy MPEG-2 video or AC-3 audio) and report informative `LIDPlaybackState.failed(error:)` rather than a silent black screen.
+    - Reactive Player: Declared `@Published public private(set) var player: AVPlayer? = nil` so SwiftUI layer views receive player instance updates immediately upon creation.
+    - Explicit Play Lifecycle: Updated `play()` to call `player.play()` before setting rate.
+  - `Engine/UI/LIDPlayerView.swift`:
+    - 1:1 Gesture Tracking: Captured initial values (`gestureStartBrightness`, `gestureStartVolume`) at gesture initiation and computed smooth proportional progress relative to drag distance, eliminating cumulative runaway values.
+    - Intentional Speed Boost: Isolated 2× speed boost to a dedicated center-zone `LongPressGesture(minimumDuration: 0.5)` separated from vertical swipe areas; guarantees restoration to `previousSpeedBeforeBoost` upon release, dismissal, or view disappear.
+    - Robust Controls & Dismissal: Surface single-tap reliably toggles controls visibility; added prominent `errorOverlayView` with "Retry" and "Close Player" buttons, `loadingOverlayView` for buffering states, and subtle persistent close button when controls are auto-hidden.
+  - `Tests/LIDPlaybackEngineTests.swift`: Added test coverage for TS header validation, missing/corrupt TS loading error transitions, and playback state helper properties.
+- **Completion Criteria:**
+  - Standalone MPEG-TS files inspected and wrapped in local HLS manifests.
+  - Gestures calculate relative to initial touch state without runaway values.
+  - Controls and Close action remain 100% reachable under all states.
+  - Verified across 9 passing tests in `LIDPlaybackEngineTests`.
 
 ---
 

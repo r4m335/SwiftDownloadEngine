@@ -231,6 +231,21 @@ public enum LIDPlaybackState: Equatable, Sendable {
         if case .buffering = self { return true }
         return false
     }
+
+    public var isLoading: Bool {
+        if case .loading = self { return true }
+        return false
+    }
+
+    public var isFailed: Bool {
+        if case .failed = self { return true }
+        return false
+    }
+
+    public var errorMessage: String? {
+        if case .failed(let err) = self { return err }
+        return nil
+    }
 }
 
 /// Metadata extracted from active media asset.
