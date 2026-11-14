@@ -152,7 +152,7 @@ public struct AddDownloadView: View {
                 if let pURL = previewPlayURL {
                     LIDPlayerView(
                         url: pURL,
-                        title: filename.isEmpty ? (inspectedResult?.suggestedBaseFilename ?? "Media Preview") : filename
+                        title: baseFilename.isEmpty ? (inspectionResult?.suggestedBaseFilename ?? "Media Preview") : baseFilename
                     ) {
                         previewPlayURL = nil
                     }

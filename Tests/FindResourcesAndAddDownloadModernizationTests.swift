@@ -349,16 +349,39 @@ final class FindResourcesAndAddDownloadModernizationTests: XCTestCase {
 // MARK: - Mock URLProtocol for HEAD Rejection
 
 final class HEADRejectionMockProtocol: URLProtocol {
-    nonisolated(unsafe) static var receivedHEAD = false
-    nonisolated(unsafe) static var receivedGET = false
-    nonisolated(unsafe) static var mockMIMEType = "application/octet-stream"
-    nonisolated(unsafe) static var mockContentLength: Int64 = 1024
+    private static let stateLock = NSLock()
+    private static var _receivedHEAD = false
+    private static var _receivedGET = false
+    private static var _mockMIMEType = "application/octet-stream"
+    private static var _mockContentLength: Int64 = 1024
+
+    static var receivedHEAD: Bool {
+        get { stateLock.lock(); defer { stateLock.unlock() }; return _receivedHEAD }
+        set { stateLock.lock(); defer { stateLock.unlock() }; _receivedHEAD = newValue }
+    }
+
+    static var receivedGET: Bool {
+        get { stateLock.lock(); defer { stateLock.unlock() }; return _receivedGET }
+        set { stateLock.lock(); defer { stateLock.unlock() }; _receivedGET = newValue }
+    }
+
+    static var mockMIMEType: String {
+        get { stateLock.lock(); defer { stateLock.unlock() }; return _mockMIMEType }
+        set { stateLock.lock(); defer { stateLock.unlock() }; _mockMIMEType = newValue }
+    }
+
+    static var mockContentLength: Int64 {
+        get { stateLock.lock(); defer { stateLock.unlock() }; return _mockContentLength }
+        set { stateLock.lock(); defer { stateLock.unlock() }; _mockContentLength = newValue }
+    }
 
     static func reset() {
-        receivedHEAD = false
-        receivedGET = false
-        mockMIMEType = "application/octet-stream"
-        mockContentLength = 1024
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        _receivedHEAD = false
+        _receivedGET = false
+        _mockMIMEType = "application/octet-stream"
+        _mockContentLength = 1024
     }
 
     override class func canInit(with request: URLRequest) -> Bool {
