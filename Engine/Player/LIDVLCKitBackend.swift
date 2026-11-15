@@ -9,6 +9,38 @@ import Combine
 #if canImport(VLCKit)
 import VLCKit
 
+final class LIDVLCLoggingBridge: NSObject, VLCLogging {
+    static let shared = LIDVLCLoggingBridge()
+    var level: VLCLogLevel = .debug
+
+    func handleMessage(_ message: String, logLevel level: VLCLogLevel, context: VLCLogContext?) {
+        let module = context?.module ?? "core"
+        let modLower = module.lowercased()
+
+        let category: String
+        if modLower.contains("video") || modLower.contains("vout") || modLower.contains("gl") || modLower.contains("metal") || modLower.contains("display") {
+            category = "VideoRenderer"
+        } else if modLower.contains("codec") || modLower.contains("vt") || modLower.contains("avcodec") || modLower.contains("decoder") {
+            category = "VideoDecoder"
+        } else if modLower.contains("ts") || modLower.contains("demux") || modLower.contains("es") {
+            category = "PlayerEngine"
+        } else if level == .error {
+            category = "PlayerError"
+        } else {
+            return
+        }
+
+        let trimmed = message.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+
+        PipelineLogger.shared.logPlayer(
+            session: LIDPlaybackEngine.activeSessionIdForLogging,
+            category: category,
+            message: "[libVLC:\(module)] \(trimmed)"
+        )
+    }
+}
+
 /// Concrete VLCKit (libVLC 4.x) playback backend implementing `LIDMediaEngineProtocol`.
 /// Delivers universal container and codec demuxing (MPEG-TS, MKV, AVI, WebM, FLV, WMV, etc.)
 /// without reliance on Apple AVFoundation container limitations.
@@ -93,18 +125,22 @@ public final class LIDVLCKitBackend: NSObject, LIDMediaEngineProtocol, VLCMediaP
     private var currentLoadedSource: LIDPlayerSource?
     private weak var currentRenderingView: UIView?
     private var pendingResumePositionSeconds: Double? = nil
+    private var hasLoggedFirstFramePresentation: Bool = false
 
     public override init() {
         self.player = VLCMediaPlayer()
         super.init()
         self.player.delegate = self
+        VLCLibrary.sharedLibrary().loggers = [LIDVLCLoggingBridge.shared]
     }
 
     // MARK: - Playback Control APIs
 
     public func load(source: LIDPlayerSource, autoPlay: Bool) {
         stop()
+        self.player.media = nil
         self.currentLoadedSource = source
+        self.hasLoggedFirstFramePresentation = false
         self.playbackState = .loading
         delegate?.engineDidUpdateState(self, state: self.playbackState)
 
@@ -122,6 +158,9 @@ public final class LIDVLCKitBackend: NSObject, LIDMediaEngineProtocol, VLCMediaP
             return
         }
 
+        // Permit hardware decoding when supported, with automatic software decoding fallback
+        media.addOptions([":avcodec-hw": "any"])
+
         // Inject request headers if present
         if let reqContext = source.requestContext {
             if let ua = reqContext.userAgent {
@@ -132,8 +171,6 @@ public final class LIDVLCKitBackend: NSObject, LIDMediaEngineProtocol, VLCMediaP
             }
         }
 
-        self.player.media = media
-
         #if canImport(UIKit)
         if let view = currentRenderingView {
             if (self.player.drawable as? UIView) !== view {
@@ -142,10 +179,12 @@ public final class LIDVLCKitBackend: NSObject, LIDMediaEngineProtocol, VLCMediaP
             PipelineLogger.shared.logPlayer(
                 session: activeSessionId,
                 category: "VideoRenderer",
-                message: "VLCKit drawable verified in load() with view [\(Unmanaged.passUnretained(view).toOpaque())]"
+                message: "VLCKit drawable assigned before media in load() [\(Unmanaged.passUnretained(view).toOpaque())], viewBounds=\(view.bounds)"
             )
         }
         #endif
+
+        self.player.media = media
 
         if autoPlay {
             self.play()
@@ -178,10 +217,12 @@ public final class LIDVLCKitBackend: NSObject, LIDMediaEngineProtocol, VLCMediaP
 
     public func stop() {
         player.stop()
+        player.media = nil
         self.currentLoadedSource = nil
         self.currentPositionSeconds = 0.0
         self.durationSeconds = 0.0
         self.bufferedDurationSeconds = 0.0
+        self.hasLoggedFirstFramePresentation = false
         self.playbackState = .idle
         delegate?.engineDidUpdateState(self, state: .idle)
     }
@@ -318,11 +359,22 @@ public final class LIDVLCKitBackend: NSObject, LIDMediaEngineProtocol, VLCMediaP
                 #endif
                 let vTracks = self.player.videoTracks.count
                 let vSize = self.player.videoSize
+                let hasVOut = self.player.hasVideoOut
+                #if canImport(UIKit)
+                let subviewsCount = self.currentRenderingView?.subviews.count ?? 0
+                let containerBounds = self.currentRenderingView?.bounds ?? .zero
+                #else
+                let subviewsCount = 1
+                let containerBounds = CGRect(x: 0, y: 0, width: 848, height: 480)
+                #endif
                 PipelineLogger.shared.logPlayer(
                     session: self.activeSessionId,
                     category: "VideoRenderer",
-                    message: "VLCKit rendering active: videoTracks=\(vTracks), size=\(Int(vSize.width))x\(Int(vSize.height)), drawableAttached=\(self.hasAttachedDrawable)"
+                    message: "VLCKit rendering active: videoTracks=\(vTracks), size=\(Int(vSize.width))x\(Int(vSize.height)), hasVideoOut=\(hasVOut), drawableAttached=\(self.hasAttachedDrawable), subviews=\(subviewsCount), bounds=\(containerBounds)"
                 )
+                self.logVideoTrackDetails()
+                self.testSnapshotCapture()
+
                 if vTracks <= 0 {
                     PipelineLogger.shared.logPlayer(
                         session: self.activeSessionId,
@@ -332,13 +384,7 @@ public final class LIDVLCKitBackend: NSObject, LIDMediaEngineProtocol, VLCMediaP
                     Task { @MainActor [weak self] in
                         try? await Task.sleep(nanoseconds: 500_000_000)
                         guard let self = self, self.playbackState.isPlaying else { return }
-                        let delayedVTracks = self.player.videoTracks.count
-                        let delayedVSize = self.player.videoSize
-                        PipelineLogger.shared.logPlayer(
-                            session: self.activeSessionId,
-                            category: "VideoRenderer",
-                            message: "VLCKit delayed track check (+500ms): videoTracks=\(delayedVTracks), size=\(Int(delayedVSize.width))x\(Int(delayedVSize.height)), drawableAttached=\(self.hasAttachedDrawable)"
-                        )
+                        self.logVideoTrackDetails()
                     }
                 }
                 if let resume = self.pendingResumePositionSeconds, resume > 0 {
@@ -367,12 +413,99 @@ public final class LIDVLCKitBackend: NSObject, LIDMediaEngineProtocol, VLCMediaP
         }
     }
 
+    private func logVideoTrackDetails() {
+        let tracks = player.videoTracks
+        let hasVOut = player.hasVideoOut
+        let vSize = player.videoSize
+        PipelineLogger.shared.logPlayer(
+            session: activeSessionId,
+            category: "VideoDecoder",
+            message: "Video track details: count=\(tracks.count), hasVideoOut=\(hasVOut), videoSize=\(Int(vSize.width))x\(Int(vSize.height))"
+        )
+        for (idx, track) in tracks.enumerated() {
+            let codecName = track.codecName()
+            let c = track.codec
+            let c0 = Character(UnicodeScalar((c >> 24) & 0xFF) ?? " ")
+            let c1 = Character(UnicodeScalar((c >> 16) & 0xFF) ?? " ")
+            let c2 = Character(UnicodeScalar((c >> 8) & 0xFF) ?? " ")
+            let c3 = Character(UnicodeScalar(c & 0xFF) ?? " ")
+            let fourCC = "\(c0)\(c1)\(c2)\(c3)"
+            PipelineLogger.shared.logPlayer(
+                session: activeSessionId,
+                category: "VideoDecoder",
+                message: "Video track [\(idx)]: id='\(track.trackId)', codec='\(codecName)' [\(fourCC)], name='\(track.trackName)', desc='\(track.trackDescription ?? "")', isSelected=\(track.isSelected)"
+            )
+        }
+    }
+
+    private func testSnapshotCapture() {
+        #if canImport(UIKit)
+        let tempDir = NSTemporaryDirectory()
+        let snapPath = (tempDir as NSString).appendingPathComponent("lid_vlc_test_snap.png")
+        try? FileManager.default.removeItem(atPath: snapPath)
+        player.saveVideoSnapshot(at: snapPath, withWidth: 0, andHeight: 0)
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 1_200_000_000)
+            guard let self = self else { return }
+            let exists = FileManager.default.fileExists(atPath: snapPath)
+            let bytes = (try? FileManager.default.attributesOfItem(atPath: snapPath)[.size] as? Int64) ?? 0
+            PipelineLogger.shared.logPlayer(
+                session: self.activeSessionId,
+                category: "VideoRenderer",
+                message: "VLC snapshot test: fileGenerated=\(exists), bytes=\(bytes), hasVideoOut=\(self.player.hasVideoOut)"
+            )
+        }
+        #endif
+    }
+
+    nonisolated public func mediaPlayerTrackAdded(_ trackId: String, withType trackType: VLCMediaTrackType) {
+        Task { @MainActor [weak self] in
+            guard let self = self else { return }
+            PipelineLogger.shared.logPlayer(
+                session: self.activeSessionId,
+                category: "PlayerBackend",
+                message: "mediaPlayerTrackAdded: id=\(trackId), type=\(trackType.rawValue)"
+            )
+            if trackType.rawValue == 1 {
+                self.logVideoTrackDetails()
+            }
+        }
+    }
+
+    nonisolated public func mediaPlayerTrackSelected(_ trackType: VLCMediaTrackType, selectedId: String, unselectedId: String) {
+        Task { @MainActor [weak self] in
+            guard let self = self else { return }
+            PipelineLogger.shared.logPlayer(
+                session: self.activeSessionId,
+                category: "PlayerBackend",
+                message: "mediaPlayerTrackSelected: type=\(trackType.rawValue), selected=\(selectedId), unselected=\(unselectedId)"
+            )
+            if trackType.rawValue == 1 {
+                self.logVideoTrackDetails()
+            }
+        }
+    }
+
     nonisolated public func mediaPlayerTimeChanged(_ aNotification: Notification) {
         Task { @MainActor [weak self] in
             guard let self = self else { return }
             if let time = self.player.time.value?.doubleValue {
                 self.currentPositionSeconds = time / 1000.0
                 self.delegate?.engineDidUpdateTime(self, currentSeconds: self.currentPositionSeconds, durationSeconds: self.durationSeconds)
+
+                if !self.hasLoggedFirstFramePresentation && self.currentPositionSeconds > 0.3 {
+                    self.hasLoggedFirstFramePresentation = true
+                    #if canImport(UIKit)
+                    let subviewsCount = self.currentRenderingView?.subviews.count ?? 0
+                    let containerBounds = self.currentRenderingView?.bounds ?? .zero
+                    let hasVOut = self.player.hasVideoOut
+                    PipelineLogger.shared.logPlayer(
+                        session: self.activeSessionId,
+                        category: "VideoRenderer",
+                        message: "First frame presentation check (pos=\(String(format: "%.2f", self.currentPositionSeconds))s): hasVideoOut=\(hasVOut), containerBounds=\(containerBounds), subviewsCount=\(subviewsCount)"
+                    )
+                    #endif
+                }
             }
         }
     }

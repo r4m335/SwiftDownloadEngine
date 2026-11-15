@@ -95,6 +95,45 @@ public struct LIDNativePlayerLayerView: UIViewRepresentable {
     }
 }
 
+public final class LIDVLCRenderingContainerView: UIView {
+    public var onLayoutChange: ((CGRect, Int) -> Void)? = nil
+
+    public override init(frame: CGRect) {
+        super.init(frame: frame)
+        backgroundColor = .black
+        autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        clipsToBounds = true
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        backgroundColor = .black
+        autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        clipsToBounds = true
+    }
+
+    public override func didAddSubview(_ subview: UIView) {
+        super.didAddSubview(subview)
+        subview.frame = self.bounds
+        subview.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        PipelineLogger.shared.logPlayer(
+            session: LIDPlaybackEngine.activeSessionIdForLogging,
+            category: "VideoRenderer",
+            message: "LIDVLCRenderingContainerView didAddSubview: class=\(type(of: subview)), subviewFrame=\(subview.frame), containerBounds=\(self.bounds)"
+        )
+    }
+
+    public override func layoutSubviews() {
+        super.layoutSubviews()
+        for subview in subviews {
+            if subview.frame != self.bounds && self.bounds.width > 0 && self.bounds.height > 0 {
+                subview.frame = self.bounds
+            }
+        }
+        onLayoutChange?(self.bounds, subviews.count)
+    }
+}
+
 /// Native VLCKit rendering view representable bridging VLCMediaPlayer.drawable
 public struct LIDVLCPlayerLayerView: UIViewRepresentable {
     public let backend: LIDVLCKitBackend
@@ -103,15 +142,20 @@ public struct LIDVLCPlayerLayerView: UIViewRepresentable {
         self.backend = backend
     }
 
-    public func makeUIView(context: Context) -> UIView {
-        let view = UIView()
-        view.backgroundColor = .black
-        view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+    public func makeUIView(context: Context) -> LIDVLCRenderingContainerView {
+        let view = LIDVLCRenderingContainerView(frame: .zero)
+        view.onLayoutChange = { bounds, count in
+            PipelineLogger.shared.logPlayer(
+                session: LIDPlaybackEngine.activeSessionIdForLogging,
+                category: "VideoRenderer",
+                message: "ContainerView layoutSubviews: bounds=\(Int(bounds.width))x\(Int(bounds.height)), subviews=\(count)"
+            )
+        }
         backend.attachRenderingView(view)
         return view
     }
 
-    public func updateUIView(_ uiView: UIView, context: Context) {
+    public func updateUIView(_ uiView: LIDVLCRenderingContainerView, context: Context) {
         backend.attachRenderingView(uiView)
     }
 }
