@@ -69,11 +69,22 @@ public final class LIDVLCKitBackend: NSObject, LIDMediaEngineProtocol, VLCMediaP
     public private(set) var durationSeconds: Double = 0.0
     public private(set) var bufferedDurationSeconds: Double = 0.0
 
-    public var playbackSpeed: LIDPlaybackSpeed = .speed1_00 {
+    public var playbackRate: Double = 1.0 {
         didSet {
-            player.rate = playbackSpeed.rate
+            player.rate = Float(playbackRate)
         }
     }
+
+    public var playbackSpeed: LIDPlaybackSpeed {
+        get {
+            LIDPlaybackSpeed.fromRate(playbackRate)
+        }
+        set {
+            self.playbackRate = newValue.rawValue
+        }
+    }
+
+    public private(set) var subtitleDelaySeconds: Double = 0.0
 
     public var volume: Float {
         get {
@@ -147,8 +158,11 @@ public final class LIDVLCKitBackend: NSObject, LIDMediaEngineProtocol, VLCMediaP
         // 2. Instantiate a fresh VLCMediaPlayer instance for this session
         self.player = VLCMediaPlayer()
         self.player.delegate = self
-        self.player.rate = playbackSpeed.rate
+        self.player.rate = Float(playbackRate)
         self.player.audio?.volume = Int32(volume * 100.0)
+        if self.subtitleDelaySeconds != 0 {
+            self.player.currentVideoSubTitleDelay = Int(self.subtitleDelaySeconds * 1_000_000)
+        }
 
         LIDVLCLoggingBridge.activeSessionId = activeSessionId
         self.currentLoadedSource = source
@@ -312,9 +326,15 @@ public final class LIDVLCKitBackend: NSObject, LIDMediaEngineProtocol, VLCMediaP
     }
 
     public func setSubtitleDelay(seconds: Double) {
+        self.subtitleDelaySeconds = seconds
         // VLCKit delay is expressed in microseconds
         let microSeconds = Int(seconds * 1_000_000)
         player.currentVideoSubTitleDelay = microSeconds
+        PipelineLogger.shared.logPlayer(
+            session: activeSessionId,
+            category: "SubtitleSync",
+            message: "VLCKit subtitle delay set to \(String(format: "%+.2f", seconds))s (\(microSeconds) µs)"
+        )
     }
 
     public func addExternalSubtitle(url: URL) {
@@ -590,7 +610,9 @@ public final class LIDVLCKitBackend: NSObject, LIDMediaEngineProtocol {
     public private(set) var currentPositionSeconds: Double = 0.0
     public private(set) var durationSeconds: Double = 0.0
     public private(set) var bufferedDurationSeconds: Double = 0.0
+    public var playbackRate: Double = 1.0
     public var playbackSpeed: LIDPlaybackSpeed = .speed1_00
+    public private(set) var subtitleDelaySeconds: Double = 0.0
     public var volume: Float = 1.0
     public var isMuted: Bool = false
     public var supportsPictureInPicture: Bool { false }

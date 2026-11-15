@@ -21,7 +21,11 @@ public final class LIDPlaybackEngine: NSObject, ObservableObject, LIDMediaEngine
     @Published public private(set) var currentPositionSeconds: Double = 0.0
     @Published public private(set) var durationSeconds: Double = 0.0
     @Published public private(set) var bufferedDurationSeconds: Double = 0.0
+    @Published public private(set) var playbackRate: Double = 1.0
     @Published public private(set) var playbackSpeed: LIDPlaybackSpeed = .speed1_00
+    private var lastNonZeroPlaybackRate: Double = 1.0
+    private var isTemporarySpeedBoostActive: Bool = false
+    private var speedBeforeTemporaryBoost: Double = 1.0
     @Published public private(set) var aspectRatio: LIDAspectRatio = .original
     @Published public private(set) var metadata: LIDMediaMetadata = .empty
     @Published public private(set) var volume: Float = 1.0
@@ -296,6 +300,10 @@ public final class LIDPlaybackEngine: NSObject, ObservableObject, LIDMediaEngine
         #if os(iOS) && canImport(AVFoundation)
         Self.configureAudioSession()
         #endif
+        if playbackRate == 0.0 {
+            let restored = lastNonZeroPlaybackRate > 0 ? lastNonZeroPlaybackRate : 1.0
+            setPlaybackRate(restored)
+        }
         switch activeBackendType {
         case .vlcKit:
             vlcBackend.play()
@@ -310,6 +318,9 @@ public final class LIDPlaybackEngine: NSObject, ObservableObject, LIDMediaEngine
     @MainActor
     public func pause() {
         PipelineLogger.shared.logPlayer(session: currentSessionId, category: "PlayerEngine", message: "pause() triggered at \(currentPositionSeconds)s")
+        if isTemporarySpeedBoostActive {
+            cancelTemporarySpeedBoost()
+        }
         switch activeBackendType {
         case .vlcKit:
             vlcBackend.pause()
@@ -334,6 +345,9 @@ public final class LIDPlaybackEngine: NSObject, ObservableObject, LIDMediaEngine
     @MainActor
     public func stop() {
         PipelineLogger.shared.logPlayer(session: currentSessionId, category: "PlayerEngine", message: "stop() triggered")
+        if isTemporarySpeedBoostActive {
+            cancelTemporarySpeedBoost()
+        }
         cancelLoadingWatchdog()
         cancelRenderingWatchdog()
         saveCurrentPosition()
@@ -384,15 +398,71 @@ public final class LIDPlaybackEngine: NSObject, ObservableObject, LIDMediaEngine
     }
 
     @MainActor
-    public func setPlaybackSpeed(_ speed: LIDPlaybackSpeed) {
+    public func setPlaybackRate(_ rate: Double) {
+        let clamped = max(0.0, min(2.0, rate))
         PipelineLogger.shared.logPlayer(
             session: currentSessionId,
             category: "PlayerEngine",
-            message: "setPlaybackSpeed(\(speed.label))"
+            message: "setPlaybackRate(\(String(format: "%.2f", clamped))x)"
         )
-        self.playbackSpeed = speed
-        vlcBackend.playbackSpeed = speed
-        avBackend.playbackSpeed = speed
+        self.playbackRate = clamped
+        if clamped > 0.0 {
+            self.lastNonZeroPlaybackRate = clamped
+            self.playbackSpeed = LIDPlaybackSpeed.fromRate(clamped)
+            vlcBackend.playbackRate = clamped
+            avBackend.playbackRate = clamped
+            if playbackState == .paused {
+                play()
+            }
+        } else {
+            // Treat 0.0x as paused playback while preserving active speed
+            vlcBackend.playbackRate = 0.0
+            avBackend.playbackRate = 0.0
+            if playbackState == .playing {
+                pause()
+            }
+        }
+        updateNowPlaying()
+    }
+
+    @MainActor
+    public func setPlaybackSpeed(_ speed: LIDPlaybackSpeed) {
+        setPlaybackRate(speed.rawValue)
+    }
+
+    @MainActor
+    public func startTemporarySpeedBoost(rate: Double = 2.0) {
+        guard !isTemporarySpeedBoostActive else { return }
+        isTemporarySpeedBoostActive = true
+        speedBeforeTemporaryBoost = playbackRate > 0 ? playbackRate : (lastNonZeroPlaybackRate > 0 ? lastNonZeroPlaybackRate : 1.0)
+        let boostRate = min(2.0, max(0.25, rate))
+        PipelineLogger.shared.logPlayer(
+            session: currentSessionId,
+            category: "PlayerEngine",
+            message: "Temporary speed boost started: \(speedBeforeTemporaryBoost)x -> \(boostRate)x"
+        )
+        vlcBackend.playbackRate = boostRate
+        avBackend.playbackRate = boostRate
+        self.playbackRate = boostRate
+        if playbackState == .paused {
+            play()
+        }
+    }
+
+    @MainActor
+    public func cancelTemporarySpeedBoost() {
+        guard isTemporarySpeedBoostActive else { return }
+        isTemporarySpeedBoostActive = false
+        let restored = speedBeforeTemporaryBoost
+        PipelineLogger.shared.logPlayer(
+            session: currentSessionId,
+            category: "PlayerEngine",
+            message: "Temporary speed boost cancelled: restoring \(restored)x"
+        )
+        self.playbackRate = restored
+        self.playbackSpeed = LIDPlaybackSpeed.fromRate(restored)
+        vlcBackend.playbackRate = restored
+        avBackend.playbackRate = restored
         updateNowPlaying()
     }
 
@@ -460,8 +530,14 @@ public final class LIDPlaybackEngine: NSObject, ObservableObject, LIDMediaEngine
     @MainActor
     public func setSubtitleDelay(seconds: Double) {
         trackManager.subtitleDelay = seconds
-        activeBackend.setSubtitleDelay(seconds: seconds)
+        vlcBackend.setSubtitleDelay(seconds: seconds)
+        avBackend.setSubtitleDelay(seconds: seconds)
         trackManager.updatePosition(currentPositionSeconds)
+    }
+
+    @MainActor
+    public func adjustSubtitleDelay(by delta: Double) {
+        setSubtitleDelay(seconds: trackManager.subtitleDelay + delta)
     }
 
     // MARK: - Anonymous Subtitle Discovery & Search

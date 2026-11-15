@@ -257,9 +257,14 @@ public final class LIDTrackManager: ObservableObject {
         }
     }
 
-    /// Adjust subtitle delay by delta in seconds.
+    /// Adjust subtitle delay by delta in seconds (unrestricted positive or negative offset).
     public func adjustSubtitleDelay(by delta: Double) {
-        subtitleDelay = max(-5.0, min(5.0, subtitleDelay + delta))
+        subtitleDelay += delta
+    }
+
+    /// Set subtitle delay to an exact value in seconds.
+    public func setSubtitleDelay(_ delay: Double) {
+        subtitleDelay = delay
     }
 
     /// Update active cue for external subtitles based on current playback timestamp.

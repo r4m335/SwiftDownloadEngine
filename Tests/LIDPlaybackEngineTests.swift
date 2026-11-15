@@ -146,6 +146,27 @@ final class LIDPlaybackEngineTests: XCTestCase {
 
         engine.setPlaybackSpeed(.speed1_50)
         XCTAssertEqual(engine.playbackSpeed, .speed1_50)
+        XCTAssertEqual(engine.playbackRate, 1.50, accuracy: 0.001)
+
+        // Continuous numeric rate slider
+        engine.setPlaybackRate(1.37)
+        XCTAssertEqual(engine.playbackRate, 1.37, accuracy: 0.001)
+
+        // Temporary 2x speed boost and restoration
+        engine.startTemporarySpeedBoost(rate: 2.0)
+        XCTAssertEqual(engine.playbackRate, 2.0, accuracy: 0.001)
+        engine.cancelTemporarySpeedBoost()
+        XCTAssertEqual(engine.playbackRate, 1.37, accuracy: 0.001)
+
+        // 0.0x pause behavior
+        engine.setPlaybackRate(0.0)
+        XCTAssertEqual(engine.playbackRate, 0.0)
+
+        // Unrestricted subtitle delay on engine
+        engine.setSubtitleDelay(seconds: -15.0)
+        XCTAssertEqual(engine.subtitleDelay, -15.0, accuracy: 0.001)
+        engine.setSubtitleDelay(seconds: 15.0)
+        XCTAssertEqual(engine.subtitleDelay, 15.0, accuracy: 0.001)
 
         engine.setVolume(0.65)
         XCTAssertEqual(engine.volume, 0.65, accuracy: 0.001)

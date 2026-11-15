@@ -325,6 +325,12 @@ public enum LIDPlaybackSpeed: Double, CaseIterable, Sendable {
     public var rate: Float {
         Float(rawValue)
     }
+
+    /// Finds the closest discrete preset corresponding to an arbitrary numeric playback rate.
+    public static func fromRate(_ rate: Double) -> LIDPlaybackSpeed {
+        let sorted = allCases.sorted { abs($0.rawValue - rate) < abs($1.rawValue - rate) }
+        return sorted.first ?? .speed1_00
+    }
 }
 
 /// Video aspect ratio display modes.

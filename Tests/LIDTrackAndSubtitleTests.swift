@@ -93,11 +93,15 @@ final class LIDTrackAndSubtitleTests: XCTestCase {
             manager.adjustSubtitleDelay(by: -1.0)
             XCTAssertEqual(manager.subtitleDelay, -0.5, accuracy: 0.001)
 
-            // Delay bounds (-5.0 to +5.0)
+            // Unrestricted subtitle delay adjustments (negative and positive beyond ±5.0s)
             manager.adjustSubtitleDelay(by: 10.0)
-            XCTAssertEqual(manager.subtitleDelay, 5.0, accuracy: 0.001)
-            manager.adjustSubtitleDelay(by: -20.0)
-            XCTAssertEqual(manager.subtitleDelay, -5.0, accuracy: 0.001)
+            XCTAssertEqual(manager.subtitleDelay, 9.5, accuracy: 0.001)
+            manager.setSubtitleDelay(-15.0)
+            XCTAssertEqual(manager.subtitleDelay, -15.0, accuracy: 0.001)
+            manager.setSubtitleDelay(15.0)
+            XCTAssertEqual(manager.subtitleDelay, 15.0, accuracy: 0.001)
+            manager.adjustSubtitleDelay(by: -17.3)
+            XCTAssertEqual(manager.subtitleDelay, -2.3, accuracy: 0.001)
         }
     }
 

@@ -202,13 +202,16 @@ public struct LIDPlayerView: View {
     @State private var zoomScale: CGFloat = 1.0
 
     // Sheet presentations
+    @State private var showSpeedSheet: Bool = false
     @State private var showTrackSelectionSheet: Bool = false
     @State private var showSubtitleSyncSheet: Bool = false
     @State private var showSubtitleSearchSheet: Bool = false
     @State private var showDiagnosticsSheet: Bool = false
     @State private var externalSubtitlePathInput: String = ""
+    @State private var manualSubtitleDelayInput: String = ""
     @State private var showExternalSubtitlePrompt: Bool = false
     @State private var sessionId: String = String(UUID().uuidString.prefix(8).uppercased())
+    @State private var isHoldingSpeedBoost: Bool = false
 
     // Gesture state HUD overlays
     @State private var brightnessLevel: Double = 0.5
@@ -427,11 +430,18 @@ public struct LIDPlayerView: View {
                 category: "PlayerLifecycle",
                 message: "LIDPlayerView disappeared, stopping engine"
             )
+            if isHoldingSpeedBoost {
+                isHoldingSpeedBoost = false
+                engine.cancelTemporarySpeedBoost()
+            }
             engine.stop()
             #if canImport(UIKit)
             engine.vlcBackend.detachRenderingView()
             #endif
             controlsTimer?.invalidate()
+        }
+        .sheet(isPresented: $showSpeedSheet) {
+            speedAdjustmentSheetView
         }
         .sheet(isPresented: $showTrackSelectionSheet) {
             trackSelectionSheetView
@@ -513,10 +523,10 @@ public struct LIDPlayerView: View {
     private var gestureOverlayView: some View {
         GeometryReader { proxy in
             HStack(spacing: 0) {
-                // Left 50%: Brightness Drag + Double-tap Rewind (-10s) + Single-tap Controls
+                // Left 35%: Brightness Drag + Double-tap Rewind (-10s) + Single-tap Controls
                 Color.clear
                     .contentShape(Rectangle())
-                    .frame(width: proxy.size.width * 0.5)
+                    .frame(width: proxy.size.width * 0.35)
                     .gesture(
                         DragGesture(minimumDistance: 20)
                             .onChanged { value in
@@ -578,10 +588,56 @@ public struct LIDPlayerView: View {
                         toggleControlsVisibility()
                     }
 
-                // Right 50%: Volume Drag + Double-tap Forward (+10s) + Single-tap Controls
+                // Centre 30%: Dedicated YouTube-style Hold-for-2x Zone (Active only when controls hidden) + Single-tap Controls
                 Color.clear
                     .contentShape(Rectangle())
-                    .frame(width: proxy.size.width * 0.5)
+                    .frame(width: proxy.size.width * 0.30)
+                    .gesture(
+                        LongPressGesture(minimumDuration: 0.45)
+                            .sequenced(before: DragGesture(minimumDistance: 0))
+                            .onChanged { value in
+                                guard !isControlsLocked && !showControls && engine.playbackState.isPlaying else { return }
+                                switch value {
+                                case .second(true, _):
+                                    if !isHoldingSpeedBoost {
+                                        isHoldingSpeedBoost = true
+                                        engine.startTemporarySpeedBoost(rate: 2.0)
+                                        PipelineLogger.shared.logPlayer(
+                                            session: sessionId,
+                                            category: "PlayerGesture",
+                                            message: "Hold-for-2x activated in center zone"
+                                        )
+                                    }
+                                default:
+                                    break
+                                }
+                            }
+                            .onEnded { _ in
+                                if isHoldingSpeedBoost {
+                                    isHoldingSpeedBoost = false
+                                    engine.cancelTemporarySpeedBoost()
+                                    PipelineLogger.shared.logPlayer(
+                                        session: sessionId,
+                                        category: "PlayerGesture",
+                                        message: "Hold-for-2x released -> restored speed"
+                                    )
+                                }
+                            }
+                    )
+                    .onTapGesture(count: 1) {
+                        guard !isControlsLocked else { return }
+                        PipelineLogger.shared.logPlayer(
+                            session: sessionId,
+                            category: "PlayerGesture",
+                            message: "Single-tap centre zone -> toggle controls (was \(showControls))"
+                        )
+                        toggleControlsVisibility()
+                    }
+
+                // Right 35%: Volume Drag + Double-tap Forward (+10s) + Single-tap Controls
+                Color.clear
+                    .contentShape(Rectangle())
+                    .frame(width: proxy.size.width * 0.35)
                     .gesture(
                         DragGesture(minimumDistance: 20)
                             .onChanged { value in
@@ -644,6 +700,21 @@ public struct LIDPlayerView: View {
 
     private var hudOverlayView: some View {
         VStack {
+            if isHoldingSpeedBoost {
+                HStack(spacing: 6) {
+                    Image(systemName: "bolt.fill")
+                        .foregroundColor(.yellow)
+                    Text("2× Speed")
+                        .font(.system(size: 14, weight: .bold))
+                        .foregroundColor(.white)
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 8)
+                .background(Color.black.opacity(0.85))
+                .cornerRadius(20)
+                .padding(.top, 50)
+            }
+
             if showBrightnessHUD {
                 hudPill(icon: "sun.max.fill", label: "Brightness", value: brightnessLevel)
             }
@@ -701,7 +772,7 @@ public struct LIDPlayerView: View {
 
     private var controlsOverlayView: some View {
         VStack {
-            // Header Bar
+            // Header Bar: Video title and close button only
             HStack(spacing: 12) {
                 Button {
                     dismiss()
@@ -755,91 +826,6 @@ public struct LIDPlayerView: View {
                 }
 
                 Spacer()
-
-                // Picture-in-Picture Button
-                #if canImport(AVFoundation) && canImport(UIKit) && canImport(AVKit)
-                if engine.supportsPictureInPicture {
-                    Button {
-                        layerViewRef?.togglePiP()
-                    } label: {
-                        Image(systemName: "pip.enter")
-                            .font(.system(size: 15, weight: .semibold))
-                            .foregroundColor(.white)
-                            .padding(6)
-                            .background(Color.black.opacity(0.4))
-                            .clipShape(Circle())
-                    }
-                }
-                #endif
-
-                // Subtitles & Audio Track Selector
-                Button {
-                    showTrackSelectionSheet = true
-                } label: {
-                    Image(systemName: "captions.bubble.fill")
-                        .font(.system(size: 15, weight: .semibold))
-                        .foregroundColor(.white)
-                        .padding(6)
-                        .background(Color.black.opacity(0.4))
-                        .clipShape(Circle())
-                }
-
-                // Subtitle Delay / Sync Adjuster
-                Button {
-                    showSubtitleSyncSheet = true
-                } label: {
-                    Image(systemName: "timer")
-                        .font(.system(size: 15, weight: .semibold))
-                        .foregroundColor(.white)
-                        .padding(6)
-                        .background(Color.black.opacity(0.4))
-                        .clipShape(Circle())
-                }
-
-                // Lock Controls Button
-                Button {
-                    withAnimation {
-                        isControlsLocked = true
-                        showControls = false
-                    }
-                    PipelineLogger.shared.logPlayer(
-                        session: sessionId,
-                        category: "PlayerGesture",
-                        message: "Controls locked by user"
-                    )
-                } label: {
-                    Image(systemName: "lock")
-                        .font(.system(size: 14, weight: .semibold))
-                        .foregroundColor(.white)
-                        .padding(6)
-                        .background(Color.black.opacity(0.4))
-                        .clipShape(Circle())
-                }
-
-                // Diagnostics Log Viewer Button
-                Button {
-                    showDiagnosticsSheet = true
-                } label: {
-                    Image(systemName: "stethoscope")
-                        .font(.system(size: 14, weight: .semibold))
-                        .foregroundColor(.white)
-                        .padding(6)
-                        .background(Color.black.opacity(0.4))
-                        .clipShape(Circle())
-                }
-
-                // Aspect Ratio Selector Button
-                Button {
-                    cycleAspectRatio()
-                } label: {
-                    Text(aspectRatio.rawValue)
-                        .font(.system(size: 12, weight: .bold))
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 4)
-                        .background(Color.white.opacity(0.2))
-                        .foregroundColor(.white)
-                        .cornerRadius(6)
-                }
             }
             .padding(.horizontal, 16)
             .padding(.top, 12)
@@ -895,9 +881,9 @@ public struct LIDPlayerView: View {
 
             Spacer()
 
-            // Footer Timeline & Speed Bar
-            VStack(spacing: 6) {
-                // Interactive Scrubber
+            // Bottom Control Area (Row 1: Timeline, Row 2: Horizontally Scrollable Toolbar)
+            VStack(spacing: 10) {
+                // Bottom row 1: Timeline, current time, duration
                 HStack(spacing: 12) {
                     Text(formatTime(isDraggingScrubber ? scrubPosition : engine.currentPositionSeconds))
                         .font(.system(size: 12, weight: .medium, design: .monospaced))
@@ -939,54 +925,170 @@ public struct LIDPlayerView: View {
                     }
                 }
 
-                // Speed, Mute, and Specs Bar
-                HStack(spacing: 16) {
-                    // Playback Speed Button
-                    Button {
-                        cyclePlaybackSpeed()
-                        resetControlsTimer()
-                    } label: {
-                        HStack(spacing: 4) {
-                            Image(systemName: "gauge.with.needle")
-                                .font(.system(size: 12))
-                            Text(engine.playbackSpeed.label)
-                                .font(.system(size: 12, weight: .bold))
-                        }
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .background(Color.white.opacity(0.18))
-                        .foregroundColor(.white)
-                        .cornerRadius(6)
-                    }
-
-                    // Mute / Unmute
-                    Button {
-                        engine.toggleMute()
-                        resetControlsTimer()
-                    } label: {
-                        Image(systemName: engine.isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill")
-                            .font(.system(size: 14))
+                // Bottom row 2: Speed, subtitles, subtitle delay, orientation, aspect ratio, mute, PiP, lock, diagnostics
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 14) {
+                        // 1. Continuous Speed Slider Sheet Trigger
+                        Button {
+                            showSpeedSheet = true
+                            resetControlsTimer()
+                        } label: {
+                            HStack(spacing: 4) {
+                                Image(systemName: "gauge.with.needle")
+                                    .font(.system(size: 12))
+                                Text(String(format: "%.2f×", engine.playbackRate))
+                                    .font(.system(size: 12, weight: .bold, design: .monospaced))
+                            }
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 5)
+                            .background(Color.white.opacity(0.2))
                             .foregroundColor(.white)
-                    }
+                            .cornerRadius(6)
+                        }
 
-                    Spacer()
+                        // 2. Subtitles & Audio Track Selector
+                        Button {
+                            showTrackSelectionSheet = true
+                            resetControlsTimer()
+                        } label: {
+                            Image(systemName: "captions.bubble.fill")
+                                .font(.system(size: 15, weight: .semibold))
+                                .foregroundColor(.white)
+                                .padding(6)
+                                .background(Color.black.opacity(0.4))
+                                .clipShape(Circle())
+                        }
 
-                    if let res = engine.metadata.naturalWidth, let h = engine.metadata.naturalHeight {
-                        Text("\(Int(res))×\(Int(h))")
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundColor(.white.opacity(0.7))
+                        // 3. Subtitle Delay / Sync Adjuster
+                        Button {
+                            showSubtitleSyncSheet = true
+                            resetControlsTimer()
+                        } label: {
+                            HStack(spacing: 3) {
+                                Image(systemName: "timer")
+                                    .font(.system(size: 14, weight: .semibold))
+                                if abs(engine.trackManager.subtitleDelay) > 0.05 {
+                                    Text(String(format: "%+.1fs", engine.trackManager.subtitleDelay))
+                                        .font(.system(size: 11, weight: .bold, design: .monospaced))
+                                }
+                            }
+                            .foregroundColor(.white)
+                            .padding(6)
+                            .background(Color.black.opacity(0.4))
+                            .cornerRadius(12)
+                        }
+
+                        // 4. Interface Orientation Toggle Button
+                        Button {
+                            toggleInterfaceOrientation()
+                            resetControlsTimer()
+                        } label: {
+                            Image(systemName: "rotate.right")
+                                .font(.system(size: 15, weight: .semibold))
+                                .foregroundColor(.white)
+                                .padding(6)
+                                .background(Color.black.opacity(0.4))
+                                .clipShape(Circle())
+                        }
+
+                        // 5. Aspect Ratio Selector Button
+                        Button {
+                            cycleAspectRatio()
+                            resetControlsTimer()
+                        } label: {
+                            Text(aspectRatio.rawValue)
+                                .font(.system(size: 12, weight: .bold))
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 5)
+                                .background(Color.white.opacity(0.2))
+                                .foregroundColor(.white)
+                                .cornerRadius(6)
+                        }
+
+                        // 6. Mute / Unmute Button
+                        Button {
+                            engine.toggleMute()
+                            resetControlsTimer()
+                        } label: {
+                            Image(systemName: engine.isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill")
+                                .font(.system(size: 15, weight: .semibold))
+                                .foregroundColor(.white)
+                                .padding(6)
+                                .background(Color.black.opacity(0.4))
+                                .clipShape(Circle())
+                        }
+
+                        // 7. Picture-in-Picture Button
+                        #if canImport(AVFoundation) && canImport(UIKit) && canImport(AVKit)
+                        if engine.supportsPictureInPicture {
+                            Button {
+                                layerViewRef?.togglePiP()
+                                resetControlsTimer()
+                            } label: {
+                                Image(systemName: "pip.enter")
+                                    .font(.system(size: 15, weight: .semibold))
+                                    .foregroundColor(.white)
+                                    .padding(6)
+                                    .background(Color.black.opacity(0.4))
+                                    .clipShape(Circle())
+                            }
+                        }
+                        #endif
+
+                        // 8. Lock Controls Button
+                        Button {
+                            withAnimation {
+                                isControlsLocked = true
+                                showControls = false
+                            }
+                            PipelineLogger.shared.logPlayer(
+                                session: sessionId,
+                                category: "PlayerGesture",
+                                message: "Controls locked by user"
+                            )
+                        } label: {
+                            Image(systemName: "lock")
+                                .font(.system(size: 14, weight: .semibold))
+                                .foregroundColor(.white)
+                                .padding(6)
+                                .background(Color.black.opacity(0.4))
+                                .clipShape(Circle())
+                        }
+
+                        // 9. Diagnostics Log Viewer Button
+                        Button {
+                            showDiagnosticsSheet = true
+                            resetControlsTimer()
+                        } label: {
+                            Image(systemName: "stethoscope")
+                                .font(.system(size: 14, weight: .semibold))
+                                .foregroundColor(.white)
+                                .padding(6)
+                                .background(Color.black.opacity(0.4))
+                                .clipShape(Circle())
+                        }
+
+                        if let res = engine.metadata.naturalWidth, let h = engine.metadata.naturalHeight {
+                            Text("\(Int(res))×\(Int(h))")
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundColor(.white.opacity(0.7))
+                                .padding(.leading, 4)
+                        }
                     }
+                    .padding(.horizontal, 4)
                 }
             }
             .padding(.horizontal, 16)
             .padding(.bottom, 20)
             .background(
                 LinearGradient(
-                    colors: [Color.clear, Color.black.opacity(0.8)],
+                    colors: [Color.clear, Color.black.opacity(0.85)],
                     startPoint: .top,
                     endPoint: .bottom
                 )
             )
+        }
+    }
         }
     }
 
@@ -1106,53 +1208,109 @@ public struct LIDPlayerView: View {
 
     private var subtitleSyncSheetView: some View {
         NavigationView {
-            VStack(spacing: 24) {
-                Text("Subtitle Delay Offset")
-                    .font(.headline)
-                    .padding(.top, 20)
+            ScrollView {
+                VStack(spacing: 20) {
+                    Text("Subtitle Delay Offset")
+                        .font(.headline)
+                        .padding(.top, 12)
 
-                Text(String(format: "%+.1f s", engine.trackManager.subtitleDelay))
-                    .font(.system(size: 40, weight: .bold, design: .monospaced))
-                    .foregroundColor(engine.trackManager.subtitleDelay == 0 ? .primary : .blue)
+                    VStack(spacing: 4) {
+                        Text(String(format: "%+.2f s", engine.trackManager.subtitleDelay))
+                            .font(.system(size: 40, weight: .bold, design: .monospaced))
+                            .foregroundColor(engine.trackManager.subtitleDelay == 0 ? .primary : .blue)
 
-                Text(engine.trackManager.subtitleDelay > 0 ? "Subtitles appear later" : (engine.trackManager.subtitleDelay < 0 ? "Subtitles appear earlier" : "Synchronized"))
-                    .font(.subheadline)
-                    .foregroundColor(.secondary)
-
-                HStack(spacing: 12) {
-                    Button("-0.5s") {
-                        let newDelay = max(-5.0, min(5.0, engine.trackManager.subtitleDelay - 0.5))
-                        engine.setSubtitleDelay(seconds: newDelay)
+                        Text(engine.trackManager.subtitleDelay > 0 ? "Subtitles appear later" : (engine.trackManager.subtitleDelay < 0 ? "Subtitles appear earlier" : "Synchronized"))
+                            .font(.subheadline)
+                            .foregroundColor(.secondary)
                     }
-                    .buttonStyle(.bordered)
 
-                    Button("-0.1s") {
-                        let newDelay = max(-5.0, min(5.0, engine.trackManager.subtitleDelay - 0.1))
-                        engine.setSubtitleDelay(seconds: newDelay)
+                    // Continuous Slider (-30.0s to +30.0s)
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack {
+                            Text("-30s")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                            Spacer()
+                            Text("0s")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                            Spacer()
+                            Text("+30s")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                        Slider(
+                            value: Binding(
+                                get: { max(-30.0, min(30.0, engine.trackManager.subtitleDelay)) },
+                                set: { engine.setSubtitleDelay(seconds: $0) }
+                            ),
+                            in: -30.0...30.0,
+                            step: 0.1
+                        )
+                        .accentColor(.blue)
                     }
-                    .buttonStyle(.bordered)
+                    .padding(.horizontal, 8)
 
-                    Button("Reset") {
-                        engine.setSubtitleDelay(seconds: 0.0)
-                    }
-                    .buttonStyle(.borderedProminent)
+                    // Quick Stepper Buttons
+                    VStack(spacing: 10) {
+                        HStack(spacing: 8) {
+                            Button("-5.0s") { engine.adjustSubtitleDelay(by: -5.0) }
+                                .buttonStyle(.bordered)
+                            Button("-1.0s") { engine.adjustSubtitleDelay(by: -1.0) }
+                                .buttonStyle(.bordered)
+                            Button("Reset (0s)") { engine.setSubtitleDelay(seconds: 0.0) }
+                                .buttonStyle(.borderedProminent)
+                            Button("+1.0s") { engine.adjustSubtitleDelay(by: 1.0) }
+                                .buttonStyle(.bordered)
+                            Button("+5.0s") { engine.adjustSubtitleDelay(by: 5.0) }
+                                .buttonStyle(.bordered)
+                        }
 
-                    Button("+0.1s") {
-                        let newDelay = max(-5.0, min(5.0, engine.trackManager.subtitleDelay + 0.1))
-                        engine.setSubtitleDelay(seconds: newDelay)
+                        HStack(spacing: 12) {
+                            Button("-0.5s") { engine.adjustSubtitleDelay(by: -0.5) }
+                                .buttonStyle(.bordered)
+                            Button("-0.1s") { engine.adjustSubtitleDelay(by: -0.1) }
+                                .buttonStyle(.bordered)
+                            Button("+0.1s") { engine.adjustSubtitleDelay(by: 0.1) }
+                                .buttonStyle(.bordered)
+                            Button("+0.5s") { engine.adjustSubtitleDelay(by: 0.5) }
+                                .buttonStyle(.bordered)
+                        }
                     }
-                    .buttonStyle(.bordered)
 
-                    Button("+0.5s") {
-                        let newDelay = max(-5.0, min(5.0, engine.trackManager.subtitleDelay + 0.5))
-                        engine.setSubtitleDelay(seconds: newDelay)
+                    // Precise Manual Entry
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Precise Manual Offset")
+                            .font(.caption.bold())
+                            .foregroundColor(.secondary)
+
+                        HStack(spacing: 10) {
+                            TextField("Offset in seconds (e.g. -12.5 or +4.8)", text: $manualSubtitleDelayInput)
+                                #if os(iOS)
+                                .keyboardType(.numbersAndPunctuation)
+                                #endif
+                                .textFieldStyle(RoundedBorderTextFieldStyle())
+
+                            Button("Apply") {
+                                let trimmed = manualSubtitleDelayInput.trimmingCharacters(in: .whitespacesAndNewlines)
+                                if let val = Double(trimmed) {
+                                    engine.setSubtitleDelay(seconds: val)
+                                    manualSubtitleDelayInput = ""
+                                }
+                            }
+                            .buttonStyle(.borderedProminent)
+                        }
                     }
-                    .buttonStyle(.bordered)
+                    .padding(.horizontal, 8)
+
+                    Text("Subtitle sync changes take effect immediately during live playback without interrupting audio or video.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .multilineTextAlignment(.center)
+                        .padding(.top, 8)
                 }
-
-                Spacer()
+                .padding()
             }
-            .padding()
             .navigationTitle("Subtitle Sync")
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
@@ -1161,6 +1319,97 @@ public struct LIDPlayerView: View {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Done") {
                         showSubtitleSyncSheet = false
+                    }
+                }
+            }
+        }
+    }
+
+    // MARK: - Playback Speed Continuous Slider Sheet
+
+    private var speedAdjustmentSheetView: some View {
+        NavigationView {
+            VStack(spacing: 24) {
+                Text("Playback Speed")
+                    .font(.headline)
+                    .padding(.top, 16)
+
+                VStack(spacing: 4) {
+                    Text(String(format: "%.2f×", engine.playbackRate))
+                        .font(.system(size: 44, weight: .bold, design: .monospaced))
+                        .foregroundColor(engine.playbackRate == 0 ? .yellow : .blue)
+                    Text(engine.playbackRate == 0 ? "Playback Paused" : (engine.playbackRate == 1.0 ? "Normal Speed" : (engine.playbackRate > 1.0 ? "Faster" : "Slower")))
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+                }
+
+                // Continuous Slider from 0.0x to 2.0x
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        Text("0.0×")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        Spacer()
+                        Text("1.0×")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        Spacer()
+                        Text("2.0×")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                    Slider(
+                        value: Binding(
+                            get: { engine.playbackRate },
+                            set: { engine.setPlaybackRate($0) }
+                        ),
+                        in: 0.0...2.0,
+                        step: 0.05
+                    )
+                    .accentColor(.blue)
+                }
+                .padding(.horizontal, 8)
+
+                // Quick Presets
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("Quick Presets")
+                        .font(.caption.bold())
+                        .foregroundColor(.secondary)
+
+                    HStack(spacing: 8) {
+                        ForEach([0.5, 0.75, 1.0, 1.25, 1.5, 2.0], id: \.self) { rate in
+                            Button {
+                                engine.setPlaybackRate(rate)
+                            } label: {
+                                Text(rate == 1.0 ? "1.0×" : String(format: "%.2g×", rate))
+                                    .font(.system(size: 13, weight: .semibold))
+                                    .padding(.horizontal, 10)
+                                    .padding(.vertical, 8)
+                                    .background(abs(engine.playbackRate - rate) < 0.02 ? Color.blue : Color.secondary.opacity(0.2))
+                                    .foregroundColor(abs(engine.playbackRate - rate) < 0.02 ? .white : .primary)
+                                    .cornerRadius(8)
+                            }
+                        }
+                    }
+                }
+
+                Text("0.0× pauses playback while preserving your active speed setting. Speeds up to 2.0× include automatic audio pitch correction.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 16)
+
+                Spacer()
+            }
+            .padding()
+            .navigationTitle("Speed Controls")
+            #if os(iOS)
+            .navigationBarTitleDisplayMode(.inline)
+            #endif
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Done") {
+                        showSpeedSheet = false
                     }
                 }
             }
@@ -1184,6 +1433,10 @@ public struct LIDPlayerView: View {
     }
 
     private func dismiss() {
+        if isHoldingSpeedBoost {
+            isHoldingSpeedBoost = false
+            engine.cancelTemporarySpeedBoost()
+        }
         engine.stop()
         controlsTimer?.invalidate()
         if let onDismiss = onDismiss {
@@ -1246,6 +1499,36 @@ public struct LIDPlayerView: View {
                 }
             }
         }
+    }
+
+    private func toggleInterfaceOrientation() {
+        #if canImport(UIKit)
+        if #available(iOS 16.0, *) {
+            let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+            if let windowScene = scenes.first {
+                let isLandscape = windowScene.interfaceOrientation.isLandscape
+                let targetMask: UIInterfaceOrientationMask = isLandscape ? .portrait : .landscapeRight
+                windowScene.requestGeometryUpdate(.iOS(interfaceOrientations: targetMask)) { [sessionId] error in
+                    PipelineLogger.shared.logPlayer(
+                        session: sessionId,
+                        category: "PlayerOrientation",
+                        message: "requestGeometryUpdate notice: \(error.localizedDescription)"
+                    )
+                }
+                UIViewController.attemptRotationToDeviceOrientation()
+            }
+        } else {
+            let isLandscape = UIDevice.current.orientation.isLandscape
+            let targetOrientation = isLandscape ? UIInterfaceOrientation.portrait.rawValue : UIInterfaceOrientation.landscapeRight.rawValue
+            UIDevice.current.setValue(targetOrientation, forKey: "orientation")
+            UIViewController.attemptRotationToDeviceOrientation()
+        }
+        PipelineLogger.shared.logPlayer(
+            session: sessionId,
+            category: "PlayerOrientation",
+            message: "toggleInterfaceOrientation requested"
+        )
+        #endif
     }
 
     private func cycleAspectRatio() {

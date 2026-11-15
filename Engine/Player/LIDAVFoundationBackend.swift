@@ -24,13 +24,22 @@ public final class LIDAVFoundationBackend: NSObject, LIDMediaEngineProtocol {
     public private(set) var durationSeconds: Double = 0.0
     public private(set) var bufferedDurationSeconds: Double = 0.0
 
-    public var playbackSpeed: LIDPlaybackSpeed = .speed1_00 {
+    public var playbackRate: Double = 1.0 {
         didSet {
             #if canImport(AVFoundation)
             if let p = player, p.rate != 0 {
-                p.rate = playbackSpeed.rate
+                p.rate = Float(playbackRate)
             }
             #endif
+        }
+    }
+
+    public var playbackSpeed: LIDPlaybackSpeed {
+        get {
+            LIDPlaybackSpeed.fromRate(playbackRate)
+        }
+        set {
+            self.playbackRate = newValue.rawValue
         }
     }
 
@@ -173,7 +182,7 @@ public final class LIDAVFoundationBackend: NSObject, LIDMediaEngineProtocol {
         #if canImport(AVFoundation)
         guard let p = player else { return }
         p.play()
-        p.rate = playbackSpeed.rate
+        p.rate = Float(playbackRate)
         self.playbackState = .playing
         delegate?.engineDidUpdateState(self, state: self.playbackState)
         #endif

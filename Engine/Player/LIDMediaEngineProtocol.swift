@@ -58,7 +58,10 @@ public protocol LIDMediaEngineProtocol: AnyObject {
     /// Total buffered media duration in seconds.
     var bufferedDurationSeconds: Double { get }
 
-    /// Playback rate / speed.
+    /// Playback rate / speed as a continuous numeric multiplier (e.g. 1.0 = normal, 1.35 = 1.35x, 0.0 = paused).
+    var playbackRate: Double { get set }
+
+    /// Playback rate / speed (legacy discrete preset).
     var playbackSpeed: LIDPlaybackSpeed { get set }
 
     /// Audio volume in the range [0.0, 1.0].
