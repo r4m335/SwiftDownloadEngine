@@ -78,7 +78,7 @@ public final class LIDAVFoundationBackend: NSObject, LIDMediaEngineProtocol {
 
     #if canImport(AVFoundation)
     public private(set) var player: AVPlayer?
-    private var playerItem: AVPlayerItem?
+    public private(set) var playerItem: AVPlayerItem?
     private var timeObserverToken: Any?
     private var statusObserver: NSKeyValueObservation?
     private var bufferEmptyObserver: NSKeyValueObservation?
