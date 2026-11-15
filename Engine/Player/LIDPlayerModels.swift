@@ -227,6 +227,11 @@ public enum LIDPlaybackState: Equatable, Sendable {
         return false
     }
 
+    public var isPaused: Bool {
+        if case .paused = self { return true }
+        return false
+    }
+
     public var isBuffering: Bool {
         if case .buffering = self { return true }
         return false
