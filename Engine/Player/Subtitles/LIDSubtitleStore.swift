@@ -67,7 +67,7 @@ public actor LIDSubtitleStore {
         // 5. Write standardized UTF-8 text to disk
         try validText.write(to: targetFileURL, atomically: true, encoding: .utf8)
 
-        return targetFileURL
+        return targetFileURL.resolvingSymlinksInPath().standardizedFileURL
     }
 
     /// Discovers all previously downloaded subtitles for a given media title.
@@ -81,19 +81,20 @@ public actor LIDSubtitleStore {
 
         var tracks: [LIDSubtitleTrack] = []
         for case let fileURL as URL in enumerator {
-            let ext = fileURL.pathExtension.lowercased()
+            let standardized = fileURL.resolvingSymlinksInPath().standardizedFileURL
+            let ext = standardized.pathExtension.lowercased()
             if ext == "srt" || ext == "vtt" {
-                let name = fileURL.deletingPathExtension().lastPathComponent
+                let name = standardized.deletingPathExtension().lastPathComponent
                 let parts = name.split(separator: ".")
                 let lang = parts.count > 1 ? String(parts.last!) : "en"
-                let displayName = "\(SubtitleLanguageCatalog.displayName(for: lang)) (\(fileURL.lastPathComponent))"
+                let displayName = "\(SubtitleLanguageCatalog.displayName(for: lang)) (\(standardized.lastPathComponent))"
 
                 let track = LIDSubtitleTrack(
-                    id: fileURL.path,
+                    id: standardized.path,
                     displayName: displayName,
                     languageCode: lang,
                     isExternal: true,
-                    externalURL: fileURL
+                    externalURL: standardized
                 )
                 tracks.append(track)
             }

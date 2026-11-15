@@ -216,7 +216,8 @@ final class LIDSubtitleDiscoveryTests: XCTestCase {
         // Verify listing
         let list = await store.listDownloadedSubtitles(for: "Breaking Bad S02E05")
         XCTAssertEqual(list.count, 1)
-        XCTAssertEqual(list.first?.externalURL, savedURL)
+        XCTAssertEqual(list.first?.externalURL?.standardizedFileURL.path, savedURL.standardizedFileURL.path)
+        XCTAssertEqual(list.first?.externalURL?.lastPathComponent, savedURL.lastPathComponent)
 
         // Verify deletion
         try await store.deleteSubtitle(at: savedURL)
