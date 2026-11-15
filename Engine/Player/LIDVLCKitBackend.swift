@@ -251,7 +251,7 @@ public final class LIDVLCKitBackend: NSObject, LIDMediaEngineProtocol, VLCMediaP
             )
             return
         }
-        let normalizedPos = Float(max(0.0, min(1.0, seconds / durationSeconds)))
+        let normalizedPos = max(0.0, min(1.0, seconds / durationSeconds))
         player.position = normalizedPos
         self.currentPositionSeconds = seconds
         delegate?.engineDidUpdateTime(self, currentSeconds: seconds, durationSeconds: durationSeconds)
