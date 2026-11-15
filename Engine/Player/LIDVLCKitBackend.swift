@@ -136,7 +136,7 @@ public final class LIDVLCKitBackend: NSObject, LIDMediaEngineProtocol, VLCMediaP
 
         #if canImport(UIKit)
         if let view = currentRenderingView {
-            if self.player.drawable !== view {
+            if (self.player.drawable as? UIView) !== view {
                 self.player.drawable = view
             }
             PipelineLogger.shared.logPlayer(
