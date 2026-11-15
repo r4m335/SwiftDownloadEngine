@@ -1095,9 +1095,8 @@ public struct LIDPlayerView: View {
         controlsTimer?.invalidate()
         if let onDismiss = onDismiss {
             onDismiss()
-        } else {
-            presentationMode.wrappedValue.dismiss()
         }
+        presentationMode.wrappedValue.dismiss()
     }
 
     private func toggleControlsVisibility() {
@@ -1118,7 +1117,8 @@ public struct LIDPlayerView: View {
         for f in files {
             let ext = f.pathExtension.lowercased()
             if (ext == "srt" || ext == "vtt") && f.lastPathComponent.lowercased().contains(baseName.lowercased()) {
-                engine.addExternalSubtitle(url: f, displayName: f.lastPathComponent)
+                let shouldSelect = engine.trackManager.selectedSubtitleTrack == .off
+                engine.addExternalSubtitle(url: f, displayName: f.lastPathComponent, autoSelect: shouldSelect)
             }
         }
     }

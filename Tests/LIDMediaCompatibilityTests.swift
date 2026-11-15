@@ -117,6 +117,16 @@ final class LIDMediaCompatibilityTests: XCTestCase {
         // 5. Non-existent file
         let nonExistentURL = tempDirectory.appendingPathComponent("does_not_exist.ts")
         XCTAssertFalse(LIDPlaybackEngine.validateTSHeader(url: nonExistentURL))
+
+        // 6. Valid TS with prepended ID3v2 metadata header (standard HLS segment pattern)
+        let id3TSURL = tempDirectory.appendingPathComponent("id3_prefixed.ts")
+        // "ID3" + version 4.0 + flags 0x00 + 4 synchsafe size bytes representing 4 bytes payload
+        var id3Data = Data([0x49, 0x44, 0x33, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04])
+        id3Data.append(contentsOf: [0x00, 0x00, 0x00, 0x00]) // 4 bytes ID3 tag body
+        id3Data.append(0x47) // First TS sync byte at offset 14
+        id3Data.append(contentsOf: Array(repeating: UInt8(0xAA), count: 187)) // Rest of TS packet
+        try? id3Data.write(to: id3TSURL)
+        XCTAssertTrue(LIDPlaybackEngine.validateTSHeader(url: id3TSURL))
     }
 
     // MARK: - 3. Empty File and Corrupted Media Error Handling

@@ -60,6 +60,7 @@ public final class LIDPlaybackEngine: NSObject, ObservableObject, LIDMediaEngine
 
     private let historyStore: LIDPlaybackHistoryStore
     private var lastRecordedSecond: Int = 0
+    private var loadingWatchdogTimer: Timer? = nil
 
     public init(
         historyStore: LIDPlaybackHistoryStore = .shared,
@@ -147,12 +148,51 @@ public final class LIDPlaybackEngine: NSObject, ObservableObject, LIDMediaEngine
 
     // MARK: - Container Header Validation
 
-    /// Validates that the file begins with the standard MPEG-TS sync byte (0x47).
+    /// Validates that the file contains valid MPEG-2 Transport Stream sync markers (0x47),
+    /// accounting for optional prepended ID3 metadata tags (common in HLS-derived TS streams)
+    /// and standard 188-byte packet strides.
     nonisolated public static func validateTSHeader(url: URL) -> Bool {
         guard let handle = try? FileHandle(forReadingFrom: url) else { return false }
         defer { try? handle.close() }
-        guard let data = try? handle.read(upToCount: 188), !data.isEmpty else { return false }
-        return data.first == 0x47
+        guard let data = try? handle.read(upToCount: 4096), !data.isEmpty else { return false }
+
+        // 1. Direct standard MPEG-TS sync byte at offset 0
+        if data.first == 0x47 {
+            return true
+        }
+
+        // 2. Check for ID3v2 metadata header prepended to TS stream (bytes "ID3")
+        if data.count >= 10, data[0] == 0x49, data[1] == 0x44, data[2] == 0x33 {
+            let sizeBytes = data[6..<10]
+            // Synchsafe integer (7 bits per byte)
+            let tagSize = (Int(sizeBytes[sizeBytes.startIndex]) << 21)
+                | (Int(sizeBytes[sizeBytes.startIndex + 1]) << 14)
+                | (Int(sizeBytes[sizeBytes.startIndex + 2]) << 7)
+                | Int(sizeBytes[sizeBytes.startIndex + 3])
+            let tsOffset = 10 + tagSize
+
+            if tsOffset < data.count && data[tsOffset] == 0x47 {
+                return true
+            }
+            if let _ = try? handle.seek(toOffset: UInt64(tsOffset)),
+               let tsData = try? handle.read(upToCount: 1),
+               tsData.first == 0x47 {
+                return true
+            }
+        }
+
+        // 3. Scan for sync byte pattern with standard 188-byte packet stride
+        let maxSearch = min(data.count, 1024)
+        for offset in 0..<maxSearch {
+            if data[offset] == 0x47 {
+                let nextOffset = offset + 188
+                if nextOffset < data.count && data[nextOffset] == 0x47 {
+                    return true
+                }
+            }
+        }
+
+        return false
     }
 
     // MARK: - Playback Control APIs
@@ -224,6 +264,8 @@ public final class LIDPlaybackEngine: NSObject, ObservableObject, LIDMediaEngine
                 }
             }
         }
+
+        startLoadingWatchdog()
     }
 
     @MainActor
@@ -265,6 +307,7 @@ public final class LIDPlaybackEngine: NSObject, ObservableObject, LIDMediaEngine
 
     @MainActor
     public func stop() {
+        cancelLoadingWatchdog()
         saveCurrentPosition()
         LIDNowPlayingCoordinator.shared.clearNowPlaying()
         trackManager.reset()
@@ -366,9 +409,10 @@ public final class LIDPlaybackEngine: NSObject, ObservableObject, LIDMediaEngine
     }
 
     @MainActor
-    public func addExternalSubtitle(url: URL, displayName: String? = nil) {
-        trackManager.addExternalSubtitle(url: url, displayName: displayName)
+    public func addExternalSubtitle(url: URL, displayName: String? = nil, autoSelect: Bool = true) {
+        trackManager.addExternalSubtitle(url: url, displayName: displayName, autoSelect: autoSelect)
         activeBackend.addExternalSubtitle(url: url)
+        trackManager.updatePosition(currentPositionSeconds)
     }
 
     public var subtitleDelay: Double {
@@ -379,6 +423,7 @@ public final class LIDPlaybackEngine: NSObject, ObservableObject, LIDMediaEngine
     public func setSubtitleDelay(seconds: Double) {
         trackManager.subtitleDelay = seconds
         activeBackend.setSubtitleDelay(seconds: seconds)
+        trackManager.updatePosition(currentPositionSeconds)
     }
 
     // MARK: - Anonymous Subtitle Discovery & Search
@@ -421,6 +466,9 @@ public final class LIDPlaybackEngine: NSObject, ObservableObject, LIDMediaEngine
     public func engineDidUpdateState(_ engine: LIDMediaEngineProtocol, state: LIDPlaybackState) {
         guard engine.backendType == self.activeBackendType else { return }
         self.playbackState = state
+        if state.isPlaying || state.isPaused || state.isFailed {
+            cancelLoadingWatchdog()
+        }
         if state == .playing {
             refreshTracks()
         }
@@ -470,6 +518,25 @@ public final class LIDPlaybackEngine: NSObject, ObservableObject, LIDMediaEngine
             currentTime: currentPositionSeconds,
             playbackRate: rate
         )
+    }
+
+    private func startLoadingWatchdog() {
+        cancelLoadingWatchdog()
+        loadingWatchdogTimer = Timer.scheduledTimer(withTimeInterval: 15.0, repeats: false) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self = self else { return }
+                if self.playbackState.isLoading {
+                    let err = "Playback initialization timed out. The media format or codec could not be decoded."
+                    self.playbackState = .failed(error: err)
+                    self.stop()
+                }
+            }
+        }
+    }
+
+    private func cancelLoadingWatchdog() {
+        loadingWatchdogTimer?.invalidate()
+        loadingWatchdogTimer = nil
     }
 
     private func saveCurrentPosition() {

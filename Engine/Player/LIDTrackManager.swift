@@ -230,7 +230,7 @@ public final class LIDTrackManager: ObservableObject {
     }
 
     /// Add an external subtitle track from a file URL.
-    public func addExternalSubtitle(url: URL, displayName: String? = nil) {
+    public func addExternalSubtitle(url: URL, displayName: String? = nil, autoSelect: Bool = true) {
         let name = displayName ?? url.deletingPathExtension().lastPathComponent
         let track = LIDSubtitleTrack(
             id: "external_\(url.lastPathComponent)",
@@ -243,7 +243,9 @@ public final class LIDTrackManager: ObservableObject {
         if !availableSubtitleTracks.contains(where: { $0.id == track.id }) {
             availableSubtitleTracks.append(track)
         }
-        selectSubtitleTrack(track)
+        if autoSelect {
+            selectSubtitleTrack(track)
+        }
     }
 
     /// Remove an external subtitle track from the available list.
