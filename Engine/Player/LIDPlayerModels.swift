@@ -242,6 +242,11 @@ public enum LIDPlaybackState: Equatable, Sendable {
         return false
     }
 
+    public var isEnded: Bool {
+        if case .ended = self { return true }
+        return false
+    }
+
     public var errorMessage: String? {
         if case .failed(let err) = self { return err }
         return nil
