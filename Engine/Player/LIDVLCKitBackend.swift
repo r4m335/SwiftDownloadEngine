@@ -458,7 +458,7 @@ public final class LIDVLCKitBackend: NSObject, LIDMediaEngineProtocol, VLCMediaP
         #endif
     }
 
-    nonisolated public func mediaPlayerTrackAdded(_ trackId: String, withType trackType: VLCMediaTrackType) {
+    nonisolated public func mediaPlayerTrackAdded(_ trackId: String, with trackType: VLCMedia.TrackType) {
         Task { @MainActor [weak self] in
             guard let self = self else { return }
             PipelineLogger.shared.logPlayer(
@@ -466,13 +466,13 @@ public final class LIDVLCKitBackend: NSObject, LIDMediaEngineProtocol, VLCMediaP
                 category: "PlayerBackend",
                 message: "mediaPlayerTrackAdded: id=\(trackId), type=\(trackType.rawValue)"
             )
-            if trackType.rawValue == 1 {
+            if trackType == .video {
                 self.logVideoTrackDetails()
             }
         }
     }
 
-    nonisolated public func mediaPlayerTrackSelected(_ trackType: VLCMediaTrackType, selectedId: String, unselectedId: String) {
+    nonisolated public func mediaPlayerTrackSelected(_ trackType: VLCMedia.TrackType, selectedId: String, unselectedId: String) {
         Task { @MainActor [weak self] in
             guard let self = self else { return }
             PipelineLogger.shared.logPlayer(
@@ -480,7 +480,7 @@ public final class LIDVLCKitBackend: NSObject, LIDMediaEngineProtocol, VLCMediaP
                 category: "PlayerBackend",
                 message: "mediaPlayerTrackSelected: type=\(trackType.rawValue), selected=\(selectedId), unselected=\(unselectedId)"
             )
-            if trackType.rawValue == 1 {
+            if trackType == .video {
                 self.logVideoTrackDetails()
             }
         }
