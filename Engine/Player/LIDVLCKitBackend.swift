@@ -20,7 +20,7 @@ public final class LIDVLCKitBackend: NSObject, LIDMediaEngineProtocol, VLCMediaP
     public var activeSessionId: String = "IDLE"
 
     public var videoTrackCount: Int {
-        player.numberOfVideoTracks
+        player.videoTracks.count
     }
 
     public var hasAttachedDrawable: Bool {
@@ -289,7 +289,7 @@ public final class LIDVLCKitBackend: NSObject, LIDMediaEngineProtocol, VLCMediaP
                 self.playbackState = .loading
             case .playing:
                 self.playbackState = .playing
-                let vTracks = self.player.numberOfVideoTracks
+                let vTracks = self.player.videoTracks.count
                 let vSize = self.player.videoSize
                 PipelineLogger.shared.logPlayer(
                     session: self.activeSessionId,
