@@ -113,10 +113,6 @@ public struct LIDVLCPlayerLayerView: UIViewRepresentable {
     public func updateUIView(_ uiView: UIView, context: Context) {
         backend.attachRenderingView(uiView)
     }
-
-    public static func dismantleUIView(_ uiView: UIView, coordinator: ()) {
-        backend.detachRenderingView()
-    }
 }
 #endif
 

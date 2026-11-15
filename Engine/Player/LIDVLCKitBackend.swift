@@ -161,6 +161,9 @@ public final class LIDVLCKitBackend: NSObject, LIDMediaEngineProtocol, VLCMediaP
 
     public func stop() {
         player.stop()
+        #if canImport(UIKit)
+        detachRenderingView()
+        #endif
         self.currentLoadedSource = nil
         self.currentPositionSeconds = 0.0
         self.durationSeconds = 0.0
