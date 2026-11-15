@@ -171,7 +171,11 @@ public struct LIDSubtitleSearchView: View {
                             }
                         }
                     }
+                    #if os(iOS)
                     .listStyle(InsetGroupedListStyle())
+                    #else
+                    .listStyle(.automatic)
+                    #endif
                 }
 
                 if let status = statusMessage {
@@ -189,7 +193,9 @@ public struct LIDSubtitleSearchView: View {
                 }
             }
             .navigationTitle("Download Subtitles")
+            #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
+            #endif
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Close") {
