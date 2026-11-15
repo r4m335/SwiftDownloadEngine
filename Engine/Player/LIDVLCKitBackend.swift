@@ -74,7 +74,13 @@ public final class LIDVLCKitBackend: NSObject, LIDMediaEngineProtocol, VLCMediaP
             return
         }
 
-        let media = VLCMedia(url: targetURL)
+        guard let media = VLCMedia(url: targetURL) else {
+            let error = "Failed to create VLCMedia for \(targetURL.lastPathComponent)"
+            self.playbackState = .failed(error: error)
+            delegate?.engineDidFail(self, error: error)
+            return
+        }
+
         // Inject request headers if present
         if let reqContext = source.requestContext {
             if let ua = reqContext.userAgent {
@@ -128,7 +134,7 @@ public final class LIDVLCKitBackend: NSObject, LIDMediaEngineProtocol, VLCMediaP
             return
         }
         let normalizedPos = max(0.0, min(1.0, seconds / durationSeconds))
-        player.position = normalizedPos
+        player.position = Float(normalizedPos)
         self.currentPositionSeconds = seconds
         delegate?.engineDidUpdateTime(self, currentSeconds: seconds, durationSeconds: durationSeconds)
     }
@@ -136,19 +142,19 @@ public final class LIDVLCKitBackend: NSObject, LIDMediaEngineProtocol, VLCMediaP
     // MARK: - Track Management
 
     public func getAudioTracks() -> [LIDAudioTrack] {
-        guard let tracks = player.audioTracks else { return [] }
+        let tracks = player.audioTracks
         return tracks.enumerated().map { (index, track) in
             LIDAudioTrack(
                 id: track.trackId,
                 displayName: track.trackName.isEmpty ? "Audio Track \(index + 1)" : track.trackName,
-                languageCode: nil,
+                languageCode: track.language,
                 isDefault: track.isSelected
             )
         }
     }
 
     public func selectAudioTrack(id: String) {
-        guard let tracks = player.audioTracks else { return }
+        let tracks = player.audioTracks
         for track in tracks {
             if track.trackId == id {
                 track.isSelectedExclusively = true
@@ -159,13 +165,13 @@ public final class LIDVLCKitBackend: NSObject, LIDMediaEngineProtocol, VLCMediaP
 
     public func getSubtitleTracks() -> [LIDSubtitleTrack] {
         var result: [LIDSubtitleTrack] = [.off]
-        guard let tracks = player.textTracks else { return result }
+        let tracks = player.textTracks
         for (index, track) in tracks.enumerated() {
             result.append(
                 LIDSubtitleTrack(
                     id: track.trackId,
                     displayName: track.trackName.isEmpty ? "Subtitle \(index + 1)" : track.trackName,
-                    languageCode: nil,
+                    languageCode: track.language,
                     isExternal: false
                 )
             )
@@ -178,7 +184,7 @@ public final class LIDVLCKitBackend: NSObject, LIDMediaEngineProtocol, VLCMediaP
             player.deselectAllTextTracks()
             return
         }
-        guard let tracks = player.textTracks else { return }
+        let tracks = player.textTracks
         for track in tracks {
             if track.trackId == id {
                 player.selectTextTracks([track])
@@ -209,24 +215,24 @@ public final class LIDVLCKitBackend: NSObject, LIDMediaEngineProtocol, VLCMediaP
 
     // MARK: - VLCMediaPlayerDelegate Callbacks
 
-    nonisolated public func mediaPlayerStateChanged(_ aNotification: Notification) {
+    nonisolated public func mediaPlayerStateChanged(_ newState: VLCMediaPlayerState) {
         Task { @MainActor [weak self] in
             guard let self = self else { return }
-            switch self.player.state {
+            switch newState {
             case .opening:
                 self.playbackState = .loading
-            case .buffering:
-                self.playbackState = .buffering(progress: 0.5)
             case .playing:
                 self.playbackState = .playing
             case .paused:
                 self.playbackState = .paused
-            case .stopped:
+            case .stopped, .stopping:
                 self.playbackState = .ended
             case .error:
                 let error = "libVLC reported playback error"
                 self.playbackState = .failed(error: error)
                 self.delegate?.engineDidFail(self, error: error)
+            case .nothingSpecial:
+                break
             @unknown default:
                 break
             }
@@ -237,7 +243,7 @@ public final class LIDVLCKitBackend: NSObject, LIDMediaEngineProtocol, VLCMediaP
     nonisolated public func mediaPlayerTimeChanged(_ aNotification: Notification) {
         Task { @MainActor [weak self] in
             guard let self = self else { return }
-            if let time = self.player.time?.value?.doubleValue {
+            if let time = self.player.time.value?.doubleValue {
                 self.currentPositionSeconds = time / 1000.0
                 self.delegate?.engineDidUpdateTime(self, currentSeconds: self.currentPositionSeconds, durationSeconds: self.durationSeconds)
             }
@@ -257,7 +263,7 @@ public final class LIDVLCKitBackend: NSObject, LIDMediaEngineProtocol, VLCMediaP
             guard let self = self else { return }
             self.bufferedDurationSeconds = self.durationSeconds * Double(progress)
             self.delegate?.engineDidUpdateBuffering(self, bufferedSeconds: self.bufferedDurationSeconds)
-            if self.player.state == .buffering {
+            if progress < 1.0 && self.playbackState != .playing {
                 self.playbackState = .buffering(progress: Double(progress))
                 self.delegate?.engineDidUpdateState(self, state: self.playbackState)
             }
