@@ -246,6 +246,15 @@ public final class LIDTrackManager: ObservableObject {
         selectSubtitleTrack(track)
     }
 
+    /// Remove an external subtitle track from the available list.
+    public func removeExternalSubtitle(url: URL) {
+        let trackId = "external_\(url.lastPathComponent)"
+        availableSubtitleTracks.removeAll(where: { $0.id == trackId })
+        if selectedSubtitleTrack.id == trackId {
+            selectSubtitleTrack(.off)
+        }
+    }
+
     /// Adjust subtitle delay by delta in seconds.
     public func adjustSubtitleDelay(by delta: Double) {
         subtitleDelay = max(-5.0, min(5.0, subtitleDelay + delta))

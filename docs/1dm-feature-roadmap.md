@@ -42,6 +42,7 @@ To bridge the remaining functional distance without compromising stability or vi
 │   • Discrete audio track & multi-subtitle stream selection             │
 │   • Direct HLS/DASH playback & BitTorrent sequential swarm streaming   │
 │   • VLC-powered universal media decoding engine (VLCKit / libVLC)      │
+│   • Anonymous subtitle discovery & multi-provider search               │
 ├────────────────────────────────────────────────────────────────────────┤
 │ Workstream B: LID Advanced Browser Modernization                       │
 │   • Enhanced multi-list ad, tracker, & cryptominer blocking            │
@@ -508,6 +509,49 @@ CI success must not be treated as proof of actual media decoding or physical-dev
 - Appropriate licensing notices are included.
 
 **Current Status:** A.6.1 through A.6.5 Complete & CI-Verified (GitHub Actions Run [#43701180237](https://github.com/r4m335/SwiftDownloadEngine/actions/runs/43701180237), Commit `6690e39`). Produced valid 60.73 MB unsigned iOS device `.ipa` (`SwiftDownloadEngine-iOS-Device`) embedding `VLCKit.framework` and `LibTorrent.xcframework`. All macOS and iOS CI jobs passed: Swift Package Tests passed (including 49 player tests & `LIDMediaCompatibilityTests`), libtorrent 2.0 iOS Native Build passed, and iOS Device Build passed. The player architecture satisfies all requirements across dual-engine abstraction, universal container routing, aspect ratio scaling, track enumeration/switching, external subtitle cue parsing/delay synchronization, sibling discovery, PiP conditional rendering, replay, and resume history. Ready for Milestone A.6.6 Physical iPhone Verification.
+
+### Milestone A.7: Anonymous Subtitle Discovery & Multi-Provider Search [In Progress]
+
+- **Objective:** Implement direct in-player subtitle searching and downloading without requiring users to create accounts, enter API keys, or configure external services.
+- **Architecture & Design:**
+  - Build LID around anonymous, replaceable subtitle providers:
+    - **Primary:** The Subtitle Database (`https://api.thesubtitledb.org` — `/v1/by-title`, `/v1/by-imdb`, `/v1/by-infohash`, direct download).
+    - **Secondary:** Stremio OpenSubtitles (`opensubtitles-v3.strem.io` + `v3-cinemeta.strem.io` title-to-IMDb resolver).
+    - **Fallback:** Subtitle Search Engine (`subtitles.website` — guest allowance).
+  - Common protocol abstraction:
+    ```swift
+    public protocol SubtitleProvider: Sendable {
+        var providerName: String { get }
+        func search(query: SubtitleSearchQuery) async throws -> [SubtitleSearchResult]
+        func download(result: SubtitleSearchResult) async throws -> Data
+    }
+    ```
+  - **Multi-Provider Aggregator & Fail-Soft:** Concurrent searches across providers with individual failure isolation (one provider error does not abort search).
+  - **Match Ranking Priority:**
+    1. Exact video hash / BitTorrent infohash match.
+    2. Exact release group and rip match.
+    3. Exact episode match (Season/Episode).
+    4. Title and release year match.
+    5. General keyword match.
+  - **In-Player Experience:**
+    - Player track selection sheet includes direct "Download Subtitles" action.
+    - Automatic query pre-fill from media filename via `LIDFilenameMetadataParser`.
+    - Manual search bar to override/refine query without leaving player.
+    - Result list with language, release name, format, provider, and match quality badge.
+    - Tapping a result downloads, validates, detects encoding (UTF-8, Latin-1, Windows-1252), saves to `Media/Subtitles/<Title>/`, attaches to active playback backend (`addExternalSubtitle`), and selects it immediately.
+  - **Local Persistence:** Persistent local cache under `Media/Subtitles/<Title>/`, duplicate prevention, replacement without deleting previous files, and deletion controls.
+
+#### Sub-Milestones:
+- **A.7.1:** Subtitle provider abstraction and common data models (`SubtitleProvider` protocol, `SubtitleSearchQuery`, `SubtitleSearchResult`, `SubtitleMatchQuality`, `SubtitleLanguage`).
+- **A.7.2:** The Subtitle Database integration (`LIDSubtitleDBProvider`).
+- **A.7.3:** Anonymous Subtitle Search Engine integration (`LIDSubtitlesWebsiteProvider`).
+- **A.7.4:** Stremio public add-on compatibility investigation and integration (`LIDStremioSubtitlesProvider` + `LIDCinemetaResolver`).
+- **A.7.5:** Filename parsing, metadata extraction and automatic search (`LIDFilenameMetadataParser`).
+- **A.7.6:** Manual keyword search, filters and results interface (`LIDSubtitleSearchView`).
+- **A.7.7:** Subtitle download, ZIP extraction, validation, and conversion (`LIDSubtitleDownloadManager`).
+- **A.7.8:** Local subtitle persistence and replacement (`LIDSubtitleStore`).
+- **A.7.9:** VLCKit and AVFoundation playback integration.
+- **A.7.10:** Provider failure handling, caching and automated test suite (`LIDSubtitleDiscoveryTests.swift`).
 
 ---
 

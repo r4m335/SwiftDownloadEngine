@@ -141,6 +141,7 @@ public struct LIDPlayerView: View {
     // Sheet presentations
     @State private var showTrackSelectionSheet: Bool = false
     @State private var showSubtitleSyncSheet: Bool = false
+    @State private var showSubtitleSearchSheet: Bool = false
     @State private var externalSubtitlePathInput: String = ""
     @State private var showExternalSubtitlePrompt: Bool = false
 
@@ -360,6 +361,9 @@ public struct LIDPlayerView: View {
         }
         .sheet(isPresented: $showSubtitleSyncSheet) {
             subtitleSyncSheetView
+        }
+        .sheet(isPresented: $showSubtitleSearchSheet) {
+            LIDSubtitleSearchView(mediaTitle: engine.currentSource?.title ?? "", engine: engine)
         }
     }
 
@@ -936,11 +940,20 @@ public struct LIDPlayerView: View {
                         }
                     }
 
+                    // Download Subtitles Online Action
+                    Button {
+                        showTrackSelectionSheet = false
+                        showSubtitleSearchSheet = true
+                    } label: {
+                        Label("Download Subtitles...", systemImage: "arrow.down.circle")
+                            .foregroundColor(.blue)
+                    }
+
                     // Add External Subtitle Action
                     Button {
                         showExternalSubtitlePrompt = true
                     } label: {
-                        Label("Add External Subtitle (.srt / .vtt)", systemImage: "plus.circle")
+                        Label("Load Subtitle File (.srt / .vtt)", systemImage: "doc.badge.plus")
                             .foregroundColor(.blue)
                     }
                 }

@@ -381,6 +381,41 @@ public final class LIDPlaybackEngine: NSObject, ObservableObject, LIDMediaEngine
         activeBackend.setSubtitleDelay(seconds: seconds)
     }
 
+    // MARK: - Anonymous Subtitle Discovery & Search
+
+    @MainActor
+    public func searchSubtitles(query: SubtitleSearchQuery) async -> [SubtitleSearchResult] {
+        return await LIDSubtitleSearchManager.shared.search(query: query)
+    }
+
+    @MainActor
+    public func downloadAndApplySubtitle(result: SubtitleSearchResult, forMediaTitle: String) async throws -> LIDSubtitleTrack {
+        let data = try await LIDSubtitleSearchManager.shared.download(result: result)
+        let localURL = try await LIDSubtitleStore.shared.saveSubtitle(
+            data: data,
+            mediaTitle: forMediaTitle,
+            languageCode: result.languageCode,
+            releaseName: result.releaseName,
+            format: result.format
+        )
+        addExternalSubtitle(url: localURL, displayName: result.displayTitle)
+        let trackId = "external_\(localURL.lastPathComponent)"
+        let appliedTrack = trackManager.availableSubtitleTracks.first(where: { $0.id == trackId })
+            ?? LIDSubtitleTrack(id: trackId, displayName: result.displayTitle, languageCode: result.languageCode, isExternal: true, externalURL: localURL)
+        return appliedTrack
+    }
+
+    @MainActor
+    public func listDownloadedSubtitles(for mediaTitle: String) async -> [LIDSubtitleTrack] {
+        return await LIDSubtitleStore.shared.listDownloadedSubtitles(for: mediaTitle)
+    }
+
+    @MainActor
+    public func deleteDownloadedSubtitle(url: URL) async throws {
+        try await LIDSubtitleStore.shared.deleteSubtitle(at: url)
+        trackManager.removeExternalSubtitle(url: url)
+    }
+
     // MARK: - LIDMediaEngineDelegate Implementation
 
     public func engineDidUpdateState(_ engine: LIDMediaEngineProtocol, state: LIDPlaybackState) {
