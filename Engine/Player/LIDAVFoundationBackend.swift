@@ -2,6 +2,9 @@ import Foundation
 #if canImport(AVFoundation)
 import AVFoundation
 #endif
+#if canImport(AVKit)
+import AVKit
+#endif
 #if canImport(UIKit)
 import UIKit
 #endif
