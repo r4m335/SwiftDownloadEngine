@@ -510,7 +510,7 @@ CI success must not be treated as proof of actual media decoding or physical-dev
 
 **Current Status:** A.6.1 through A.6.5 Complete & CI-Verified (GitHub Actions Run [#43701180237](https://github.com/r4m335/SwiftDownloadEngine/actions/runs/43701180237), Commit `6690e39`). Produced valid 60.73 MB unsigned iOS device `.ipa` (`SwiftDownloadEngine-iOS-Device`) embedding `VLCKit.framework` and `LibTorrent.xcframework`. All macOS and iOS CI jobs passed: Swift Package Tests passed (including 49 player tests & `LIDMediaCompatibilityTests`), libtorrent 2.0 iOS Native Build passed, and iOS Device Build passed. The player architecture satisfies all requirements across dual-engine abstraction, universal container routing, aspect ratio scaling, track enumeration/switching, external subtitle cue parsing/delay synchronization, sibling discovery, PiP conditional rendering, replay, and resume history. Ready for Milestone A.6.6 Physical iPhone Verification.
 
-### Milestone A.7: Anonymous Subtitle Discovery & Multi-Provider Search [In Progress]
+### Milestone A.7: Anonymous Subtitle Discovery & Multi-Provider Search [Complete & CI-Verified]
 
 - **Objective:** Implement direct in-player subtitle searching and downloading without requiring users to create accounts, enter API keys, or configure external services.
 - **Architecture & Design:**
@@ -552,6 +552,8 @@ CI success must not be treated as proof of actual media decoding or physical-dev
 - **A.7.8:** Local subtitle persistence and replacement (`LIDSubtitleStore`).
 - **A.7.9:** VLCKit and AVFoundation playback integration.
 - **A.7.10:** Provider failure handling, caching and automated test suite (`LIDSubtitleDiscoveryTests.swift`).
+
+**Current Status:** Milestone A.7 Complete & CI-Verified (GitHub Actions Run [#43705724774](https://github.com/r4m335/SwiftDownloadEngine/actions/runs/43705724774), Commit `43d3338`). All 3 CI jobs passed: Swift Package Tests passed (including 12 subtitle discovery unit tests in `LIDSubtitleDiscoveryTests` and 61 player tests), libtorrent 2.0 iOS Native Build passed, and iOS Device Build passed with packaged 61.11 MB unsigned `.ipa` (`SwiftDownloadEngine-iOS-Device`). Direct anonymous subtitle lookup implemented across The Subtitle Database, Stremio OpenSubtitles v3, and Subtitles.website with fail-soft concurrency, filename regex metadata parsing, match quality ranking, UTF-8 transcoding, persistent storage in `Media/Subtitles/<Title>/`, and in-player SwiftUI search sheet.
 
 ---
 
