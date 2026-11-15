@@ -80,8 +80,17 @@ public struct LIDNativePlayerLayerView: UIViewRepresentable {
     }
 
     public func updateUIView(_ uiView: LIDPlayerLayerView, context: Context) {
-        uiView.playerLayer.player = player
-        uiView.playerLayer.videoGravity = videoGravity
+        if uiView.playerLayer.player !== player {
+            uiView.playerLayer.player = player
+            PipelineLogger.shared.logPlayer(
+                session: LIDPlaybackEngine.shared.currentSessionId,
+                category: "VideoRenderer",
+                message: "AVPlayerLayer attached to active player"
+            )
+        }
+        if uiView.playerLayer.videoGravity != videoGravity {
+            uiView.playerLayer.videoGravity = videoGravity
+        }
         uiView.setupPiP()
     }
 }
@@ -106,7 +115,7 @@ public struct LIDVLCPlayerLayerView: UIViewRepresentable {
     }
 
     public static func dismantleUIView(_ uiView: UIView, coordinator: ()) {
-        // Backend handles detachment on stop/teardown
+        backend.detachRenderingView()
     }
 }
 #endif
@@ -142,8 +151,10 @@ public struct LIDPlayerView: View {
     @State private var showTrackSelectionSheet: Bool = false
     @State private var showSubtitleSyncSheet: Bool = false
     @State private var showSubtitleSearchSheet: Bool = false
+    @State private var showDiagnosticsSheet: Bool = false
     @State private var externalSubtitlePathInput: String = ""
     @State private var showExternalSubtitlePrompt: Bool = false
+    @State private var sessionId: String = String(UUID().uuidString.prefix(8).uppercased())
 
     // Gesture state HUD overlays
     @State private var brightnessLevel: Double = 0.5
@@ -314,6 +325,11 @@ public struct LIDPlayerView: View {
                                 showControls = true
                                 resetControlsTimer()
                             }
+                            PipelineLogger.shared.logPlayer(
+                                session: sessionId,
+                                category: "PlayerGesture",
+                                message: "Controls unlocked by user"
+                            )
                         } label: {
                             HStack(spacing: 6) {
                                 Image(systemName: "lock.fill")
@@ -340,13 +356,23 @@ public struct LIDPlayerView: View {
             brightnessLevel = Double(UIScreen.main.brightness)
             #endif
             volumeLevel = Double(engine.volume)
-            engine.load(source: source, autoPlay: true, resumeFromHistory: true)
+            PipelineLogger.shared.logPlayer(
+                session: sessionId,
+                category: "PlayerLifecycle",
+                message: "LIDPlayerView appeared for media '\(title)', url: \(url.lastPathComponent)"
+            )
+            engine.load(source: source, autoPlay: true, resumeFromHistory: true, sessionId: sessionId)
             if case .localFile(let localURL, _) = source {
                 autoDiscoverSiblingSubtitles(for: localURL)
             }
             resetControlsTimer()
         }
         .onDisappear {
+            PipelineLogger.shared.logPlayer(
+                session: sessionId,
+                category: "PlayerLifecycle",
+                message: "LIDPlayerView disappeared, stopping engine"
+            )
             engine.stop()
             controlsTimer?.invalidate()
         }
@@ -358,6 +384,9 @@ public struct LIDPlayerView: View {
         }
         .sheet(isPresented: $showSubtitleSearchSheet) {
             LIDSubtitleSearchView(mediaTitle: engine.currentSource?.title ?? "", engine: engine)
+        }
+        .sheet(isPresented: $showDiagnosticsSheet) {
+            DiagnosticLogView()
         }
     }
 
@@ -426,93 +455,130 @@ public struct LIDPlayerView: View {
 
     private var gestureOverlayView: some View {
         GeometryReader { proxy in
-            ZStack {
-                // Surface tap: Tapping anywhere on the video toggles controls visibility
+            HStack(spacing: 0) {
+                // Left 50%: Brightness Drag + Double-tap Rewind (-10s) + Single-tap Controls
                 Color.clear
                     .contentShape(Rectangle())
-                    .onTapGesture {
-                        guard !isControlsLocked else { return }
+                    .frame(width: proxy.size.width * 0.5)
+                    .gesture(
+                        DragGesture(minimumDistance: 20)
+                            .onChanged { value in
+                                guard !isControlsLocked else { return }
+                                if !isDraggingBrightness {
+                                    isDraggingBrightness = true
+                                    controlsTimer?.invalidate()
+                                    #if canImport(UIKit)
+                                    gestureStartBrightness = Double(UIScreen.main.brightness)
+                                    #else
+                                    gestureStartBrightness = brightnessLevel
+                                    #endif
+                                    PipelineLogger.shared.logPlayer(
+                                        session: sessionId,
+                                        category: "PlayerGesture",
+                                        message: "Brightness drag started at \(Int(gestureStartBrightness * 100))%"
+                                    )
+                                }
+                                showControls = false
+                                showBrightnessHUD = true
+                                let delta = -Double(value.translation.height) / Double(proxy.size.height * 0.7)
+                                let newLevel = max(0.0, min(1.0, gestureStartBrightness + delta))
+                                brightnessLevel = newLevel
+                                #if canImport(UIKit)
+                                UIScreen.main.brightness = CGFloat(newLevel)
+                                #endif
+                            }
+                            .onEnded { _ in
+                                isDraggingBrightness = false
+                                PipelineLogger.shared.logPlayer(
+                                    session: sessionId,
+                                    category: "PlayerGesture",
+                                    message: "Brightness drag ended -> \(Int(brightnessLevel * 100))%"
+                                )
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                                    showBrightnessHUD = false
+                                }
+                                resetControlsTimer()
+                            }
+                    )
+                    .onTapGesture(count: 2) {
+                        guard !isControlsLocked && !isDraggingBrightness else { return }
+                        PipelineLogger.shared.logPlayer(
+                            session: sessionId,
+                            category: "PlayerGesture",
+                            message: "Double-tap left zone -> rewind -10s"
+                        )
+                        engine.seekBy(offsetSeconds: -10)
+                        showTemporaryHUD("⏪ 10s")
+                        resetControlsTimer()
+                    }
+                    .onTapGesture(count: 1) {
+                        guard !isControlsLocked && !isDraggingBrightness else { return }
+                        PipelineLogger.shared.logPlayer(
+                            session: sessionId,
+                            category: "PlayerGesture",
+                            message: "Single-tap left zone -> toggle controls (was \(showControls))"
+                        )
                         toggleControlsVisibility()
                     }
 
-                // 2-Zone Interaction Layout:
-                // Left 50%: Brightness swipe + Double-tap rewind (10s)
-                // Right 50%: Volume swipe + Double-tap forward (10s)
-                HStack(spacing: 0) {
-                    // Left 50%: Brightness
-                    Color.clear
-                        .frame(width: proxy.size.width * 0.5)
-                        .contentShape(Rectangle())
-                        .gesture(
-                            DragGesture(minimumDistance: 15)
-                                .onChanged { value in
-                                    guard !isControlsLocked else { return }
-                                    if !isDraggingBrightness {
-                                        isDraggingBrightness = true
-                                        #if canImport(UIKit)
-                                        gestureStartBrightness = Double(UIScreen.main.brightness)
-                                        #else
-                                        gestureStartBrightness = brightnessLevel
-                                        #endif
-                                    }
-                                    showControls = false
-                                    showBrightnessHUD = true
-                                    let delta = -Double(value.translation.height) / Double(proxy.size.height * 0.7)
-                                    let newLevel = max(0.0, min(1.0, gestureStartBrightness + delta))
-                                    brightnessLevel = newLevel
-                                    #if canImport(UIKit)
-                                    UIScreen.main.brightness = CGFloat(newLevel)
-                                    #endif
-                                }
-                                .onEnded { _ in
-                                    isDraggingBrightness = false
-                                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
-                                        showBrightnessHUD = false
-                                    }
-                                }
-                        )
-                        .simultaneousGesture(
-                            TapGesture(count: 2).onEnded {
+                // Right 50%: Volume Drag + Double-tap Forward (+10s) + Single-tap Controls
+                Color.clear
+                    .contentShape(Rectangle())
+                    .frame(width: proxy.size.width * 0.5)
+                    .gesture(
+                        DragGesture(minimumDistance: 20)
+                            .onChanged { value in
                                 guard !isControlsLocked else { return }
-                                engine.seekBy(offsetSeconds: -10)
-                                showTemporaryHUD("⏪ 10s")
-                            }
-                        )
-
-                    // Right 50%: Volume
-                    Color.clear
-                        .frame(width: proxy.size.width * 0.5)
-                        .contentShape(Rectangle())
-                        .gesture(
-                            DragGesture(minimumDistance: 15)
-                                .onChanged { value in
-                                    guard !isControlsLocked else { return }
-                                    if !isDraggingVolume {
-                                        isDraggingVolume = true
-                                        gestureStartVolume = Double(engine.volume)
-                                    }
-                                    showControls = false
-                                    showVolumeHUD = true
-                                    let delta = -Double(value.translation.height) / Double(proxy.size.height * 0.7)
-                                    let newLevel = max(0.0, min(1.0, gestureStartVolume + delta))
-                                    volumeLevel = newLevel
-                                    engine.setVolume(Float(newLevel))
+                                if !isDraggingVolume {
+                                    isDraggingVolume = true
+                                    controlsTimer?.invalidate()
+                                    gestureStartVolume = Double(engine.volume)
+                                    PipelineLogger.shared.logPlayer(
+                                        session: sessionId,
+                                        category: "PlayerGesture",
+                                        message: "Volume drag started at \(Int(gestureStartVolume * 100))%"
+                                    )
                                 }
-                                .onEnded { _ in
-                                    isDraggingVolume = false
-                                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
-                                        showVolumeHUD = false
-                                    }
-                                }
-                        )
-                        .simultaneousGesture(
-                            TapGesture(count: 2).onEnded {
-                                guard !isControlsLocked else { return }
-                                engine.seekBy(offsetSeconds: 10)
-                                showTemporaryHUD("⏩ 10s")
+                                showControls = false
+                                showVolumeHUD = true
+                                let delta = -Double(value.translation.height) / Double(proxy.size.height * 0.7)
+                                let newLevel = max(0.0, min(1.0, gestureStartVolume + delta))
+                                volumeLevel = newLevel
+                                engine.setVolume(Float(newLevel))
                             }
+                            .onEnded { _ in
+                                isDraggingVolume = false
+                                PipelineLogger.shared.logPlayer(
+                                    session: sessionId,
+                                    category: "PlayerGesture",
+                                    message: "Volume drag ended -> \(Int(volumeLevel * 100))%"
+                                )
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                                    showVolumeHUD = false
+                                }
+                                resetControlsTimer()
+                            }
+                    )
+                    .onTapGesture(count: 2) {
+                        guard !isControlsLocked && !isDraggingVolume else { return }
+                        PipelineLogger.shared.logPlayer(
+                            session: sessionId,
+                            category: "PlayerGesture",
+                            message: "Double-tap right zone -> forward +10s"
                         )
-                }
+                        engine.seekBy(offsetSeconds: 10)
+                        showTemporaryHUD("⏩ 10s")
+                        resetControlsTimer()
+                    }
+                    .onTapGesture(count: 1) {
+                        guard !isControlsLocked && !isDraggingVolume else { return }
+                        PipelineLogger.shared.logPlayer(
+                            session: sessionId,
+                            category: "PlayerGesture",
+                            message: "Single-tap right zone -> toggle controls (was \(showControls))"
+                        )
+                        toggleControlsVisibility()
+                    }
             }
         }
     }
@@ -679,8 +745,25 @@ public struct LIDPlayerView: View {
                         isControlsLocked = true
                         showControls = false
                     }
+                    PipelineLogger.shared.logPlayer(
+                        session: sessionId,
+                        category: "PlayerGesture",
+                        message: "Controls locked by user"
+                    )
                 } label: {
                     Image(systemName: "lock")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundColor(.white)
+                        .padding(6)
+                        .background(Color.black.opacity(0.4))
+                        .clipShape(Circle())
+                }
+
+                // Diagnostics Log Viewer Button
+                Button {
+                    showDiagnosticsSheet = true
+                } label: {
+                    Image(systemName: "stethoscope")
                         .font(.system(size: 14, weight: .semibold))
                         .foregroundColor(.white)
                         .padding(6)
@@ -1056,6 +1139,11 @@ public struct LIDPlayerView: View {
         withAnimation(.easeInOut(duration: 0.25)) {
             showControls.toggle()
         }
+        PipelineLogger.shared.logPlayer(
+            session: sessionId,
+            category: "PlayerControls",
+            message: "toggleControlsVisibility -> showControls = \(showControls)"
+        )
         if showControls {
             resetControlsTimer()
         } else {
@@ -1086,11 +1174,17 @@ public struct LIDPlayerView: View {
 
     private func resetControlsTimer() {
         controlsTimer?.invalidate()
+        guard !isDraggingBrightness && !isDraggingVolume else { return }
         controlsTimer = Timer.scheduledTimer(withTimeInterval: 3.5, repeats: false) { _ in
             Task { @MainActor in
                 withAnimation(.easeInOut(duration: 0.3)) {
-                    if engine.playbackState.isPlaying && !isControlsLocked {
+                    if engine.playbackState.isPlaying && !isControlsLocked && !isDraggingBrightness && !isDraggingVolume {
                         showControls = false
+                        PipelineLogger.shared.logPlayer(
+                            session: sessionId,
+                            category: "PlayerControls",
+                            message: "Controls auto-hidden after timeout"
+                        )
                     }
                 }
             }

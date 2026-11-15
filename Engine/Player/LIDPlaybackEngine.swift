@@ -61,6 +61,8 @@ public final class LIDPlaybackEngine: NSObject, ObservableObject, LIDMediaEngine
     private let historyStore: LIDPlaybackHistoryStore
     private var lastRecordedSecond: Int = 0
     private var loadingWatchdogTimer: Timer? = nil
+    private var renderingWatchdogTimer: Timer? = nil
+    public private(set) var currentSessionId: String = "IDLE"
 
     public init(
         historyStore: LIDPlaybackHistoryStore = .shared,
@@ -198,8 +200,19 @@ public final class LIDPlaybackEngine: NSObject, ObservableObject, LIDMediaEngine
     // MARK: - Playback Control APIs
 
     @MainActor
-    public func load(source: LIDPlayerSource, autoPlay: Bool = true, resumeFromHistory: Bool = true) {
+    public func load(source: LIDPlayerSource, autoPlay: Bool = true, resumeFromHistory: Bool = true, sessionId: String? = nil) {
         stop()
+        let sid = sessionId ?? String(UUID().uuidString.prefix(8).uppercased())
+        self.currentSessionId = sid
+        vlcBackend.activeSessionId = sid
+        avBackend.activeSessionId = sid
+
+        PipelineLogger.shared.logPlayer(
+            session: sid,
+            category: "PlayerLifecycle",
+            message: "Loading source '\(source.title)' (format=\(source.url?.pathExtension ?? "stream"), autoPlay=\(autoPlay))"
+        )
+
         self.currentSource = source
         self.playbackState = .loading
         self.currentPositionSeconds = 0.0
@@ -212,19 +225,25 @@ public final class LIDPlaybackEngine: NSObject, ObservableObject, LIDMediaEngine
         // Validate local file existence and container header
         if case .localFile(let url, _) = source {
             guard FileManager.default.fileExists(atPath: url.path) else {
-                self.playbackState = .failed(error: "Media file does not exist on disk: \(url.lastPathComponent)")
+                let err = "Media file does not exist on disk: \(url.lastPathComponent)"
+                self.playbackState = .failed(error: err)
+                PipelineLogger.shared.logPlayer(session: sid, category: "PlayerError", message: err)
                 return
             }
 
             if let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
                let size = attrs[.size] as? Int64, size == 0 {
-                self.playbackState = .failed(error: "Media file is empty (0 bytes): \(url.lastPathComponent)")
+                let err = "Media file is empty (0 bytes): \(url.lastPathComponent)"
+                self.playbackState = .failed(error: err)
+                PipelineLogger.shared.logPlayer(session: sid, category: "PlayerError", message: err)
                 return
             }
 
             if url.pathExtension.lowercased() == "ts" {
                 if !Self.validateTSHeader(url: url) {
-                    self.playbackState = .failed(error: "File is not a valid MPEG-2 Transport Stream (missing 0x47 sync header).")
+                    let err = "File is not a valid MPEG-2 Transport Stream (missing 0x47 sync header)."
+                    self.playbackState = .failed(error: err)
+                    PipelineLogger.shared.logPlayer(session: sid, category: "PlayerError", message: err)
                     return
                 }
             }
@@ -238,6 +257,11 @@ public final class LIDPlaybackEngine: NSObject, ObservableObject, LIDMediaEngine
 
         let selected = selectBackend(for: source)
         self.activeBackendType = selected
+        PipelineLogger.shared.logPlayer(
+            session: sid,
+            category: "PlayerBackend",
+            message: "Selected backend: \(selected)"
+        )
 
         switch selected {
         case .vlcKit:
@@ -270,6 +294,7 @@ public final class LIDPlaybackEngine: NSObject, ObservableObject, LIDMediaEngine
 
     @MainActor
     public func play() {
+        PipelineLogger.shared.logPlayer(session: currentSessionId, category: "PlayerEngine", message: "play() triggered")
         #if os(iOS) && canImport(AVFoundation)
         Self.configureAudioSession()
         #endif
@@ -280,11 +305,13 @@ public final class LIDPlaybackEngine: NSObject, ObservableObject, LIDMediaEngine
             avBackend.play()
         }
         self.playbackState = .playing
+        startRenderingWatchdog()
         updateNowPlaying()
     }
 
     @MainActor
     public func pause() {
+        PipelineLogger.shared.logPlayer(session: currentSessionId, category: "PlayerEngine", message: "pause() triggered at \(currentPositionSeconds)s")
         switch activeBackendType {
         case .vlcKit:
             vlcBackend.pause()
@@ -292,6 +319,7 @@ public final class LIDPlaybackEngine: NSObject, ObservableObject, LIDMediaEngine
             avBackend.pause()
         }
         self.playbackState = .paused
+        cancelRenderingWatchdog()
         saveCurrentPosition()
         updateNowPlaying()
     }
@@ -307,7 +335,9 @@ public final class LIDPlaybackEngine: NSObject, ObservableObject, LIDMediaEngine
 
     @MainActor
     public func stop() {
+        PipelineLogger.shared.logPlayer(session: currentSessionId, category: "PlayerEngine", message: "stop() triggered")
         cancelLoadingWatchdog()
+        cancelRenderingWatchdog()
         saveCurrentPosition()
         LIDNowPlayingCoordinator.shared.clearNowPlaying()
         trackManager.reset()
@@ -334,6 +364,11 @@ public final class LIDPlaybackEngine: NSObject, ObservableObject, LIDMediaEngine
     @MainActor
     public func seek(to seconds: Double) {
         let target = max(0.0, min(seconds, durationSeconds > 0 ? durationSeconds : seconds))
+        PipelineLogger.shared.logPlayer(
+            session: currentSessionId,
+            category: "PlayerEngine",
+            message: "seek(to: \(String(format: "%.1f", target))s)"
+        )
         self.currentPositionSeconds = target
         switch activeBackendType {
         case .vlcKit:
@@ -352,6 +387,11 @@ public final class LIDPlaybackEngine: NSObject, ObservableObject, LIDMediaEngine
 
     @MainActor
     public func setPlaybackSpeed(_ speed: LIDPlaybackSpeed) {
+        PipelineLogger.shared.logPlayer(
+            session: currentSessionId,
+            category: "PlayerEngine",
+            message: "setPlaybackSpeed(\(speed.label))"
+        )
         self.playbackSpeed = speed
         vlcBackend.playbackSpeed = speed
         avBackend.playbackSpeed = speed
@@ -505,6 +545,11 @@ public final class LIDPlaybackEngine: NSObject, ObservableObject, LIDMediaEngine
     public func engineDidFail(_ engine: LIDMediaEngineProtocol, error: String) {
         guard engine.backendType == self.activeBackendType else { return }
         self.playbackState = .failed(error: error)
+        PipelineLogger.shared.logPlayer(
+            session: currentSessionId,
+            category: "PlayerError",
+            message: "Engine failed: \(error)"
+        )
     }
 
     // MARK: - Internal Helpers
@@ -528,6 +573,11 @@ public final class LIDPlaybackEngine: NSObject, ObservableObject, LIDMediaEngine
                 if self.playbackState.isLoading {
                     let err = "Playback initialization timed out. The media format or codec could not be decoded."
                     self.playbackState = .failed(error: err)
+                    PipelineLogger.shared.logPlayer(
+                        session: self.currentSessionId,
+                        category: "PlayerError",
+                        message: err
+                    )
                     self.stop()
                 }
             }
@@ -537,6 +587,51 @@ public final class LIDPlaybackEngine: NSObject, ObservableObject, LIDMediaEngine
     private func cancelLoadingWatchdog() {
         loadingWatchdogTimer?.invalidate()
         loadingWatchdogTimer = nil
+    }
+
+    private func startRenderingWatchdog() {
+        cancelRenderingWatchdog()
+        var lastPosition: Double = -1.0
+
+        renderingWatchdogTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self = self, self.playbackState.isPlaying else { return }
+                let currentPos = self.currentPositionSeconds
+                let isAdvancing = (currentPos - lastPosition) > 0.4
+                lastPosition = currentPos
+
+                switch self.activeBackendType {
+                case .vlcKit:
+                    let vTracks = self.vlcBackend.videoTrackCount
+                    let hasDrawable = self.vlcBackend.hasAttachedDrawable
+                    if isAdvancing && (!hasDrawable || vTracks == 0) {
+                        PipelineLogger.shared.logPlayer(
+                            session: self.currentSessionId,
+                            category: "VideoRenderer",
+                            message: "[RenderingWatchdog] WARNING: Audio advancing (pos=\(String(format: "%.1f", currentPos))s) but VLC video anomaly! hasDrawable=\(hasDrawable), videoTracks=\(vTracks)"
+                        )
+                    }
+                case .avFoundation:
+                    #if canImport(AVFoundation)
+                    if isAdvancing, let item = self.avBackend.playerItem {
+                        let size = item.presentationSize
+                        if size == .zero && item.tracks.contains(where: { $0.assetTrack?.mediaType == .video }) {
+                            PipelineLogger.shared.logPlayer(
+                                session: self.currentSessionId,
+                                category: "VideoRenderer",
+                                message: "[RenderingWatchdog] WARNING: Audio advancing (pos=\(String(format: "%.1f", currentPos))s) but AVPlayerItem presentationSize is zero!"
+                            )
+                        }
+                    }
+                    #endif
+                }
+            }
+        }
+    }
+
+    private func cancelRenderingWatchdog() {
+        renderingWatchdogTimer?.invalidate()
+        renderingWatchdogTimer = nil
     }
 
     private func saveCurrentPosition() {

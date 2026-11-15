@@ -17,6 +17,19 @@ public final class LIDVLCKitBackend: NSObject, LIDMediaEngineProtocol, VLCMediaP
 
     public let backendType: LIDMediaEngineBackendType = .vlcKit
     public weak var delegate: LIDMediaEngineDelegate?
+    public var activeSessionId: String = "IDLE"
+
+    public var videoTrackCount: Int {
+        player.numberOfVideoTracks
+    }
+
+    public var hasAttachedDrawable: Bool {
+        #if canImport(UIKit)
+        return currentRenderingView != nil && player.drawable != nil
+        #else
+        return true
+        #endif
+    }
 
     public private(set) var playbackState: LIDPlaybackState = .idle
     public private(set) var currentPositionSeconds: Double = 0.0
@@ -238,11 +251,24 @@ public final class LIDVLCKitBackend: NSObject, LIDMediaEngineProtocol, VLCMediaP
 
     #if canImport(UIKit)
     public func attachRenderingView(_ view: UIView) {
+        if self.currentRenderingView === view && self.player.drawable != nil {
+            return
+        }
         self.currentRenderingView = view
         self.player.drawable = view
+        PipelineLogger.shared.logPlayer(
+            session: activeSessionId,
+            category: "VideoRenderer",
+            message: "VLCKit drawable attached to view [\(Unmanaged.passUnretained(view).toOpaque())]"
+        )
     }
 
     public func detachRenderingView() {
+        PipelineLogger.shared.logPlayer(
+            session: activeSessionId,
+            category: "VideoRenderer",
+            message: "VLCKit drawable detached"
+        )
         self.currentRenderingView = nil
         self.player.drawable = nil
     }
@@ -253,11 +279,30 @@ public final class LIDVLCKitBackend: NSObject, LIDMediaEngineProtocol, VLCMediaP
     nonisolated public func mediaPlayerStateChanged(_ newState: VLCMediaPlayerState) {
         Task { @MainActor [weak self] in
             guard let self = self else { return }
+            PipelineLogger.shared.logPlayer(
+                session: self.activeSessionId,
+                category: "PlayerBackend",
+                message: "VLCKit state changed -> \(newState.rawValue)"
+            )
             switch newState {
             case .opening:
                 self.playbackState = .loading
             case .playing:
                 self.playbackState = .playing
+                let vTracks = self.player.numberOfVideoTracks
+                let vSize = self.player.videoSize
+                PipelineLogger.shared.logPlayer(
+                    session: self.activeSessionId,
+                    category: "VideoRenderer",
+                    message: "VLCKit rendering active: videoTracks=\(vTracks), size=\(Int(vSize.width))x\(Int(vSize.height)), drawableAttached=\(self.currentRenderingView != nil)"
+                )
+                if vTracks <= 0 {
+                    PipelineLogger.shared.logPlayer(
+                        session: self.activeSessionId,
+                        category: "VideoRenderer",
+                        message: "WARNING: VLCKit is playing with 0 video tracks (audio-only or video demux failure)"
+                    )
+                }
                 if let resume = self.pendingResumePositionSeconds, resume > 0 {
                     self.pendingResumePositionSeconds = nil
                     self.seek(to: resume)
@@ -269,6 +314,11 @@ public final class LIDVLCKitBackend: NSObject, LIDMediaEngineProtocol, VLCMediaP
             case .error:
                 let error = "libVLC reported playback error"
                 self.playbackState = .failed(error: error)
+                PipelineLogger.shared.logPlayer(
+                    session: self.activeSessionId,
+                    category: "PlayerError",
+                    message: "libVLC reported playback error: \(error)"
+                )
                 self.delegate?.engineDidFail(self, error: error)
             case .nothingSpecial:
                 break
@@ -320,6 +370,9 @@ public final class LIDVLCKitBackend: NSObject, LIDMediaEngineProtocol {
 
     public let backendType: LIDMediaEngineBackendType = .vlcKit
     public weak var delegate: LIDMediaEngineDelegate?
+    public var activeSessionId: String = "IDLE"
+    public var videoTrackCount: Int { 1 }
+    public var hasAttachedDrawable: Bool { true }
 
     public private(set) var playbackState: LIDPlaybackState = .idle
     public private(set) var currentPositionSeconds: Double = 0.0

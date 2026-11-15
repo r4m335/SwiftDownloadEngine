@@ -28,10 +28,67 @@ public final class PipelineLogger: @unchecked Sendable, ObservableObject {
         return df
     }()
 
-    public init() {}
+    private let logFileURL: URL? = {
+        guard let docDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else {
+            return nil
+        }
+        let dir = docDir.appendingPathComponent("LID_Diagnostics", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir.appendingPathComponent("player_diagnostics.log")
+    }()
+
+    private let maxFileSizeBytes: Int = 512 * 1024 // 512 KB rotating threshold
+
+    public init() {
+        loadPersistedLogs()
+    }
+
+    private func loadPersistedLogs() {
+        guard let url = logFileURL, FileManager.default.fileExists(atPath: url.path),
+              let content = try? String(contentsOf: url, encoding: .utf8) else { return }
+        let lines = content.components(separatedBy: .newlines).filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+        lock.lock()
+        let tail = lines.suffix(Self.maxLogCount)
+        logs = Array(tail)
+        let snapshot = logs
+        lock.unlock()
+        entries = snapshot
+    }
+
+    private func appendToFile(_ line: String) {
+        guard let url = logFileURL else { return }
+        let lineWithNewline = line + "\n"
+        guard let data = lineWithNewline.data(using: .utf8) else { return }
+
+        rotateLogFileIfNeeded(url: url)
+
+        if let handle = try? FileHandle(forWritingTo: url) {
+            defer { try? handle.close() }
+            _ = try? handle.seekToEnd()
+            try? handle.write(contentsOf: data)
+        } else {
+            try? data.write(to: url, options: .atomic)
+        }
+    }
+
+    private func rotateLogFileIfNeeded(url: URL) {
+        guard let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
+              let size = attrs[.size] as? Int64,
+              size > maxFileSizeBytes else { return }
+
+        let oldURL = url.deletingPathExtension().appendingPathExtension("old.log")
+        try? FileManager.default.removeItem(at: oldURL)
+        try? FileManager.default.moveItem(at: url, to: oldURL)
+    }
+
+    /// Structured logger for player diagnostics with session tracking and category filtering.
+    public func logPlayer(session: String, category: String, message: String) {
+        let msg = "[\(session)] [\(category)] \(message)"
+        log(msg)
+    }
 
     /// Logs a raw message, applies redaction, appends to the circular buffer,
-    /// and mirrors to standard output.
+    /// persists to rotating diagnostic file on disk, and mirrors to standard output.
     public func log(_ rawMessage: String) {
         let redacted = Self.redact(rawMessage)
         let timestamp = Self.dateFormatter.string(from: Date())
@@ -45,6 +102,7 @@ public final class PipelineLogger: @unchecked Sendable, ObservableObject {
         let snapshot = logs
         lock.unlock()
 
+        appendToFile(formattedLine)
         print(formattedLine)
 
         DispatchQueue.main.async { [weak self] in
@@ -64,10 +122,15 @@ public final class PipelineLogger: @unchecked Sendable, ObservableObject {
         allLogs().joined(separator: "\n")
     }
 
-    /// Clears all recorded log entries from memory.
+    /// Clears all recorded log entries from memory and disk.
     public func clear() {
         lock.lock()
         logs.removeAll()
+        if let url = logFileURL {
+            try? FileManager.default.removeItem(at: url)
+            let oldURL = url.deletingPathExtension().appendingPathExtension("old.log")
+            try? FileManager.default.removeItem(at: oldURL)
+        }
         lock.unlock()
 
         DispatchQueue.main.async { [weak self] in

@@ -17,6 +17,7 @@ public final class LIDAVFoundationBackend: NSObject, LIDMediaEngineProtocol {
 
     public let backendType: LIDMediaEngineBackendType = .avFoundation
     public weak var delegate: LIDMediaEngineDelegate?
+    public var activeSessionId: String = "IDLE"
 
     public private(set) var playbackState: LIDPlaybackState = .idle
     public private(set) var currentPositionSeconds: Double = 0.0
@@ -334,6 +335,11 @@ public final class LIDAVFoundationBackend: NSObject, LIDMediaEngineProtocol {
         statusObserver = item.observe(\.status, options: [.initial, .new]) { [weak self] observedItem, _ in
             Task { @MainActor [weak self] in
                 guard let self = self else { return }
+                PipelineLogger.shared.logPlayer(
+                    session: self.activeSessionId,
+                    category: "VideoRenderer",
+                    message: "AVPlayerItem status -> \(observedItem.status.rawValue), error: \(observedItem.error?.localizedDescription ?? "none"), size: \(Int(observedItem.presentationSize.width))x\(Int(observedItem.presentationSize.height))"
+                )
                 switch observedItem.status {
                 case .readyToPlay:
                     let rawDuration = observedItem.duration.seconds
@@ -345,6 +351,11 @@ public final class LIDAVFoundationBackend: NSObject, LIDMediaEngineProtocol {
                 case .failed:
                     let err = observedItem.error?.localizedDescription ?? "Playback failed"
                     self.playbackState = .failed(error: err)
+                    PipelineLogger.shared.logPlayer(
+                        session: self.activeSessionId,
+                        category: "PlayerError",
+                        message: "AVPlayerItem failed with error: \(err)"
+                    )
                     self.delegate?.engineDidFail(self, error: err)
                 case .unknown:
                     break
