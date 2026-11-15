@@ -342,6 +342,9 @@ public struct LIDPlayerView: View {
             #endif
             volumeLevel = Double(engine.volume)
             engine.load(source: source, autoPlay: true, resumeFromHistory: true)
+            if case .localFile(let localURL, _) = source {
+                autoDiscoverSiblingSubtitles(for: localURL)
+            }
             resetControlsTimer()
         }
         .onDisappear {
@@ -671,7 +674,7 @@ public struct LIDPlayerView: View {
 
                 // Picture-in-Picture Button
                 #if canImport(AVFoundation) && canImport(UIKit) && canImport(AVKit)
-                if AVPictureInPictureController.isPictureInPictureSupported() {
+                if engine.supportsPictureInPicture {
                     Button {
                         layerViewRef?.togglePiP()
                     } label: {
@@ -766,10 +769,14 @@ public struct LIDPlayerView: View {
                         .scaleEffect(1.6)
                 } else {
                     Button {
-                        engine.togglePlayPause()
+                        if engine.playbackState.isEnded {
+                            engine.replay()
+                        } else {
+                            engine.togglePlayPause()
+                        }
                         resetControlsTimer()
                     } label: {
-                        Image(systemName: engine.playbackState.isPlaying ? "pause.circle.fill" : "play.circle.fill")
+                        Image(systemName: engine.playbackState.isEnded ? "arrow.counterclockwise.circle.fill" : (engine.playbackState.isPlaying ? "pause.circle.fill" : "play.circle.fill"))
                             .font(.system(size: 64))
                             .foregroundColor(.white)
                     }
@@ -895,7 +902,7 @@ public struct LIDPlayerView: View {
                     } else {
                         ForEach(engine.trackManager.availableAudioTracks) { track in
                             Button {
-                                engine.trackManager.selectAudioTrack(track)
+                                engine.selectAudioTrack(track)
                             } label: {
                                 HStack {
                                     Text(track.displayName)
@@ -915,7 +922,7 @@ public struct LIDPlayerView: View {
                 Section(header: Text("Subtitles")) {
                     ForEach(engine.trackManager.availableSubtitleTracks) { track in
                         Button {
-                            engine.trackManager.selectSubtitleTrack(track)
+                            engine.selectSubtitleTrack(track)
                         } label: {
                             HStack {
                                 Text(track.displayName)
@@ -964,6 +971,24 @@ public struct LIDPlayerView: View {
                     }
                 }
             }
+            .alert("Add External Subtitle", isPresented: $showExternalSubtitlePrompt) {
+                TextField("File path or URL (e.g. /path/to/sub.srt)", text: $externalSubtitlePathInput)
+                Button("Add") {
+                    let trimmed = externalSubtitlePathInput.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !trimmed.isEmpty {
+                        let fileURL = trimmed.hasPrefix("/") ? URL(fileURLWithPath: trimmed) : URL(string: trimmed)
+                        if let targetURL = fileURL {
+                            engine.addExternalSubtitle(url: targetURL)
+                        }
+                    }
+                    externalSubtitlePathInput = ""
+                }
+                Button("Cancel", role: .cancel) {
+                    externalSubtitlePathInput = ""
+                }
+            } message: {
+                Text("Enter the local file path or URL for an external SRT or WebVTT subtitle file.")
+            }
         }
     }
 
@@ -986,27 +1011,31 @@ public struct LIDPlayerView: View {
 
                 HStack(spacing: 12) {
                     Button("-0.5s") {
-                        engine.trackManager.adjustSubtitleDelay(by: -0.5)
+                        let newDelay = max(-5.0, min(5.0, engine.trackManager.subtitleDelay - 0.5))
+                        engine.setSubtitleDelay(seconds: newDelay)
                     }
                     .buttonStyle(.bordered)
 
                     Button("-0.1s") {
-                        engine.trackManager.adjustSubtitleDelay(by: -0.1)
+                        let newDelay = max(-5.0, min(5.0, engine.trackManager.subtitleDelay - 0.1))
+                        engine.setSubtitleDelay(seconds: newDelay)
                     }
                     .buttonStyle(.bordered)
 
                     Button("Reset") {
-                        engine.trackManager.subtitleDelay = 0.0
+                        engine.setSubtitleDelay(seconds: 0.0)
                     }
                     .buttonStyle(.borderedProminent)
 
                     Button("+0.1s") {
-                        engine.trackManager.adjustSubtitleDelay(by: 0.1)
+                        let newDelay = max(-5.0, min(5.0, engine.trackManager.subtitleDelay + 0.1))
+                        engine.setSubtitleDelay(seconds: newDelay)
                     }
                     .buttonStyle(.bordered)
 
                     Button("+0.5s") {
-                        engine.trackManager.adjustSubtitleDelay(by: 0.5)
+                        let newDelay = max(-5.0, min(5.0, engine.trackManager.subtitleDelay + 0.5))
+                        engine.setSubtitleDelay(seconds: newDelay)
                     }
                     .buttonStyle(.bordered)
                 }
@@ -1069,6 +1098,18 @@ public struct LIDPlayerView: View {
         }
     }
 
+    private func autoDiscoverSiblingSubtitles(for mediaURL: URL) {
+        let baseName = mediaURL.deletingPathExtension().lastPathComponent
+        let dir = mediaURL.deletingLastPathComponent()
+        guard let files = try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil) else { return }
+        for f in files {
+            let ext = f.pathExtension.lowercased()
+            if (ext == "srt" || ext == "vtt") && f.lastPathComponent.lowercased().contains(baseName.lowercased()) {
+                engine.addExternalSubtitle(url: f, displayName: f.lastPathComponent)
+            }
+        }
+    }
+
     private func showTemporaryHUD(_ text: String) {
         seekHUDText = text
         showSeekHUD = true
@@ -1095,6 +1136,7 @@ public struct LIDPlayerView: View {
         if let idx = all.firstIndex(of: aspectRatio) {
             let next = all[(idx + 1) % all.count]
             aspectRatio = next
+            engine.setAspectRatio(next)
             zoomScale = 1.0
             showTemporaryHUD(next.rawValue)
         }

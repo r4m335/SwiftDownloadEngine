@@ -92,6 +92,29 @@ public final class LIDTrackManager: ObservableObject {
         #endif
     }
 
+    /// Normalizes and updates available audio and subtitle tracks from any active backend (VLCKit or AVFoundation).
+    public func updateAvailableTracks(audioTracks: [LIDAudioTrack], subtitleTracks: [LIDSubtitleTrack]) {
+        self.availableAudioTracks = audioTracks
+        if let current = selectedAudioTrack, audioTracks.contains(where: { $0.id == current.id }) {
+            // Retain selected track
+        } else {
+            self.selectedAudioTrack = audioTracks.first(where: { $0.isDefault }) ?? audioTracks.first
+        }
+
+        var combined: [LIDSubtitleTrack] = [LIDSubtitleTrack.off]
+        for s in subtitleTracks where s.id != LIDSubtitleTrack.off.id {
+            if !combined.contains(where: { $0.id == s.id }) {
+                combined.append(s)
+            }
+        }
+        for ext in availableSubtitleTracks where ext.isExternal {
+            if !combined.contains(where: { $0.id == ext.id }) {
+                combined.append(ext)
+            }
+        }
+        self.availableSubtitleTracks = combined
+    }
+
     #if canImport(AVFoundation)
     /// Discover available embedded tracks from the AVPlayerItem.
     public func populateTracks(from item: AVPlayerItem) {

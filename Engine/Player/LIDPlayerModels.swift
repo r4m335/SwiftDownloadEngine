@@ -324,6 +324,8 @@ public enum LIDAspectRatio: String, CaseIterable, Sendable {
     case fit4x3 = "4:3"
     case fill = "Fill"
     case stretch = "Stretch"
+
+    public var displayName: String { rawValue }
 }
 
 /// Playback history and resume record persisted across app restarts.
@@ -368,7 +370,7 @@ extension URL {
     /// Whether this URL points to a video container format.
     public var isVideoMedia: Bool {
         let ext = pathExtension.lowercased()
-        return ["mp4", "m4v", "mov", "mkv", "webm", "avi", "3gp", "ts", "m3u8"].contains(ext)
+        return ["mp4", "m4v", "mov", "mkv", "webm", "avi", "3gp", "ts", "m3u8", "flv", "wmv", "asf", "mpg", "mpeg", "vob", "ogv"].contains(ext)
     }
 
     /// Whether this URL points to an audio container format.

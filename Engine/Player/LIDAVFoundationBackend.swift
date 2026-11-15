@@ -60,6 +60,18 @@ public final class LIDAVFoundationBackend: NSObject, LIDMediaEngineProtocol {
         }
     }
 
+    public var supportsPictureInPicture: Bool {
+        #if os(iOS) && canImport(AVKit)
+        return AVPictureInPictureController.isPictureInPictureSupported()
+        #else
+        return false
+        #endif
+    }
+
+    public func setAspectRatio(_ ratio: LIDAspectRatio) {
+        // Aspect ratio for AVFoundation is applied directly via AVLayerVideoGravity on AVPlayerLayer
+    }
+
     #if canImport(AVFoundation)
     public private(set) var player: AVPlayer?
     private var playerItem: AVPlayerItem?
@@ -282,6 +294,10 @@ public final class LIDAVFoundationBackend: NSObject, LIDMediaEngineProtocol {
 
     public func setSubtitleDelay(seconds: Double) {
         // AVPlayer applies subtitle timing directly from sample buffers
+    }
+
+    public func addExternalSubtitle(url: URL) {
+        // External subtitles for AVFoundation are synchronized and rendered via LIDTrackManager cue overlay
     }
 
     // MARK: - Rendering Presentation

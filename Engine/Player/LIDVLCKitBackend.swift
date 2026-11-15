@@ -49,9 +49,37 @@ public final class LIDVLCKitBackend: NSObject, LIDMediaEngineProtocol, VLCMediaP
         }
     }
 
+    public var supportsPictureInPicture: Bool {
+        // VLCKit on iOS renders to a drawable UIView and does not use AVPictureInPictureController
+        return false
+    }
+
+    public func setAspectRatio(_ ratio: LIDAspectRatio) {
+        #if canImport(VLCKit)
+        switch ratio {
+        case .original:
+            player.videoAspectRatio = nil
+            player.videoFitMode = .smaller
+        case .fit16x9:
+            player.videoAspectRatio = "16:9"
+            player.videoFitMode = .smaller
+        case .fit4x3:
+            player.videoAspectRatio = "4:3"
+            player.videoFitMode = .smaller
+        case .fill:
+            player.videoAspectRatio = nil
+            player.videoFitMode = .larger
+        case .stretch:
+            player.videoAspectRatio = nil
+            player.videoFitMode = .width
+        }
+        #endif
+    }
+
     private let player: VLCMediaPlayer
     private var currentLoadedSource: LIDPlayerSource?
     private weak var currentRenderingView: UIView?
+    private var pendingResumePositionSeconds: Double? = nil
 
     public override init() {
         self.player = VLCMediaPlayer()
@@ -199,6 +227,13 @@ public final class LIDVLCKitBackend: NSObject, LIDMediaEngineProtocol, VLCMediaP
         player.currentVideoSubTitleDelay = microSeconds
     }
 
+    public func addExternalSubtitle(url: URL) {
+        #if canImport(VLCKit)
+        let slave = VLCMediaSlave(url: url, type: .subtitle, priority: 1)
+        player.media?.addSlave(slave)
+        #endif
+    }
+
     // MARK: - Rendering Presentation
 
     #if canImport(UIKit)
@@ -223,6 +258,10 @@ public final class LIDVLCKitBackend: NSObject, LIDMediaEngineProtocol, VLCMediaP
                 self.playbackState = .loading
             case .playing:
                 self.playbackState = .playing
+                if let resume = self.pendingResumePositionSeconds, resume > 0 {
+                    self.pendingResumePositionSeconds = nil
+                    self.seek(to: resume)
+                }
             case .paused:
                 self.playbackState = .paused
             case .stopped, .stopping:
@@ -289,6 +328,8 @@ public final class LIDVLCKitBackend: NSObject, LIDMediaEngineProtocol {
     public var playbackSpeed: LIDPlaybackSpeed = .speed1_00
     public var volume: Float = 1.0
     public var isMuted: Bool = false
+    public var supportsPictureInPicture: Bool { false }
+    public func setAspectRatio(_ ratio: LIDAspectRatio) {}
 
     private var currentLoadedSource: LIDPlayerSource?
 
@@ -333,6 +374,7 @@ public final class LIDVLCKitBackend: NSObject, LIDMediaEngineProtocol {
     public func getSubtitleTracks() -> [LIDSubtitleTrack] { [.off] }
     public func selectSubtitleTrack(id: String) {}
     public func setSubtitleDelay(seconds: Double) {}
+    public func addExternalSubtitle(url: URL) {}
 
     #if canImport(UIKit)
     public func attachRenderingView(_ view: UIView) {}

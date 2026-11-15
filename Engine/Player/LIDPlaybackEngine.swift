@@ -21,11 +21,23 @@ public final class LIDPlaybackEngine: NSObject, ObservableObject, LIDMediaEngine
     @Published public private(set) var durationSeconds: Double = 0.0
     @Published public private(set) var bufferedDurationSeconds: Double = 0.0
     @Published public private(set) var playbackSpeed: LIDPlaybackSpeed = .speed1_00
+    @Published public private(set) var aspectRatio: LIDAspectRatio = .original
     @Published public private(set) var metadata: LIDMediaMetadata = .empty
     @Published public private(set) var volume: Float = 1.0
     @Published public private(set) var isMuted: Bool = false
     @Published public private(set) var currentSource: LIDPlayerSource? = nil
     @Published public private(set) var streamContext: LIDStreamContextInfo = .empty
+
+    public var activeBackend: LIDMediaEngineProtocol {
+        switch activeBackendType {
+        case .vlcKit: return vlcBackend
+        case .avFoundation: return avBackend
+        }
+    }
+
+    public var supportsPictureInPicture: Bool {
+        activeBackend.supportsPictureInPicture
+    }
 
     #if canImport(AVFoundation)
     @Published public private(set) var player: AVPlayer? = nil
@@ -161,6 +173,12 @@ public final class LIDPlaybackEngine: NSObject, ObservableObject, LIDMediaEngine
         if case .localFile(let url, _) = source {
             guard FileManager.default.fileExists(atPath: url.path) else {
                 self.playbackState = .failed(error: "Media file does not exist on disk: \(url.lastPathComponent)")
+                return
+            }
+
+            if let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
+               let size = attrs[.size] as? Int64, size == 0 {
+                self.playbackState = .failed(error: "Media file is empty (0 bytes): \(url.lastPathComponent)")
                 return
             }
 
@@ -312,11 +330,65 @@ public final class LIDPlaybackEngine: NSObject, ObservableObject, LIDMediaEngine
         avBackend.isMuted = self.isMuted
     }
 
+    @MainActor
+    public func setAspectRatio(_ ratio: LIDAspectRatio) {
+        self.aspectRatio = ratio
+        activeBackend.setAspectRatio(ratio)
+    }
+
+    @MainActor
+    public func replay() {
+        seek(to: 0.0)
+        play()
+    }
+
+    // MARK: - Track Management Coordination
+
+    @MainActor
+    public func refreshTracks() {
+        let audios = activeBackend.getAudioTracks()
+        let subs = activeBackend.getSubtitleTracks()
+        trackManager.updateAvailableTracks(audioTracks: audios, subtitleTracks: subs)
+    }
+
+    @MainActor
+    public func selectAudioTrack(_ track: LIDAudioTrack) {
+        trackManager.selectAudioTrack(track)
+        activeBackend.selectAudioTrack(id: track.id)
+    }
+
+    @MainActor
+    public func selectSubtitleTrack(_ track: LIDSubtitleTrack) {
+        trackManager.selectSubtitleTrack(track)
+        if !track.isExternal {
+            activeBackend.selectSubtitleTrack(id: track.id)
+        }
+    }
+
+    @MainActor
+    public func addExternalSubtitle(url: URL, displayName: String? = nil) {
+        trackManager.addExternalSubtitle(url: url, displayName: displayName)
+        activeBackend.addExternalSubtitle(url: url)
+    }
+
+    public var subtitleDelay: Double {
+        trackManager.subtitleDelay
+    }
+
+    @MainActor
+    public func setSubtitleDelay(seconds: Double) {
+        trackManager.subtitleDelay = seconds
+        activeBackend.setSubtitleDelay(seconds: seconds)
+    }
+
     // MARK: - LIDMediaEngineDelegate Implementation
 
     public func engineDidUpdateState(_ engine: LIDMediaEngineProtocol, state: LIDPlaybackState) {
         guard engine.backendType == self.activeBackendType else { return }
         self.playbackState = state
+        if state == .playing {
+            refreshTracks()
+        }
         updateNowPlaying()
     }
 

@@ -67,6 +67,12 @@ public protocol LIDMediaEngineProtocol: AnyObject {
     /// Mute state.
     var isMuted: Bool { get set }
 
+    /// Indicates whether the active backend natively supports Picture-in-Picture.
+    var supportsPictureInPicture: Bool { get }
+
+    /// Sets the video aspect ratio mode (e.g. original, 16:9, 4:3, fill, stretch).
+    func setAspectRatio(_ ratio: LIDAspectRatio)
+
     /// Loads a media source into the engine.
     func load(source: LIDPlayerSource, autoPlay: Bool)
 
@@ -98,6 +104,9 @@ public protocol LIDMediaEngineProtocol: AnyObject {
 
     /// Adjusts subtitle synchronization offset in seconds.
     func setSubtitleDelay(seconds: Double)
+
+    /// Registers an external subtitle file (SRT, VTT) with the media engine.
+    func addExternalSubtitle(url: URL)
 
     // MARK: - Rendering Presentation
 
