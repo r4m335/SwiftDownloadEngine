@@ -131,7 +131,7 @@ public final class LIDPlaybackEngine: NSObject, ObservableObject, LIDMediaEngine
             try session.setCategory(
                 .playback,
                 mode: .moviePlayback,
-                options: [.allowAirPlay, .allowBluetooth]
+                options: [.allowAirPlay, .allowBluetoothA2DP]
             )
             try session.setActive(true)
         } catch {

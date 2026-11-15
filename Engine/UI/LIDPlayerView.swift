@@ -106,6 +106,7 @@ public struct LIDVLCPlayerLayerView: UIViewRepresentable {
     public func makeUIView(context: Context) -> UIView {
         let view = UIView()
         view.backgroundColor = .black
+        view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         backend.attachRenderingView(view)
         return view
     }
@@ -370,6 +371,9 @@ public struct LIDPlayerView: View {
                 message: "LIDPlayerView disappeared, stopping engine"
             )
             engine.stop()
+            #if canImport(UIKit)
+            engine.vlcBackend.detachRenderingView()
+            #endif
             controlsTimer?.invalidate()
         }
         .sheet(isPresented: $showTrackSelectionSheet) {

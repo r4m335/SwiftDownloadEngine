@@ -136,7 +136,14 @@ public final class LIDVLCKitBackend: NSObject, LIDMediaEngineProtocol, VLCMediaP
 
         #if canImport(UIKit)
         if let view = currentRenderingView {
-            self.player.drawable = view
+            if self.player.drawable !== view {
+                self.player.drawable = view
+            }
+            PipelineLogger.shared.logPlayer(
+                session: activeSessionId,
+                category: "VideoRenderer",
+                message: "VLCKit drawable verified in load() with view [\(Unmanaged.passUnretained(view).toOpaque())]"
+            )
         }
         #endif
 
@@ -147,6 +154,16 @@ public final class LIDVLCKitBackend: NSObject, LIDMediaEngineProtocol, VLCMediaP
 
     public func play() {
         guard currentLoadedSource != nil else { return }
+        #if canImport(UIKit)
+        if let view = currentRenderingView, self.player.drawable == nil {
+            self.player.drawable = view
+            PipelineLogger.shared.logPlayer(
+                session: activeSessionId,
+                category: "VideoRenderer",
+                message: "VLCKit drawable re-attached before play() with view [\(Unmanaged.passUnretained(view).toOpaque())]"
+            )
+        }
+        #endif
         player.play()
         self.playbackState = .playing
         delegate?.engineDidUpdateState(self, state: self.playbackState)
@@ -161,9 +178,6 @@ public final class LIDVLCKitBackend: NSObject, LIDMediaEngineProtocol, VLCMediaP
 
     public func stop() {
         player.stop()
-        #if canImport(UIKit)
-        detachRenderingView()
-        #endif
         self.currentLoadedSource = nil
         self.currentPositionSeconds = 0.0
         self.durationSeconds = 0.0
@@ -292,19 +306,40 @@ public final class LIDVLCKitBackend: NSObject, LIDMediaEngineProtocol, VLCMediaP
                 self.playbackState = .loading
             case .playing:
                 self.playbackState = .playing
+                #if canImport(UIKit)
+                if self.player.drawable == nil, let view = self.currentRenderingView {
+                    self.player.drawable = view
+                    PipelineLogger.shared.logPlayer(
+                        session: self.activeSessionId,
+                        category: "VideoRenderer",
+                        message: "VLCKit drawable restored on state .playing with view [\(Unmanaged.passUnretained(view).toOpaque())]"
+                    )
+                }
+                #endif
                 let vTracks = self.player.videoTracks.count
                 let vSize = self.player.videoSize
                 PipelineLogger.shared.logPlayer(
                     session: self.activeSessionId,
                     category: "VideoRenderer",
-                    message: "VLCKit rendering active: videoTracks=\(vTracks), size=\(Int(vSize.width))x\(Int(vSize.height)), drawableAttached=\(self.currentRenderingView != nil)"
+                    message: "VLCKit rendering active: videoTracks=\(vTracks), size=\(Int(vSize.width))x\(Int(vSize.height)), drawableAttached=\(self.hasAttachedDrawable)"
                 )
                 if vTracks <= 0 {
                     PipelineLogger.shared.logPlayer(
                         session: self.activeSessionId,
                         category: "VideoRenderer",
-                        message: "WARNING: VLCKit is playing with 0 video tracks (audio-only or video demux failure)"
+                        message: "Notice: VLCKit playing before video track metadata was parsed; scheduling delayed track check..."
                     )
+                    Task { @MainActor [weak self] in
+                        try? await Task.sleep(nanoseconds: 500_000_000)
+                        guard let self = self, self.playbackState.isPlaying else { return }
+                        let delayedVTracks = self.player.videoTracks.count
+                        let delayedVSize = self.player.videoSize
+                        PipelineLogger.shared.logPlayer(
+                            session: self.activeSessionId,
+                            category: "VideoRenderer",
+                            message: "VLCKit delayed track check (+500ms): videoTracks=\(delayedVTracks), size=\(Int(delayedVSize.width))x\(Int(delayedVSize.height)), drawableAttached=\(self.hasAttachedDrawable)"
+                        )
+                    }
                 }
                 if let resume = self.pendingResumePositionSeconds, resume > 0 {
                     self.pendingResumePositionSeconds = nil
