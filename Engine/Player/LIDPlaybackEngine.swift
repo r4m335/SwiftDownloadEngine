@@ -83,6 +83,12 @@ public final class LIDPlaybackEngine: NSObject, ObservableObject, LIDMediaEngine
         NotificationCenter.default.removeObserver(self)
     }
 
+    /// Configures or updates the underlying BitTorrent engine for swarm playback.
+    public func configure(torrentEngine: TorrentEngine) {
+        self.torrentEngine = torrentEngine
+        self.avBackend.torrentEngine = torrentEngine
+    }
+
     // MARK: - Backend Routing
 
     /// Determines the optimal playback backend for a given media source based on container,
