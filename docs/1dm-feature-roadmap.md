@@ -285,7 +285,7 @@ To bridge the remaining functional distance without compromising stability or vi
   - BitTorrent sequential swarm streaming adapter (`LIDTorrentStreamAdapter`) conforming to `AVAssetResourceLoaderDelegate` with custom URL scheme (`lidtorrent://<infoHash>/<fileIndex>`), mathematical byte-range to piece mapping, moov atom head/tail piece prioritization (priority 7), sequential download activation, and live swarm telemetry (speed, peers, progress) published to the player HUD.
   - Live badge indicator and swarm statistics HUD pill integrated into `LIDPlayerView`.
 
-### Milestone A.6: VLC-Powered Universal Media Playback Engine [Implemented — A.6.1 through A.6.4 Complete; A.6.5 CI Verification Pending]
+### Milestone A.6: VLC-Powered Universal Media Playback Engine [A.6.1 through A.6.5 Complete & CI-Verified — Ready for Physical iPhone Verification]
 
 - **Objective:** Resolve the current local-media compatibility limitations by integrating VideoLAN VLCKit (libVLC) behind a unified playback architecture, while retaining AVFoundation for Apple-native playback paths where it offers advantages.
 
@@ -507,7 +507,7 @@ CI success must not be treated as proof of actual media decoding or physical-dev
 - GitHub Actions produces a correctly packaged IPA with required VLC runtime components.
 - Appropriate licensing notices are included.
 
-**Current Status:** A.6.1 through A.6.4 Implemented & Locally Verified across 49 player tests. Completed: dual-engine protocol architecture (`LIDMediaEngineProtocol`), concrete `LIDVLCKitBackend` and `LIDAVFoundationBackend`, unified `LIDPlaybackEngine` controller routing, full playback lifecycle (load, play, pause, seek, replay, stop), aspect ratio scaling (.original, .fit16x9, .fit4x3, .fill, .stretch), audio/subtitle track enumeration and selection, external WebVTT/SRT subtitle cue parsing and delay offset synchronization, sibling subtitle auto-discovery, PiP capability detection, 0-byte/corrupted media failure handling, and extensive 16-format compatibility test suite (`LIDMediaCompatibilityTests`). Awaiting Milestone A.6.5 GitHub Actions CI validation across macOS, iOS device build with VLCKit framework embedding, and unsigned IPA verification before A.6.6 physical iPhone validation.
+**Current Status:** A.6.1 through A.6.5 Complete & CI-Verified (GitHub Actions Run [#43701180237](https://github.com/r4m335/SwiftDownloadEngine/actions/runs/43701180237), Commit `6690e39`). Produced valid 60.73 MB unsigned iOS device `.ipa` (`SwiftDownloadEngine-iOS-Device`) embedding `VLCKit.framework` and `LibTorrent.xcframework`. All macOS and iOS CI jobs passed: Swift Package Tests passed (including 49 player tests & `LIDMediaCompatibilityTests`), libtorrent 2.0 iOS Native Build passed, and iOS Device Build passed. The player architecture satisfies all requirements across dual-engine abstraction, universal container routing, aspect ratio scaling, track enumeration/switching, external subtitle cue parsing/delay synchronization, sibling discovery, PiP conditional rendering, replay, and resume history. Ready for Milestone A.6.6 Physical iPhone Verification.
 
 ---
 
