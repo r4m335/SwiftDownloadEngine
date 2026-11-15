@@ -35,7 +35,9 @@ public struct LIDSubtitleSearchView: View {
 
                         TextField("Movie or Show Title", text: $searchText)
                             .textFieldStyle(PlainTextFieldStyle())
+                            #if os(iOS)
                             .autocapitalization(.none)
+                            #endif
                             .disableAutocorrection(true)
                             .onSubmit {
                                 performSearch()
@@ -56,7 +58,7 @@ public struct LIDSubtitleSearchView: View {
                         .disabled(searchText.trimmingCharacters(in: .whitespaces).isEmpty || isSearching)
                     }
                     .padding(10)
-                    .background(Color(.secondarySystemBackground))
+                    .background(fieldBackground)
                     .cornerRadius(10)
 
                     // Language Filter Picker
@@ -81,7 +83,7 @@ public struct LIDSubtitleSearchView: View {
                     }
                 }
                 .padding()
-                .background(Color(.systemBackground))
+                .background(headerBackground)
 
                 Divider()
 
@@ -271,6 +273,22 @@ public struct LIDSubtitleSearchView: View {
             try? await engine.deleteDownloadedSubtitle(url: url)
             await refreshDownloadedSubtitles()
         }
+    }
+
+    private var fieldBackground: Color {
+        #if os(iOS)
+        return Color(.secondarySystemBackground)
+        #else
+        return Color.secondary.opacity(0.15)
+        #endif
+    }
+
+    private var headerBackground: Color {
+        #if os(iOS)
+        return Color(.systemBackground)
+        #else
+        return Color.secondary.opacity(0.08)
+        #endif
     }
 }
 
