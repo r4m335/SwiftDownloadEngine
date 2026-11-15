@@ -14,7 +14,7 @@ import Combine
 public final class LIDPlaybackEngine: NSObject, ObservableObject, LIDMediaEngineDelegate {
 
     public static let shared = LIDPlaybackEngine()
-    public static var activeSessionIdForLogging: String = "IDLE"
+    public nonisolated(unsafe) static var activeSessionIdForLogging: String = "IDLE"
 
     @Published public private(set) var activeBackendType: LIDMediaEngineBackendType = .vlcKit
     @Published public private(set) var playbackState: LIDPlaybackState = .idle

@@ -11,6 +11,7 @@ import VLCKit
 
 final class LIDVLCLoggingBridge: NSObject, VLCLogging {
     static let shared = LIDVLCLoggingBridge()
+    nonisolated(unsafe) static var activeSessionId: String = "IDLE"
     var level: VLCLogLevel = .debug
 
     func handleMessage(_ message: String, logLevel level: VLCLogLevel, context: VLCLogContext?) {
@@ -34,7 +35,7 @@ final class LIDVLCLoggingBridge: NSObject, VLCLogging {
         guard !trimmed.isEmpty else { return }
 
         PipelineLogger.shared.logPlayer(
-            session: LIDPlaybackEngine.activeSessionIdForLogging,
+            session: LIDVLCLoggingBridge.activeSessionId,
             category: category,
             message: "[libVLC:\(module)] \(trimmed)"
         )
@@ -131,13 +132,14 @@ public final class LIDVLCKitBackend: NSObject, LIDMediaEngineProtocol, VLCMediaP
         self.player = VLCMediaPlayer()
         super.init()
         self.player.delegate = self
-        VLCLibrary.sharedLibrary().loggers = [LIDVLCLoggingBridge.shared]
+        VLCLibrary.shared().loggers = [LIDVLCLoggingBridge.shared]
     }
 
     // MARK: - Playback Control APIs
 
     public func load(source: LIDPlayerSource, autoPlay: Bool) {
         stop()
+        LIDVLCLoggingBridge.activeSessionId = activeSessionId
         self.player.media = nil
         self.currentLoadedSource = source
         self.hasLoggedFirstFramePresentation = false
