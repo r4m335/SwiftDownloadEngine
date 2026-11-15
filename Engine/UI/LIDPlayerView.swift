@@ -123,6 +123,16 @@ public final class LIDVLCRenderingContainerView: UIView {
         )
     }
 
+    public override func willRemoveSubview(_ subview: UIView) {
+        super.willRemoveSubview(subview)
+        let symbols = Thread.callStackSymbols.prefix(12).joined(separator: "\n    ")
+        PipelineLogger.shared.logPlayer(
+            session: LIDPlaybackEngine.activeSessionIdForLogging,
+            category: "VideoRenderer",
+            message: "LIDVLCRenderingContainerView willRemoveSubview: class=\(type(of: subview)), subviewFrame=\(subview.frame)\n  Stack trace:\n    \(symbols)"
+        )
+    }
+
     public override func layoutSubviews() {
         super.layoutSubviews()
         for subview in subviews {
@@ -144,12 +154,15 @@ public struct LIDVLCPlayerLayerView: UIViewRepresentable {
 
     public func makeUIView(context: Context) -> LIDVLCRenderingContainerView {
         let view = LIDVLCRenderingContainerView(frame: .zero)
-        view.onLayoutChange = { bounds, count in
+        view.onLayoutChange = { [weak backend] bounds, count in
             PipelineLogger.shared.logPlayer(
                 session: LIDPlaybackEngine.activeSessionIdForLogging,
                 category: "VideoRenderer",
                 message: "ContainerView layoutSubviews: bounds=\(Int(bounds.width))x\(Int(bounds.height)), subviews=\(count)"
             )
+            if bounds.width > 0 && bounds.height > 0 {
+                backend?.updateRenderingViewBounds(view)
+            }
         }
         backend.attachRenderingView(view)
         return view

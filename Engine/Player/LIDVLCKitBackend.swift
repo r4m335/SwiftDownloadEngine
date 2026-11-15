@@ -122,7 +122,7 @@ public final class LIDVLCKitBackend: NSObject, LIDMediaEngineProtocol, VLCMediaP
         #endif
     }
 
-    private let player: VLCMediaPlayer
+    private var player: VLCMediaPlayer
     private var currentLoadedSource: LIDPlayerSource?
     private weak var currentRenderingView: UIView?
     private var pendingResumePositionSeconds: Double? = nil
@@ -138,9 +138,19 @@ public final class LIDVLCKitBackend: NSObject, LIDMediaEngineProtocol, VLCMediaP
     // MARK: - Playback Control APIs
 
     public func load(source: LIDPlayerSource, autoPlay: Bool) {
-        stop()
-        LIDVLCLoggingBridge.activeSessionId = activeSessionId
+        // 1. Decouple and terminate any previous player instance to prevent async teardown interference
+        self.player.delegate = nil
+        self.player.stop()
+        self.player.drawable = nil
         self.player.media = nil
+
+        // 2. Instantiate a fresh VLCMediaPlayer instance for this session
+        self.player = VLCMediaPlayer()
+        self.player.delegate = self
+        self.player.rate = playbackSpeed.rate
+        self.player.audio?.volume = Int32(volume * 100.0)
+
+        LIDVLCLoggingBridge.activeSessionId = activeSessionId
         self.currentLoadedSource = source
         self.hasLoggedFirstFramePresentation = false
         self.playbackState = .loading
@@ -175,13 +185,15 @@ public final class LIDVLCKitBackend: NSObject, LIDMediaEngineProtocol, VLCMediaP
 
         #if canImport(UIKit)
         if let view = currentRenderingView {
-            if (self.player.drawable as? UIView) !== view {
-                self.player.drawable = view
+            // Remove any orphaned subviews left over from previous sessions
+            for subview in view.subviews {
+                subview.removeFromSuperview()
             }
+            self.player.drawable = view
             PipelineLogger.shared.logPlayer(
                 session: activeSessionId,
                 category: "VideoRenderer",
-                message: "VLCKit drawable assigned before media in load() [\(Unmanaged.passUnretained(view).toOpaque())], viewBounds=\(view.bounds)"
+                message: "Fresh VLCMediaPlayer created; drawable assigned before media [\(Unmanaged.passUnretained(view).toOpaque())], viewBounds=\(view.bounds)"
             )
         }
         #endif
@@ -231,10 +243,15 @@ public final class LIDVLCKitBackend: NSObject, LIDMediaEngineProtocol, VLCMediaP
 
     public func seek(to seconds: Double) {
         guard durationSeconds > 0 else {
-            player.position = 0.0
+            self.pendingResumePositionSeconds = seconds
+            PipelineLogger.shared.logPlayer(
+                session: activeSessionId,
+                category: "PlayerEngine",
+                message: "seek(to: \(String(format: "%.1f", seconds))s) queued (duration not yet known, avoiding position 0.0 reset)"
+            )
             return
         }
-        let normalizedPos = max(0.0, min(1.0, seconds / durationSeconds))
+        let normalizedPos = Float(max(0.0, min(1.0, seconds / durationSeconds)))
         player.position = normalizedPos
         self.currentPositionSeconds = seconds
         delegate?.engineDidUpdateTime(self, currentSeconds: seconds, durationSeconds: durationSeconds)
@@ -331,6 +348,18 @@ public final class LIDVLCKitBackend: NSObject, LIDMediaEngineProtocol, VLCMediaP
         )
         self.currentRenderingView = nil
         self.player.drawable = nil
+    }
+
+    public func updateRenderingViewBounds(_ view: UIView) {
+        guard view.bounds.width > 0 && view.bounds.height > 0 else { return }
+        if (self.player.drawable as? UIView) !== view {
+            self.player.drawable = view
+            PipelineLogger.shared.logPlayer(
+                session: activeSessionId,
+                category: "VideoRenderer",
+                message: "Re-bound VLCKit drawable to view with real bounds: \(view.bounds)"
+            )
+        }
     }
     #endif
 
@@ -517,6 +546,16 @@ public final class LIDVLCKitBackend: NSObject, LIDMediaEngineProtocol, VLCMediaP
             guard let self = self else { return }
             self.durationSeconds = Double(length) / 1000.0
             self.delegate?.engineDidUpdateTime(self, currentSeconds: self.currentPositionSeconds, durationSeconds: self.durationSeconds)
+
+            if let pending = self.pendingResumePositionSeconds, pending > 0, self.durationSeconds > 0 {
+                self.pendingResumePositionSeconds = nil
+                PipelineLogger.shared.logPlayer(
+                    session: self.activeSessionId,
+                    category: "PlayerEngine",
+                    message: "Executing queued seek to \(String(format: "%.1f", pending))s now that duration is resolved (\(String(format: "%.1f", self.durationSeconds))s)"
+                )
+                self.seek(to: pending)
+            }
         }
     }
 
@@ -605,6 +644,7 @@ public final class LIDVLCKitBackend: NSObject, LIDMediaEngineProtocol {
     #if canImport(UIKit)
     public func attachRenderingView(_ view: UIView) {}
     public func detachRenderingView() {}
+    public func updateRenderingViewBounds(_ view: UIView) {}
     #endif
 }
 

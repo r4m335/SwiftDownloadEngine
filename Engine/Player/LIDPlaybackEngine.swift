@@ -129,11 +129,7 @@ public final class LIDPlaybackEngine: NSObject, ObservableObject, LIDMediaEngine
     public static func configureAudioSession() {
         do {
             let session = AVAudioSession.sharedInstance()
-            try session.setCategory(
-                .playback,
-                mode: .moviePlayback,
-                options: [.allowAirPlay, .allowBluetoothA2DP]
-            )
+            try session.setCategory(.playback, mode: .moviePlayback)
             try session.setActive(true)
         } catch {
             PipelineLogger.shared.log("[LIDPlaybackEngine] Audio session configuration notice: \(error.localizedDescription)")
