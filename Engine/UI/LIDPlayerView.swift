@@ -1089,8 +1089,6 @@ public struct LIDPlayerView: View {
             )
         }
     }
-        }
-    }
 
     // MARK: - Track Selection Sheet
 
