@@ -285,7 +285,7 @@ To bridge the remaining functional distance without compromising stability or vi
   - BitTorrent sequential swarm streaming adapter (`LIDTorrentStreamAdapter`) conforming to `AVAssetResourceLoaderDelegate` with custom URL scheme (`lidtorrent://<infoHash>/<fileIndex>`), mathematical byte-range to piece mapping, moov atom head/tail piece prioritization (priority 7), sequential download activation, and live swarm telemetry (speed, peers, progress) published to the player HUD.
   - Live badge indicator and swarm statistics HUD pill integrated into `LIDPlayerView`.
 
-### Milestone A.6: VLC-Powered Universal Media Playback Engine [Planned]
+### Milestone A.6: VLC-Powered Universal Media Playback Engine [In Progress — A.6.1 Foundation Complete & CI-Verified]
 
 - **Objective:** Resolve the current local-media compatibility limitations by integrating VideoLAN VLCKit (libVLC) behind a unified playback architecture, while retaining AVFoundation for Apple-native playback paths where it offers advantages.
 
@@ -507,7 +507,7 @@ CI success must not be treated as proof of actual media decoding or physical-dev
 - GitHub Actions produces a correctly packaged IPA with required VLC runtime components.
 - Appropriate licensing notices are included.
 
-**Current Status:** Planned. The current default branch does not yet contain the VLCKit dependency or backend abstraction.
+**Current Status:** A.6.1 Foundation Complete & CI-Verified. The dual-engine protocol abstraction (`LIDMediaEngineProtocol`), concrete `LIDVLCKitBackend`, concrete `LIDAVFoundationBackend`, unified `LIDPlaybackEngine` controller routing, and device packaging with embedded `VLCKit.framework` (60.7 MB unsigned `.ipa`) are fully verified in CI (GitHub Actions Run [#43696922764](https://github.com/r4m335/SwiftDownloadEngine/actions/runs/43696922764)). Ready for physical iPhone verification of local MPEG-TS decoding.
 
 ---
 
