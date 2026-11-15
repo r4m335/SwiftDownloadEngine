@@ -157,8 +157,6 @@ public struct LIDPlayerView: View {
     @State private var seekGestureOffset: Double = 0.0
     @State private var showSeekHUD: Bool = false
     @State private var seekHUDText: String = ""
-    @State private var isLongPressingSpeedBoost: Bool = false
-    @State private var previousSpeedBeforeBoost: LIDPlaybackSpeed = .speed1_00
 
     #if canImport(AVFoundation) && canImport(UIKit) && canImport(AVKit)
     @State private var layerViewRef: LIDPlayerLayerView? = nil
@@ -349,10 +347,6 @@ public struct LIDPlayerView: View {
             resetControlsTimer()
         }
         .onDisappear {
-            if isLongPressingSpeedBoost {
-                isLongPressingSpeedBoost = false
-                engine.setPlaybackSpeed(previousSpeedBeforeBoost)
-            }
             engine.stop()
             controlsTimer?.invalidate()
         }
@@ -441,14 +435,13 @@ public struct LIDPlayerView: View {
                         toggleControlsVisibility()
                     }
 
-                // 3-Zone Interaction Layout:
-                // Left 45%: Brightness swipe + Double-tap rewind
-                // Center 10%: Deliberate Long-press 2× speed boost
-                // Right 45%: Volume swipe + Double-tap forward
+                // 2-Zone Interaction Layout:
+                // Left 50%: Brightness swipe + Double-tap rewind (10s)
+                // Right 50%: Volume swipe + Double-tap forward (10s)
                 HStack(spacing: 0) {
-                    // Left 45%: Brightness
+                    // Left 50%: Brightness
                     Color.clear
-                        .frame(width: proxy.size.width * 0.45)
+                        .frame(width: proxy.size.width * 0.5)
                         .contentShape(Rectangle())
                         .gesture(
                             DragGesture(minimumDistance: 15)
@@ -486,31 +479,9 @@ public struct LIDPlayerView: View {
                             }
                         )
 
-                    // Center 10%: Dedicated intentional Long-press for 2× Speed Boost
+                    // Right 50%: Volume
                     Color.clear
-                        .frame(width: proxy.size.width * 0.10)
-                        .contentShape(Rectangle())
-                        .gesture(
-                            LongPressGesture(minimumDuration: 0.5)
-                                .onChanged { _ in
-                                    guard !isControlsLocked && !isDraggingBrightness && !isDraggingVolume else { return }
-                                    if !isLongPressingSpeedBoost {
-                                        isLongPressingSpeedBoost = true
-                                        previousSpeedBeforeBoost = engine.playbackSpeed
-                                        engine.setPlaybackSpeed(.speed2_00)
-                                    }
-                                }
-                                .onEnded { _ in
-                                    if isLongPressingSpeedBoost {
-                                        isLongPressingSpeedBoost = false
-                                        engine.setPlaybackSpeed(previousSpeedBeforeBoost)
-                                    }
-                                }
-                        )
-
-                    // Right 45%: Volume
-                    Color.clear
-                        .frame(width: proxy.size.width * 0.45)
+                        .frame(width: proxy.size.width * 0.5)
                         .contentShape(Rectangle())
                         .gesture(
                             DragGesture(minimumDistance: 15)
@@ -550,20 +521,6 @@ public struct LIDPlayerView: View {
 
     private var hudOverlayView: some View {
         VStack {
-            if isLongPressingSpeedBoost {
-                HStack(spacing: 8) {
-                    Image(systemName: "forward.fill")
-                    Text("2× Speed Boost")
-                        .font(.subheadline.bold())
-                }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 8)
-                .background(Color.black.opacity(0.75))
-                .foregroundColor(.yellow)
-                .cornerRadius(20)
-                .padding(.top, 50)
-            }
-
             if showBrightnessHUD {
                 hudPill(icon: "sun.max.fill", label: "Brightness", value: brightnessLevel)
             }
@@ -1087,10 +1044,6 @@ public struct LIDPlayerView: View {
     }
 
     private func dismiss() {
-        if isLongPressingSpeedBoost {
-            isLongPressingSpeedBoost = false
-            engine.setPlaybackSpeed(previousSpeedBeforeBoost)
-        }
         engine.stop()
         controlsTimer?.invalidate()
         if let onDismiss = onDismiss {
