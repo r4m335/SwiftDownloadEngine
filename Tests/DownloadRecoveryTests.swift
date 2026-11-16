@@ -51,9 +51,9 @@ final class DownloadRecoveryTests: XCTestCase {
             totalSize: 5_000_000,
             state: .failed(reason: "HTTP 403"),
             storageMode: .directSeek,
-            headers: [:],
             eTag: "\"etag-v1\"",
             lastModified: "Mon, 16 Nov 2026 12:00:00 GMT",
+            headers: [:],
             segments: [
                 SegmentRecord(id: 0, startOffset: 0, endOffset: 2_499_999, length: 2_500_000, completedBytes: 2_500_000),
                 SegmentRecord(id: 1, startOffset: 2_500_000, endOffset: 4_999_999, length: 2_500_000, completedBytes: 0)
@@ -131,8 +131,8 @@ final class DownloadRecoveryTests: XCTestCase {
             totalSize: 5_000_000,
             state: .failed(reason: "interrupted"),
             storageMode: .directSeek,
-            headers: [:],
             eTag: "\"version-1\"",
+            headers: [:],
             segments: []
         )
 
@@ -382,8 +382,8 @@ final class DownloadRecoveryTests: XCTestCase {
             totalSize: 1000,
             state: .failed(reason: "HTTP 403"),
             storageMode: .directSeek,
-            headers: ["Referer": "https://media.example.com/player"],
             eTag: "\"v1\"",
+            headers: ["Referer": "https://media.example.com/player"],
             segments: [seg0, seg1]
         )
         try await persistenceStore.save(initialRecord)
