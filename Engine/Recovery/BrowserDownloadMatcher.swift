@@ -147,7 +147,7 @@ public struct BrowserDownloadMatcher: Sendable {
         // Extract quality height from candidate resource
         var candidateHeight: Int? = nil
         if let hlsPrefs = resource.hlsVariantPreferences {
-            candidateHeight = hlsPrefs.preferredHeight
+            candidateHeight = hlsPrefs.maximumHeight
         }
 
         // Extract quality height from existing transfer filename (e.g. "video-480p.mp4")

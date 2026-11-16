@@ -60,7 +60,7 @@ final class DownloadRecoveryTests: XCTestCase {
             ]
         )
 
-        let probe = HTTPRangeProbeResult(
+        let probe = DownloadIdentityVerifier.ProbeMetadata(
             finalURL: URL(string: "https://example.com/video.mp4?token=new456")!,
             totalSize: 5_000_000,
             eTag: "W/\"etag-v1\"",
@@ -68,7 +68,7 @@ final class DownloadRecoveryTests: XCTestCase {
             supportsRange: true,
             mimeType: "video/mp4",
             statusCode: 200,
-            redirectCount: 0,
+            isRedirected: false,
             canResume: true
         )
 
@@ -98,7 +98,7 @@ final class DownloadRecoveryTests: XCTestCase {
             segments: []
         )
 
-        let probe = HTTPRangeProbeResult(
+        let probe = DownloadIdentityVerifier.ProbeMetadata(
             finalURL: URL(string: "https://example.com/video_different.mp4")!,
             totalSize: 7_500_000,
             eTag: nil,
@@ -106,7 +106,7 @@ final class DownloadRecoveryTests: XCTestCase {
             supportsRange: true,
             mimeType: "video/mp4",
             statusCode: 200,
-            redirectCount: 0,
+            isRedirected: false,
             canResume: true
         )
 
@@ -136,7 +136,7 @@ final class DownloadRecoveryTests: XCTestCase {
             segments: []
         )
 
-        let probe = HTTPRangeProbeResult(
+        let probe = DownloadIdentityVerifier.ProbeMetadata(
             finalURL: URL(string: "https://example.com/video.mp4")!,
             totalSize: 5_000_000,
             eTag: "\"version-2\"",
@@ -144,7 +144,7 @@ final class DownloadRecoveryTests: XCTestCase {
             supportsRange: true,
             mimeType: "video/mp4",
             statusCode: 200,
-            redirectCount: 0,
+            isRedirected: false,
             canResume: true
         )
 
@@ -175,7 +175,7 @@ final class DownloadRecoveryTests: XCTestCase {
             ]
         )
 
-        let probe = HTTPRangeProbeResult(
+        let probe = DownloadIdentityVerifier.ProbeMetadata(
             finalURL: URL(string: "https://example.com/video.mp4")!,
             totalSize: 5_000_000,
             eTag: nil,
@@ -183,7 +183,7 @@ final class DownloadRecoveryTests: XCTestCase {
             supportsRange: false,
             mimeType: "video/mp4",
             statusCode: 200,
-            redirectCount: 0,
+            isRedirected: false,
             canResume: false
         )
 
@@ -298,7 +298,7 @@ final class DownloadRecoveryTests: XCTestCase {
             suggestedFilename: "stream-1080p.mp4",
             resourceType: .video,
             mimeType: "application/x-mpegurl",
-            hlsVariantPreferences: HLSVariantSelectionPreferences(preferredResolution: "1920x1080", preferredHeight: 1080)
+            hlsVariantPreferences: HLSVariantSelectionPreferences(maximumHeight: 1080)
         )
 
         // Captured resource 2: 480p variant
@@ -309,7 +309,7 @@ final class DownloadRecoveryTests: XCTestCase {
             suggestedFilename: "stream-480p.mp4",
             resourceType: .video,
             mimeType: "application/x-mpegurl",
-            hlsVariantPreferences: HLSVariantSelectionPreferences(preferredResolution: "854x480", preferredHeight: 480)
+            hlsVariantPreferences: HLSVariantSelectionPreferences(maximumHeight: 480)
         )
 
         // 1080p should NOT match 480p transfer!

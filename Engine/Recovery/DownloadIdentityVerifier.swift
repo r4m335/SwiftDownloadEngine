@@ -49,7 +49,7 @@ public struct DownloadIdentityVerifier: Sendable {
         public let supportsRange: Bool
         public let mimeType: String?
         public let statusCode: Int
-        public let redirectCount: Int
+        public let isRedirected: Bool
         public let canResume: Bool
 
         public init(
@@ -60,7 +60,7 @@ public struct DownloadIdentityVerifier: Sendable {
             supportsRange: Bool,
             mimeType: String?,
             statusCode: Int = 200,
-            redirectCount: Int = 0,
+            isRedirected: Bool = false,
             canResume: Bool = true
         ) {
             self.finalURL = finalURL
@@ -70,7 +70,7 @@ public struct DownloadIdentityVerifier: Sendable {
             self.supportsRange = supportsRange
             self.mimeType = mimeType
             self.statusCode = statusCode
-            self.redirectCount = redirectCount
+            self.isRedirected = isRedirected
             self.canResume = canResume
         }
     }
@@ -176,7 +176,7 @@ public struct DownloadIdentityVerifier: Sendable {
             supportsRange: probe.supportsRange,
             mimeType: probe.mimeType,
             statusCode: probe.statusCode,
-            redirectCount: probe.redirectCount,
+            isRedirected: probe.isRedirected,
             canResume: probe.canResume
         )
         return verify(record: record, probe: meta, policy: policy)

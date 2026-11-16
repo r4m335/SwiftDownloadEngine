@@ -142,8 +142,8 @@ public final class DownloadRecoveryManager: ObservableObject, @unchecked Sendabl
         if let ctx = resource.requestContext {
             if let ua = ctx.userAgent, !ua.isEmpty { headers["User-Agent"] = ua }
             if let ref = ctx.referer, !ref.isEmpty { headers["Referer"] = ref }
-            if let cookies = ctx.cookies, !cookies.isEmpty {
-                let cookieString = cookies.map { "\($0.name)=\($0.value)" }.joined(separator: "; ")
+            if !ctx.cookies.isEmpty {
+                let cookieString = ctx.cookies.map { "\($0.name)=\($0.value)" }.joined(separator: "; ")
                 if !cookieString.isEmpty { headers["Cookie"] = cookieString }
             }
         }
@@ -151,7 +151,7 @@ public final class DownloadRecoveryManager: ObservableObject, @unchecked Sendabl
         let isHLS = resource.isStreamingManifest || resource.url.pathExtension.lowercased() == "m3u8"
         var expectedHeight: Int? = nil
         if let prefs = resource.hlsVariantPreferences {
-            expectedHeight = prefs.preferredHeight
+            expectedHeight = prefs.maximumHeight
         }
 
         try await updateDownloadLink(
