@@ -15,7 +15,7 @@ public final class LIDOrientationManager: ObservableObject {
     public init() {}
 
     /// Restores the app interface to portrait orientation upon player dismissal.
-    public func restorePortrait() {
+    public func restorePortrait(session: String = "IDLE") {
         self.isPlayerActive = false
         #if os(iOS)
         if #available(iOS 16.0, *) {
@@ -23,6 +23,7 @@ public final class LIDOrientationManager: ObservableObject {
             if let windowScene = scenes.first {
                 windowScene.requestGeometryUpdate(.iOS(interfaceOrientations: .portrait)) { error in
                     PipelineLogger.shared.logPlayer(
+                        session: session,
                         category: "OrientationManager",
                         message: "requestGeometryUpdate(.portrait) notice: \(error.localizedDescription)"
                     )
@@ -34,6 +35,7 @@ public final class LIDOrientationManager: ObservableObject {
             UIViewController.attemptRotationToDeviceOrientation()
         }
         PipelineLogger.shared.logPlayer(
+            session: session,
             category: "OrientationManager",
             message: "Restored portrait orientation on player dismissal"
         )

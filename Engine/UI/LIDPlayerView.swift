@@ -454,7 +454,7 @@ public struct LIDPlayerView: View {
                 engine.cancelTemporarySpeedBoost()
             }
             #if canImport(UIKit)
-            LIDOrientationManager.shared.restorePortrait()
+            LIDOrientationManager.shared.restorePortrait(session: sessionId)
             #endif
             engine.stop()
             #if canImport(UIKit)
@@ -1446,7 +1446,7 @@ public struct LIDPlayerView: View {
             engine.cancelTemporarySpeedBoost()
         }
         #if canImport(UIKit)
-        LIDOrientationManager.shared.restorePortrait()
+        LIDOrientationManager.shared.restorePortrait(session: sessionId)
         #endif
         engine.stop()
         controlsTimer?.invalidate()
