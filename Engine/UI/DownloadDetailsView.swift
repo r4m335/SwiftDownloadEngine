@@ -33,9 +33,6 @@ public struct DownloadDetailsView: View {
     @State private var newTrackerURL: String = ""
     @State private var trackerErrorMessage: String? = nil
     @State private var showingRefreshSheet: Bool = false
-    @State private var newRefreshURL: String = ""
-    @State private var isRefreshing: Bool = false
-    @State private var refreshStatusMessage: String? = nil
     @State private var hlsRecord: HLSTransferRecord? = nil
     @State private var isLoadingHLSSegments = false
 
@@ -702,29 +699,30 @@ public struct DownloadDetailsView: View {
                             .foregroundColor(.red)
                     }
 
-                    if snapshot?.isForbidden == true || snapshot?.isLinkExpired == true ||
-                       reason.localizedCaseInsensitiveContains("403") ||
-                       reason.localizedCaseInsensitiveContains("404") ||
-                       reason.localizedCaseInsensitiveContains("expired") {
-                        Button {
-                            newRefreshURL = snapshot?.url.absoluteString ?? ""
-                            refreshStatusMessage = nil
-                            showingRefreshSheet = true
-                        } label: {
-                            Label("Refresh Link", systemImage: "arrow.triangle.2.circlepath")
-                                .font(.headline)
+                    // Recovery Actions for failed transfers
+                    Button {
+                        Task { @MainActor in
+                            await viewModel.retryTransfer(transfer)
                         }
+                    } label: {
+                        Label("Retry Download", systemImage: "arrow.clockwise")
+                            .font(.headline)
+                            .foregroundColor(.blue)
                     }
 
-                    if snapshot?.isUnauthorized == true || reason.localizedCaseInsensitiveContains("401") {
+                    Button {
+                        showingRefreshSheet = true
+                    } label: {
+                        Label("Update Download Link", systemImage: "link")
+                            .font(.headline)
+                    }
+
+                    if !transfer.isTorrent {
                         Button {
-                            if let pageURL = snapshot?.url {
-                                #if canImport(UIKit)
-                                UIApplication.shared.open(pageURL)
-                                #endif
-                            }
+                            presentationMode.wrappedValue.dismiss()
+                            viewModel.startBrowserLinkRefresh(for: transfer)
                         } label: {
-                            Label("Log In in Browser", systemImage: "person.crop.circle.badge.exclamationmark")
+                            Label("Refresh Link from Browser", systemImage: "safari")
                                 .font(.headline)
                         }
                     }
@@ -820,6 +818,31 @@ public struct DownloadDetailsView: View {
                         Label("Resume Download", systemImage: "play.fill")
                             .foregroundColor(.green)
                     }
+                    Button {
+                        showingRefreshSheet = true
+                    } label: {
+                        Label("Update Download Link", systemImage: "link")
+                    }
+                } else if transfer.canRetry {
+                    Button {
+                        Task { @MainActor in await viewModel.retryTransfer(transfer) }
+                    } label: {
+                        Label("Retry Download", systemImage: "arrow.clockwise")
+                            .foregroundColor(.blue)
+                    }
+                    Button {
+                        showingRefreshSheet = true
+                    } label: {
+                        Label("Update Download Link", systemImage: "link")
+                    }
+                    if !transfer.isTorrent {
+                        Button {
+                            presentationMode.wrappedValue.dismiss()
+                            viewModel.startBrowserLinkRefresh(for: transfer)
+                        } label: {
+                            Label("Refresh Link from Browser", systemImage: "safari")
+                        }
+                    }
                 } else if transfer.state == .completed {
                     if transfer.destinationURL.isPlayableMedia {
                         Button {
@@ -877,65 +900,11 @@ public struct DownloadDetailsView: View {
         }
         .sheet(isPresented: $showingRefreshSheet) {
             #if canImport(SwiftUI)
-            NavigationView {
-                Form {
-                    Section(
-                        header: Text("Update Download URL / Token"),
-                        footer: Text("If the ETag and file size match the original resource, the download resumes seamlessly. Otherwise, the engine restarts fresh.")
-                    ) {
-                        TextField("https://...", text: $newRefreshURL)
-                            #if os(iOS)
-                            .keyboardType(.URL)
-                            .autocapitalization(.none)
-                            .disableAutocorrection(true)
-                            #endif
-                    }
-
-                    if let msg = refreshStatusMessage {
-                        Section {
-                            Text(msg)
-                                .font(.caption)
-                                .foregroundColor(.red)
-                        }
-                    }
-
-                    Section {
-                        Button {
-                            guard let snap = snapshot else { return }
-                            isRefreshing = true
-                            refreshStatusMessage = nil
-                            Task {
-                                do {
-                                    try await viewModel.refreshDownloadLink(id: snap.id, newURLText: newRefreshURL)
-                                    isRefreshing = false
-                                    showingRefreshSheet = false
-                                } catch {
-                                    isRefreshing = false
-                                    refreshStatusMessage = error.localizedDescription
-                                }
-                            }
-                        } label: {
-                            if isRefreshing {
-                                HStack {
-                                    ProgressView()
-                                        .padding(.trailing, 6)
-                                    Text("Validating & Refreshing...")
-                                }
-                            } else {
-                                Text("Refresh & Resume")
-                                    .bold()
-                            }
-                        }
-                        .disabled(newRefreshURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isRefreshing)
-                    }
-                }
-                .navigationTitle("Refresh Link")
-                .toolbar {
-                    ToolbarItem(placement: .cancellationAction) {
-                        Button("Cancel") { showingRefreshSheet = false }
-                    }
-                }
-            }
+            UpdateDownloadLinkSheet(
+                viewModel: viewModel,
+                transfer: transfer,
+                onDismiss: { showingRefreshSheet = false }
+            )
             #endif
         }
     }

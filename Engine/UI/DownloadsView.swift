@@ -1306,6 +1306,13 @@ public struct UnifiedTransferRowView: View {
                         }
                         .buttonStyle(.bordered)
                         .tint(.green)
+                    } else if transfer.canRetry {
+                        Button(action: onRetry) {
+                            Label("Retry", systemImage: "arrow.clockwise")
+                                .font(.caption2)
+                        }
+                        .buttonStyle(.bordered)
+                        .tint(.blue)
                     } else if transfer.state == .completed {
                         Button(action: onOpen) {
                             Label("Open File", systemImage: "doc.text")
