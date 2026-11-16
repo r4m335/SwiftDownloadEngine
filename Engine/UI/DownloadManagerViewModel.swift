@@ -37,6 +37,33 @@ public enum DownloadFilter: String, CaseIterable, Sendable, Identifiable {
     public var id: String { rawValue }
 }
 
+/// Real-time aggregate count summary for download statuses across all unified transfers (HTTP & BitTorrent).
+public struct DownloadStatusCounts: Equatable, Sendable {
+    public let all: Int
+    public let active: Int
+    public let paused: Int
+    public let completed: Int
+    public let failed: Int
+
+    public init(all: Int, active: Int, paused: Int, completed: Int, failed: Int) {
+        self.all = all
+        self.active = active
+        self.paused = paused
+        self.completed = completed
+        self.failed = failed
+    }
+
+    public func count(for filter: DownloadFilter) -> Int {
+        switch filter {
+        case .all: return all
+        case .active: return active
+        case .paused: return paused
+        case .completed: return completed
+        case .failed: return failed
+        }
+    }
+}
+
 /// Defensive manager for resolving, creating, and validating the downloads directory across the application.
 public enum DownloadsDirectoryManager: Sendable {
     public enum Error: LocalizedError, Equatable, Sendable {
@@ -879,7 +906,7 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
             case .all:
                 break
             case .active:
-                guard snap.state == .downloading || snap.state == .probing else { return false }
+                guard snap.state == .downloading || snap.state == .probing || snap.state == .pending else { return false }
             case .paused:
                 guard snap.state == .paused else { return false }
             case .completed:
@@ -897,6 +924,38 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
         }
     }
 
+    /// Dynamically calculated status counts from unifiedTransfers covering both HTTP and BitTorrent transfers.
+    /// Live counts automatically update when transfers are added, paused, resumed, completed, failed, or deleted.
+    public var statusCounts: DownloadStatusCounts {
+        var allCount = 0
+        var activeCount = 0
+        var pausedCount = 0
+        var completedCount = 0
+        var failedCount = 0
+
+        for item in unifiedTransfers {
+            allCount += 1
+            switch item.state {
+            case .downloading, .seeding, .queued:
+                activeCount += 1
+            case .paused:
+                pausedCount += 1
+            case .completed:
+                completedCount += 1
+            case .failed:
+                failedCount += 1
+            }
+        }
+
+        return DownloadStatusCounts(
+            all: allCount,
+            active: activeCount,
+            paused: pausedCount,
+            completed: completedCount,
+            failed: failedCount
+        )
+    }
+
     /// Returns unified transfers (HTTP + Torrent) matching current search query, status filter, and optional category filter.
     public var filteredTransfers: [UnifiedTransfer] {
         unifiedTransfers.filter { item in
@@ -910,18 +969,7 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
                 }
             }
 
-            switch selectedFilter {
-            case .all:
-                break
-            case .active:
-                guard item.state == .downloading || item.state == .seeding else { return false }
-            case .paused:
-                guard item.state == .paused else { return false }
-            case .completed:
-                guard item.state == .completed else { return false }
-            case .failed:
-                if case .failed = item.state {} else { return false }
-            }
+            guard item.matchesFilter(selectedFilter) else { return false }
 
             if let category = selectedCategory {
                 guard item.category == category else { return false }

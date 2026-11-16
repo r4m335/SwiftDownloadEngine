@@ -163,11 +163,6 @@ public struct DownloadsView: View {
                 }
                 .hidden()
 
-                // Summary Header
-                if let summary = viewModel.queueSummary {
-                    QueueSummaryHeader(summary: summary)
-                }
-
                 // Bandwidth Dashboard (Milestone 4.3)
                 BandwidthDashboardSection(viewModel: viewModel)
 
@@ -271,8 +266,8 @@ public struct DownloadsView: View {
                     .padding(.top, 4)
                 }
 
-                // Filter Chips
-                FilterBar(selectedFilter: $viewModel.selectedFilter)
+                // Row 1: Clickable Download Status Counters (Merged Statistics & Status Filters)
+                QueueSummaryHeader(viewModel: viewModel)
                     .padding(.top, 6)
                     .padding(.bottom, 2)
 
@@ -1767,40 +1762,170 @@ public struct StatusBadge: View {
     }
 }
 
-// MARK: - Queue Summary Header
+// MARK: - Queue Summary Header & Download Status Counters
 
-public struct QueueSummaryHeader: View {
-    public let summary: QueueSnapshot
+public typealias QueueStatsHeader = QueueSummaryHeader
 
-    public var body: some View {
-        HStack(spacing: 16) {
-            HeaderStat(label: "Active", count: summary.activeCount, color: .blue)
-            HeaderStat(label: "Queued", count: summary.queuedCount, color: .purple)
-            HeaderStat(label: "Paused", count: summary.pausedCount, color: .orange)
-            HeaderStat(label: "Done", count: summary.completedCount, color: .green)
-            HeaderStat(label: "Failed", count: summary.failedCount, color: .red)
+extension DownloadFilter {
+    public var accentColor: Color {
+        switch self {
+        case .all: return .primary
+        case .active: return .blue
+        case .paused: return .orange
+        case .completed: return .green
+        case .failed: return .red
         }
-        .padding(.horizontal)
-        .padding(.vertical, 8)
-        .background(Color.platformSecondaryBackground)
     }
 }
 
-private struct HeaderStat: View {
-    let label: String
-    let count: Int
-    let color: Color
+public struct QueueSummaryHeader: View {
+    @ObservedObject public var viewModel: DownloadManagerViewModel
+    public var legacySummary: QueueSnapshot?
 
-    var body: some View {
-        VStack(spacing: 2) {
-            Text("\(count)")
-                .font(.headline)
-                .foregroundColor(color)
-            Text(label)
-                .font(.caption2)
-                .foregroundColor(.secondary)
+    public init(viewModel: DownloadManagerViewModel) {
+        self.viewModel = viewModel
+        self.legacySummary = nil
+    }
+
+    public init(summary: QueueSnapshot) {
+        self.legacySummary = summary
+        self.viewModel = DownloadManagerViewModel(engine: DownloadEngine())
+    }
+
+    private var currentCounts: (all: Int, active: Int, paused: Int, completed: Int, failed: Int) {
+        if let s = legacySummary {
+            let activeTotal = s.activeCount + s.queuedCount
+            let allTotal = activeTotal + s.pausedCount + s.completedCount + s.failedCount
+            return (all: allTotal, active: activeTotal, paused: s.pausedCount, completed: s.completedCount, failed: s.failedCount)
         }
-        .frame(maxWidth: .infinity)
+        let counts = viewModel.statusCounts
+        return (all: counts.all, active: counts.active, paused: counts.paused, completed: counts.completed, failed: counts.failed)
+    }
+
+    public var body: some View {
+        let counts = currentCounts
+        HStack(spacing: 4) {
+            HeaderStat(
+                label: "All",
+                count: counts.all,
+                color: DownloadFilter.all.accentColor,
+                isSelected: viewModel.selectedFilter == .all
+            ) {
+                withAnimation(.easeInOut(duration: 0.15)) {
+                    viewModel.selectedFilter = .all
+                }
+            }
+
+            HeaderStat(
+                label: "Active",
+                count: counts.active,
+                color: DownloadFilter.active.accentColor,
+                isSelected: viewModel.selectedFilter == .active
+            ) {
+                withAnimation(.easeInOut(duration: 0.15)) {
+                    viewModel.selectedFilter = .active
+                }
+            }
+
+            HeaderStat(
+                label: "Paused",
+                count: counts.paused,
+                color: DownloadFilter.paused.accentColor,
+                isSelected: viewModel.selectedFilter == .paused
+            ) {
+                withAnimation(.easeInOut(duration: 0.15)) {
+                    viewModel.selectedFilter = .paused
+                }
+            }
+
+            HeaderStat(
+                label: "Completed",
+                count: counts.completed,
+                color: DownloadFilter.completed.accentColor,
+                isSelected: viewModel.selectedFilter == .completed
+            ) {
+                withAnimation(.easeInOut(duration: 0.15)) {
+                    viewModel.selectedFilter = .completed
+                }
+            }
+
+            HeaderStat(
+                label: "Failed",
+                count: counts.failed,
+                color: DownloadFilter.failed.accentColor,
+                isSelected: viewModel.selectedFilter == .failed
+            ) {
+                withAnimation(.easeInOut(duration: 0.15)) {
+                    viewModel.selectedFilter = .failed
+                }
+            }
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
+        .background(Color.platformSecondaryBackground)
+        .cornerRadius(10)
+        .padding(.horizontal)
+    }
+}
+
+public struct HeaderStat: View {
+    public let label: String
+    public let count: Int
+    public let color: Color
+    public let isSelected: Bool
+    public let action: (() -> Void)?
+
+    public init(
+        label: String,
+        count: Int,
+        color: Color,
+        isSelected: Bool = false,
+        action: (() -> Void)? = nil
+    ) {
+        self.label = label
+        self.count = count
+        self.color = color
+        self.isSelected = isSelected
+        self.action = action
+    }
+
+    public var body: some View {
+        Button {
+            action?()
+        } label: {
+            VStack(spacing: 2) {
+                Text("\(count)")
+                    .font(.headline.weight(isSelected ? .bold : .semibold))
+                    .foregroundColor(color)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
+
+                Text(label)
+                    .font(.caption2.weight(isSelected ? .semibold : .regular))
+                    .foregroundColor(isSelected ? .primary : .secondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
+
+                // Subtle underline indicator
+                Capsule()
+                    .fill(isSelected ? color : Color.clear)
+                    .frame(height: 2.5)
+                    .padding(.horizontal, 4)
+                    .padding(.top, 2)
+            }
+            .frame(maxWidth: .infinity, minHeight: 44)
+            .padding(.vertical, 4)
+            .background(
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(isSelected ? color.opacity(0.12) : Color.clear)
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(label), \(count) items")
+        .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : [.isButton])
+        .accessibilityHint("Filter downloads by \(label)")
     }
 }
 

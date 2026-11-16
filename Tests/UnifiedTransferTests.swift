@@ -218,11 +218,30 @@ final class UnifiedTransferTests: XCTestCase {
             createdAt: Date()
         )
 
+        let queuedTransfer = UnifiedTransfer(
+            id: "t5",
+            name: "File5",
+            type: .http,
+            state: .queued,
+            completedBytes: 0,
+            totalBytes: 100,
+            progressFraction: 0.0,
+            destinationURL: URL(fileURLWithPath: "/tmp"),
+            source: "https://example.com/file5",
+            createdAt: Date()
+        )
+
         XCTAssertTrue(downloadingTransfer.matchesFilter(DownloadFilter.all))
         XCTAssertTrue(downloadingTransfer.matchesFilter(DownloadFilter.active))
         XCTAssertFalse(downloadingTransfer.matchesFilter(DownloadFilter.paused))
         XCTAssertFalse(downloadingTransfer.matchesFilter(DownloadFilter.completed))
         XCTAssertFalse(downloadingTransfer.matchesFilter(DownloadFilter.failed))
+
+        XCTAssertTrue(queuedTransfer.matchesFilter(DownloadFilter.all))
+        XCTAssertTrue(queuedTransfer.matchesFilter(DownloadFilter.active))
+        XCTAssertFalse(queuedTransfer.matchesFilter(DownloadFilter.paused))
+        XCTAssertFalse(queuedTransfer.matchesFilter(DownloadFilter.completed))
+        XCTAssertFalse(queuedTransfer.matchesFilter(DownloadFilter.failed))
 
         XCTAssertTrue(pausedTransfer.matchesFilter(DownloadFilter.all))
         XCTAssertFalse(pausedTransfer.matchesFilter(DownloadFilter.active))

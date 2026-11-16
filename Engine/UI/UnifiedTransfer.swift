@@ -320,7 +320,7 @@ public struct UnifiedTransfer: Identifiable, Sendable, Equatable {
         case .all:
             return true
         case .active:
-            return state == .downloading || state == .seeding
+            return state == .downloading || state == .seeding || state == .queued
         case .paused:
             return state == .paused
         case .completed:

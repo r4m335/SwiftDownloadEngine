@@ -213,6 +213,113 @@ final class DownloadsViewInteractionTests: XCTestCase {
         XCTAssertTrue(toggledSelection, "Tapping content in multi-selection mode must toggle selection")
         XCTAssertFalse(openedDetails, "Tapping content in multi-selection mode must not open details")
     }
+
+    @MainActor
+    func testDownloadStatusCounters_UnifiedCountsAndLiveUpdates() {
+        let tDownloading = UnifiedTransfer(
+            id: "t1", name: "movie.mp4", type: .http, state: .downloading,
+            completedBytes: 100, totalBytes: 200, progressFraction: 0.5,
+            downloadSpeedBytesPerSecond: 50,
+            destinationURL: tempDirectory.appendingPathComponent("movie.mp4"),
+            source: "https://example.com/movie.mp4"
+        )
+        let tSeeding = UnifiedTransfer(
+            id: "t2", name: "distro.iso", type: .torrent, state: .seeding,
+            completedBytes: 1000, totalBytes: 1000, progressFraction: 1.0,
+            downloadSpeedBytesPerSecond: 0,
+            destinationURL: tempDirectory.appendingPathComponent("distro.iso"),
+            source: "magnet:?xt=urn:btih:abc"
+        )
+        let tQueued = UnifiedTransfer(
+            id: "t3", name: "audio.mp3", type: .http, state: .queued,
+            completedBytes: 0, totalBytes: 50, progressFraction: 0.0,
+            downloadSpeedBytesPerSecond: 0,
+            destinationURL: tempDirectory.appendingPathComponent("audio.mp3"),
+            source: "https://example.com/audio.mp3"
+        )
+        let tPaused = UnifiedTransfer(
+            id: "t4", name: "doc.pdf", type: .http, state: .paused,
+            completedBytes: 10, totalBytes: 100, progressFraction: 0.1,
+            downloadSpeedBytesPerSecond: 0,
+            destinationURL: tempDirectory.appendingPathComponent("doc.pdf"),
+            source: "https://example.com/doc.pdf"
+        )
+        let tCompleted = UnifiedTransfer(
+            id: "t5", name: "archive.zip", type: .http, state: .completed,
+            completedBytes: 500, totalBytes: 500, progressFraction: 1.0,
+            downloadSpeedBytesPerSecond: 0,
+            destinationURL: tempDirectory.appendingPathComponent("archive.zip"),
+            source: "https://example.com/archive.zip"
+        )
+        let tFailed = UnifiedTransfer(
+            id: "t6", name: "bad.bin", type: .http, state: .failed(reason: "HTTP 404"),
+            completedBytes: 0, totalBytes: 100, progressFraction: 0.0,
+            downloadSpeedBytesPerSecond: 0,
+            destinationURL: tempDirectory.appendingPathComponent("bad.bin"),
+            source: "https://example.com/bad.bin"
+        )
+
+        viewModel.unifiedTransfers = [tDownloading, tSeeding, tQueued, tPaused, tCompleted, tFailed]
+
+        let counts = viewModel.statusCounts
+        XCTAssertEqual(counts.all, 6)
+        XCTAssertEqual(counts.active, 3, "Active must include downloading, seeding, and queued transfers")
+        XCTAssertEqual(counts.paused, 1)
+        XCTAssertEqual(counts.completed, 1)
+        XCTAssertEqual(counts.failed, 1)
+
+        // Test filtering behavior for each filter
+        viewModel.selectedFilter = .all
+        XCTAssertEqual(viewModel.filteredTransfers.count, 6)
+
+        viewModel.selectedFilter = .active
+        XCTAssertEqual(viewModel.filteredTransfers.count, 3)
+        XCTAssertTrue(viewModel.filteredTransfers.contains(where: { $0.id == "t1" }))
+        XCTAssertTrue(viewModel.filteredTransfers.contains(where: { $0.id == "t2" }))
+        XCTAssertTrue(viewModel.filteredTransfers.contains(where: { $0.id == "t3" }))
+
+        viewModel.selectedFilter = .paused
+        XCTAssertEqual(viewModel.filteredTransfers.count, 1)
+        XCTAssertEqual(viewModel.filteredTransfers.first?.id, "t4")
+
+        viewModel.selectedFilter = .completed
+        XCTAssertEqual(viewModel.filteredTransfers.count, 1)
+        XCTAssertEqual(viewModel.filteredTransfers.first?.id, "t5")
+
+        viewModel.selectedFilter = .failed
+        XCTAssertEqual(viewModel.filteredTransfers.count, 1)
+        XCTAssertEqual(viewModel.filteredTransfers.first?.id, "t6")
+
+        // Test combined status + file-type category filtering
+        viewModel.selectedFilter = .active
+        viewModel.selectedCategory = .videos
+        XCTAssertEqual(viewModel.filteredTransfers.count, 1)
+        XCTAssertEqual(viewModel.filteredTransfers.first?.id, "t1")
+
+        viewModel.selectedCategory = .audio
+        XCTAssertEqual(viewModel.filteredTransfers.count, 1)
+        XCTAssertEqual(viewModel.filteredTransfers.first?.id, "t3")
+
+        viewModel.selectedCategory = nil
+    }
+
+    @MainActor
+    func testHeaderStat_InteractiveTapsAndAccessibility() {
+        var tapped = false
+        let stat = HeaderStat(
+            label: "Active",
+            count: 7,
+            color: .blue,
+            isSelected: true,
+            action: { tapped = true }
+        )
+
+        XCTAssertEqual(stat.label, "Active")
+        XCTAssertEqual(stat.count, 7)
+        XCTAssertTrue(stat.isSelected)
+        stat.action?()
+        XCTAssertTrue(tapped, "HeaderStat action must fire when tapped")
+    }
 #else
     func testDownloadsViewInteractionLinuxNoOp() {
         // SwiftUI is not available on Linux platforms.
