@@ -1346,7 +1346,7 @@ public struct UnifiedTransferRowView: View {
                         onDeleteFile: onDeleteFile
                     )
                 } label: {
-                    Image(systemName: "ellipsis")
+                    Image(systemName: "ellipsis.vertical")
                         .font(.body.weight(.bold))
                         .foregroundColor(.secondary)
                         .frame(width: 32, height: 32)
@@ -1695,7 +1695,7 @@ public struct DownloadRowView: View {
                         onDeleteFile: onDeleteFile
                     )
                 } label: {
-                    Image(systemName: "ellipsis")
+                    Image(systemName: "ellipsis.vertical")
                         .font(.body.weight(.bold))
                         .foregroundColor(.secondary)
                         .frame(width: 32, height: 32)
