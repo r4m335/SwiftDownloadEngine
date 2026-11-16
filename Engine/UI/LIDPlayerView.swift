@@ -202,7 +202,7 @@ public struct LIDPlayerView: View {
     @State private var zoomScale: CGFloat = 1.0
 
     // Presentations and Floating Panels
-    @State private var showSpeedSheet: Bool = false
+    @State private var showSpeedPanel: Bool = false
     @State private var showTrackSelectionSheet: Bool = false
     @State private var showSubtitleDelayPanel: Bool = false
     @State private var showSubtitleSearchSheet: Bool = false
@@ -211,6 +211,8 @@ public struct LIDPlayerView: View {
     @State private var showExternalSubtitlePrompt: Bool = false
     @State private var sessionId: String = String(UUID().uuidString.prefix(8).uppercased())
     @State private var isHoldingSpeedBoost: Bool = false
+    @State private var voiceHeardTime: Double? = nil
+    @State private var textSeenTime: Double? = nil
 
     // Gesture state HUD overlays
     @State private var brightnessLevel: Double = 0.5
@@ -368,6 +370,25 @@ public struct LIDPlayerView: View {
                 }
             }
 
+            // Compact Floating Playback Speed Controller Overlay
+            if showSpeedPanel && !isControlsLocked && !engine.playbackState.isFailed {
+                Color.black.opacity(0.01)
+                    .edgesIgnoringSafeArea(.all)
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            showSpeedPanel = false
+                        }
+                    }
+
+                VStack {
+                    Spacer()
+                    floatingSpeedPanel
+                        .padding(.bottom, showControls ? 140 : 50)
+                        .transition(.scale(scale: 0.9).combined(with: .opacity))
+                }
+            }
+
             // Subtle fallback close button when controls are auto-hidden (so the user is never trapped)
             if !showControls && !isControlsLocked && !engine.playbackState.isFailed {
                 VStack {
@@ -453,6 +474,10 @@ public struct LIDPlayerView: View {
                 isHoldingSpeedBoost = false
                 engine.cancelTemporarySpeedBoost()
             }
+            showSubtitleDelayPanel = false
+            showSpeedPanel = false
+            voiceHeardTime = nil
+            textSeenTime = nil
             #if canImport(UIKit)
             LIDOrientationManager.shared.restorePortrait(session: sessionId)
             #endif
@@ -461,9 +486,6 @@ public struct LIDPlayerView: View {
             engine.vlcBackend.detachRenderingView()
             #endif
             controlsTimer?.invalidate()
-        }
-        .sheet(isPresented: $showSpeedSheet) {
-            speedAdjustmentSheetView
         }
         .sheet(isPresented: $showTrackSelectionSheet) {
             trackSelectionSheetView
@@ -947,9 +969,14 @@ public struct LIDPlayerView: View {
                 // Bottom row 2: Speed, subtitles, subtitle delay, orientation, aspect ratio, mute, PiP, lock, diagnostics
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 14) {
-                        // 1. Continuous Speed Slider Sheet Trigger
+                        // 1. Continuous Speed Floating Panel Trigger
                         Button {
-                            showSpeedSheet = true
+                            withAnimation(.easeInOut(duration: 0.2)) {
+                                showSpeedPanel.toggle()
+                                if showSpeedPanel {
+                                    showSubtitleDelayPanel = false
+                                }
+                            }
                             resetControlsTimer()
                         } label: {
                             HStack(spacing: 4) {
@@ -960,8 +987,8 @@ public struct LIDPlayerView: View {
                             }
                             .padding(.horizontal, 10)
                             .padding(.vertical, 5)
-                            .background(Color.white.opacity(0.2))
-                            .foregroundColor(.white)
+                            .background(showSpeedPanel ? Color.white.opacity(0.25) : Color.black.opacity(0.4))
+                            .foregroundColor(showSpeedPanel ? Color.orange : .white)
                             .cornerRadius(6)
                         }
 
@@ -982,6 +1009,9 @@ public struct LIDPlayerView: View {
                         Button {
                             withAnimation(.easeInOut(duration: 0.2)) {
                                 showSubtitleDelayPanel.toggle()
+                                if showSubtitleDelayPanel {
+                                    showSpeedPanel = false
+                                }
                             }
                             resetControlsTimer()
                         } label: {
@@ -1061,6 +1091,8 @@ public struct LIDPlayerView: View {
                             withAnimation {
                                 isControlsLocked = true
                                 showControls = false
+                                showSubtitleDelayPanel = false
+                                showSpeedPanel = false
                             }
                             PipelineLogger.shared.logPlayer(
                                 session: sessionId,
@@ -1182,6 +1214,7 @@ public struct LIDPlayerView: View {
                         showTrackSelectionSheet = false
                         withAnimation(.easeInOut(duration: 0.2)) {
                             showSubtitleDelayPanel = true
+                            showSpeedPanel = false
                         }
                     } label: {
                         HStack {
@@ -1225,91 +1258,102 @@ public struct LIDPlayerView: View {
         }
     }
 
-    // MARK: - Compact Floating Subtitle Delay Controller
+    // MARK: - Compact Floating Subtitle Delay Controller (VLC-Style Sync)
 
     private var floatingSubtitleDelayPanel: some View {
-        VStack(spacing: 12) {
-            // Header
+        VStack(spacing: 8) {
+            // Row 1: Title pill
+            Text("Subtitle delay")
+                .font(.system(size: 15, weight: .bold))
+                .foregroundColor(Color.orange)
+                .frame(width: 320, height: 36)
+                .background(Color.black.opacity(0.75))
+                .cornerRadius(10)
+
+            // Row 2: Stepper pill: <  0 ms  >
             HStack {
-                Text("Subtitle delay")
-                    .font(.system(size: 15, weight: .bold))
-                    .foregroundColor(Color.orange)
-
-                Spacer()
-
-                Button {
-                    withAnimation(.easeInOut(duration: 0.2)) {
-                        showSubtitleDelayPanel = false
-                    }
-                } label: {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 12, weight: .bold))
-                        .foregroundColor(.white.opacity(0.7))
-                        .padding(5)
-                        .background(Color.white.opacity(0.15))
-                        .clipShape(Circle())
-                }
-            }
-
-            // Stepper Row: [ - ]  0 ms  [ + ]
-            HStack(spacing: 20) {
                 Button {
                     adjustDelayByMilliseconds(-100)
                 } label: {
-                    Image(systemName: "minus")
-                        .font(.system(size: 20, weight: .bold))
+                    Image(systemName: "chevron.left")
+                        .font(.system(size: 18, weight: .bold))
                         .foregroundColor(.white)
-                        .frame(width: 44, height: 44)
-                        .background(Color.white.opacity(0.2))
-                        .clipShape(Circle())
+                        .frame(width: 50, height: 44)
+                        .contentShape(Rectangle())
                 }
 
+                Spacer()
+
                 Text(formatDelayMilliseconds(engine.trackManager.subtitleDelay))
-                    .font(.system(size: 24, weight: .bold, design: .monospaced))
-                    .foregroundColor(engine.trackManager.subtitleDelay == 0 ? .white : Color.orange)
-                    .frame(minWidth: 120)
+                    .font(.system(size: 17, weight: .bold, design: .monospaced))
+                    .foregroundColor(.white)
+
+                Spacer()
 
                 Button {
                     adjustDelayByMilliseconds(100)
                 } label: {
-                    Image(systemName: "plus")
-                        .font(.system(size: 20, weight: .bold))
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 18, weight: .bold))
                         .foregroundColor(.white)
-                        .frame(width: 44, height: 44)
-                        .background(Color.white.opacity(0.2))
-                        .clipShape(Circle())
+                        .frame(width: 50, height: 44)
+                        .contentShape(Rectangle())
                 }
             }
-            .padding(.vertical, 4)
+            .frame(width: 320, height: 44)
+            .background(Color.black.opacity(0.75))
+            .cornerRadius(10)
 
-            // Reset Row
-            HStack {
-                Spacer()
+            // Row 3: Action Buttons [ ✓ VOICE HEARD ] [ ✓ TEXT SEEN ] [ RESET ]
+            HStack(spacing: 8) {
+                // Voice Heard Button
                 Button {
-                    engine.setSubtitleDelay(seconds: 0.0)
+                    handleVoiceHeardTapped()
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "checkmark")
+                            .font(.system(size: 11, weight: .black))
+                        Text("VOICE HEARD")
+                            .font(.system(size: 11, weight: .bold))
+                    }
+                    .foregroundColor(voiceHeardTime != nil ? Color.orange : .white)
+                    .frame(maxWidth: .infinity, minHeight: 38)
+                    .background(Color.black.opacity(0.75))
+                    .cornerRadius(10)
+                }
+
+                // Text Seen Button
+                Button {
+                    handleTextSeenTapped()
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "checkmark")
+                            .font(.system(size: 11, weight: .black))
+                        Text("TEXT SEEN")
+                            .font(.system(size: 11, weight: .bold))
+                    }
+                    .foregroundColor(textSeenTime != nil ? Color.orange : .white)
+                    .frame(maxWidth: .infinity, minHeight: 38)
+                    .background(Color.black.opacity(0.75))
+                    .cornerRadius(10)
+                }
+
+                // Reset Button
+                Button {
+                    handleResetSubtitleDelay()
                 } label: {
                     Text("RESET")
-                        .font(.system(size: 12, weight: .bold))
+                        .font(.system(size: 11, weight: .bold))
                         .foregroundColor(.white)
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 6)
-                        .background(Color.white.opacity(0.2))
-                        .cornerRadius(6)
+                        .padding(.horizontal, 16)
+                        .frame(minHeight: 38)
+                        .background(Color.black.opacity(0.75))
+                        .cornerRadius(10)
                 }
             }
+            .frame(width: 320)
         }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 16)
-        .background(
-            RoundedRectangle(cornerRadius: 16)
-                .fill(Color.black.opacity(0.85))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 16)
-                        .stroke(Color.white.opacity(0.15), lineWidth: 1)
-                )
-        )
-        .frame(width: 280)
-        .shadow(color: Color.black.opacity(0.5), radius: 10, x: 0, y: 4)
+        .shadow(color: Color.black.opacity(0.5), radius: 8, x: 0, y: 3)
     }
 
     private func adjustDelayByMilliseconds(_ deltaMs: Int) {
@@ -1334,94 +1378,126 @@ public struct LIDPlayerView: View {
         }
     }
 
-    // MARK: - Playback Speed Continuous Slider Sheet
-
-    private var speedAdjustmentSheetView: some View {
-        NavigationView {
-            VStack(spacing: 24) {
-                Text("Playback Speed")
-                    .font(.headline)
-                    .padding(.top, 16)
-
-                VStack(spacing: 4) {
-                    Text(String(format: "%.2f×", engine.playbackRate))
-                        .font(.system(size: 44, weight: .bold, design: .monospaced))
-                        .foregroundColor(engine.playbackRate == 0 ? .yellow : .blue)
-                    Text(engine.playbackRate == 0 ? "Playback Paused" : (engine.playbackRate == 1.0 ? "Normal Speed" : (engine.playbackRate > 1.0 ? "Faster" : "Slower")))
-                        .font(.subheadline)
-                        .foregroundColor(.secondary)
-                }
-
-                // Continuous Slider from 0.0x to 2.0x (unrestricted continuous values)
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack {
-                        Text("0.0×")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                        Spacer()
-                        Text("1.0×")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                        Spacer()
-                        Text("2.0×")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                    }
-                    Slider(
-                        value: Binding(
-                            get: { engine.playbackRate },
-                            set: { engine.setPlaybackRate($0) }
-                        ),
-                        in: 0.0...2.0
-                    )
-                    .accentColor(.blue)
-                }
-                .padding(.horizontal, 8)
-
-                // Quick Presets
-                VStack(alignment: .leading, spacing: 10) {
-                    Text("Quick Presets")
-                        .font(.caption.bold())
-                        .foregroundColor(.secondary)
-
-                    HStack(spacing: 8) {
-                        ForEach([0.5, 0.75, 1.0, 1.25, 1.5, 2.0], id: \.self) { rate in
-                            Button {
-                                engine.setPlaybackRate(rate)
-                            } label: {
-                                Text(rate == 1.0 ? "1.0×" : String(format: "%.2g×", rate))
-                                    .font(.system(size: 13, weight: .semibold))
-                                    .padding(.horizontal, 10)
-                                    .padding(.vertical, 8)
-                                    .background(abs(engine.playbackRate - rate) < 0.02 ? Color.blue : Color.secondary.opacity(0.2))
-                                    .foregroundColor(abs(engine.playbackRate - rate) < 0.02 ? .white : .primary)
-                                    .cornerRadius(8)
-                            }
-                        }
-                    }
-                }
-
-                Text("0.0× pauses playback while preserving your active speed setting. Speeds up to 2.0× include automatic audio pitch correction.")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                    .multilineTextAlignment(.center)
-                    .padding(.horizontal, 16)
-
-                Spacer()
-            }
-            .padding()
-            .navigationTitle("Speed Controls")
-            #if os(iOS)
-            .navigationBarTitleDisplayMode(.inline)
-            #endif
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Done") {
-                        showSpeedSheet = false
-                    }
-                }
-            }
+    private func handleVoiceHeardTapped() {
+        let now = engine.currentPositionSeconds
+        voiceHeardTime = now
+        PipelineLogger.shared.logPlayer(
+            session: sessionId,
+            category: "SubtitleSync",
+            message: "Voice heard recorded at \(String(format: "%.3f", now))s"
+        )
+        if let textTime = textSeenTime {
+            applyCalculatedSubtitleDelay(voiceTime: now, textTime: textTime)
         }
+    }
+
+    private func handleTextSeenTapped() {
+        let now = engine.currentPositionSeconds
+        textSeenTime = now
+        PipelineLogger.shared.logPlayer(
+            session: sessionId,
+            category: "SubtitleSync",
+            message: "Text seen recorded at \(String(format: "%.3f", now))s"
+        )
+        if let voiceTime = voiceHeardTime {
+            applyCalculatedSubtitleDelay(voiceTime: voiceTime, textTime: now)
+        }
+    }
+
+    private func applyCalculatedSubtitleDelay(voiceTime: Double, textTime: Double) {
+        let rawDiff = voiceTime - textTime
+        // Round to nearest 50ms for clean integer-friendly offset
+        let roundedDiff = (round(rawDiff * 20.0) / 20.0)
+        let current = engine.trackManager.subtitleDelay
+        let base = (current.isFinite && !current.isNaN) ? current : 0.0
+        let newDelay = base + roundedDiff
+        engine.setSubtitleDelay(seconds: newDelay)
+        PipelineLogger.shared.logPlayer(
+            session: sessionId,
+            category: "SubtitleSync",
+            message: "Calculated sync delay: diff=\(String(format: "%.3f", roundedDiff))s, newDelay=\(String(format: "%.3f", newDelay))s"
+        )
+        voiceHeardTime = nil
+        textSeenTime = nil
+    }
+
+    private func handleResetSubtitleDelay() {
+        engine.setSubtitleDelay(seconds: 0.0)
+        voiceHeardTime = nil
+        textSeenTime = nil
+        PipelineLogger.shared.logPlayer(
+            session: sessionId,
+            category: "SubtitleSync",
+            message: "Subtitle delay reset to 0ms"
+        )
+    }
+
+    // MARK: - Compact Floating Playback Speed Controller
+
+    private var floatingSpeedPanel: some View {
+        VStack(spacing: 8) {
+            // Row 1: Title pill
+            Text("Playback speed")
+                .font(.system(size: 15, weight: .bold))
+                .foregroundColor(Color.orange)
+                .frame(width: 320, height: 36)
+                .background(Color.black.opacity(0.75))
+                .cornerRadius(10)
+
+            // Row 2: Continuous Slider pill: 0.0× ───●─── 2.0×
+            HStack(spacing: 12) {
+                Text("0.0×")
+                    .font(.system(size: 12, weight: .bold, design: .monospaced))
+                    .foregroundColor(.white.opacity(0.7))
+
+                Slider(
+                    value: Binding(
+                        get: { engine.playbackRate },
+                        set: { engine.setPlaybackRate($0) }
+                    ),
+                    in: 0.0...2.0
+                )
+                .accentColor(Color.orange)
+
+                Text("2.0×")
+                    .font(.system(size: 12, weight: .bold, design: .monospaced))
+                    .foregroundColor(.white.opacity(0.7))
+            }
+            .padding(.horizontal, 16)
+            .frame(width: 320, height: 44)
+            .background(Color.black.opacity(0.75))
+            .cornerRadius(10)
+
+            // Row 3: Action Buttons [ Rate & Status ] [ RESET (1.0×) ]
+            HStack(spacing: 8) {
+                HStack(spacing: 6) {
+                    Text(String(format: "%.2f×", engine.playbackRate))
+                        .font(.system(size: 14, weight: .bold, design: .monospaced))
+                        .foregroundColor(abs(engine.playbackRate - 1.0) < 0.01 ? .white : Color.orange)
+
+                    Text(engine.playbackRate == 0 ? "Paused" : (abs(engine.playbackRate - 1.0) < 0.01 ? "Normal" : (engine.playbackRate > 1.0 ? "Faster" : "Slower")))
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(.white.opacity(0.7))
+                }
+                .frame(maxWidth: .infinity, minHeight: 38)
+                .background(Color.black.opacity(0.75))
+                .cornerRadius(10)
+
+                Button {
+                    engine.setPlaybackRate(1.0)
+                } label: {
+                    Text("RESET")
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 16)
+                        .frame(minHeight: 38)
+                        .background(Color.black.opacity(0.75))
+                        .cornerRadius(10)
+                }
+            }
+            .frame(width: 320)
+        }
+        .shadow(color: Color.black.opacity(0.5), radius: 8, x: 0, y: 3)
     }
 
     // MARK: - Helper Views & Methods
@@ -1445,6 +1521,10 @@ public struct LIDPlayerView: View {
             isHoldingSpeedBoost = false
             engine.cancelTemporarySpeedBoost()
         }
+        showSubtitleDelayPanel = false
+        showSpeedPanel = false
+        voiceHeardTime = nil
+        textSeenTime = nil
         #if canImport(UIKit)
         LIDOrientationManager.shared.restorePortrait(session: sessionId)
         #endif
