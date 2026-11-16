@@ -170,9 +170,16 @@ final class LIDPlayerSettingsTests: XCTestCase {
     }
 
     @MainActor
-    func testSettingsViewCategoriesInitialization() {
-        let coordinator = DownloadCoordinator()
-        let vm = DownloadManagerViewModel(coordinator: coordinator)
+    func testSettingsViewCategoriesInitialization() throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let store = try DownloadPersistenceStore(storageDirectoryURL: tempDir)
+        let coordinator = try DownloadCoordinator(session: .shared, persistenceStore: store)
+        let queueManager = DownloadQueueManager(coordinator: coordinator, persistenceStore: store)
+        let engine = DownloadEngine(queueManager: queueManager, coordinator: coordinator, persistenceStore: store)
+        let vm = DownloadManagerViewModel(engine: engine, downloadsDirectory: tempDir)
 
         let rootSettings = SettingsView(viewModel: vm)
         XCTAssertNotNil(rootSettings)
