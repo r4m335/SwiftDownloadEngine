@@ -191,6 +191,7 @@ public struct LIDPlayerView: View {
     @StateObject private var engine = LIDPlaybackEngine.shared
     @ObservedObject private var playerSettingsStore: LIDPlayerSettingsStore = .shared
     @Environment(\.presentationMode) private var presentationMode
+    @Environment(\.scenePhase) private var scenePhase
 
     private var playerSettings: LIDPlayerSettings {
         playerSettingsStore.settings
@@ -228,6 +229,8 @@ public struct LIDPlayerView: View {
     @State private var gestureStartVolume: Double = 1.0
     @State private var isDraggingBrightness: Bool = false
     @State private var isDraggingVolume: Bool = false
+    @State private var isDraggingSeek: Bool = false
+    @State private var seekGestureStartPosition: Double = 0.0
     @State private var seekGestureOffset: Double = 0.0
     @State private var showSeekHUD: Bool = false
     @State private var seekHUDText: String = ""
@@ -457,9 +460,7 @@ public struct LIDPlayerView: View {
             #if canImport(UIKit)
             brightnessLevel = Double(UIScreen.main.brightness)
             LIDOrientationManager.shared.isPlayerActive = true
-            if playerSettings.defaultOrientation == .landscape {
-                LIDOrientationManager.shared.requestLandscape(session: sessionId)
-            }
+            LIDOrientationManager.shared.applyOrientationPreference(playerSettings.defaultOrientation, session: sessionId)
             #endif
             volumeLevel = Double(engine.volume)
             PipelineLogger.shared.logPlayer(
@@ -469,14 +470,28 @@ public struct LIDPlayerView: View {
             )
             aspectRatio = playerSettings.defaultAspectRatio
             engine.setAspectRatio(playerSettings.defaultAspectRatio)
-            if !playerSettings.rememberPlaybackSpeed {
-                engine.setPlaybackRate(playerSettings.defaultPlaybackSpeed)
-            }
+            engine.setPlaybackRate(playerSettings.effectivePlaybackSpeed)
             engine.load(source: source, autoPlay: true, resumeFromHistory: playerSettings.resumePlaybackPosition, sessionId: sessionId)
             if case .localFile(let localURL, _) = source {
-                autoDiscoverSiblingSubtitles(for: localURL)
+                if playerSettings.autoLoadSiblingSubtitles {
+                    autoDiscoverSiblingSubtitles(for: localURL)
+                }
             }
             resetControlsTimer()
+        }
+        .onChange(of: scenePhase) { newPhase in
+            if newPhase == .background {
+                if !playerSettings.enableBackgroundAudio {
+                    if engine.playbackState.isPlaying {
+                        engine.pause()
+                        PipelineLogger.shared.logPlayer(
+                            session: sessionId,
+                            category: "PlayerLifecycle",
+                            message: "Paused playback because background audio is disabled"
+                        )
+                    }
+                }
+            }
         }
         .onDisappear {
             PipelineLogger.shared.logPlayer(
@@ -645,7 +660,7 @@ public struct LIDPlayerView: View {
                         toggleControlsVisibility()
                     }
 
-                // Centre 30%: Dedicated YouTube-style Hold-for-2x Zone (Active only when controls hidden) + Single-tap Controls
+                // Centre 30%: Dedicated YouTube-style Hold-for-2x Zone (Active only when controls hidden) + Horizontal Seek Drag + Single-tap Controls
                 Color.clear
                     .contentShape(Rectangle())
                     .frame(width: proxy.size.width * 0.30)
@@ -679,6 +694,37 @@ public struct LIDPlayerView: View {
                                         message: "Hold-for-2x released -> restored speed"
                                     )
                                 }
+                            }
+                    )
+                    .simultaneousGesture(
+                        DragGesture(minimumDistance: 25)
+                            .onChanged { value in
+                                guard !isControlsLocked && !isHoldingSpeedBoost && playerSettings.enableSeekGesture else { return }
+                                guard abs(value.translation.width) > abs(value.translation.height) else { return }
+                                if !isDraggingSeek {
+                                    isDraggingSeek = true
+                                    controlsTimer?.invalidate()
+                                    seekGestureStartPosition = engine.currentPositionSeconds
+                                }
+                                let duration = engine.durationSeconds > 0 ? engine.durationSeconds : 600.0
+                                let sensitivity: Double = min(120.0, max(30.0, duration * 0.2))
+                                let fraction = Double(value.translation.width) / Double(proxy.size.width * 0.3)
+                                let offsetSeconds = fraction * sensitivity
+                                let target = max(0.0, min(duration, seekGestureStartPosition + offsetSeconds))
+                                seekGestureOffset = offsetSeconds
+                                seekHUDText = String(format: "%@ (%+.0fs)", formatTime(target), offsetSeconds)
+                                showSeekHUD = true
+                            }
+                            .onEnded { _ in
+                                guard isDraggingSeek else { return }
+                                isDraggingSeek = false
+                                let duration = engine.durationSeconds > 0 ? engine.durationSeconds : 600.0
+                                let target = max(0.0, min(duration, seekGestureStartPosition + seekGestureOffset))
+                                engine.seek(to: target)
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                                    showSeekHUD = false
+                                }
+                                resetControlsTimer()
                             }
                     )
                     .onTapGesture(count: 1) {
@@ -898,13 +944,14 @@ public struct LIDPlayerView: View {
 
             Spacer()
 
-            // Center Play / Pause & 10s Skip
+            // Center Play / Pause & Dynamic Interval Skip
             HStack(spacing: 40) {
                 Button {
-                    engine.seekBy(offsetSeconds: -10)
+                    let interval = Double(playerSettings.seekIntervalSeconds)
+                    engine.seekBy(offsetSeconds: -interval)
                     resetControlsTimer()
                 } label: {
-                    Image(systemName: "gobackward.10")
+                    Image(systemName: seekIconName(seconds: playerSettings.seekIntervalSeconds, isForward: false))
                         .font(.system(size: 32))
                         .foregroundColor(.white)
                 }
@@ -929,10 +976,11 @@ public struct LIDPlayerView: View {
                 }
 
                 Button {
-                    engine.seekBy(offsetSeconds: 10)
+                    let interval = Double(playerSettings.seekIntervalSeconds)
+                    engine.seekBy(offsetSeconds: interval)
                     resetControlsTimer()
                 } label: {
-                    Image(systemName: "goforward.10")
+                    Image(systemName: seekIconName(seconds: playerSettings.seekIntervalSeconds, isForward: true))
                         .font(.system(size: 32))
                         .foregroundColor(.white)
                 }
@@ -1471,7 +1519,13 @@ public struct LIDPlayerView: View {
                 Slider(
                     value: Binding(
                         get: { engine.playbackRate },
-                        set: { engine.setPlaybackRate($0) }
+                        set: { newRate in
+                            engine.setPlaybackRate(newRate)
+                            if playerSettings.rememberPlaybackSpeed {
+                                playerSettingsStore.settings.lastSelectedPlaybackSpeed = newRate
+                                playerSettingsStore.save()
+                            }
+                        }
                     ),
                     in: 0.0...2.0
                 )
@@ -1503,6 +1557,10 @@ public struct LIDPlayerView: View {
 
                 Button {
                     engine.setPlaybackRate(1.0)
+                    if playerSettings.rememberPlaybackSpeed {
+                        playerSettingsStore.settings.lastSelectedPlaybackSpeed = 1.0
+                        playerSettingsStore.save()
+                    }
                 } label: {
                     Text("RESET")
                         .font(.system(size: 11, weight: .bold))
@@ -1581,6 +1639,16 @@ public struct LIDPlayerView: View {
                 let shouldSelect = engine.trackManager.selectedSubtitleTrack == .off
                 engine.addExternalSubtitle(url: f, displayName: f.lastPathComponent, autoSelect: shouldSelect)
             }
+        }
+    }
+
+    private func seekIconName(seconds: Int, isForward: Bool) -> String {
+        let prefix = isForward ? "goforward" : "gobackward"
+        switch seconds {
+        case 5, 10, 15, 30:
+            return "\(prefix).\(seconds)"
+        default:
+            return prefix
         }
     }
 

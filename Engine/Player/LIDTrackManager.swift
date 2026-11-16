@@ -115,6 +115,73 @@ public final class LIDTrackManager: ObservableObject {
         self.availableSubtitleTracks = combined
     }
 
+    // MARK: - Language & Preference Resolution
+
+    /// Determines if a track matches the user's preferred language string (e.g. "English", "Spanish", "Any").
+    public static func matchesLanguage(languageCode: String?, displayName: String, preferredLanguage: String) -> Bool {
+        let pref = preferredLanguage.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !pref.isEmpty, pref != "any" else { return true }
+
+        let code = languageCode?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+        let name = displayName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+
+        switch pref {
+        case "english":
+            return code.hasPrefix("en") || code == "eng" || name.contains("english") || name.contains("eng")
+        case "spanish":
+            return code.hasPrefix("es") || code == "spa" || name.contains("spanish") || name.contains("español") || name.contains("espanol")
+        case "french":
+            return code.hasPrefix("fr") || code == "fra" || code == "fre" || name.contains("french") || name.contains("français") || name.contains("francais")
+        case "german":
+            return code.hasPrefix("de") || code == "deu" || code == "ger" || name.contains("german") || name.contains("deutsch")
+        case "japanese":
+            return code.hasPrefix("ja") || code == "jpn" || name.contains("japanese") || name.contains("nihongo") || name.contains("日本語")
+        case "chinese":
+            return code.hasPrefix("zh") || code == "zho" || code == "chi" || name.contains("chinese") || name.contains("mandarin") || name.contains("中文")
+        case "arabic":
+            return code.hasPrefix("ar") || code == "ara" || name.contains("arabic") || name.contains("العربية")
+        case "portuguese":
+            return code.hasPrefix("pt") || code == "por" || name.contains("portuguese") || name.contains("português") || name.contains("portugues")
+        case "russian":
+            return code.hasPrefix("ru") || code == "rus" || name.contains("russian") || name.contains("русский")
+        default:
+            return code.hasPrefix(pref) || name.contains(pref)
+        }
+    }
+
+    /// Automatically selects audio and subtitle tracks according to user settings and optional history record.
+    public func applyPreferences(
+        settings: LIDPlayerSettings,
+        historyRecord: LIDPlaybackRecord? = nil
+    ) {
+        // 1. Audio Track Preference Resolution
+        if settings.rememberAudioTrack,
+           let rememberedAudioId = historyRecord?.selectedAudioTrackId,
+           let matched = availableAudioTracks.first(where: { $0.id == rememberedAudioId || $0.displayName == rememberedAudioId }) {
+            selectAudioTrack(matched)
+        } else if settings.defaultAudioLanguage.lowercased() != "any",
+                  let langMatched = availableAudioTracks.first(where: { Self.matchesLanguage(languageCode: $0.languageCode, displayName: $0.displayName, preferredLanguage: settings.defaultAudioLanguage) }) {
+            selectAudioTrack(langMatched)
+        } else if selectedAudioTrack == nil {
+            if let def = availableAudioTracks.first(where: { $0.isDefault }) ?? availableAudioTracks.first {
+                selectAudioTrack(def)
+            }
+        }
+
+        // 2. Subtitle Track Preference Resolution
+        if settings.rememberSubtitleTrack,
+           let rememberedSubId = historyRecord?.selectedSubtitleTrackId {
+            if rememberedSubId == LIDSubtitleTrack.off.id {
+                selectSubtitleTrack(.off)
+            } else if let matched = availableSubtitleTracks.first(where: { $0.id == rememberedSubId || $0.displayName == rememberedSubId }) {
+                selectSubtitleTrack(matched)
+            }
+        } else if settings.defaultSubtitleLanguage.lowercased() != "any",
+                  let langMatched = availableSubtitleTracks.first(where: { $0.id != LIDSubtitleTrack.off.id && Self.matchesLanguage(languageCode: $0.languageCode, displayName: $0.displayName, preferredLanguage: settings.defaultSubtitleLanguage) }) {
+            selectSubtitleTrack(langMatched)
+        }
+    }
+
     #if canImport(AVFoundation)
     /// Discover available embedded tracks from the AVPlayerItem.
     public func populateTracks(from item: AVPlayerItem) {

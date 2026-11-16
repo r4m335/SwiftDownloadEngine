@@ -44,10 +44,19 @@ public struct LIDPlayerSettings: Codable, Sendable, Equatable {
     // MARK: - Playback Behavior
     public var defaultPlaybackSpeed: Double
     public var rememberPlaybackSpeed: Bool
+    public var lastSelectedPlaybackSpeed: Double?
     public var defaultAspectRatio: LIDAspectRatio
     public var seekIntervalSeconds: Int
     public var autoHideControlsSeconds: Int
     public var resumePlaybackPosition: Bool
+
+    /// Resolves the effective initial playback rate for a new session according to user preferences.
+    public var effectivePlaybackSpeed: Double {
+        if rememberPlaybackSpeed, let last = lastSelectedPlaybackSpeed, last > 0 {
+            return max(0.25, min(2.0, last))
+        }
+        return max(0.25, min(2.0, defaultPlaybackSpeed))
+    }
 
     // MARK: - Subtitles & Captions
     public var autoLoadSubtitles: Bool
@@ -78,6 +87,7 @@ public struct LIDPlayerSettings: Codable, Sendable, Equatable {
         version: currentVersion,
         defaultPlaybackSpeed: 1.0,
         rememberPlaybackSpeed: true,
+        lastSelectedPlaybackSpeed: nil,
         defaultAspectRatio: .original,
         seekIntervalSeconds: 10,
         autoHideControlsSeconds: 4,
@@ -105,6 +115,7 @@ public struct LIDPlayerSettings: Codable, Sendable, Equatable {
         version: Int = currentVersion,
         defaultPlaybackSpeed: Double = 1.0,
         rememberPlaybackSpeed: Bool = true,
+        lastSelectedPlaybackSpeed: Double? = nil,
         defaultAspectRatio: LIDAspectRatio = .original,
         seekIntervalSeconds: Int = 10,
         autoHideControlsSeconds: Int = 4,
@@ -130,6 +141,7 @@ public struct LIDPlayerSettings: Codable, Sendable, Equatable {
         self.version = version
         self.defaultPlaybackSpeed = defaultPlaybackSpeed
         self.rememberPlaybackSpeed = rememberPlaybackSpeed
+        self.lastSelectedPlaybackSpeed = lastSelectedPlaybackSpeed
         self.defaultAspectRatio = defaultAspectRatio
         self.seekIntervalSeconds = seekIntervalSeconds
         self.autoHideControlsSeconds = autoHideControlsSeconds
@@ -151,14 +163,16 @@ public struct LIDPlayerSettings: Codable, Sendable, Equatable {
         self.enablePinchToZoom = enablePinchToZoom
         self.enableTwoXSpeedBoostGesture = enableTwoXSpeedBoostGesture
         self.defaultOrientation = defaultOrientation
+        validateAndClamp()
     }
 
-    // Resilient decoder with safe fallbacks for each field
+    // Resilient decoder with safe fallbacks and range validation for each field
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         self.version = try container.decodeIfPresent(Int.self, forKey: .version) ?? Self.currentVersion
         self.defaultPlaybackSpeed = try container.decodeIfPresent(Double.self, forKey: .defaultPlaybackSpeed) ?? 1.0
         self.rememberPlaybackSpeed = try container.decodeIfPresent(Bool.self, forKey: .rememberPlaybackSpeed) ?? true
+        self.lastSelectedPlaybackSpeed = try container.decodeIfPresent(Double.self, forKey: .lastSelectedPlaybackSpeed)
         self.defaultAspectRatio = try container.decodeIfPresent(LIDAspectRatio.self, forKey: .defaultAspectRatio) ?? .original
         self.seekIntervalSeconds = try container.decodeIfPresent(Int.self, forKey: .seekIntervalSeconds) ?? 10
         self.autoHideControlsSeconds = try container.decodeIfPresent(Int.self, forKey: .autoHideControlsSeconds) ?? 4
@@ -184,6 +198,26 @@ public struct LIDPlayerSettings: Codable, Sendable, Equatable {
         self.enableTwoXSpeedBoostGesture = try container.decodeIfPresent(Bool.self, forKey: .enableTwoXSpeedBoostGesture) ?? true
 
         self.defaultOrientation = try container.decodeIfPresent(LIDPlayerOrientationPreference.self, forKey: .defaultOrientation) ?? .auto
+        validateAndClamp()
+    }
+
+    /// Validates and clamps persisted values to safe runtime engine ranges.
+    public mutating func validateAndClamp() {
+        self.defaultPlaybackSpeed = max(0.25, min(2.0, self.defaultPlaybackSpeed))
+        if let last = self.lastSelectedPlaybackSpeed {
+            self.lastSelectedPlaybackSpeed = max(0.25, min(2.0, last))
+        }
+        self.subtitleFontSize = max(12.0, min(32.0, self.subtitleFontSize))
+        self.subtitleBackgroundOpacity = max(0.0, min(1.0, self.subtitleBackgroundOpacity))
+        if ![5, 10, 15, 30].contains(self.seekIntervalSeconds) {
+            self.seekIntervalSeconds = 10
+        }
+        if ![0, 2, 3, 4, 5, 8].contains(self.autoHideControlsSeconds) {
+            self.autoHideControlsSeconds = 4
+        }
+        if ![50, 100, 250, 500].contains(self.subtitleDelayStepMs) {
+            self.subtitleDelayStepMs = 100
+        }
     }
 }
 

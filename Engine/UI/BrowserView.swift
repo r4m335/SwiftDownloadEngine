@@ -2222,6 +2222,33 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         #endif
     }
 
+    public func reloadSettings(from providedSettings: AppSettings? = nil) {
+        let currentSettings = providedSettings ?? (downloadDelegate as? DownloadManagerViewModel)?.appSettings ?? AppSettings.load()
+        self.isAdBlockerEnabled = currentSettings.isAdBlockerEnabled
+        self.isTrackerBlockerEnabled = currentSettings.isTrackerBlockerEnabled
+        self.isAnnoyanceBlockerEnabled = currentSettings.isAnnoyanceBlockerEnabled
+        self.cookiePolicy = currentSettings.cookiePolicy
+        self.isPopupBlockerEnabled = currentSettings.isPopupBlockerEnabled
+        self.adBlockerWhitelistedDomains = Set(currentSettings.adBlockerWhitelistedDomains)
+        self.selectedSearchEngine = currentSettings.browserSearchEngine
+        self.browserHomepage = currentSettings.browserHomepage
+        self.restoreTabsOnLaunch = currentSettings.restoreTabsOnLaunch
+        self.readerSettings = BrowserReaderSettings(
+            theme: currentSettings.readerTheme,
+            fontFamily: currentSettings.readerFontFamily,
+            fontSize: currentSettings.readerFontSize
+        )
+        #if canImport(WebKit)
+        Task {
+            await BrowserContentBlocker.shared.prepareRuleLists(
+                whitelistedDomains: currentSettings.adBlockerWhitelistedDomains
+            )
+        }
+        #endif
+        updateActiveTabBlocker()
+        publishMediaCandidates()
+    }
+
     public func presentMagnetLink(_ magnet: MagnetLink, sourcePageURL: URL?) {
         guard !isShowingMagnetSheet || magnetCandidate?.uri != magnet.uri else { return }
         magnetCandidate = magnet
@@ -3853,6 +3880,9 @@ public struct BrowserView: View {
         #if canImport(UIKit)
         .background(Color(UIColor.systemBackground))
         #endif
+        .onAppear {
+            viewModel.reloadSettings()
+        }
     }
 
     private var isModalPresented: Bool {

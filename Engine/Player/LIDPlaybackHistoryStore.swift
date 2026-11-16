@@ -28,12 +28,18 @@ public actor LIDPlaybackHistoryStore {
         mediaIdentifier: String,
         title: String,
         positionSeconds: Double,
-        durationSeconds: Double
+        durationSeconds: Double,
+        selectedAudioTrackId: String? = nil,
+        selectedSubtitleTrackId: String? = nil
     ) {
         ensureLoaded()
 
         let isCompleted = durationSeconds > 0 && (positionSeconds >= (durationSeconds - 5.0) || positionSeconds >= (durationSeconds * 0.97))
         let effectivePosition = isCompleted ? 0.0 : positionSeconds
+
+        let existing = records[mediaIdentifier]
+        let audioId = selectedAudioTrackId ?? existing?.selectedAudioTrackId
+        let subId = selectedSubtitleTrackId ?? existing?.selectedSubtitleTrackId
 
         let record = LIDPlaybackRecord(
             mediaIdentifier: mediaIdentifier,
@@ -41,11 +47,37 @@ public actor LIDPlaybackHistoryStore {
             lastPositionSeconds: effectivePosition,
             durationSeconds: durationSeconds,
             lastPlayedAt: Date(),
-            isCompleted: isCompleted
+            isCompleted: isCompleted,
+            selectedAudioTrackId: audioId,
+            selectedSubtitleTrackId: subId
         )
 
         records[mediaIdentifier] = record
         persistToDisk()
+    }
+
+    /// Records user-selected audio or subtitle tracks for an asset.
+    public func recordSelectedTracks(
+        mediaIdentifier: String,
+        audioTrackId: String?,
+        subtitleTrackId: String?
+    ) {
+        ensureLoaded()
+        guard var existing = records[mediaIdentifier] else { return }
+        if let audioId = audioTrackId {
+            existing.selectedAudioTrackId = audioId
+        }
+        if let subId = subtitleTrackId {
+            existing.selectedSubtitleTrackId = subId
+        }
+        records[mediaIdentifier] = existing
+        persistToDisk()
+    }
+
+    /// Retrieves the full playback record for an asset, if available.
+    public func playbackRecord(mediaIdentifier: String) -> LIDPlaybackRecord? {
+        ensureLoaded()
+        return records[mediaIdentifier]
     }
 
     /// Retrieves the resume position in seconds for an asset, or nil if none or completed.

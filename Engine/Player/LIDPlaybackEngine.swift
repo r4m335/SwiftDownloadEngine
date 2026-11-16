@@ -130,10 +130,15 @@ public final class LIDPlaybackEngine: NSObject, ObservableObject, LIDMediaEngine
     // MARK: - Audio Session Control
 
     #if os(iOS) && canImport(AVFoundation)
-    public static func configureAudioSession() {
+    public static func targetAudioSessionCategory(enableBackgroundAudio: Bool) -> AVAudioSession.Category {
+        enableBackgroundAudio ? .playback : .ambient
+    }
+
+    public static func configureAudioSession(enableBackgroundAudio: Bool = true) {
         do {
             let session = AVAudioSession.sharedInstance()
-            try session.setCategory(.playback, mode: .moviePlayback)
+            let category = targetAudioSessionCategory(enableBackgroundAudio: enableBackgroundAudio)
+            try session.setCategory(category, mode: .moviePlayback)
             try session.setActive(true)
         } catch {
             PipelineLogger.shared.log("[LIDPlaybackEngine] Audio session configuration notice: \(error.localizedDescription)")
@@ -253,7 +258,7 @@ public final class LIDPlaybackEngine: NSObject, ObservableObject, LIDMediaEngine
 
         #if os(iOS) && canImport(AVFoundation)
         if autoPlay {
-            Self.configureAudioSession()
+            Self.configureAudioSession(enableBackgroundAudio: LIDPlayerSettingsStore.shared.settings.enableBackgroundAudio)
         }
         #endif
 
@@ -298,7 +303,7 @@ public final class LIDPlaybackEngine: NSObject, ObservableObject, LIDMediaEngine
     public func play() {
         PipelineLogger.shared.logPlayer(session: currentSessionId, category: "PlayerEngine", message: "play() triggered")
         #if os(iOS) && canImport(AVFoundation)
-        Self.configureAudioSession()
+        Self.configureAudioSession(enableBackgroundAudio: LIDPlayerSettingsStore.shared.settings.enableBackgroundAudio)
         #endif
         if playbackRate == 0.0 {
             let restored = lastNonZeroPlaybackRate > 0 ? lastNonZeroPlaybackRate : 1.0
@@ -500,12 +505,29 @@ public final class LIDPlaybackEngine: NSObject, ObservableObject, LIDMediaEngine
         let audios = activeBackend.getAudioTracks()
         let subs = activeBackend.getSubtitleTracks()
         trackManager.updateAvailableTracks(audioTracks: audios, subtitleTracks: subs)
+        if let source = currentSource {
+            let mediaID = source.mediaIdentifier
+            Task { @MainActor [weak self] in
+                guard let self = self else { return }
+                let record = await self.historyStore.playbackRecord(mediaIdentifier: mediaID)
+                self.trackManager.applyPreferences(
+                    settings: LIDPlayerSettingsStore.shared.settings,
+                    historyRecord: record
+                )
+            }
+        }
     }
 
     @MainActor
     public func selectAudioTrack(_ track: LIDAudioTrack) {
         trackManager.selectAudioTrack(track)
         activeBackend.selectAudioTrack(id: track.id)
+        if let source = currentSource, LIDPlayerSettingsStore.shared.settings.rememberAudioTrack {
+            let mediaID = source.mediaIdentifier
+            Task {
+                await historyStore.recordSelectedTracks(mediaIdentifier: mediaID, audioTrackId: track.id, subtitleTrackId: nil)
+            }
+        }
     }
 
     @MainActor
@@ -513,6 +535,12 @@ public final class LIDPlaybackEngine: NSObject, ObservableObject, LIDMediaEngine
         trackManager.selectSubtitleTrack(track)
         if !track.isExternal {
             activeBackend.selectSubtitleTrack(id: track.id)
+        }
+        if let source = currentSource, LIDPlayerSettingsStore.shared.settings.rememberSubtitleTrack {
+            let mediaID = source.mediaIdentifier
+            Task {
+                await historyStore.recordSelectedTracks(mediaIdentifier: mediaID, audioTrackId: nil, subtitleTrackId: track.id)
+            }
         }
     }
 
@@ -714,12 +742,16 @@ public final class LIDPlaybackEngine: NSObject, ObservableObject, LIDMediaEngine
         let title = source.title
         let pos = currentPositionSeconds
         let dur = durationSeconds
+        let audioId = trackManager.selectedAudioTrack?.id
+        let subId = trackManager.selectedSubtitleTrack.id
         Task {
             await historyStore.recordPosition(
                 mediaIdentifier: mediaID,
                 title: title,
                 positionSeconds: pos,
-                durationSeconds: dur
+                durationSeconds: dur,
+                selectedAudioTrackId: audioId,
+                selectedSubtitleTrackId: subId
             )
         }
     }

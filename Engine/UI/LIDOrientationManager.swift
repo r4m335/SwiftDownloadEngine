@@ -12,6 +12,9 @@ public final class LIDOrientationManager: ObservableObject {
     /// Indicates whether the media player is currently active and allowed to rotate.
     public var isPlayerActive: Bool = false
 
+    /// The active orientation preference applied to the player.
+    public private(set) var activeOrientationPreference: LIDPlayerOrientationPreference = .auto
+
     public init() {}
 
     /// Restores the app interface to portrait orientation upon player dismissal.
@@ -75,6 +78,7 @@ public final class LIDOrientationManager: ObservableObject {
 
     /// Requests landscape orientation for player launch when preferred.
     public func requestLandscape(session: String = "IDLE") {
+        self.isPlayerActive = true
         #if os(iOS)
         if #available(iOS 16.0, *) {
             let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
@@ -98,6 +102,59 @@ public final class LIDOrientationManager: ObservableObject {
             message: "Requested landscape orientation for player"
         )
         #endif
+    }
+
+    /// Requests portrait orientation for player launch when preferred.
+    public func requestPortrait(session: String = "IDLE") {
+        self.isPlayerActive = true
+        #if os(iOS)
+        if #available(iOS 16.0, *) {
+            let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+            if let windowScene = scenes.first {
+                windowScene.requestGeometryUpdate(.iOS(interfaceOrientations: .portrait)) { error in
+                    PipelineLogger.shared.logPlayer(
+                        session: session,
+                        category: "OrientationManager",
+                        message: "requestPortrait notice: \(error.localizedDescription)"
+                    )
+                }
+                UIViewController.attemptRotationToDeviceOrientation()
+            }
+        } else {
+            UIDevice.current.setValue(UIInterfaceOrientation.portrait.rawValue, forKey: "orientation")
+            UIViewController.attemptRotationToDeviceOrientation()
+        }
+        PipelineLogger.shared.logPlayer(
+            session: session,
+            category: "OrientationManager",
+            message: "Requested portrait orientation for player"
+        )
+        #endif
+    }
+
+    /// Applies the configured orientation policy upon player launch.
+    public func applyOrientationPreference(_ preference: LIDPlayerOrientationPreference, session: String = "IDLE") {
+        self.isPlayerActive = true
+        self.activeOrientationPreference = preference
+        switch preference {
+        case .auto:
+            #if os(iOS)
+            if #available(iOS 16.0, *) {
+                let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+                if let windowScene = scenes.first {
+                    windowScene.requestGeometryUpdate(.iOS(interfaceOrientations: .allButUpsideDown)) { _ in }
+                    UIViewController.attemptRotationToDeviceOrientation()
+                }
+            } else {
+                UIViewController.attemptRotationToDeviceOrientation()
+            }
+            #endif
+            PipelineLogger.shared.logPlayer(session: session, category: "OrientationManager", message: "Applied auto sensor orientation policy")
+        case .landscape:
+            requestLandscape(session: session)
+        case .portrait:
+            requestPortrait(session: session)
+        }
     }
 }
 #endif

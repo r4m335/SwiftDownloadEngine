@@ -353,6 +353,8 @@ public struct LIDPlaybackRecord: Codable, Equatable, Identifiable, Sendable {
     public let durationSeconds: Double
     public let lastPlayedAt: Date
     public let isCompleted: Bool
+    public var selectedAudioTrackId: String?
+    public var selectedSubtitleTrackId: String?
 
     public var progressFraction: Double {
         guard durationSeconds > 0 else { return 0 }
@@ -365,7 +367,9 @@ public struct LIDPlaybackRecord: Codable, Equatable, Identifiable, Sendable {
         lastPositionSeconds: Double,
         durationSeconds: Double,
         lastPlayedAt: Date = Date(),
-        isCompleted: Bool = false
+        isCompleted: Bool = false,
+        selectedAudioTrackId: String? = nil,
+        selectedSubtitleTrackId: String? = nil
     ) {
         self.mediaIdentifier = mediaIdentifier
         self.title = title
@@ -373,6 +377,20 @@ public struct LIDPlaybackRecord: Codable, Equatable, Identifiable, Sendable {
         self.durationSeconds = durationSeconds
         self.lastPlayedAt = lastPlayedAt
         self.isCompleted = isCompleted
+        self.selectedAudioTrackId = selectedAudioTrackId
+        self.selectedSubtitleTrackId = selectedSubtitleTrackId
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.mediaIdentifier = try container.decode(String.self, forKey: .mediaIdentifier)
+        self.title = try container.decode(String.self, forKey: .title)
+        self.lastPositionSeconds = try container.decode(Double.self, forKey: .lastPositionSeconds)
+        self.durationSeconds = try container.decode(Double.self, forKey: .durationSeconds)
+        self.lastPlayedAt = try container.decodeIfPresent(Date.self, forKey: .lastPlayedAt) ?? Date()
+        self.isCompleted = try container.decodeIfPresent(Bool.self, forKey: .isCompleted) ?? false
+        self.selectedAudioTrackId = try container.decodeIfPresent(String.self, forKey: .selectedAudioTrackId)
+        self.selectedSubtitleTrackId = try container.decodeIfPresent(String.self, forKey: .selectedSubtitleTrackId)
     }
 }
 
