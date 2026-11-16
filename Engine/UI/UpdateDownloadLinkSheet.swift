@@ -53,9 +53,11 @@ public struct UpdateDownloadLinkSheet: View {
                     HStack {
                         TextField("https://...", text: $urlText)
                             .textFieldStyle(RoundedBorderTextFieldStyle())
+                            #if os(iOS)
+                            .keyboardType(.URL)
                             .autocapitalization(.none)
                             .disableAutocorrection(true)
-                            .keyboardType(.URL)
+                            #endif
 
                         #if canImport(UIKit)
                         Button {
