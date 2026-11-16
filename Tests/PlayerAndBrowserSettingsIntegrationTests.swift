@@ -48,6 +48,7 @@ final class PlayerAndBrowserSettingsIntegrationTests: XCTestCase {
 
     // MARK: - 2. Audio & Subtitle Language Matching
 
+    @MainActor
     func testTrackManager_MatchesLanguage() {
         let manager = LIDTrackManager()
 
@@ -70,6 +71,7 @@ final class PlayerAndBrowserSettingsIntegrationTests: XCTestCase {
         XCTAssertTrue(manager.matchesLanguage(languageCode: nil, displayName: nil, preferredLanguage: "Any"))
     }
 
+    @MainActor
     func testTrackManager_ApplyPreferences() {
         let manager = LIDTrackManager()
 
@@ -92,6 +94,7 @@ final class PlayerAndBrowserSettingsIntegrationTests: XCTestCase {
         XCTAssertEqual(manager.selectedAudioTrack.id, "ja_audio")
     }
 
+    @MainActor
     func testTrackManager_HistoryTakesPrecedenceWhenRememberActive() {
         let manager = LIDTrackManager()
 
@@ -254,39 +257,39 @@ final class PlayerAndBrowserSettingsIntegrationTests: XCTestCase {
     }
 
     func testBrowserSnifferFilter_FiltersCandidatesCorrectly() {
-        let candidate1 = BrowserMediaCandidate(
-            url: URL(string: "https://example.com/video.mp4")!,
-            mimeType: "video/mp4",
-            sourcePageURL: nil,
-            contentLength: 1024,
-            duration: 60.0
+        let resVideo = WebpageResource(
+            url: URL(string: "https://example.com/clip.mp4")!,
+            title: "clip",
+            suggestedFilename: "clip.mp4",
+            resourceType: .video,
+            mimeType: "video/mp4"
         )
-        let candidate2 = BrowserMediaCandidate(
-            url: URL(string: "https://example.com/image.png")!,
-            mimeType: "image/png",
-            sourcePageURL: nil,
-            contentLength: 512,
-            duration: nil
+        let resDoc = WebpageResource(
+            url: URL(string: "https://example.com/document.pdf")!,
+            title: "doc",
+            suggestedFilename: "document.pdf",
+            resourceType: .document,
+            mimeType: "application/pdf"
         )
+        let candVideo = BrowserMediaCandidateClassifier.classify(resource: resVideo)
+        let candDoc = BrowserMediaCandidateClassifier.classify(resource: resDoc)
 
-        // Filter enabled: only mp4 should pass
         let filter = BrowserSnifferFilter(
             allowedExtensions: ["mp4", "m3u8"],
-            allowedMIMETypes: ["video/mp4", "application/x-mpegurl"],
+            allowedMIMETypes: ["video/mp4"],
             isFilterEnabled: true
         )
 
-        let filtered = BrowserMediaCandidateManager.filter(candidates: [candidate1, candidate2], using: filter)
+        let filtered = BrowserMediaDiscoveryBridge.filter(candidates: [candVideo, candDoc], using: filter)
         XCTAssertEqual(filtered.count, 1)
-        XCTAssertEqual(filtered.first?.url, candidate1.url)
+        XCTAssertEqual(filtered.first?.url, candVideo.url)
 
-        // Filter disabled: all should pass
         let disabledFilter = BrowserSnifferFilter(
             allowedExtensions: ["mp4"],
             allowedMIMETypes: ["video/mp4"],
             isFilterEnabled: false
         )
-        let allPassed = BrowserMediaCandidateManager.filter(candidates: [candidate1, candidate2], using: disabledFilter)
+        let allPassed = BrowserMediaDiscoveryBridge.filter(candidates: [candVideo, candDoc], using: disabledFilter)
         XCTAssertEqual(allPassed.count, 2)
     }
 }
