@@ -478,6 +478,7 @@ public struct ResourceRowView: View {
         self.onOpenBrowser = nil
         self.onOpenAddDownload = nil
         self.onShare = nil
+        self.statusDot = nil
     }
 
     public var fileIconName: String {
