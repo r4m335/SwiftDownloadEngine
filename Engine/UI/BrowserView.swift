@@ -3979,23 +3979,30 @@ public struct BrowserView: View {
                     .accessibilityLabel("Reader Mode")
                 }
 
-                if viewModel.detectedMediaCount > 0 {
+                if viewModel.currentURL != nil {
                     Button {
                         viewModel.openResourceInspector()
                     } label: {
-                        HStack(spacing: 3) {
-                            Image(systemName: "arrow.down.circle.fill")
-                                .font(.system(size: 13))
-                            Text("\(viewModel.detectedMediaCount)")
-                                .font(.caption2.bold())
+                        ZStack(alignment: .topTrailing) {
+                            Image(systemName: "doc.text.magnifyingglass")
+                                .font(.system(size: 14, weight: .semibold))
+                                .foregroundColor(.primary)
+                                .frame(width: 26, height: 26)
+
+                            if viewModel.detectedMediaCount > 0 {
+                                Text("\(viewModel.detectedMediaCount)")
+                                    .font(.system(size: 9, weight: .bold))
+                                    .foregroundColor(.white)
+                                    .padding(.horizontal, viewModel.detectedMediaCount > 9 ? 3 : 0)
+                                    .frame(minWidth: 14, minHeight: 14)
+                                    .background(Circle().fill(Color.red))
+                                    .offset(x: 5, y: -5)
+                            }
                         }
-                        .foregroundColor(.white)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 3)
-                        .background(Color.blue)
-                        .cornerRadius(10)
                     }
-                    .accessibilityLabel("Detected media (\(viewModel.detectedMediaCount))")
+                    .accessibilityLabel(viewModel.detectedMediaCount > 0
+                        ? "Find Resources (\(viewModel.detectedMediaCount))"
+                        : "Find Resources")
                 }
             }
             .padding(.horizontal, 10)
@@ -4127,29 +4134,6 @@ public struct BrowserView: View {
                 Label("Bookmarks & History", systemImage: "book")
             }
 
-            // Downloads Queue
-            Button {
-                viewModel.openDownloads()
-            } label: {
-                if viewModel.activeDownloadCount > 0 {
-                    Label("Downloads (\(viewModel.activeDownloadCount))", systemImage: "arrow.down.circle")
-                } else {
-                    Label("Downloads", systemImage: "arrow.down.circle")
-                }
-            }
-
-            // Find Resources / Media Grabber
-            Button {
-                viewModel.openResourceInspector()
-            } label: {
-                if viewModel.detectedMediaCount > 0 {
-                    Label("Find Resources (\(viewModel.detectedMediaCount))", systemImage: "doc.text.magnifyingglass")
-                } else {
-                    Label("Find Resources", systemImage: "doc.text.magnifyingglass")
-                }
-            }
-            .disabled(viewModel.currentURL == nil)
-
             // Content Shields (Milestone B.2)
             Button {
                 viewModel.isShowingShieldSheet = true
@@ -4189,17 +4173,8 @@ public struct BrowserView: View {
                     .rotationEffect(.degrees(90))
                     .font(.system(size: 18, weight: .semibold))
 
-                // Priority Badge Indicator: Red for detected media, Blue for active downloads
-                if viewModel.detectedMediaCount > 0 {
-                    Text("\(viewModel.detectedMediaCount)")
-                        .font(.system(size: 9, weight: .bold))
-                        .foregroundColor(.white)
-                        .padding(.horizontal, 4)
-                        .padding(.vertical, 1)
-                        .background(Color.red)
-                        .clipShape(Capsule())
-                        .offset(x: 8, y: -6)
-                } else if viewModel.activeDownloadCount > 0 {
+                // Priority Badge Indicator: Blue for active downloads
+                if viewModel.activeDownloadCount > 0 {
                     Text("\(viewModel.activeDownloadCount)")
                         .font(.system(size: 9, weight: .bold))
                         .foregroundColor(.white)
