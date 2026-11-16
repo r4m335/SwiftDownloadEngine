@@ -1779,7 +1779,7 @@ extension DownloadFilter {
 }
 
 public struct QueueSummaryHeader: View {
-    @ObservedObject public var viewModel: DownloadManagerViewModel
+    @ObservedObject public var viewModel: DownloadManagerViewModel?
     public var legacySummary: QueueSnapshot?
 
     public init(viewModel: DownloadManagerViewModel) {
@@ -1789,7 +1789,7 @@ public struct QueueSummaryHeader: View {
 
     public init(summary: QueueSnapshot) {
         self.legacySummary = summary
-        self.viewModel = DownloadManagerViewModel(engine: DownloadEngine())
+        self.viewModel = nil
     }
 
     private var currentCounts: (all: Int, active: Int, paused: Int, completed: Int, failed: Int) {
@@ -1798,8 +1798,11 @@ public struct QueueSummaryHeader: View {
             let allTotal = activeTotal + s.pausedCount + s.completedCount + s.failedCount
             return (all: allTotal, active: activeTotal, paused: s.pausedCount, completed: s.completedCount, failed: s.failedCount)
         }
-        let counts = viewModel.statusCounts
-        return (all: counts.all, active: counts.active, paused: counts.paused, completed: counts.completed, failed: counts.failed)
+        if let vm = viewModel {
+            let counts = vm.statusCounts
+            return (all: counts.all, active: counts.active, paused: counts.paused, completed: counts.completed, failed: counts.failed)
+        }
+        return (all: 0, active: 0, paused: 0, completed: 0, failed: 0)
     }
 
     public var body: some View {
@@ -1809,10 +1812,10 @@ public struct QueueSummaryHeader: View {
                 label: "All",
                 count: counts.all,
                 color: DownloadFilter.all.accentColor,
-                isSelected: viewModel.selectedFilter == .all
+                isSelected: viewModel?.selectedFilter == .all
             ) {
                 withAnimation(.easeInOut(duration: 0.15)) {
-                    viewModel.selectedFilter = .all
+                    viewModel?.selectedFilter = .all
                 }
             }
 
@@ -1820,10 +1823,10 @@ public struct QueueSummaryHeader: View {
                 label: "Active",
                 count: counts.active,
                 color: DownloadFilter.active.accentColor,
-                isSelected: viewModel.selectedFilter == .active
+                isSelected: viewModel?.selectedFilter == .active
             ) {
                 withAnimation(.easeInOut(duration: 0.15)) {
-                    viewModel.selectedFilter = .active
+                    viewModel?.selectedFilter = .active
                 }
             }
 
@@ -1831,10 +1834,10 @@ public struct QueueSummaryHeader: View {
                 label: "Paused",
                 count: counts.paused,
                 color: DownloadFilter.paused.accentColor,
-                isSelected: viewModel.selectedFilter == .paused
+                isSelected: viewModel?.selectedFilter == .paused
             ) {
                 withAnimation(.easeInOut(duration: 0.15)) {
-                    viewModel.selectedFilter = .paused
+                    viewModel?.selectedFilter = .paused
                 }
             }
 
@@ -1842,10 +1845,10 @@ public struct QueueSummaryHeader: View {
                 label: "Completed",
                 count: counts.completed,
                 color: DownloadFilter.completed.accentColor,
-                isSelected: viewModel.selectedFilter == .completed
+                isSelected: viewModel?.selectedFilter == .completed
             ) {
                 withAnimation(.easeInOut(duration: 0.15)) {
-                    viewModel.selectedFilter = .completed
+                    viewModel?.selectedFilter = .completed
                 }
             }
 
@@ -1853,10 +1856,10 @@ public struct QueueSummaryHeader: View {
                 label: "Failed",
                 count: counts.failed,
                 color: DownloadFilter.failed.accentColor,
-                isSelected: viewModel.selectedFilter == .failed
+                isSelected: viewModel?.selectedFilter == .failed
             ) {
                 withAnimation(.easeInOut(duration: 0.15)) {
-                    viewModel.selectedFilter = .failed
+                    viewModel?.selectedFilter = .failed
                 }
             }
         }
