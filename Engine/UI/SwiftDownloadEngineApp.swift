@@ -155,6 +155,17 @@ public final class AppDelegate: NSObject, UIApplicationDelegate {
         }
     }
 
+    public func application(
+        _ application: UIApplication,
+        supportedInterfaceOrientationsFor window: UIWindow?
+    ) -> UIInterfaceOrientationMask {
+        if LIDOrientationManager.shared.isPlayerActive {
+            return [.portrait, .landscapeLeft, .landscapeRight]
+        } else {
+            return .portrait
+        }
+    }
+
     public static func attach(manager: BackgroundDownloadSessionManager) {
         lock.lock()
         defer { lock.unlock() }

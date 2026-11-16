@@ -201,14 +201,13 @@ public struct LIDPlayerView: View {
     @State private var showRemainingTime: Bool = false
     @State private var zoomScale: CGFloat = 1.0
 
-    // Sheet presentations
+    // Presentations and Floating Panels
     @State private var showSpeedSheet: Bool = false
     @State private var showTrackSelectionSheet: Bool = false
-    @State private var showSubtitleSyncSheet: Bool = false
+    @State private var showSubtitleDelayPanel: Bool = false
     @State private var showSubtitleSearchSheet: Bool = false
     @State private var showDiagnosticsSheet: Bool = false
     @State private var externalSubtitlePathInput: String = ""
-    @State private var manualSubtitleDelayInput: String = ""
     @State private var showExternalSubtitlePrompt: Bool = false
     @State private var sessionId: String = String(UUID().uuidString.prefix(8).uppercased())
     @State private var isHoldingSpeedBoost: Bool = false
@@ -350,6 +349,25 @@ public struct LIDPlayerView: View {
                     .transition(.opacity)
             }
 
+            // Compact Floating Subtitle Delay Controller Overlay
+            if showSubtitleDelayPanel && !isControlsLocked && !engine.playbackState.isFailed {
+                Color.black.opacity(0.01)
+                    .edgesIgnoringSafeArea(.all)
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            showSubtitleDelayPanel = false
+                        }
+                    }
+
+                VStack {
+                    Spacer()
+                    floatingSubtitleDelayPanel
+                        .padding(.bottom, showControls ? 140 : 50)
+                        .transition(.scale(scale: 0.9).combined(with: .opacity))
+                }
+            }
+
             // Subtle fallback close button when controls are auto-hidden (so the user is never trapped)
             if !showControls && !isControlsLocked && !engine.playbackState.isFailed {
                 VStack {
@@ -411,6 +429,7 @@ public struct LIDPlayerView: View {
         .onAppear {
             #if canImport(UIKit)
             brightnessLevel = Double(UIScreen.main.brightness)
+            LIDOrientationManager.shared.isPlayerActive = true
             #endif
             volumeLevel = Double(engine.volume)
             PipelineLogger.shared.logPlayer(
@@ -434,6 +453,9 @@ public struct LIDPlayerView: View {
                 isHoldingSpeedBoost = false
                 engine.cancelTemporarySpeedBoost()
             }
+            #if canImport(UIKit)
+            LIDOrientationManager.shared.restorePortrait()
+            #endif
             engine.stop()
             #if canImport(UIKit)
             engine.vlcBackend.detachRenderingView()
@@ -445,9 +467,6 @@ public struct LIDPlayerView: View {
         }
         .sheet(isPresented: $showTrackSelectionSheet) {
             trackSelectionSheetView
-        }
-        .sheet(isPresented: $showSubtitleSyncSheet) {
-            subtitleSyncSheetView
         }
         .sheet(isPresented: $showSubtitleSearchSheet) {
             LIDSubtitleSearchView(mediaTitle: engine.currentSource?.title ?? "", engine: engine)
@@ -959,22 +978,24 @@ public struct LIDPlayerView: View {
                                 .clipShape(Circle())
                         }
 
-                        // 3. Subtitle Delay / Sync Adjuster
+                        // 3. Subtitle Delay / Sync Adjuster (Floating Panel Trigger)
                         Button {
-                            showSubtitleSyncSheet = true
+                            withAnimation(.easeInOut(duration: 0.2)) {
+                                showSubtitleDelayPanel.toggle()
+                            }
                             resetControlsTimer()
                         } label: {
                             HStack(spacing: 3) {
                                 Image(systemName: "timer")
                                     .font(.system(size: 14, weight: .semibold))
-                                if abs(engine.trackManager.subtitleDelay) > 0.05 {
-                                    Text(String(format: "%+.1fs", engine.trackManager.subtitleDelay))
+                                if abs(engine.trackManager.subtitleDelay) > 0.001 {
+                                    Text(formatDelayMilliseconds(engine.trackManager.subtitleDelay))
                                         .font(.system(size: 11, weight: .bold, design: .monospaced))
                                 }
                             }
-                            .foregroundColor(.white)
+                            .foregroundColor(showSubtitleDelayPanel ? Color.orange : .white)
                             .padding(6)
-                            .background(Color.black.opacity(0.4))
+                            .background(showSubtitleDelayPanel ? Color.white.opacity(0.25) : Color.black.opacity(0.4))
                             .cornerRadius(12)
                         }
 
@@ -1159,12 +1180,14 @@ public struct LIDPlayerView: View {
                 Section {
                     Button {
                         showTrackSelectionSheet = false
-                        showSubtitleSyncSheet = true
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            showSubtitleDelayPanel = true
+                        }
                     } label: {
                         HStack {
                             Label("Adjust Subtitle Sync", systemImage: "timer")
                             Spacer()
-                            Text(String(format: "%+.1fs", engine.trackManager.subtitleDelay))
+                            Text(formatDelayMilliseconds(engine.trackManager.subtitleDelay))
                                 .foregroundColor(.secondary)
                         }
                     }
@@ -1202,124 +1225,112 @@ public struct LIDPlayerView: View {
         }
     }
 
-    // MARK: - Subtitle Delay Synchronization Sheet
+    // MARK: - Compact Floating Subtitle Delay Controller
 
-    private var subtitleSyncSheetView: some View {
-        NavigationView {
-            ScrollView {
-                VStack(spacing: 20) {
-                    Text("Subtitle Delay Offset")
-                        .font(.headline)
-                        .padding(.top, 12)
+    private var floatingSubtitleDelayPanel: some View {
+        VStack(spacing: 12) {
+            // Header
+            HStack {
+                Text("Subtitle delay")
+                    .font(.system(size: 15, weight: .bold))
+                    .foregroundColor(Color.orange)
 
-                    VStack(spacing: 4) {
-                        Text(String(format: "%+.2f s", engine.trackManager.subtitleDelay))
-                            .font(.system(size: 40, weight: .bold, design: .monospaced))
-                            .foregroundColor(engine.trackManager.subtitleDelay == 0 ? .primary : .blue)
+                Spacer()
 
-                        Text(engine.trackManager.subtitleDelay > 0 ? "Subtitles appear later" : (engine.trackManager.subtitleDelay < 0 ? "Subtitles appear earlier" : "Synchronized"))
-                            .font(.subheadline)
-                            .foregroundColor(.secondary)
+                Button {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        showSubtitleDelayPanel = false
                     }
-
-                    // Continuous Slider (-30.0s to +30.0s)
-                    VStack(alignment: .leading, spacing: 6) {
-                        HStack {
-                            Text("-30s")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                            Spacer()
-                            Text("0s")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                            Spacer()
-                            Text("+30s")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                        }
-                        Slider(
-                            value: Binding(
-                                get: { max(-30.0, min(30.0, engine.trackManager.subtitleDelay)) },
-                                set: { engine.setSubtitleDelay(seconds: $0) }
-                            ),
-                            in: -30.0...30.0,
-                            step: 0.1
-                        )
-                        .accentColor(.blue)
-                    }
-                    .padding(.horizontal, 8)
-
-                    // Quick Stepper Buttons
-                    VStack(spacing: 10) {
-                        HStack(spacing: 8) {
-                            Button("-5.0s") { engine.adjustSubtitleDelay(by: -5.0) }
-                                .buttonStyle(.bordered)
-                            Button("-1.0s") { engine.adjustSubtitleDelay(by: -1.0) }
-                                .buttonStyle(.bordered)
-                            Button("Reset (0s)") { engine.setSubtitleDelay(seconds: 0.0) }
-                                .buttonStyle(.borderedProminent)
-                            Button("+1.0s") { engine.adjustSubtitleDelay(by: 1.0) }
-                                .buttonStyle(.bordered)
-                            Button("+5.0s") { engine.adjustSubtitleDelay(by: 5.0) }
-                                .buttonStyle(.bordered)
-                        }
-
-                        HStack(spacing: 12) {
-                            Button("-0.5s") { engine.adjustSubtitleDelay(by: -0.5) }
-                                .buttonStyle(.bordered)
-                            Button("-0.1s") { engine.adjustSubtitleDelay(by: -0.1) }
-                                .buttonStyle(.bordered)
-                            Button("+0.1s") { engine.adjustSubtitleDelay(by: 0.1) }
-                                .buttonStyle(.bordered)
-                            Button("+0.5s") { engine.adjustSubtitleDelay(by: 0.5) }
-                                .buttonStyle(.bordered)
-                        }
-                    }
-
-                    // Precise Manual Entry
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("Precise Manual Offset")
-                            .font(.caption.bold())
-                            .foregroundColor(.secondary)
-
-                        HStack(spacing: 10) {
-                            TextField("Offset in seconds (e.g. -12.5 or +4.8)", text: $manualSubtitleDelayInput)
-                                #if os(iOS)
-                                .keyboardType(.numbersAndPunctuation)
-                                #endif
-                                .textFieldStyle(RoundedBorderTextFieldStyle())
-
-                            Button("Apply") {
-                                let trimmed = manualSubtitleDelayInput.trimmingCharacters(in: .whitespacesAndNewlines)
-                                if let val = Double(trimmed) {
-                                    engine.setSubtitleDelay(seconds: val)
-                                    manualSubtitleDelayInput = ""
-                                }
-                            }
-                            .buttonStyle(.borderedProminent)
-                        }
-                    }
-                    .padding(.horizontal, 8)
-
-                    Text("Subtitle sync changes take effect immediately during live playback without interrupting audio or video.")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                        .multilineTextAlignment(.center)
-                        .padding(.top, 8)
-                }
-                .padding()
-            }
-            .navigationTitle("Subtitle Sync")
-            #if os(iOS)
-            .navigationBarTitleDisplayMode(.inline)
-            #endif
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Done") {
-                        showSubtitleSyncSheet = false
-                    }
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundColor(.white.opacity(0.7))
+                        .padding(5)
+                        .background(Color.white.opacity(0.15))
+                        .clipShape(Circle())
                 }
             }
+
+            // Stepper Row: [ - ]  0 ms  [ + ]
+            HStack(spacing: 20) {
+                Button {
+                    adjustDelayByMilliseconds(-100)
+                } label: {
+                    Image(systemName: "minus")
+                        .font(.system(size: 20, weight: .bold))
+                        .foregroundColor(.white)
+                        .frame(width: 44, height: 44)
+                        .background(Color.white.opacity(0.2))
+                        .clipShape(Circle())
+                }
+
+                Text(formatDelayMilliseconds(engine.trackManager.subtitleDelay))
+                    .font(.system(size: 24, weight: .bold, design: .monospaced))
+                    .foregroundColor(engine.trackManager.subtitleDelay == 0 ? .white : Color.orange)
+                    .frame(minWidth: 120)
+
+                Button {
+                    adjustDelayByMilliseconds(100)
+                } label: {
+                    Image(systemName: "plus")
+                        .font(.system(size: 20, weight: .bold))
+                        .foregroundColor(.white)
+                        .frame(width: 44, height: 44)
+                        .background(Color.white.opacity(0.2))
+                        .clipShape(Circle())
+                }
+            }
+            .padding(.vertical, 4)
+
+            // Reset Row
+            HStack {
+                Spacer()
+                Button {
+                    engine.setSubtitleDelay(seconds: 0.0)
+                } label: {
+                    Text("RESET")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 6)
+                        .background(Color.white.opacity(0.2))
+                        .cornerRadius(6)
+                }
+            }
+        }
+        .padding(.horizontal, 20)
+        .padding(.vertical, 16)
+        .background(
+            RoundedRectangle(cornerRadius: 16)
+                .fill(Color.black.opacity(0.85))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 16)
+                        .stroke(Color.white.opacity(0.15), lineWidth: 1)
+                )
+        )
+        .frame(width: 280)
+        .shadow(color: Color.black.opacity(0.5), radius: 10, x: 0, y: 4)
+    }
+
+    private func adjustDelayByMilliseconds(_ deltaMs: Int) {
+        let deltaSec = Double(deltaMs) / 1000.0
+        let current = engine.trackManager.subtitleDelay
+        guard current.isFinite && !current.isNaN else {
+            engine.setSubtitleDelay(seconds: deltaSec)
+            return
+        }
+        engine.setSubtitleDelay(seconds: current + deltaSec)
+    }
+
+    private func formatDelayMilliseconds(_ seconds: Double) -> String {
+        guard seconds.isFinite && !seconds.isNaN else { return "0 ms" }
+        let ms = Int(round(seconds * 1000.0))
+        if ms == 0 {
+            return "0 ms"
+        } else if ms > 0 {
+            return "+\(ms) ms"
+        } else {
+            return "\(ms) ms"
         }
     }
 
@@ -1341,7 +1352,7 @@ public struct LIDPlayerView: View {
                         .foregroundColor(.secondary)
                 }
 
-                // Continuous Slider from 0.0x to 2.0x
+                // Continuous Slider from 0.0x to 2.0x (unrestricted continuous values)
                 VStack(alignment: .leading, spacing: 8) {
                     HStack {
                         Text("0.0×")
@@ -1361,8 +1372,7 @@ public struct LIDPlayerView: View {
                             get: { engine.playbackRate },
                             set: { engine.setPlaybackRate($0) }
                         ),
-                        in: 0.0...2.0,
-                        step: 0.05
+                        in: 0.0...2.0
                     )
                     .accentColor(.blue)
                 }
@@ -1435,6 +1445,9 @@ public struct LIDPlayerView: View {
             isHoldingSpeedBoost = false
             engine.cancelTemporarySpeedBoost()
         }
+        #if canImport(UIKit)
+        LIDOrientationManager.shared.restorePortrait()
+        #endif
         engine.stop()
         controlsTimer?.invalidate()
         if let onDismiss = onDismiss {
@@ -1501,31 +1514,7 @@ public struct LIDPlayerView: View {
 
     private func toggleInterfaceOrientation() {
         #if canImport(UIKit)
-        if #available(iOS 16.0, *) {
-            let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
-            if let windowScene = scenes.first {
-                let isLandscape = windowScene.interfaceOrientation.isLandscape
-                let targetMask: UIInterfaceOrientationMask = isLandscape ? .portrait : .landscapeRight
-                windowScene.requestGeometryUpdate(.iOS(interfaceOrientations: targetMask)) { [sessionId] error in
-                    PipelineLogger.shared.logPlayer(
-                        session: sessionId,
-                        category: "PlayerOrientation",
-                        message: "requestGeometryUpdate notice: \(error.localizedDescription)"
-                    )
-                }
-                UIViewController.attemptRotationToDeviceOrientation()
-            }
-        } else {
-            let isLandscape = UIDevice.current.orientation.isLandscape
-            let targetOrientation = isLandscape ? UIInterfaceOrientation.portrait.rawValue : UIInterfaceOrientation.landscapeRight.rawValue
-            UIDevice.current.setValue(targetOrientation, forKey: "orientation")
-            UIViewController.attemptRotationToDeviceOrientation()
-        }
-        PipelineLogger.shared.logPlayer(
-            session: sessionId,
-            category: "PlayerOrientation",
-            message: "toggleInterfaceOrientation requested"
-        )
+        LIDOrientationManager.shared.toggleOrientation(session: sessionId)
         #endif
     }
 

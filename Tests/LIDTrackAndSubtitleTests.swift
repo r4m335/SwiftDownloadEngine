@@ -100,8 +100,16 @@ final class LIDTrackAndSubtitleTests: XCTestCase {
             XCTAssertEqual(manager.subtitleDelay, -15.0, accuracy: 0.001)
             manager.setSubtitleDelay(15.0)
             XCTAssertEqual(manager.subtitleDelay, 15.0, accuracy: 0.001)
-            manager.adjustSubtitleDelay(by: -17.3)
-            XCTAssertEqual(manager.subtitleDelay, -2.3, accuracy: 0.001)
+            // 100 ms step increments (matching compact floating panel)
+            manager.setSubtitleDelay(0.0)
+            manager.adjustSubtitleDelay(by: 0.1) // +100 ms
+            XCTAssertEqual(manager.subtitleDelay, 0.1, accuracy: 0.001)
+            manager.adjustSubtitleDelay(by: 0.1) // +200 ms
+            XCTAssertEqual(manager.subtitleDelay, 0.2, accuracy: 0.001)
+            manager.adjustSubtitleDelay(by: -0.1) // +100 ms
+            XCTAssertEqual(manager.subtitleDelay, 0.1, accuracy: 0.001)
+            manager.setSubtitleDelay(0.0) // Reset
+            XCTAssertEqual(manager.subtitleDelay, 0.0)
         }
     }
 
