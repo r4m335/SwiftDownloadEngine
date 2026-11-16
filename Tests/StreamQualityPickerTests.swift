@@ -349,6 +349,76 @@ final class StreamQualityPickerTests: XCTestCase {
         XCTAssertEqual(vm.selectedQualityOption?.qualityBadge, "1080p")
         XCTAssertFalse(vm.isExecutingStreaming)
     }
+
+    @MainActor
+    func testPromptStreamingDownloadSkipsQualityPickerWhenVariantPreferencesPreselected() async throws {
+        let orchestrator = StreamingDownloadOrchestrator(segmentExecutor: URLSessionStreamingSegmentExecutor())
+        let vm = BrowserViewModel(streamingOrchestrator: orchestrator)
+        let muxManifest = """
+        #EXTM3U
+        #EXT-X-STREAM-INF:BANDWIDTH=6221600,RESOLUTION=1920x1080
+        1080p.m3u8
+        #EXT-X-STREAM-INF:BANDWIDTH=1400000,RESOLUTION=848x480
+        480p.m3u8
+        """
+        let prefs = HLSVariantSelectionPreferences(
+            maximumBandwidth: 1400000,
+            maximumWidth: 848,
+            maximumHeight: 480,
+            exactURI: URL(string: "https://test-streams.mux.dev/x36xhzz/480p.m3u8")
+        )
+        let resource = WebpageResource(
+            url: URL(string: "https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8")!,
+            title: "HLS 480p",
+            suggestedFilename: "x36xhzz-480p.mp4",
+            resourceType: .video,
+            manifestText: muxManifest,
+            hlsVariantPreferences: prefs
+        )
+
+        vm.promptStreamingDownload(for: resource)
+
+        // Allow cooperative cycles
+        for _ in 0..<10 {
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+
+        // Quality picker must NOT be shown when variant is already preselected
+        XCTAssertFalse(vm.isShowingQualityPicker, "Preselected variant must skip redundant StreamQualityPickerSheet")
+    }
+
+    @MainActor
+    func testExecuteDownloadFastPathPreservesPreSelectedVariantPreferencesAndFilename() async throws {
+        let orchestrator = StreamingDownloadOrchestrator(segmentExecutor: URLSessionStreamingSegmentExecutor())
+        let vm = BrowserViewModel(streamingOrchestrator: orchestrator)
+        let masterURL = URL(string: "https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8")!
+        let prefs = HLSVariantSelectionPreferences(
+            maximumBandwidth: 1400000,
+            maximumWidth: 848,
+            maximumHeight: 480,
+            exactURI: URL(string: "https://test-streams.mux.dev/x36xhzz/480p.m3u8")
+        )
+        let resource = WebpageResource(
+            id: "test-resource-480p",
+            url: masterURL,
+            title: "HLS 480p",
+            suggestedFilename: "x36xhzz-480p.mp4",
+            resourceType: .video,
+            manifestText: "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1400000,RESOLUTION=848x480\n480p.m3u8\n",
+            hlsVariantPreferences: prefs
+        )
+
+        vm.activeDownloadResource = resource
+        vm.downloadCandidateURL = masterURL
+        vm.downloadCandidateFilename = "custom_renamed_480p.mp4"
+
+        try await vm.executeDownload()
+
+        // Verify quality picker was not triggered
+        XCTAssertFalse(vm.isShowingQualityPicker)
+        XCTAssertFalse(vm.isShowingDownloadSheet)
+        XCTAssertEqual(vm.activeStreamingFilename, "custom_renamed_480p.mp4")
+    }
     #endif
 }
 

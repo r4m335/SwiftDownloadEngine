@@ -319,6 +319,9 @@ public struct BrowserResourceInspectorSheet: View {
                 if resource.isSegmentChunk {
                     viewModel.blobCaptureErrorMessage = "This is a streaming segment chunk. Download the playlist manifest (.m3u8 or .mpd) instead."
                 } else {
+                    if let item = variant {
+                        viewModel.variantStreamItems[resource.id] = item
+                    }
                     viewModel.promptDownloadFromInspector(for: resource)
                 }
             },
