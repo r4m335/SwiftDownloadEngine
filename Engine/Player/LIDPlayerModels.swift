@@ -334,7 +334,7 @@ public enum LIDPlaybackSpeed: Double, CaseIterable, Sendable {
 }
 
 /// Video aspect ratio display modes.
-public enum LIDAspectRatio: String, CaseIterable, Sendable {
+public enum LIDAspectRatio: String, CaseIterable, Sendable, Codable {
     case original = "Original"
     case fit16x9 = "16:9"
     case fit4x3 = "4:3"

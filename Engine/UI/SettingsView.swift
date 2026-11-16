@@ -1,80 +1,10 @@
 #if canImport(SwiftUI)
 import SwiftUI
 
-#if canImport(UIKit)
-import UIKit
-#endif
-
-/// Screen 4: Settings Screen exposing the engine's concurrency, request budget, bandwidth limits, and BitTorrent controls.
+/// Root Settings Screen: Category-based navigation hub organizing preferences into
+/// Downloader, Browser, and Media Player sub-pages.
 public struct SettingsView: View {
     @ObservedObject public var viewModel: DownloadManagerViewModel
-
-    // Engine Execution Settings (Codable AppSettings Layer)
-    @State private var timeoutSeconds: Int = 30
-    @State private var customUserAgent: String = ""
-    @State private var maxRetryAttempts: Int = 3
-    @State private var duplicateNamingRule: DuplicateNamingRule = .autoRename
-    @State private var allowCellular: Bool = true
-
-    // Keychain Sensitive Authentication & Proxy (Hardware-backed iOS Keychain, never in AppSettings)
-    @State private var authServer: String = ""
-    @State private var authUsername: String = ""
-    @State private var authPassword: String = ""
-    @State private var keychainFeedbackMessage: String? = nil
-
-    // HTTP Settings
-    @State private var maxConcurrent: Int = 3
-    @State private var maxGlobalRequests: Int = 12
-    @State private var enableGlobalSpeedLimit: Bool = false
-    @State private var globalSpeedLimitKBps: String = "2048"
-
-    // Torrent Settings
-    @State private var maxConcurrentTorrents: Int = 3
-    @State private var defaultTorrentPriority: TorrentPriority = .normal
-
-    // Seeding Settings
-    @State private var seedingMode: SeedingMode = .ratio
-    @State private var targetRatio: Double = 1.0
-    @State private var targetDurationMinutes: Int = 60
-
-    // Media Sniffer Filter Settings
-    @State private var enableSnifferFilter: Bool = true
-    @State private var snifferExtensions: String = ""
-    @State private var snifferMIMETypes: String = ""
-
-    // Content Shields & Ad Blocking (Phase 3 Milestone 3.2 & Workstream B Milestone B.2)
-    @State private var isAdBlockerEnabled: Bool = true
-    @State private var isTrackerBlockerEnabled: Bool = true
-    @State private var isAnnoyanceBlockerEnabled: Bool = true
-    @State private var cookiePolicy: BrowserCookiePolicy = .blockThirdParty
-    @State private var isPopupBlockerEnabled: Bool = true
-    @State private var selectedSearchEngine: BrowserSearchEngine = .duckDuckGo
-    @State private var isShowingClearDataSheet: Bool = false
-
-    // Browser Navigation & Reader Experience (Milestone B.3)
-    @State private var browserHomepage: String = "https://duckduckgo.com"
-    @State private var restoreTabsOnLaunch: Bool = true
-    @State private var readerTheme: BrowserReaderTheme = .light
-    @State private var readerFontFamily: BrowserReaderFontFamily = .serif
-    @State private var readerFontSize: Double = 18.0
-
-    // Download File Categorization (Phase 3 Milestone 3.3)
-    @State private var isAutomaticCategorizationEnabled: Bool = true
-    @State private var isOrganizingDownloads: Bool = false
-    @State private var organizeFeedbackMessage: String? = nil
-
-    // Download Scheduler Settings (iOS URLSession & Local Notifications)
-    @State private var scheduleEnabled: Bool = false
-    @State private var scheduleStartTime: Date = Calendar.current.date(from: DateComponents(hour: 2, minute: 0)) ?? Date()
-    @State private var scheduleEnableStopTime: Bool = true
-    @State private var scheduleStopTime: Date = Calendar.current.date(from: DateComponents(hour: 6, minute: 0)) ?? Date()
-    @State private var scheduleWeekdays: Set<Int> = Set(1...7)
-    @State private var scheduleWifiOnly: Bool = true
-
-    // UI Feedback
-    @State private var showingSavedAlert: Bool = false
-    @State private var statusMessage: String? = nil
-    @State private var showingDiagnostics: Bool = false
 
     public init(viewModel: DownloadManagerViewModel) {
         self.viewModel = viewModel
@@ -82,594 +12,114 @@ public struct SettingsView: View {
 
     public var body: some View {
         NavigationView {
-            Form {
-                // Section 1: HTTP Queue & Concurrency
-                Section(
-                    header: Text("HTTP Queue Concurrency"),
-                    footer: Text("Controls how many HTTP downloads are transferred concurrently. Excess items wait in priority order.")
-                ) {
-                    Stepper("Max Concurrent HTTP Downloads: \(maxConcurrent)", value: $maxConcurrent, in: 1...10)
-                }
+            List {
+                Section(header: Text("Preferences Categories")) {
+                    // Category 1: Downloader
+                    NavigationLink {
+                        DownloaderSettingsView(viewModel: viewModel)
+                    } label: {
+                        HStack(spacing: 14) {
+                            ZStack {
+                                RoundedRectangle(cornerRadius: 8)
+                                    .fill(Color.blue)
+                                    .frame(width: 36, height: 36)
+                                Image(systemName: "arrow.down.circle.fill")
+                                    .font(.system(size: 20))
+                                    .foregroundColor(.white)
+                            }
 
-                // Section 2: Network Rules & Engine Execution
-                Section(
-                    header: Text("Network Rules & Execution"),
-                    footer: Text("Platform rules and execution timeouts for all downloads. Cellular downloads can be restricted to Wi-Fi only.")
-                ) {
-                    Toggle("Allow Cellular Data", isOn: $allowCellular)
-
-                    Stepper("Request Timeout: \(timeoutSeconds)s", value: $timeoutSeconds, in: 5...120, step: 5)
-
-                    Stepper("Max Retry Attempts: \(maxRetryAttempts)", value: $maxRetryAttempts, in: 0...10)
-
-                    Picker("Duplicate Filename Rule", selection: $duplicateNamingRule) {
-                        ForEach(DuplicateNamingRule.allCases, id: \.self) { rule in
-                            Text(rule.rawValue).tag(rule)
-                        }
-                    }
-
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Custom User-Agent (Optional)")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                        TextField("Default iOS User-Agent", text: $customUserAgent)
-                            .textFieldStyle(RoundedBorderTextFieldStyle())
-                    }
-                }
-
-                // Section 3: BitTorrent Concurrency & Network Ports (Platform Gated)
-                if viewModel.isTorrentEngineAvailable {
-                    Section(
-                        header: Text("BitTorrent Queueing & Ports"),
-                        footer: Text("Limits concurrent active torrent downloads, displays the verified native listening socket, and binds the 6881–6891 port range.")
-                    ) {
-                        Stepper("Max Concurrent Torrents: \(maxConcurrentTorrents)", value: $maxConcurrentTorrents, in: 1...10)
-
-                        Picker("Default Priority", selection: $defaultTorrentPriority) {
-                            Text("Low").tag(TorrentPriority.low)
-                            Text("Normal").tag(TorrentPriority.normal)
-                            Text("High").tag(TorrentPriority.high)
-                        }
-
-                        HStack {
-                            Text("Active Listen Port")
-                            Spacer()
-                            Text(viewModel.torrentActivePortString)
-                                .font(.caption.monospaced())
-                                .foregroundColor(viewModel.torrentSessionStatus?.isListening == true ? .green : .secondary)
-                        }
-
-                        HStack {
-                            Text("Configured Range")
-                            Spacer()
-                            Text(viewModel.torrentPortRangeString)
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                        }
-                    }
-
-                    // Section 4: BitTorrent Seeding Policy
-                    Section(
-                        header: Text("BitTorrent Seeding Behavior"),
-                        footer: Text("Defines automatic seeding cessation once a transfer completes. Settings are enforced by the scheduler and stored persistently.")
-                    ) {
-                        Picker("Seeding Mode", selection: $seedingMode) {
-                            Text("Stop when complete").tag(SeedingMode.doNotSeed)
-                            Text("Seed until ratio").tag(SeedingMode.ratio)
-                            Text("Seed for duration").tag(SeedingMode.duration)
-                            Text("Seed indefinitely").tag(SeedingMode.indefinitely)
-                        }
-
-                        if seedingMode == .ratio {
-                            HStack {
-                                Text("Target Ratio")
-                                Spacer()
-                                Text(String(format: "%.1fx", targetRatio))
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text("Downloader")
+                                    .font(.headline)
+                                Text("Concurrency, network, bandwidth limits, storage, BitTorrent & scheduler")
+                                    .font(.caption)
                                     .foregroundColor(.secondary)
+                                    .lineLimit(2)
                             }
-                            Slider(value: $targetRatio, in: 0.5...5.0, step: 0.1)
-                        } else if seedingMode == .duration {
-                            Stepper("Duration: \(targetDurationMinutes) min", value: $targetDurationMinutes, in: 5...1440, step: 15)
+                            .padding(.vertical, 4)
                         }
                     }
-                }
 
-                // Section 5: HTTP Connection & Request Budgeting
-                Section(
-                    header: Text("HTTP Request Budget"),
-                    footer: Text("Limits total in-flight HTTP range requests across all segment workers to avoid socket exhaustion.")
-                ) {
-                    Stepper("Max Global In-Flight Requests: \(maxGlobalRequests)", value: $maxGlobalRequests, in: 2...32)
-                }
+                    // Category 2: Browser
+                    NavigationLink {
+                        BrowserSettingsView(viewModel: viewModel)
+                    } label: {
+                        HStack(spacing: 14) {
+                            ZStack {
+                                RoundedRectangle(cornerRadius: 8)
+                                    .fill(Color.indigo)
+                                    .frame(width: 36, height: 36)
+                                Image(systemName: "globe")
+                                    .font(.system(size: 20))
+                                    .foregroundColor(.white)
+                            }
 
-                // Section 6: Bandwidth Management
-                Section(
-                    header: Text("Bandwidth Throttling"),
-                    footer: Text("Token-bucket rate limiter dynamically enforces download throughput caps.")
-                ) {
-                    Toggle("Enable Global Speed Limit", isOn: $enableGlobalSpeedLimit)
-
-                    if enableGlobalSpeedLimit {
-                        HStack {
-                            Text("Speed Cap (KB/s)")
-                            Spacer()
-                            TextField("KB/s", text: $globalSpeedLimitKBps)
-                            #if canImport(UIKit)
-                                .keyboardType(.numberPad)
-                            #endif
-                                .multilineTextAlignment(.trailing)
-                                .frame(maxWidth: 120)
-                        }
-                    }
-                }
-
-                // Section 7: Secure Credentials & Proxy (Stored in iOS Keychain)
-                Section(
-                    header: Text("Secure Authentication & Proxy"),
-                    footer: Text("Sensitive auth passwords and proxy credentials are encrypted in the iOS Keychain (kSecClassInternetPassword) and never stored in plain AppSettings.")
-                ) {
-                    TextField("Server / Host (e.g. example.com)", text: $authServer)
-                        #if canImport(UIKit)
-                        .autocapitalization(.none)
-                        .keyboardType(.URL)
-                        #endif
-                    TextField("Username", text: $authUsername)
-                        #if canImport(UIKit)
-                        .autocapitalization(.none)
-                        #endif
-                    SecureField("Password / Token", text: $authPassword)
-
-                    HStack {
-                        Button("Save to Keychain") {
-                            saveKeychainCredentials()
-                        }
-                        .disabled(authServer.isEmpty || authUsername.isEmpty || authPassword.isEmpty)
-
-                        Spacer()
-
-                        Button("Clear") {
-                            clearKeychainCredentials()
-                        }
-                        .foregroundColor(.red)
-                        .disabled(authServer.isEmpty)
-                    }
-
-                    if let msg = keychainFeedbackMessage {
-                        Text(msg)
-                            .font(.caption)
-                            .foregroundColor(.blue)
-                    }
-                }
-
-                // Section 6: Storage, Categorization & Persistence
-                Section(
-                    header: Text("Download Storage & Categorization"),
-                    footer: Text("Automatically classifies downloads into Videos, Music, Documents, Archives, Torrents, and Others subfolders inside the app sandbox.")
-                ) {
-                    HStack {
-                        Text("Root Downloads Directory")
-                        Spacer()
-                        Text(viewModel.downloadsDirectoryURL.path)
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                            .lineLimit(1)
-                    }
-
-                    Toggle("Automatic File Categorization", isOn: $isAutomaticCategorizationEnabled)
-
-                    if isAutomaticCategorizationEnabled {
-                        ForEach(DownloadCategory.allCases) { category in
-                            HStack {
-                                Label(category.displayName, systemImage: category.iconName)
-                                Spacer()
-                                Text("Downloads/\(viewModel.appSettings.subfolderName(for: category))/")
-                                    .font(.caption.monospaced())
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text("Browser")
+                                    .font(.headline)
+                                Text("Search engine, homepage, privacy shields, ad blocking & reader mode")
+                                    .font(.caption)
                                     .foregroundColor(.secondary)
+                                    .lineLimit(2)
                             }
+                            .padding(.vertical, 4)
                         }
                     }
 
-                    Button {
-                        Task { @MainActor in
-                            isOrganizingDownloads = true
-                            defer { isOrganizingDownloads = false }
-                            do {
-                                let count = try await viewModel.organizeExistingDownloads()
-                                organizeFeedbackMessage = count > 0
-                                    ? "Successfully organized \(count) file\(count == 1 ? "" : "s") into category folders."
-                                    : "All completed downloads are already organized."
-                            } catch {
-                                organizeFeedbackMessage = "Organization failed: \(error.localizedDescription)"
-                            }
-                        }
+                    // Category 3: Media Player
+                    NavigationLink {
+                        MediaPlayerSettingsView()
                     } label: {
-                        HStack {
-                            Label("Organize Existing Downloads", systemImage: "folder.badge.gearshape")
-                            if isOrganizingDownloads {
-                                Spacer()
-                                ProgressView()
+                        HStack(spacing: 14) {
+                            ZStack {
+                                RoundedRectangle(cornerRadius: 8)
+                                    .fill(Color.orange)
+                                    .frame(width: 36, height: 36)
+                                Image(systemName: "play.tv.fill")
+                                    .font(.system(size: 20))
+                                    .foregroundColor(.white)
                             }
-                        }
-                    }
-                    .disabled(isOrganizingDownloads)
 
-                    if let msg = organizeFeedbackMessage {
-                        Text(msg)
-                            .font(.caption)
-                            .foregroundColor(.blue)
-                    }
-
-                    Button {
-                        Task { @MainActor in
-                            do {
-                                try await viewModel.restoreQueue(autoStart: false)
-                                statusMessage = "Queue successfully restored from disk."
-                            } catch {
-                                statusMessage = "Restore failed: \(error.localizedDescription)"
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text("Media Player")
+                                    .font(.headline)
+                                Text("Playback speed, aspect ratio, subtitles, audio, gestures & orientation")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                                    .lineLimit(2)
                             }
-                        }
-                    } label: {
-                        Label("Restore Queue from Disk", systemImage: "arrow.clockwise.circle")
-                    }
-
-                    if let msg = statusMessage {
-                        Text(msg)
-                            .font(.caption)
-                            .foregroundColor(.blue)
-                    }
-                }
-
-                // Section 7: Pipeline Diagnostics & Remote Debugging
-                Section(
-                    header: Text("Diagnostics & Remote Debugging"),
-                    footer: Text("Inspect in-memory diagnostic logs for HLS and DASH stream downloads with sensitive tokens and cookies redacted.")
-                ) {
-                    Button {
-                        showingDiagnostics = true
-                    } label: {
-                        Label("View Pipeline Diagnostics", systemImage: "doc.text.magnifyingglass")
-                    }
-                }
-
-                // Section 8: Media Sniffer Filters
-                Section(
-                    header: Text("Media Sniffer Filters"),
-                    footer: Text("Filter browser Grabber media candidates by comma-separated file extensions and MIME type prefixes.")
-                ) {
-                    Toggle("Enable Media Sniffer Filter", isOn: $enableSnifferFilter)
-
-                    if enableSnifferFilter {
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text("Allowed Extensions")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                            TextField("mp4, mkv, mp3, m3u8, zip...", text: $snifferExtensions)
-                                .textFieldStyle(RoundedBorderTextFieldStyle())
-                        }
-
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text("Allowed MIME Types")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                            TextField("video/, audio/, application/...", text: $snifferMIMETypes)
-                                .textFieldStyle(RoundedBorderTextFieldStyle())
+                            .padding(.vertical, 4)
                         }
                     }
                 }
 
-                // Section 9: Content Shields & Ad Blocking (Phase 3 Milestone 3.2 & Workstream B Milestone B.2)
-                Section(
-                    header: Text("Content Shields & Privacy"),
-                    footer: Text("Apple WKContentRuleListStore provides hardware-accelerated ad, tracker, and annoyance blocking with zero JavaScript overhead.")
-                ) {
-                    Toggle("Block Invasive Ads (EasyList)", isOn: $isAdBlockerEnabled)
-                    Toggle("Block Trackers & Telemetry (EasyPrivacy)", isOn: $isTrackerBlockerEnabled)
-                    Toggle("Block Annoyances & Cookie Notices", isOn: $isAnnoyanceBlockerEnabled)
-                    Toggle("Block Popups & Hijack Redirects", isOn: $isPopupBlockerEnabled)
-
-                    Picker("Cookie Policy", selection: $cookiePolicy) {
-                        ForEach(BrowserCookiePolicy.allCases) { policy in
-                            Text(policy.displayName).tag(policy)
-                        }
-                    }
-
-                    if !viewModel.appSettings.adBlockerWhitelistedDomains.isEmpty {
-                        HStack {
-                            Text("Whitelisted Domains")
-                            Spacer()
-                            Text("\(viewModel.appSettings.adBlockerWhitelistedDomains.count) active")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                        }
-                    }
-
-                    Button {
-                        isShowingClearDataSheet = true
-                    } label: {
-                        Label("Clear Browsing Data...", systemImage: "trash")
-                            .foregroundColor(.red)
-                    }
-                }
-
-                // Section 9B: Browser & Navigation Experience (Workstream B Milestone B.1 & B.3)
-                Section(
-                    header: Text("Browser & Navigation Experience"),
-                    footer: Text("Configure search, homepage, tab restoration, and Safari-style Reader Mode appearance.")
-                ) {
-                    Picker("Default Search Engine", selection: $selectedSearchEngine) {
-                        ForEach(BrowserSearchEngine.allCases) { engine in
-                            Text(engine.displayName).tag(engine)
-                        }
+                Section(header: Text("About & System")) {
+                    HStack {
+                        Text("Application")
+                        Spacer()
+                        Text("LID Download Manager")
+                            .foregroundColor(.secondary)
                     }
 
                     HStack {
-                        Text("Homepage")
+                        Text("Download Engine")
                         Spacer()
-                        TextField("https://...", text: $browserHomepage)
-                            .multilineTextAlignment(.trailing)
-                            #if canImport(UIKit)
-                            .autocapitalization(.none)
-                            #endif
-                            .disableAutocorrection(true)
+                        Text("SwiftDownloadEngine (Native)")
+                            .foregroundColor(.secondary)
                     }
 
-                    Toggle("Restore Tabs on App Startup", isOn: $restoreTabsOnLaunch)
-
-                    Picker("Reader Theme", selection: $readerTheme) {
-                        ForEach(BrowserReaderTheme.allCases) { theme in
-                            Text(theme.displayName).tag(theme)
-                        }
-                    }
-
-                    Picker("Reader Font", selection: $readerFontFamily) {
-                        ForEach(BrowserReaderFontFamily.allCases) { font in
-                            Text(font.displayName).tag(font)
-                        }
-                    }
-
-                    Stepper("Reader Font Size: \(Int(readerFontSize)) pt", value: $readerFontSize, in: 12...32, step: 1)
-                }
-
-                // Section 10: Download Scheduler (iOS Native URLSession & Local Notifications)
-                Section(
-                    header: Text("Download Scheduler"),
-                    footer: Text("\(ScheduleCoordinator.scheduledBackgroundBehaviorMessage) \(ScheduleCoordinator.torrentBackgroundLimitationMessage)")
-                ) {
-                    Toggle("Enable Scheduler", isOn: $scheduleEnabled)
-
-                    if scheduleEnabled {
-                        DatePicker("Start Time", selection: $scheduleStartTime, displayedComponents: .hourAndMinute)
-
-                        Toggle("Enable Stop Time", isOn: $scheduleEnableStopTime)
-
-                        if scheduleEnableStopTime {
-                            DatePicker("Stop Time", selection: $scheduleStopTime, displayedComponents: .hourAndMinute)
-                        }
-
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text("Active Days")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                            HStack(spacing: 6) {
-                                ForEach(ScheduleRule.orderedWeekdaySymbols, id: \.day) { item in
-                                    let isSelected = scheduleWeekdays.contains(item.day)
-                                    Button {
-                                        if isSelected {
-                                            if scheduleWeekdays.count > 1 {
-                                                scheduleWeekdays.remove(item.day)
-                                            }
-                                        } else {
-                                            scheduleWeekdays.insert(item.day)
-                                        }
-                                    } label: {
-                                        Text(item.symbol)
-                                            .font(.caption2.bold())
-                                            .frame(maxWidth: .infinity, minHeight: 28)
-                                            .background(isSelected ? Color.blue : Color.secondary.opacity(0.15))
-                                            .foregroundColor(isSelected ? .white : .primary)
-                                            .cornerRadius(6)
-                                    }
-                                    .buttonStyle(.borderless)
-                                }
-                            }
-                        }
-                        .padding(.vertical, 4)
-
-                        Toggle("Wi-Fi Only", isOn: $scheduleWifiOnly)
-
-                        HStack {
-                            Text("Scheduled Downloads Tagged")
-                            Spacer()
-                            Text("\(viewModel.scheduleRules.first?.targetDownloadIDs.count ?? 0) items")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                        }
-                    }
-                }
-
-                // Section 10: Save Action
-                Section {
-                    Button {
-                        saveSettings()
-                    } label: {
-                        HStack {
-                            Spacer()
-                            Text("Apply Settings")
-                                .bold()
-                            Spacer()
-                        }
+                    HStack {
+                        Text("Settings Schema")
+                        Spacer()
+                        Text("AppSettings v7 • LIDPlayer v1")
+                            .font(.caption.monospaced())
+                            .foregroundColor(.secondary)
                     }
                 }
             }
+            .listStyle(InsetGroupedListStyle())
             .navigationTitle("Settings")
-            .sheet(isPresented: $showingDiagnostics) {
-                DiagnosticLogView(configuration: viewModel.activeEngineConfiguration)
-            }
-            .sheet(isPresented: $isShowingClearDataSheet) {
-                BrowserClearDataSheet(viewModel: BrowserViewModel(downloadDelegate: viewModel))
-            }
-            .onAppear {
-                loadCurrentSettings()
-            }
-            .alert("Settings Applied", isPresented: $showingSavedAlert) {
-                Button("OK", role: .cancel) {}
-            } message: {
-                Text("Engine execution state, UI preferences, scheduler rules, and security policies have been updated.")
-            }
         }
-    }
-
-    private func loadCurrentSettings() {
-        let settings = viewModel.appSettings
-        self.maxConcurrent = settings.maxConcurrentDownloads
-        self.maxGlobalRequests = settings.maxGlobalRequests
-        self.timeoutSeconds = settings.timeoutSeconds
-        self.customUserAgent = settings.customUserAgent ?? ""
-        self.maxRetryAttempts = settings.maxRetryAttempts
-        self.duplicateNamingRule = settings.duplicateNamingRule
-        self.allowCellular = settings.allowCellular
-
-        self.maxConcurrentTorrents = settings.maxConcurrentTorrents
-        self.defaultTorrentPriority = settings.defaultTorrentPriority
-        self.seedingMode = settings.seedingMode
-        self.targetRatio = settings.targetRatio
-        self.targetDurationMinutes = settings.targetDurationMinutes
-
-        self.enableGlobalSpeedLimit = settings.enableGlobalSpeedLimit
-        self.globalSpeedLimitKBps = String(settings.globalSpeedLimitKBps)
-
-        let sniffer = BrowserSnifferFilter.load()
-        self.enableSnifferFilter = sniffer.isFilterEnabled
-        self.snifferExtensions = sniffer.allowedExtensions.joined(separator: ", ")
-        self.snifferMIMETypes = sniffer.allowedMIMETypes.joined(separator: ", ")
-
-        self.isAdBlockerEnabled = settings.isAdBlockerEnabled
-        self.isTrackerBlockerEnabled = settings.isTrackerBlockerEnabled
-        self.isAnnoyanceBlockerEnabled = settings.isAnnoyanceBlockerEnabled
-        self.cookiePolicy = settings.cookiePolicy
-        self.isPopupBlockerEnabled = settings.isPopupBlockerEnabled
-        self.selectedSearchEngine = settings.browserSearchEngine
-        self.browserHomepage = settings.browserHomepage
-        self.restoreTabsOnLaunch = settings.restoreTabsOnLaunch
-        self.readerTheme = settings.readerTheme
-        self.readerFontFamily = settings.readerFontFamily
-        self.readerFontSize = settings.readerFontSize
-        self.isAutomaticCategorizationEnabled = settings.isAutomaticCategorizationEnabled
-
-        if let rule = viewModel.scheduleRules.first {
-            self.scheduleEnabled = rule.isEnabled
-            let cal = Calendar.current
-            self.scheduleStartTime = cal.date(from: rule.startTime) ?? Date()
-            if let stopComp = rule.stopTime {
-                self.scheduleEnableStopTime = true
-                self.scheduleStopTime = cal.date(from: stopComp) ?? Date()
-            } else {
-                self.scheduleEnableStopTime = false
-            }
-            self.scheduleWeekdays = rule.weekdays
-            self.scheduleWifiOnly = rule.wifiOnly
-        }
-    }
-
-    private func saveSettings() {
-        let speedKB = Int(globalSpeedLimitKBps) ?? 2048
-        let updatedSettings = AppSettings(
-            version: AppSettings.currentVersion,
-            maxConcurrentDownloads: maxConcurrent,
-            maxGlobalRequests: maxGlobalRequests,
-            timeoutSeconds: timeoutSeconds,
-            customUserAgent: customUserAgent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : customUserAgent,
-            maxRetryAttempts: maxRetryAttempts,
-            duplicateNamingRule: duplicateNamingRule,
-            allowCellular: allowCellular,
-            enableGlobalSpeedLimit: enableGlobalSpeedLimit,
-            globalSpeedLimitKBps: speedKB,
-            maxConcurrentTorrents: maxConcurrentTorrents,
-            defaultTorrentPriority: defaultTorrentPriority,
-            seedingMode: seedingMode,
-            targetRatio: targetRatio,
-            targetDurationMinutes: targetDurationMinutes,
-            isAdBlockerEnabled: isAdBlockerEnabled,
-            isTrackerBlockerEnabled: isTrackerBlockerEnabled,
-            isAnnoyanceBlockerEnabled: isAnnoyanceBlockerEnabled,
-            cookiePolicy: cookiePolicy,
-            isPopupBlockerEnabled: isPopupBlockerEnabled,
-            adBlockerWhitelistedDomains: viewModel.appSettings.adBlockerWhitelistedDomains,
-            isAutomaticCategorizationEnabled: isAutomaticCategorizationEnabled,
-            customCategoryFolders: viewModel.appSettings.customCategoryFolders,
-            defaultDownloadDirectoryBookmark: viewModel.appSettings.defaultDownloadDirectoryBookmark,
-            downloadSortOrder: viewModel.appSettings.downloadSortOrder,
-            browserSearchEngine: selectedSearchEngine,
-            browserHomepage: browserHomepage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "https://duckduckgo.com" : browserHomepage,
-            restoreTabsOnLaunch: restoreTabsOnLaunch,
-            readerTheme: readerTheme,
-            readerFontFamily: readerFontFamily,
-            readerFontSize: readerFontSize
-        )
-
-        var currentRule = viewModel.scheduleRules.first ?? ScheduleRule()
-        currentRule.isEnabled = scheduleEnabled
-        let cal = Calendar.current
-        currentRule.startTime = cal.dateComponents([.hour, .minute], from: scheduleStartTime)
-        if scheduleEnableStopTime {
-            currentRule.stopTime = cal.dateComponents([.hour, .minute], from: scheduleStopTime)
-        } else {
-            currentRule.stopTime = nil
-        }
-        currentRule.weekdays = scheduleWeekdays
-        currentRule.wifiOnly = scheduleWifiOnly
-
-        Task { @MainActor in
-            await viewModel.saveScheduleRule(currentRule)
-            let exts = snifferExtensions
-                .split(separator: ",")
-                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-                .filter { !$0.isEmpty }
-            let mimes = snifferMIMETypes
-                .split(separator: ",")
-                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-                .filter { !$0.isEmpty }
-            let filter = BrowserSnifferFilter(
-                allowedExtensions: exts.isEmpty ? BrowserSnifferFilter.defaultExtensions : exts,
-                allowedMIMETypes: mimes.isEmpty ? BrowserSnifferFilter.defaultMIMETypes : mimes,
-                isFilterEnabled: enableSnifferFilter
-            )
-            filter.save()
-
-            try? await viewModel.applySettings(updatedSettings)
-            await viewModel.reconcileSchedule()
-            showingSavedAlert = true
-        }
-    }
-
-    private func saveKeychainCredentials() {
-        let cleanHost = authServer.trimmingCharacters(in: .whitespacesAndNewlines)
-        let cleanUser = authUsername.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !cleanHost.isEmpty, !cleanUser.isEmpty, !authPassword.isEmpty else { return }
-
-        let success = KeychainManager.shared.storeInternetPassword(
-            username: cleanUser,
-            password: authPassword,
-            server: cleanHost
-        )
-        if success {
-            keychainFeedbackMessage = "Credentials securely saved in Keychain for \(cleanHost)."
-            authPassword = ""
-        } else {
-            keychainFeedbackMessage = "Failed to store credentials in Keychain."
-        }
-    }
-
-    private func clearKeychainCredentials() {
-        let cleanHost = authServer.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !cleanHost.isEmpty else { return }
-        let cleanUser = authUsername.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !cleanUser.isEmpty {
-            _ = KeychainManager.shared.deleteInternetPassword(server: cleanHost)
-        }
-        authUsername = ""
-        authPassword = ""
-        keychainFeedbackMessage = "Cleared credentials for \(cleanHost)."
     }
 }
 #endif

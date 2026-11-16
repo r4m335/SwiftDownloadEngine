@@ -72,5 +72,32 @@ public final class LIDOrientationManager: ObservableObject {
         )
         #endif
     }
+
+    /// Requests landscape orientation for player launch when preferred.
+    public func requestLandscape(session: String = "IDLE") {
+        #if os(iOS)
+        if #available(iOS 16.0, *) {
+            let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+            if let windowScene = scenes.first {
+                windowScene.requestGeometryUpdate(.iOS(interfaceOrientations: .landscapeRight)) { error in
+                    PipelineLogger.shared.logPlayer(
+                        session: session,
+                        category: "OrientationManager",
+                        message: "requestLandscape notice: \(error.localizedDescription)"
+                    )
+                }
+                UIViewController.attemptRotationToDeviceOrientation()
+            }
+        } else {
+            UIDevice.current.setValue(UIInterfaceOrientation.landscapeRight.rawValue, forKey: "orientation")
+            UIViewController.attemptRotationToDeviceOrientation()
+        }
+        PipelineLogger.shared.logPlayer(
+            session: session,
+            category: "OrientationManager",
+            message: "Requested landscape orientation for player"
+        )
+        #endif
+    }
 }
 #endif

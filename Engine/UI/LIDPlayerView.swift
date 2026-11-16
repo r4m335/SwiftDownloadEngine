@@ -189,7 +189,12 @@ public struct LIDPlayerView: View {
     }
 
     @StateObject private var engine = LIDPlaybackEngine.shared
+    @ObservedObject private var playerSettingsStore: LIDPlayerSettingsStore = .shared
     @Environment(\.presentationMode) private var presentationMode
+
+    private var playerSettings: LIDPlayerSettings {
+        playerSettingsStore.settings
+    }
 
     // Controls state
     @State private var showControls: Bool = true
@@ -297,6 +302,7 @@ public struct LIDPlayerView: View {
             .gesture(
                 MagnificationGesture()
                     .onChanged { scale in
+                        guard playerSettings.enablePinchToZoom else { return }
                         zoomScale = max(0.8, min(3.0, scale))
                     }
                     .onEnded { _ in
@@ -324,12 +330,12 @@ public struct LIDPlayerView: View {
                 VStack {
                     Spacer()
                     Text(cueText)
-                        .font(.system(size: 16, weight: .bold))
-                        .foregroundColor(.white)
+                        .font(.system(size: CGFloat(playerSettings.subtitleFontSize), weight: .bold))
+                        .foregroundColor(playerSettings.subtitleTextColor.swiftUIColor)
                         .multilineTextAlignment(.center)
                         .padding(.horizontal, 14)
                         .padding(.vertical, 8)
-                        .background(Color.black.opacity(0.75))
+                        .background(Color.black.opacity(playerSettings.subtitleBackgroundOpacity))
                         .cornerRadius(8)
                         .padding(.horizontal, 24)
                         .padding(.bottom, showControls && !isControlsLocked ? 95 : 32)
@@ -451,6 +457,9 @@ public struct LIDPlayerView: View {
             #if canImport(UIKit)
             brightnessLevel = Double(UIScreen.main.brightness)
             LIDOrientationManager.shared.isPlayerActive = true
+            if playerSettings.defaultOrientation == .landscape {
+                LIDOrientationManager.shared.requestLandscape(session: sessionId)
+            }
             #endif
             volumeLevel = Double(engine.volume)
             PipelineLogger.shared.logPlayer(
@@ -458,7 +467,12 @@ public struct LIDPlayerView: View {
                 category: "PlayerLifecycle",
                 message: "LIDPlayerView appeared for media '\(title)', url: \(url.lastPathComponent)"
             )
-            engine.load(source: source, autoPlay: true, resumeFromHistory: true, sessionId: sessionId)
+            aspectRatio = playerSettings.defaultAspectRatio
+            engine.setAspectRatio(playerSettings.defaultAspectRatio)
+            if !playerSettings.rememberPlaybackSpeed {
+                engine.setPlaybackRate(playerSettings.defaultPlaybackSpeed)
+            }
+            engine.load(source: source, autoPlay: true, resumeFromHistory: playerSettings.resumePlaybackPosition, sessionId: sessionId)
             if case .localFile(let localURL, _) = source {
                 autoDiscoverSiblingSubtitles(for: localURL)
             }
@@ -571,7 +585,7 @@ public struct LIDPlayerView: View {
                     .gesture(
                         DragGesture(minimumDistance: 20)
                             .onChanged { value in
-                                guard !isControlsLocked else { return }
+                                guard !isControlsLocked && playerSettings.enableBrightnessGesture else { return }
                                 if !isDraggingBrightness {
                                     isDraggingBrightness = true
                                     controlsTimer?.invalidate()
@@ -610,13 +624,15 @@ public struct LIDPlayerView: View {
                     )
                     .onTapGesture(count: 2) {
                         guard !isControlsLocked && !isDraggingBrightness else { return }
+                        guard playerSettings.enableDoubleTapSeek else { return }
+                        let seekStep = Double(playerSettings.seekIntervalSeconds)
                         PipelineLogger.shared.logPlayer(
                             session: sessionId,
                             category: "PlayerGesture",
-                            message: "Double-tap left zone -> rewind -10s"
+                            message: "Double-tap left zone -> rewind -\(seekStep)s"
                         )
-                        engine.seekBy(offsetSeconds: -10)
-                        showTemporaryHUD("⏪ 10s")
+                        engine.seekBy(offsetSeconds: -seekStep)
+                        showTemporaryHUD("⏪ \(Int(seekStep))s")
                         resetControlsTimer()
                     }
                     .onTapGesture(count: 1) {
@@ -637,7 +653,7 @@ public struct LIDPlayerView: View {
                         LongPressGesture(minimumDuration: 0.45)
                             .sequenced(before: DragGesture(minimumDistance: 0))
                             .onChanged { value in
-                                guard !isControlsLocked && !showControls && engine.playbackState.isPlaying else { return }
+                                guard !isControlsLocked && !showControls && engine.playbackState.isPlaying && playerSettings.enableTwoXSpeedBoostGesture else { return }
                                 switch value {
                                 case .second(true, _):
                                     if !isHoldingSpeedBoost {
@@ -682,7 +698,7 @@ public struct LIDPlayerView: View {
                     .gesture(
                         DragGesture(minimumDistance: 20)
                             .onChanged { value in
-                                guard !isControlsLocked else { return }
+                                guard !isControlsLocked && playerSettings.enableVolumeGesture else { return }
                                 if !isDraggingVolume {
                                     isDraggingVolume = true
                                     controlsTimer?.invalidate()
@@ -715,13 +731,15 @@ public struct LIDPlayerView: View {
                     )
                     .onTapGesture(count: 2) {
                         guard !isControlsLocked && !isDraggingVolume else { return }
+                        guard playerSettings.enableDoubleTapSeek else { return }
+                        let seekStep = Double(playerSettings.seekIntervalSeconds)
                         PipelineLogger.shared.logPlayer(
                             session: sessionId,
                             category: "PlayerGesture",
-                            message: "Double-tap right zone -> forward +10s"
+                            message: "Double-tap right zone -> forward +\(seekStep)s"
                         )
-                        engine.seekBy(offsetSeconds: 10)
-                        showTemporaryHUD("⏩ 10s")
+                        engine.seekBy(offsetSeconds: seekStep)
+                        showTemporaryHUD("⏩ \(Int(seekStep))s")
                         resetControlsTimer()
                     }
                     .onTapGesture(count: 1) {
@@ -1273,7 +1291,7 @@ public struct LIDPlayerView: View {
             // Row 2: Stepper pill: <  0 ms  >
             HStack {
                 Button {
-                    adjustDelayByMilliseconds(-100)
+                    adjustDelayByMilliseconds(-playerSettings.subtitleDelayStepMs)
                 } label: {
                     Image(systemName: "chevron.left")
                         .font(.system(size: 18, weight: .bold))
@@ -1291,7 +1309,7 @@ public struct LIDPlayerView: View {
                 Spacer()
 
                 Button {
-                    adjustDelayByMilliseconds(100)
+                    adjustDelayByMilliseconds(playerSettings.subtitleDelayStepMs)
                 } label: {
                     Image(systemName: "chevron.right")
                         .font(.system(size: 18, weight: .bold))
@@ -1553,6 +1571,7 @@ public struct LIDPlayerView: View {
     }
 
     private func autoDiscoverSiblingSubtitles(for mediaURL: URL) {
+        guard playerSettings.autoLoadSubtitles else { return }
         let baseName = mediaURL.deletingPathExtension().lastPathComponent
         let dir = mediaURL.deletingLastPathComponent()
         guard let files = try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil) else { return }
@@ -1576,7 +1595,9 @@ public struct LIDPlayerView: View {
     private func resetControlsTimer() {
         controlsTimer?.invalidate()
         guard !isDraggingBrightness && !isDraggingVolume else { return }
-        controlsTimer = Timer.scheduledTimer(withTimeInterval: 3.5, repeats: false) { _ in
+        let hideDelay = playerSettings.autoHideControlsSeconds
+        guard hideDelay > 0 else { return }
+        controlsTimer = Timer.scheduledTimer(withTimeInterval: Double(hideDelay), repeats: false) { _ in
             Task { @MainActor in
                 withAnimation(.easeInOut(duration: 0.3)) {
                     if engine.playbackState.isPlaying && !isControlsLocked && !isDraggingBrightness && !isDraggingVolume {
