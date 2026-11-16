@@ -41,12 +41,46 @@ public enum ResourceIdentityOutcome: Equatable, Sendable {
 /// Verifies resource identity before allowing resume or link replacement.
 /// Matches 1DM+'s integrity philosophy: never silently mix data from incompatible files.
 public struct DownloadIdentityVerifier: Sendable {
+    public struct ProbeMetadata: Sendable, Equatable {
+        public let finalURL: URL
+        public let totalSize: Int64?
+        public let eTag: String?
+        public let lastModified: String?
+        public let supportsRange: Bool
+        public let mimeType: String?
+        public let statusCode: Int
+        public let redirectCount: Int
+        public let canResume: Bool
+
+        public init(
+            finalURL: URL,
+            totalSize: Int64?,
+            eTag: String?,
+            lastModified: String?,
+            supportsRange: Bool,
+            mimeType: String?,
+            statusCode: Int = 200,
+            redirectCount: Int = 0,
+            canResume: Bool = true
+        ) {
+            self.finalURL = finalURL
+            self.totalSize = totalSize
+            self.eTag = eTag
+            self.lastModified = lastModified
+            self.supportsRange = supportsRange
+            self.mimeType = mimeType
+            self.statusCode = statusCode
+            self.redirectCount = redirectCount
+            self.canResume = canResume
+        }
+    }
+
     public init() {}
 
     /// Evaluates remote probe metadata against an existing download record.
     public func verify(
         record: DownloadRecord,
-        probe: HTTPRangeProbeResult,
+        probe: ProbeMetadata,
         policy: ResumeIntegrityPolicy = .compatibility
     ) -> ResourceIdentityOutcome {
         var reasons: [String] = []
@@ -126,6 +160,26 @@ public struct DownloadIdentityVerifier: Sendable {
         }
 
         return .compatible(reasons: reasons)
+    }
+
+    /// Internal overload accepting internal HTTPRangeProbeResult from DM_Reverse_engineering.
+    func verify(
+        record: DownloadRecord,
+        probe: HTTPRangeProbeResult,
+        policy: ResumeIntegrityPolicy = .compatibility
+    ) -> ResourceIdentityOutcome {
+        let meta = ProbeMetadata(
+            finalURL: probe.finalURL,
+            totalSize: probe.totalSize,
+            eTag: probe.eTag,
+            lastModified: probe.lastModified,
+            supportsRange: probe.supportsRange,
+            mimeType: probe.mimeType,
+            statusCode: probe.statusCode,
+            redirectCount: probe.redirectCount,
+            canResume: probe.canResume
+        )
+        return verify(record: record, probe: meta, policy: policy)
     }
 
     private func normalizeValidator(_ v: String) -> String {

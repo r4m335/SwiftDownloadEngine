@@ -138,7 +138,7 @@ public enum InternalStreamingConstants {
 public struct DownloadRecord: Codable, Equatable, Identifiable, Sendable {
     public let id: String
     public var tag: String { id }
-    public let originalURL: URL
+    public var originalURL: URL
     public var resolvedURL: URL?
     public let destinationURL: URL
     public var totalSize: Int64
