@@ -56,9 +56,14 @@ public protocol BrowserDownloadDelegate: AnyObject {
         speedLimitBytesPerSecond: Int64?,
         headers: [String: String]?
     ) async throws
+
+    var unifiedTransfersList: [UnifiedTransfer] { get }
+    var downloadRecoveryManager: DownloadRecoveryManager? { get }
 }
 
 public extension BrowserDownloadDelegate {
+    var unifiedTransfersList: [UnifiedTransfer] { [] }
+    var downloadRecoveryManager: DownloadRecoveryManager? { nil }
     func importCompletedBrowserFile(
         fileURL: URL,
         filename: String,

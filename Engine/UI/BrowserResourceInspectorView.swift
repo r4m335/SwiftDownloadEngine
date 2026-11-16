@@ -301,12 +301,14 @@ public struct BrowserResourceInspectorSheet: View {
         }
         let quality = hlsMasterQualitySummaries[resource.id]
         let variant = variantMetadataMap[resource.id]
+        let statusDot = viewModel.matchingTransferDot(for: resource)
 
         ResourceRowView(
             resource: resource,
             candidate: cand,
             qualitySummary: quality,
             variantItem: variant,
+            statusDot: statusDot,
             onSelect: {
                 if resource.isDRMProtected || cand?.kind == .protectedMedia {
                     drmWarningAlert = "This media stream is encrypted with Digital Rights Management (\(resource.drmProtectionType ?? "DRM")) and cannot be downloaded or captured."
@@ -425,6 +427,7 @@ public struct ResourceRowView: View {
     public let candidate: BrowserMediaCandidate?
     public let qualitySummary: String?
     public let variantItem: HLSVariantStreamItem?
+    public let statusDot: DownloadStatusDot?
     public let onSelect: () -> Void
     public let onPreview: (() -> Void)?
     public let onOpenBrowser: (() -> Void)?
@@ -436,6 +439,7 @@ public struct ResourceRowView: View {
         candidate: BrowserMediaCandidate? = nil,
         qualitySummary: String? = nil,
         variantItem: HLSVariantStreamItem? = nil,
+        statusDot: DownloadStatusDot? = nil,
         onSelect: @escaping () -> Void,
         onPreview: (() -> Void)? = nil,
         onOpenBrowser: (() -> Void)? = nil,
@@ -446,6 +450,7 @@ public struct ResourceRowView: View {
         self.candidate = candidate
         self.qualitySummary = qualitySummary
         self.variantItem = variantItem
+        self.statusDot = statusDot
         self.onSelect = onSelect
         self.onPreview = onPreview
         self.onOpenBrowser = onOpenBrowser
@@ -549,12 +554,19 @@ public struct ResourceRowView: View {
 
                     // Middle: Filename, Size, Specs & Audio Indicator
                     VStack(alignment: .leading, spacing: 4) {
-                        // Line 1: Actual Filename as headline
-                        Text(displayFilename)
-                            .font(.subheadline.weight(.semibold))
-                            .foregroundColor(.primary)
-                            .lineLimit(2)
-                            .multilineTextAlignment(.leading)
+                        // Line 1: Actual Filename as headline with minimal existing-download status dot
+                        HStack(alignment: .center, spacing: 6) {
+                            if let dot = statusDot {
+                                Circle()
+                                    .fill(dot.color)
+                                    .frame(width: 8, height: 8)
+                            }
+                            Text(displayFilename)
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundColor(.primary)
+                                .lineLimit(2)
+                                .multilineTextAlignment(.leading)
+                        }
 
                         // Line 2: Size & Quality Specifications
                         HStack(spacing: 6) {

@@ -372,6 +372,10 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
     @Published public var errorMessage: String? = nil
     @Published public var userNotificationMessage: String? = nil
     @Published public var isObserving: Bool = false
+    @Published public var selectedTab: Int = 0
+
+    // Recovery & Link Refresh Management
+    public let recoveryManager: DownloadRecoveryManager
 
     private var eventTask: Task<Void, Never>? = nil
     private var torrentRefreshTask: Task<Void, Never>? = nil
@@ -435,6 +439,12 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
         self.scheduleCoordinator = ScheduleCoordinator(
             engine: engine,
             persistenceStore: engine.persistenceStore
+        )
+        self.recoveryManager = DownloadRecoveryManager(
+            engine: engine,
+            persistenceStore: engine.persistenceStore,
+            hlsPersistenceStore: try? HLSPersistenceStore(storageDirectoryURL: engine.persistenceStore.storageDirectoryURL),
+            streamingOrchestrator: StreamingDownloadOrchestrator.shared
         )
 #if canImport(BackgroundTasks) && os(iOS) && SDE_ENABLE_BG_CONTINUED_PROCESSING
         self.continuedProcessingCoordinator = ContinuedProcessingTaskCoordinator(engine: engine)
@@ -1192,6 +1202,73 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
         }
     }
 
+    // MARK: - Recovery & Link Refresh Operations
+
+    /// Retries a failed or paused transfer in-place, skipping completed segments.
+    public func retryTransfer(_ transfer: UnifiedTransfer) async {
+        do {
+            if transfer.isTorrent, let hash = transfer.infoHash {
+                try await torrentEngine?.resume(infoHash: hash)
+            } else {
+                try await recoveryManager.retry(transferID: transfer.id)
+            }
+            await refreshSnapshots()
+        } catch {
+            self.errorMessage = error.localizedDescription
+        }
+    }
+
+    /// Updates the download URL and headers of an existing download, validating identity and resuming in-place.
+    public func updateTransferLink(
+        transfer: UnifiedTransfer,
+        newURLText: String,
+        newHeaders: [String: String]? = nil,
+        forceRestartIfNonResumable: Bool = false
+    ) async throws {
+        let isHLS = transfer.type == .hls || transfer.name.lowercased().hasSuffix(".m3u8")
+        do {
+            try await recoveryManager.updateDownloadLink(
+                transferID: transfer.id,
+                newURLText: newURLText,
+                newHeaders: newHeaders,
+                isHLS: isHLS,
+                forceRestartIfNonResumable: forceRestartIfNonResumable
+            )
+            await refreshSnapshots()
+        } catch {
+            self.errorMessage = error.localizedDescription
+            throw error
+        }
+    }
+
+    /// Starts a browser link-refresh session for a failed transfer, switching to the Browser tab.
+    public func startBrowserLinkRefresh(for transfer: UnifiedTransfer) {
+        let targetPageURL = recoveryManager.startBrowserRefresh(for: transfer)
+        self.selectedTab = 1
+        NotificationCenter.default.post(
+            name: NSNotification.Name("LIDNavigateBrowserToURL"),
+            object: nil,
+            userInfo: targetPageURL != nil ? ["url": targetPageURL!] : nil
+        )
+    }
+
+    /// Reconnects a captured browser resource to an existing download record and resumes it without creating duplicates.
+    public func reconnectBrowserResource(
+        transferID: String,
+        resource: WebpageResource
+    ) async throws {
+        do {
+            try await recoveryManager.reconnectBrowserResource(
+                transferID: transferID,
+                resource: resource
+            )
+            await refreshSnapshots()
+        } catch {
+            self.errorMessage = error.localizedDescription
+            throw error
+        }
+    }
+
     // MARK: - Torrent Operations
 
     @discardableResult
@@ -1869,6 +1946,14 @@ extension DownloadManagerViewModel: BrowserDownloadDelegate {
             transportPolicy: .foreground,
             autoStart: true
         )
+    }
+
+    public var unifiedTransfersList: [UnifiedTransfer] {
+        unifiedTransfers
+    }
+
+    public var downloadRecoveryManager: DownloadRecoveryManager? {
+        recoveryManager
     }
 
     /// Defensive handler for direct candidate download taps from UI components.

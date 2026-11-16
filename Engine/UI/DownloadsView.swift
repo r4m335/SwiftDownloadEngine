@@ -48,6 +48,7 @@ public enum ActiveSheet: Identifiable {
     case shareFile(URL)
     case diagnostics
     case mediaLibrary
+    case updateDownloadLink(UnifiedTransfer)
 
     public var id: String {
         switch self {
@@ -61,6 +62,8 @@ public enum ActiveSheet: Identifiable {
             return "diagnostics"
         case .mediaLibrary:
             return "mediaLibrary"
+        case .updateDownloadLink(let transfer):
+            return "updateDownloadLink_\(transfer.id)"
         }
     }
 }
@@ -315,6 +318,9 @@ public struct DownloadsView: View {
                                     onShowDetails: { showTransferDetails(transfer) },
                                     onPause: { pauseTransfer(transfer) },
                                     onResume: { resumeTransfer(transfer) },
+                                    onRetry: { Task { await viewModel.retryTransfer(transfer) } },
+                                    onUpdateLink: { activeSheet = .updateDownloadLink(transfer) },
+                                    onRefreshFromBrowser: { viewModel.startBrowserLinkRefresh(for: transfer) },
                                     onRemoveQueue: { removeTransferFromQueue(transfer) },
                                     onDeleteFile: { promptDeleteTransferFile(transfer) }
                                 )
@@ -415,6 +421,14 @@ public struct DownloadsView: View {
                     LIDPlayerLibraryView(
                         baseDirectory: viewModel.downloadsDirectoryURL,
                         knownTransfers: viewModel.unifiedTransfers,
+                        onDismiss: {
+                            activeSheet = nil
+                        }
+                    )
+                case .updateDownloadLink(let transfer):
+                    UpdateDownloadLinkSheet(
+                        viewModel: viewModel,
+                        transfer: transfer,
                         onDismiss: {
                             activeSheet = nil
                         }
@@ -1143,6 +1157,9 @@ public struct UnifiedTransferRowView: View {
     public let onShowDetails: () -> Void
     public let onPause: () -> Void
     public let onResume: () -> Void
+    public var onRetry: () -> Void = {}
+    public var onUpdateLink: () -> Void = {}
+    public var onRefreshFromBrowser: () -> Void = {}
     public let onRemoveQueue: () -> Void
     public let onDeleteFile: () -> Void
 
@@ -1158,6 +1175,9 @@ public struct UnifiedTransferRowView: View {
         onShowDetails: @escaping () -> Void = {},
         onPause: @escaping () -> Void = {},
         onResume: @escaping () -> Void = {},
+        onRetry: @escaping () -> Void = {},
+        onUpdateLink: @escaping () -> Void = {},
+        onRefreshFromBrowser: @escaping () -> Void = {},
         onRemoveQueue: @escaping () -> Void = {},
         onDeleteFile: @escaping () -> Void = {}
     ) {
@@ -1172,6 +1192,9 @@ public struct UnifiedTransferRowView: View {
         self.onShowDetails = onShowDetails
         self.onPause = onPause
         self.onResume = onResume
+        self.onRetry = onRetry
+        self.onUpdateLink = onUpdateLink
+        self.onRefreshFromBrowser = onRefreshFromBrowser
         self.onRemoveQueue = onRemoveQueue
         self.onDeleteFile = onDeleteFile
     }
@@ -1312,6 +1335,9 @@ public struct UnifiedTransferRowView: View {
                         onShowDetails: onShowDetails,
                         onPause: onPause,
                         onResume: onResume,
+                        onRetry: onRetry,
+                        onUpdateLink: onUpdateLink,
+                        onRefreshFromBrowser: onRefreshFromBrowser,
                         onToggleSchedule: { viewModel.toggleScheduled(transferID: transfer.id) },
                         onRemoveQueue: onRemoveQueue,
                         onDeleteFile: onDeleteFile
@@ -1362,6 +1388,9 @@ public struct UnifiedTransferMenuContent: View {
     public let onShowDetails: () -> Void
     public let onPause: () -> Void
     public let onResume: () -> Void
+    public var onRetry: () -> Void = {}
+    public var onUpdateLink: () -> Void = {}
+    public var onRefreshFromBrowser: () -> Void = {}
     public var onToggleSchedule: () -> Void = {}
     public let onRemoveQueue: () -> Void
     public let onDeleteFile: () -> Void
@@ -1376,6 +1405,9 @@ public struct UnifiedTransferMenuContent: View {
         onShowDetails: @escaping () -> Void = {},
         onPause: @escaping () -> Void = {},
         onResume: @escaping () -> Void = {},
+        onRetry: @escaping () -> Void = {},
+        onUpdateLink: @escaping () -> Void = {},
+        onRefreshFromBrowser: @escaping () -> Void = {},
         onToggleSchedule: @escaping () -> Void = {},
         onRemoveQueue: @escaping () -> Void = {},
         onDeleteFile: @escaping () -> Void = {}
@@ -1389,6 +1421,9 @@ public struct UnifiedTransferMenuContent: View {
         self.onShowDetails = onShowDetails
         self.onPause = onPause
         self.onResume = onResume
+        self.onRetry = onRetry
+        self.onUpdateLink = onUpdateLink
+        self.onRefreshFromBrowser = onRefreshFromBrowser
         self.onToggleSchedule = onToggleSchedule
         self.onRemoveQueue = onRemoveQueue
         self.onDeleteFile = onDeleteFile
@@ -1410,6 +1445,23 @@ public struct UnifiedTransferMenuContent: View {
             } else if transfer.canResume {
                 Button(action: onResume) {
                     Label("Resume", systemImage: "play.fill")
+                }
+            }
+
+            if transfer.canRetry {
+                Button(action: onRetry) {
+                    Label("Retry", systemImage: "arrow.clockwise")
+                }
+            }
+
+            if transfer.canRetry || transfer.canResume {
+                Button(action: onUpdateLink) {
+                    Label("Update Download Link", systemImage: "link")
+                }
+                if !transfer.isTorrent {
+                    Button(action: onRefreshFromBrowser) {
+                        Label("Refresh Link from Browser", systemImage: "safari")
+                    }
                 }
             }
 

@@ -30,7 +30,7 @@ public struct DownloadManagerAppView: View {
     }
 
     public var body: some View {
-        TabView(selection: $selectedTab) {
+        TabView(selection: $viewModel.selectedTab) {
             DownloadsView(viewModel: viewModel)
                 .tabItem {
                     Label("Downloads", systemImage: "arrow.down.circle.fill")
@@ -38,12 +38,12 @@ public struct DownloadManagerAppView: View {
                 .tag(0)
 
             BrowserView(viewModel: viewModel, onDownloadInitiated: {
-                selectedTab = 0
+                viewModel.selectedTab = 0
             }, onOpenAddDownload: { url in
                 addURLPrefill = url.absoluteString
-                selectedTab = 2
+                viewModel.selectedTab = 2
             }, onOpenDownloads: {
-                selectedTab = 0
+                viewModel.selectedTab = 0
             })
                 .tabItem {
                     Label("Browser", systemImage: "globe")
@@ -51,10 +51,10 @@ public struct DownloadManagerAppView: View {
                 .tag(1)
 
             AddDownloadView(viewModel: viewModel, onDownloadAdded: {
-                selectedTab = 0
+                viewModel.selectedTab = 0
             }, onOpenInBrowser: { url in
                 addURLPrefill = url.absoluteString
-                selectedTab = 1
+                viewModel.selectedTab = 1
             }, prefilledURL: addURLPrefill)
                 .tabItem {
                     Label("Add", systemImage: "plus.circle")

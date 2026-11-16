@@ -310,6 +310,16 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                 self?.handleMediaDiscoveryObservation(observation)
             }
         }
+
+        NotificationCenter.default.addObserver(
+            forName: NSNotification.Name("LIDNavigateBrowserToURL"),
+            object: nil,
+            queue: .main
+        ) { [weak self] notif in
+            if let url = notif.userInfo?["url"] as? URL {
+                self?.load(url: url)
+            }
+        }
     }
 
     private func publishTabState() {
@@ -1362,12 +1372,80 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         )
     }
 
+    public var recoveryManager: DownloadRecoveryManager? {
+        downloadDelegate?.downloadRecoveryManager
+    }
+
+    public func matchingTransferDot(for resource: WebpageResource) -> DownloadStatusDot? {
+        guard let rm = recoveryManager else { return nil }
+        let transfers = downloadDelegate?.unifiedTransfersList ?? []
+        return rm.matcher.match(resource: resource, transfers: transfers)?.statusDot
+    }
+
+    public func matchingTransfer(for resource: WebpageResource) -> DownloadMatchResult? {
+        guard let rm = recoveryManager else { return nil }
+        let transfers = downloadDelegate?.unifiedTransfersList ?? []
+        return rm.matcher.match(resource: resource, transfers: transfers)
+    }
+
     public func openResourceInspector() {
         isShowingResourceInspector = true
         inspectCurrentPageResources()
     }
 
     public func promptDownloadFromInspector(for resource: WebpageResource) {
+        // Evaluate against existing transfers to avoid duplicates and handle link recovery
+        if let match = matchingTransfer(for: resource) {
+            // Case 1: In active link-refresh session or matched transfer failed -> Reconnect & resume in-place!
+            if recoveryManager?.activeSession != nil || match.statusDot == .failed {
+                isShowingResourceInspector = false
+                let targetID = recoveryManager?.activeSession?.targetTransferID ?? match.transferID
+                Task { [weak self] in
+                    guard let self = self else { return }
+                    do {
+                        try await self.recoveryManager?.reconnectBrowserResource(
+                            transferID: targetID,
+                            resource: resource
+                        )
+                        await MainActor.run {
+                            self.onOpenDownloads?()
+                        }
+                    } catch {
+                        await MainActor.run {
+                            self.resourceScanError = error.localizedDescription
+                        }
+                    }
+                }
+                return
+            }
+
+            // Case 2: Currently downloading -> Avoid starting duplicate transfer
+            if match.statusDot == .downloading {
+                isShowingResourceInspector = false
+                onOpenDownloads?()
+                return
+            }
+
+            // Case 3: Paused -> Resume existing transfer
+            if match.statusDot == .paused {
+                isShowingResourceInspector = false
+                Task { [weak self] in
+                    try? await self?.recoveryManager?.retry(transferID: match.transferID)
+                    await MainActor.run {
+                        self?.onOpenDownloads?()
+                    }
+                }
+                return
+            }
+
+            // Case 4: Completed -> Avoid creating duplicate download
+            if match.statusDot == .completed {
+                isShowingResourceInspector = false
+                onOpenDownloads?()
+                return
+            }
+        }
+
         isShowingResourceInspector = false
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
             guard let self = self else { return }

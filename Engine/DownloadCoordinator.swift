@@ -607,7 +607,7 @@ public actor DownloadCoordinator {
             return
         }
 
-        guard existingRecord.originalURL == request.url else {
+        guard existingRecord.originalURL == request.url || existingRecord.resolvedURL == request.url else {
             throw DownloadCoordinatorError.cannotResume(reason: "URL mismatch with persisted record")
         }
 
@@ -641,6 +641,7 @@ public actor DownloadCoordinator {
             remoteTotalSize: probeResult.totalSize
         )
 
+        record.originalURL = newURL
         record.resolvedURL = probeResult.finalURL
         if let h = newHeaders {
             for (k, v) in h {
