@@ -1779,43 +1779,23 @@ extension DownloadFilter {
 }
 
 public struct QueueSummaryHeader: View {
-    @ObservedObject public var viewModel: DownloadManagerViewModel?
-    public var legacySummary: QueueSnapshot?
+    @ObservedObject public var viewModel: DownloadManagerViewModel
 
     public init(viewModel: DownloadManagerViewModel) {
         self.viewModel = viewModel
-        self.legacySummary = nil
-    }
-
-    public init(summary: QueueSnapshot) {
-        self.legacySummary = summary
-        self.viewModel = nil
-    }
-
-    private var currentCounts: (all: Int, active: Int, paused: Int, completed: Int, failed: Int) {
-        if let s = legacySummary {
-            let activeTotal = s.activeCount + s.queuedCount
-            let allTotal = activeTotal + s.pausedCount + s.completedCount + s.failedCount
-            return (all: allTotal, active: activeTotal, paused: s.pausedCount, completed: s.completedCount, failed: s.failedCount)
-        }
-        if let vm = viewModel {
-            let counts = vm.statusCounts
-            return (all: counts.all, active: counts.active, paused: counts.paused, completed: counts.completed, failed: counts.failed)
-        }
-        return (all: 0, active: 0, paused: 0, completed: 0, failed: 0)
     }
 
     public var body: some View {
-        let counts = currentCounts
+        let counts = viewModel.statusCounts
         HStack(spacing: 4) {
             HeaderStat(
                 label: "All",
                 count: counts.all,
                 color: DownloadFilter.all.accentColor,
-                isSelected: viewModel?.selectedFilter == .all
+                isSelected: viewModel.selectedFilter == .all
             ) {
                 withAnimation(.easeInOut(duration: 0.15)) {
-                    viewModel?.selectedFilter = .all
+                    viewModel.selectedFilter = .all
                 }
             }
 
@@ -1823,10 +1803,10 @@ public struct QueueSummaryHeader: View {
                 label: "Active",
                 count: counts.active,
                 color: DownloadFilter.active.accentColor,
-                isSelected: viewModel?.selectedFilter == .active
+                isSelected: viewModel.selectedFilter == .active
             ) {
                 withAnimation(.easeInOut(duration: 0.15)) {
-                    viewModel?.selectedFilter = .active
+                    viewModel.selectedFilter = .active
                 }
             }
 
@@ -1834,10 +1814,10 @@ public struct QueueSummaryHeader: View {
                 label: "Paused",
                 count: counts.paused,
                 color: DownloadFilter.paused.accentColor,
-                isSelected: viewModel?.selectedFilter == .paused
+                isSelected: viewModel.selectedFilter == .paused
             ) {
                 withAnimation(.easeInOut(duration: 0.15)) {
-                    viewModel?.selectedFilter = .paused
+                    viewModel.selectedFilter = .paused
                 }
             }
 
@@ -1845,10 +1825,10 @@ public struct QueueSummaryHeader: View {
                 label: "Completed",
                 count: counts.completed,
                 color: DownloadFilter.completed.accentColor,
-                isSelected: viewModel?.selectedFilter == .completed
+                isSelected: viewModel.selectedFilter == .completed
             ) {
                 withAnimation(.easeInOut(duration: 0.15)) {
-                    viewModel?.selectedFilter = .completed
+                    viewModel.selectedFilter = .completed
                 }
             }
 
@@ -1856,10 +1836,10 @@ public struct QueueSummaryHeader: View {
                 label: "Failed",
                 count: counts.failed,
                 color: DownloadFilter.failed.accentColor,
-                isSelected: viewModel?.selectedFilter == .failed
+                isSelected: viewModel.selectedFilter == .failed
             ) {
                 withAnimation(.easeInOut(duration: 0.15)) {
-                    viewModel?.selectedFilter = .failed
+                    viewModel.selectedFilter = .failed
                 }
             }
         }
