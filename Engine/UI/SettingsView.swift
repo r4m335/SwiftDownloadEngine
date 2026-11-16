@@ -117,7 +117,11 @@ public struct SettingsView: View {
                     }
                 }
             }
+            #if os(iOS)
             .listStyle(InsetGroupedListStyle())
+            #else
+            .listStyle(PlainListStyle())
+            #endif
             .navigationTitle("Settings")
         }
     }
