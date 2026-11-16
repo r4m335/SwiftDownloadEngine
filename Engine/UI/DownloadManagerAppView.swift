@@ -1,11 +1,9 @@
 #if canImport(SwiftUI)
 import SwiftUI
 
-/// Main application entry container coordinating Downloads, Add Download, and Settings screens.
+/// Main application entry container coordinating Downloads, Browser, Media, and Settings screens.
 public struct DownloadManagerAppView: View {
     @StateObject public var viewModel: DownloadManagerViewModel
-    @State private var selectedTab = 0
-    @State private var addURLPrefill = ""
 
     public init(engine: DownloadEngine, downloadsDirectory: URL? = nil) {
         let vm = DownloadManagerViewModel(
@@ -31,17 +29,20 @@ public struct DownloadManagerAppView: View {
 
     public var body: some View {
         TabView(selection: $viewModel.selectedTab) {
+            // Tab 0: Downloads
             DownloadsView(viewModel: viewModel)
                 .tabItem {
                     Label("Downloads", systemImage: "arrow.down.circle.fill")
                 }
                 .tag(0)
 
+            // Tab 1: Browser
             BrowserView(viewModel: viewModel, onDownloadInitiated: {
                 viewModel.selectedTab = 0
             }, onOpenAddDownload: { url in
-                addURLPrefill = url.absoluteString
-                viewModel.selectedTab = 2
+                viewModel.addDownloadPrefilledURL = url.absoluteString
+                viewModel.showAddDownloadSheet = true
+                viewModel.selectedTab = 0
             }, onOpenDownloads: {
                 viewModel.selectedTab = 0
             })
@@ -50,17 +51,17 @@ public struct DownloadManagerAppView: View {
                 }
                 .tag(1)
 
-            AddDownloadView(viewModel: viewModel, onDownloadAdded: {
-                viewModel.selectedTab = 0
-            }, onOpenInBrowser: { url in
-                addURLPrefill = url.absoluteString
-                viewModel.selectedTab = 1
-            }, prefilledURL: addURLPrefill)
+            // Tab 2: Media (Moved from Downloads page)
+            LIDPlayerLibraryView(
+                baseDirectory: viewModel.downloadsDirectoryURL,
+                knownTransfers: viewModel.unifiedTransfers
+            )
                 .tabItem {
-                    Label("Add", systemImage: "plus.circle")
+                    Label("Media", systemImage: "film.stack")
                 }
                 .tag(2)
 
+            // Tab 3: Settings
             SettingsView(viewModel: viewModel)
                 .tabItem {
                     Label("Settings", systemImage: "gearshape.fill")

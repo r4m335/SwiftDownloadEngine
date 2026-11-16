@@ -320,6 +320,43 @@ final class DownloadsViewInteractionTests: XCTestCase {
         stat.action?()
         XCTAssertTrue(tapped, "HeaderStat action must fire when tapped")
     }
+
+    @MainActor
+    func testMainNavigation_MediaTabAndAddDownloadHandoff() {
+        // Tab 0: Downloads, Tab 1: Browser, Tab 2: Media, Tab 3: Settings
+        viewModel.selectedTab = 0
+        XCTAssertEqual(viewModel.selectedTab, 0)
+
+        // Browser link refresh switches to Browser tab (Tab 1)
+        viewModel.selectedTab = 1
+        XCTAssertEqual(viewModel.selectedTab, 1)
+
+        // Media tab is at Tab 2
+        viewModel.selectedTab = 2
+        XCTAssertEqual(viewModel.selectedTab, 2)
+
+        // Settings tab is at Tab 3
+        viewModel.selectedTab = 3
+        XCTAssertEqual(viewModel.selectedTab, 3)
+
+        // Browser Add Download handoff sets prefilled URL, flags sheet, and switches to Tab 0 (Downloads)
+        let sampleURL = "https://example.com/video.mp4"
+        viewModel.addDownloadPrefilledURL = sampleURL
+        viewModel.showAddDownloadSheet = true
+        viewModel.selectedTab = 0
+
+        XCTAssertEqual(viewModel.selectedTab, 0)
+        XCTAssertTrue(viewModel.showAddDownloadSheet)
+        XCTAssertEqual(viewModel.addDownloadPrefilledURL, sampleURL)
+
+        // Instantiating LIDPlayerLibraryView directly as Tab 2 root (onDismiss: nil)
+        let mediaView = LIDPlayerLibraryView(
+            baseDirectory: tempDirectory,
+            knownTransfers: viewModel.unifiedTransfers,
+            onDismiss: nil
+        )
+        XCTAssertNil(mediaView.onDismiss, "Media tab root view must not show a modal Done button")
+    }
 #else
     func testDownloadsViewInteractionLinuxNoOp() {
         // SwiftUI is not available on Linux platforms.

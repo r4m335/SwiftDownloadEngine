@@ -400,6 +400,8 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
     @Published public var userNotificationMessage: String? = nil
     @Published public var isObserving: Bool = false
     @Published public var selectedTab: Int = 0
+    @Published public var showAddDownloadSheet: Bool = false
+    @Published public var addDownloadPrefilledURL: String? = nil
 
     // Recovery & Link Refresh Management
     public let recoveryManager: DownloadRecoveryManager

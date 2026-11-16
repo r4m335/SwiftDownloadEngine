@@ -384,12 +384,21 @@ public struct DownloadsView: View {
                 : "Downloads")
             .searchable(text: $viewModel.filterText, prompt: "Search downloads...")
             )
-            .sheet(item: $activeSheet) { sheet in
+            .sheet(item: $activeSheet, onDismiss: {
+                viewModel.showAddDownloadSheet = false
+                viewModel.addDownloadPrefilledURL = nil
+            }) { sheet in
                 switch sheet {
                 case .addDownload:
-                    AddDownloadView(viewModel: viewModel, onDownloadAdded: {
-                        activeSheet = nil
-                    })
+                    AddDownloadView(
+                        viewModel: viewModel,
+                        onDownloadAdded: {
+                            activeSheet = nil
+                            viewModel.showAddDownloadSheet = false
+                            viewModel.addDownloadPrefilledURL = nil
+                        },
+                        prefilledURL: viewModel.addDownloadPrefilledURL
+                    )
                 case .saveToFiles(let url):
                     #if canImport(UIKit)
                     DocumentExporterSheet(url: url)
@@ -428,6 +437,11 @@ public struct DownloadsView: View {
                             activeSheet = nil
                         }
                     )
+                }
+            }
+            .onChange(of: viewModel.showAddDownloadSheet) { show in
+                if show {
+                    activeSheet = .addDownload
                 }
             }
             .alert(item: $activeAlert) { alert in
@@ -620,24 +634,9 @@ public struct DownloadsView: View {
 
     @ViewBuilder
     private var normalToolbarContent: some View {
-        Button {
-            activeSheet = .mediaLibrary
-        } label: {
-            Image(systemName: "film.stack")
-        }
-        .accessibilityLabel("Media Library")
-
         sortOrderMenu
 
         Menu {
-            Button {
-                activeSheet = .mediaLibrary
-            } label: {
-                Label("Media Library", systemImage: "film.stack")
-            }
-
-            Divider()
-
             Button {
                 Task { @MainActor in await viewModel.pauseAll() }
             } label: {
@@ -670,6 +669,8 @@ public struct DownloadsView: View {
         }
 
         Button {
+            viewModel.addDownloadPrefilledURL = nil
+            viewModel.showAddDownloadSheet = true
             activeSheet = .addDownload
         } label: {
             Image(systemName: "plus.circle.fill")
