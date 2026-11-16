@@ -60,6 +60,10 @@ public struct LIDPlayerSettings: Codable, Sendable, Equatable {
 
     // MARK: - Subtitles & Captions
     public var autoLoadSubtitles: Bool
+    public var autoLoadSiblingSubtitles: Bool {
+        get { autoLoadSubtitles }
+        set { autoLoadSubtitles = newValue }
+    }
     public var rememberSubtitleTrack: Bool
     public var defaultSubtitleLanguage: String
     public var subtitleFontSize: Double

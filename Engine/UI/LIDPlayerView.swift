@@ -473,7 +473,7 @@ public struct LIDPlayerView: View {
             engine.setPlaybackRate(playerSettings.effectivePlaybackSpeed)
             engine.load(source: source, autoPlay: true, resumeFromHistory: playerSettings.resumePlaybackPosition, sessionId: sessionId)
             if case .localFile(let localURL, _) = source {
-                if playerSettings.autoLoadSiblingSubtitles {
+                if playerSettings.autoLoadSubtitles {
                     autoDiscoverSiblingSubtitles(for: localURL)
                 }
             }
