@@ -7,6 +7,7 @@ import AVFoundation
 #endif
 @testable import DM_Reverse_engineering
 
+@MainActor
 final class PlayerAndBrowserSettingsIntegrationTests: XCTestCase {
 
     // MARK: - 1. Playback Speed & Memory
@@ -35,7 +36,7 @@ final class PlayerAndBrowserSettingsIntegrationTests: XCTestCase {
 
     func testPlaybackSpeed_TemporaryBoostDoesNotOverwriteRememberedSpeed() async {
         let engine = LIDPlaybackEngine.shared
-        engine.playbackRate = 1.25
+        engine.setPlaybackRate(1.25)
 
         // Start temporary 2x boost
         engine.startTemporarySpeedBoost(rate: 2.0)
@@ -68,7 +69,6 @@ final class PlayerAndBrowserSettingsIntegrationTests: XCTestCase {
         XCTAssertTrue(LIDTrackManager.matchesLanguage(languageCode: nil, displayName: "", preferredLanguage: "Any"))
     }
 
-    @MainActor
     func testTrackManager_ApplyPreferences() {
         let manager = LIDTrackManager()
 
@@ -90,7 +90,6 @@ final class PlayerAndBrowserSettingsIntegrationTests: XCTestCase {
         XCTAssertEqual(manager.selectedAudioTrack?.id, "ja_audio")
     }
 
-    @MainActor
     func testTrackManager_HistoryTakesPrecedenceWhenRememberActive() {
         let manager = LIDTrackManager()
 
@@ -178,7 +177,6 @@ final class PlayerAndBrowserSettingsIntegrationTests: XCTestCase {
     // MARK: - 4. Orientation Manager
 
     #if canImport(UIKit)
-    @MainActor
     func testOrientationManager_ApplyPreference() {
         let orientationManager = LIDOrientationManager.shared
 
@@ -213,7 +211,6 @@ final class PlayerAndBrowserSettingsIntegrationTests: XCTestCase {
 
     // MARK: - 6. Browser Settings Runtime Synchronization
 
-    @MainActor
     func testBrowserViewModel_ReloadSettingsUpdatesRuntimeState() {
         let vm = BrowserViewModel()
 
