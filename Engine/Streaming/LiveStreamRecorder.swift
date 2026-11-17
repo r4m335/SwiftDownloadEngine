@@ -402,50 +402,55 @@ public final class LiveStreamRecorder: ObservableObject {
         }
 
         var pollInterval = 4.0
-        if let minUpdate = inspection.manifest.minimumUpdatePeriod, minUpdate > 0 {
-            pollInterval = minUpdate
+        if let minBuffer = inspection.manifest.minBufferTime, minBuffer > 0 {
+            pollInterval = minBuffer
         }
 
-        // If SegmentTimeline is present, extract published segments
-        if let timeline = rep.segmentTimeline ?? inspection.manifest.periods.first?.adaptationSets.first(where: { $0.representations.contains(where: { $0.id == rep.id }) })?.segmentTimeline {
-            var runningTime = timeline.originTime
-            for entry in timeline.entries {
-                let repeatCount = entry.repeatCount ?? 0
+        // If SegmentTemplate is present with a timeline, extract published segments
+        let template = rep.segmentTemplate ?? inspection.manifest.periods.first?.adaptationSets.first(where: { $0.representations.contains(where: { $0.id == rep.id }) })?.segmentTemplate
+
+        if let template = template, !template.timeline.isEmpty, let mediaPattern = template.media {
+            var runningTime: Int64 = template.presentationTimeOffset
+            let timescale = template.timescale > 0 ? template.timescale : 1000
+
+            for entry in template.timeline {
+                if let s = entry.start {
+                    runningTime = s
+                }
+                let repeatCount = entry.repeatCount
                 for r in 0...repeatCount {
                     let segTime = runningTime + Int64(r) * entry.duration
                     let key = "\(rep.id ?? "rep")_\(segTime)"
                     if !seenSegmentKeys.contains(key) {
                         seenSegmentKeys.insert(key)
-                        let segDuration = Double(entry.duration) / Double(rep.timescale ?? 1000)
+                        let segDuration = Double(entry.duration) / Double(timescale)
 
-                        if let template = rep.segmentTemplate {
-                            let constructed = template
-                                .replacingOccurrences(of: "$RepresentationID$", with: rep.id ?? "1")
-                                .replacingOccurrences(of: "$Time$", with: String(segTime))
-                            if let segURL = URL(string: constructed, relativeTo: rep.baseURL ?? request.manifestURL) {
-                                let segOrder = recordedSegments.count
-                                let localURL = scratchDir.appendingPathComponent("seg_\(String(format: "%06d", segOrder)).m4s")
+                        let constructed = mediaPattern
+                            .replacingOccurrences(of: "$RepresentationID$", with: rep.id ?? "1")
+                            .replacingOccurrences(of: "$Time$", with: String(segTime))
+                        if let segURL = URL(string: constructed, relativeTo: rep.baseURL ?? request.manifestURL) {
+                            let segOrder = recordedSegments.count
+                            let localURL = scratchDir.appendingPathComponent("seg_\(String(format: "%06d", segOrder)).m4s")
 
-                                if let bytes = try? await downloadSegmentToDisk(url: segURL, destination: localURL, requestContext: request.requestContext) {
-                                    let recorded = LiveRecordedSegment(
-                                        sequenceNumber: Int64(segOrder),
-                                        uri: segURL,
-                                        duration: segDuration,
-                                        localFileURL: localURL,
-                                        byteCount: bytes
+                            if let bytes = try? await downloadSegmentToDisk(url: segURL, destination: localURL, requestContext: request.requestContext) {
+                                let recorded = LiveRecordedSegment(
+                                    sequenceNumber: Int64(segOrder),
+                                    uri: segURL,
+                                    duration: segDuration,
+                                    localFileURL: localURL,
+                                    byteCount: bytes
+                                )
+                                self.recordedSegments.append(recorded)
+                                self.recordedDurationSeconds += segDuration
+                                self.recordedSegmentCount += 1
+                                self.bytesWritten += bytes
+
+                                if !isPaused {
+                                    self.state = .recording(
+                                        duration: self.recordedDurationSeconds,
+                                        segmentCount: self.recordedSegmentCount,
+                                        bytesWritten: self.bytesWritten
                                     )
-                                    self.recordedSegments.append(recorded)
-                                    self.recordedDurationSeconds += segDuration
-                                    self.recordedSegmentCount += 1
-                                    self.bytesWritten += bytes
-
-                                    if !isPaused {
-                                        self.state = .recording(
-                                            duration: self.recordedDurationSeconds,
-                                            segmentCount: self.recordedSegmentCount,
-                                            bytesWritten: self.bytesWritten
-                                        )
-                                    }
                                 }
                             }
                         }
@@ -482,7 +487,7 @@ public final class LiveStreamRecorder: ObservableObject {
 
         // 1. Direct packet-safe ordered concatenation
         do {
-            try FileManager.default.createFile(atPath: stagingOutputURL.path, contents: nil)
+            FileManager.default.createFile(atPath: stagingOutputURL.path, contents: nil)
             let outHandle = try FileHandle(forWritingTo: stagingOutputURL)
             defer { try? outHandle.close() }
 
@@ -516,7 +521,7 @@ public final class LiveStreamRecorder: ObservableObject {
         self.bytesWritten = finalBytes
 
         // 3. Register with LIDLibraryStore
-        LIDLibraryStore.shared.scanLibrary(directory: destDir)
+        _ = await LIDLibraryStore.shared.scanLibrary(in: destDir)
 
         // 4. Clean up scratch directory
         try? FileManager.default.removeItem(at: scratchDir)
