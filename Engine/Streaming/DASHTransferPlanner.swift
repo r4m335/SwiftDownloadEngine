@@ -642,8 +642,10 @@ public enum DASHTransferPlanner {
             let sidxOffset: Int64
             if let rangeStr = base.indexRange, let parsedRange = try? parseRange(rangeStr) {
                 sidxOffset = parsedRange.start
+            } else if let end = initByteRange?.end {
+                sidxOffset = end + 1
             } else {
-                sidxOffset = initByteRange?.end.map { $0 + 1 } ?? 0
+                sidxOffset = 0
             }
             let sidxSegments = try DASHSidxParser.parse(data: sidxData, sidxOffset: sidxOffset)
             guard !sidxSegments.isEmpty else { throw DASHVODTransferPlanError.noMediaSegments }
