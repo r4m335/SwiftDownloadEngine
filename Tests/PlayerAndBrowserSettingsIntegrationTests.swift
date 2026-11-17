@@ -75,13 +75,12 @@ final class PlayerAndBrowserSettingsIntegrationTests: XCTestCase {
     func testTrackManager_ApplyPreferences() {
         let manager = LIDTrackManager()
 
-        let trackEN = LIDMediaTrack(id: "en_sub", type: .subtitle, title: "English Subtitles", language: "en")
-        let trackFR = LIDMediaTrack(id: "fr_sub", type: .subtitle, title: "French Subtitles", language: "fr")
-        manager.availableSubtitleTracks = [trackEN, trackFR]
+        let trackEN = LIDSubtitleTrack(id: "en_sub", displayName: "English Subtitles", languageCode: "en")
+        let trackFR = LIDSubtitleTrack(id: "fr_sub", displayName: "French Subtitles", languageCode: "fr")
+        let audioEN = LIDAudioTrack(id: "en_audio", displayName: "English 5.1", languageCode: "en")
+        let audioJA = LIDAudioTrack(id: "ja_audio", displayName: "Japanese Stereo", languageCode: "ja")
 
-        let audioEN = LIDMediaTrack(id: "en_audio", type: .audio, title: "English 5.1", language: "en")
-        let audioJA = LIDMediaTrack(id: "ja_audio", type: .audio, title: "Japanese Stereo", language: "ja")
-        manager.availableAudioTracks = [audioEN, audioJA]
+        manager.updateAvailableTracks(audioTracks: [audioEN, audioJA], subtitleTracks: [trackEN, trackFR])
 
         var settings = LIDPlayerSettings.default
         settings.defaultSubtitleLanguage = "French"
@@ -91,20 +90,19 @@ final class PlayerAndBrowserSettingsIntegrationTests: XCTestCase {
 
         // Should match preferences
         XCTAssertEqual(manager.selectedSubtitleTrack.id, "fr_sub")
-        XCTAssertEqual(manager.selectedAudioTrack.id, "ja_audio")
+        XCTAssertEqual(manager.selectedAudioTrack?.id, "ja_audio")
     }
 
     @MainActor
     func testTrackManager_HistoryTakesPrecedenceWhenRememberActive() {
         let manager = LIDTrackManager()
 
-        let trackEN = LIDMediaTrack(id: "en_sub", type: .subtitle, title: "English", language: "en")
-        let trackFR = LIDMediaTrack(id: "fr_sub", type: .subtitle, title: "French", language: "fr")
-        manager.availableSubtitleTracks = [trackEN, trackFR]
+        let trackEN = LIDSubtitleTrack(id: "en_sub", displayName: "English", languageCode: "en")
+        let trackFR = LIDSubtitleTrack(id: "fr_sub", displayName: "French", languageCode: "fr")
+        let audioEN = LIDAudioTrack(id: "en_audio", displayName: "English", languageCode: "en")
+        let audioJA = LIDAudioTrack(id: "ja_audio", displayName: "Japanese", languageCode: "ja")
 
-        let audioEN = LIDMediaTrack(id: "en_audio", type: .audio, title: "English", language: "en")
-        let audioJA = LIDMediaTrack(id: "ja_audio", type: .audio, title: "Japanese", language: "ja")
-        manager.availableAudioTracks = [audioEN, audioJA]
+        manager.updateAvailableTracks(audioTracks: [audioEN, audioJA], subtitleTracks: [trackEN, trackFR])
 
         var settings = LIDPlayerSettings.default
         settings.rememberSubtitleTrack = true
@@ -115,13 +113,11 @@ final class PlayerAndBrowserSettingsIntegrationTests: XCTestCase {
         // History recorded English for both
         let history = LIDPlaybackRecord(
             mediaIdentifier: "test_media",
+            title: "Test Media",
             lastPositionSeconds: 120.0,
             durationSeconds: 300.0,
             lastPlayedAt: Date(),
-            playbackRate: 1.0,
-            aspectRatio: .original,
-            subtitleDelaySeconds: 0.0,
-            audioDelaySeconds: 0.0,
+            isCompleted: false,
             selectedAudioTrackId: "en_audio",
             selectedSubtitleTrackId: "en_sub"
         )
@@ -130,7 +126,7 @@ final class PlayerAndBrowserSettingsIntegrationTests: XCTestCase {
 
         // History should win over defaults when remember is true
         XCTAssertEqual(manager.selectedSubtitleTrack.id, "en_sub")
-        XCTAssertEqual(manager.selectedAudioTrack.id, "en_audio")
+        XCTAssertEqual(manager.selectedAudioTrack?.id, "en_audio")
 
         // If remember is false, defaults should win
         settings.rememberSubtitleTrack = false
@@ -138,7 +134,7 @@ final class PlayerAndBrowserSettingsIntegrationTests: XCTestCase {
         manager.applyPreferences(settings: settings, historyRecord: history)
 
         XCTAssertEqual(manager.selectedSubtitleTrack.id, "fr_sub")
-        XCTAssertEqual(manager.selectedAudioTrack.id, "ja_audio")
+        XCTAssertEqual(manager.selectedAudioTrack?.id, "ja_audio")
     }
 
     func testPlaybackRecord_BackwardCompatibleDecoding() throws {
@@ -146,13 +142,11 @@ final class PlayerAndBrowserSettingsIntegrationTests: XCTestCase {
         let legacyJSON = """
         {
             "mediaIdentifier": "legacy_test",
+            "title": "Legacy Test",
             "lastPositionSeconds": 45.0,
             "durationSeconds": 100.0,
             "lastPlayedAt": 1700000000.0,
-            "playbackRate": 1.0,
-            "aspectRatio": "original",
-            "subtitleDelaySeconds": 0.0,
-            "audioDelaySeconds": 0.0
+            "isCompleted": false
         }
         """.data(using: .utf8)!
 
