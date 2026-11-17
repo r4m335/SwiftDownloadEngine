@@ -169,9 +169,9 @@ final class PlayerAndBrowserSettingsIntegrationTests: XCTestCase {
         XCTAssertEqual(settings.defaultPlaybackSpeed, 2.0)
         XCTAssertEqual(settings.subtitleFontSize, 32.0)
         XCTAssertEqual(settings.subtitleBackgroundOpacity, 1.0)
-        XCTAssertEqual(settings.seekIntervalSeconds, 30) // snapped to closest valid (30)
-        XCTAssertEqual(settings.autoHideControlsSeconds, 8) // snapped to closest valid (8)
-        XCTAssertEqual(settings.subtitleDelayStepMs, 500) // snapped to closest valid (500)
+        XCTAssertEqual(settings.seekIntervalSeconds, 10) // reset to safe default fallback (10)
+        XCTAssertEqual(settings.autoHideControlsSeconds, 4) // reset to safe default fallback (4)
+        XCTAssertEqual(settings.subtitleDelayStepMs, 100) // reset to safe default fallback (100)
     }
 
     // MARK: - 4. Orientation Manager
