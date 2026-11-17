@@ -87,13 +87,16 @@ public enum SearchURLValidationError: LocalizedError, Equatable, Sendable {
 public struct SearchURLBuilder: Sendable {
     /// Validates that a user-provided template conforms to HTTPS, contains a valid host, and has exactly one `%s`.
     public static func validateTemplate(_ template: String) -> Result<Void, SearchURLValidationError> {
+        if template.rangeOfCharacter(from: .newlines) != nil {
+            return .failure(.invalidCharacters)
+        }
+
         let trimmed = template.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
             return .failure(.emptyTemplate)
         }
 
-        if trimmed.rangeOfCharacter(from: .controlCharacters) != nil ||
-           trimmed.rangeOfCharacter(from: .newlines) != nil {
+        if trimmed.rangeOfCharacter(from: .controlCharacters) != nil {
             return .failure(.invalidCharacters)
         }
 

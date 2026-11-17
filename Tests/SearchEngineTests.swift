@@ -94,6 +94,7 @@ final class SearchEngineTests: XCTestCase {
 
         // Control characters or newlines
         assertValidationFailure("https://example.com/search?q=%s\n", expected: .invalidCharacters)
+        assertValidationFailure("https://example.com/\nsearch?q=%s", expected: .invalidCharacters)
         assertValidationFailure("https://example.com/search?q=%s\u{0000}", expected: .invalidCharacters)
     }
 
