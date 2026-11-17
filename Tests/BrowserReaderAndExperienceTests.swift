@@ -6,9 +6,9 @@ final class BrowserReaderAndExperienceTests: XCTestCase {
     // MARK: - 1. AppSettings Version 7 Migration & Reader Settings
 
     func testAppSettingsVersion7MigrationAndReaderPreferences() throws {
-        XCTAssertEqual(AppSettings.currentVersion, 7)
+        XCTAssertGreaterThanOrEqual(AppSettings.currentVersion, 7)
         let defaultSettings = AppSettings.default
-        XCTAssertEqual(defaultSettings.version, 7)
+        XCTAssertEqual(defaultSettings.version, AppSettings.currentVersion)
         XCTAssertEqual(defaultSettings.browserHomepage, "https://duckduckgo.com")
         XCTAssertTrue(defaultSettings.restoreTabsOnLaunch)
         XCTAssertEqual(defaultSettings.readerTheme, BrowserReaderTheme.light)

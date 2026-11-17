@@ -23,6 +23,123 @@ public enum BrowserSearchEngine: String, CaseIterable, Identifiable, Codable, Se
             return "https://search.brave.com/search?q="
         }
     }
+
+    /// Complete URL template containing the `%s` search query placeholder.
+    public var urlTemplate: String {
+        queryPrefix + "%s"
+    }
+}
+
+/// User-defined custom search engine.
+public struct CustomSearchEngine: Identifiable, Codable, Equatable, Hashable, Sendable {
+    public let id: String
+    public var name: String
+    public var urlTemplate: String
+    public var searchDescription: String?
+
+    public init(
+        id: String = UUID().uuidString,
+        name: String,
+        urlTemplate: String,
+        searchDescription: String? = nil
+    ) {
+        self.id = id
+        self.name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.urlTemplate = urlTemplate.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.searchDescription = searchDescription?.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+}
+
+/// Validation errors for user-supplied search URL templates.
+public enum SearchURLValidationError: LocalizedError, Equatable, Sendable {
+    case emptyName
+    case emptyTemplate
+    case missingHTTPS
+    case invalidHost
+    case missingPlaceholder
+    case multiplePlaceholders
+    case invalidCharacters
+    case malformedURL
+
+    public var errorDescription: String? {
+        switch self {
+        case .emptyName:
+            return "Engine name cannot be empty."
+        case .emptyTemplate:
+            return "Search URL template cannot be empty."
+        case .missingHTTPS:
+            return "Search URL template must use the secure https:// protocol."
+        case .invalidHost:
+            return "Search URL template must include a valid host domain."
+        case .missingPlaceholder:
+            return "Search URL template must include exactly one '%s' query placeholder."
+        case .multiplePlaceholders:
+            return "Search URL template cannot contain more than one '%s' placeholder."
+        case .invalidCharacters:
+            return "Search URL template contains invalid characters or unsafe schemes."
+        case .malformedURL:
+            return "Search URL template is not a valid URL format."
+        }
+    }
+}
+
+/// Validates search URL templates and constructs percent-encoded search query URLs.
+public struct SearchURLBuilder: Sendable {
+    /// Validates that a user-provided template conforms to HTTPS, contains a valid host, and has exactly one `%s`.
+    public static func validateTemplate(_ template: String) -> Result<Void, SearchURLValidationError> {
+        let trimmed = template.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            return .failure(.emptyTemplate)
+        }
+
+        if trimmed.rangeOfCharacter(from: .controlCharacters) != nil ||
+           trimmed.rangeOfCharacter(from: .newlines) != nil {
+            return .failure(.invalidCharacters)
+        }
+
+        let placeholder = "%s"
+        let components = trimmed.components(separatedBy: placeholder)
+        let count = components.count - 1
+        if count == 0 {
+            return .failure(.missingPlaceholder)
+        } else if count > 1 {
+            return .failure(.multiplePlaceholders)
+        }
+
+        // Test placeholder replacement with a dummy keyword to validate URL structure
+        let testString = trimmed.replacingOccurrences(of: "%s", with: "test_query")
+        guard let url = URL(string: testString) else {
+            return .failure(.malformedURL)
+        }
+
+        guard let scheme = url.scheme?.lowercased(), scheme == "https" else {
+            return .failure(.missingHTTPS)
+        }
+
+        guard let host = url.host, !host.isEmpty, host.contains(".") else {
+            return .failure(.invalidHost)
+        }
+
+        return .success(())
+    }
+
+    /// Safely substitutes the percent-encoded query into the `%s` template placeholder.
+    public static func buildURL(query: String, template: String) -> URL? {
+        let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedQuery.isEmpty else { return nil }
+
+        // Remove +, &, =, #, ?, / from allowed query characters so special characters in searches
+        // (e.g. "C++", "AT&T", "x=y", "#swift") are strictly percent-encoded.
+        var allowed = CharacterSet.urlQueryAllowed
+        allowed.remove(charactersIn: "+&=#/?")
+
+        guard let encodedQuery = trimmedQuery.addingPercentEncoding(withAllowedCharacters: allowed) else {
+            return nil
+        }
+
+        let fullURLString = template.replacingOccurrences(of: "%s", with: encodedQuery)
+        return URL(string: fullURLString)
+    }
 }
 
 /// Pure Swift URL parser, validator, and sanitizer for browser navigation and download interception.
@@ -42,15 +159,15 @@ public struct BrowserURLResolver {
         "file", "ftp", "javascript", "data", "blob", "vbscript"
     ]
 
-    /// Resolves an arbitrary user text input into a valid HTTP/HTTPS URL or search query URL.
+    /// Resolves an arbitrary user text input into a valid HTTP/HTTPS URL or search query URL using a URL template.
     ///
     /// - Parameters:
     ///   - input: The raw text entered by the user in the address bar.
-    ///   - searchEngine: The default search engine to construct queries with.
+    ///   - template: The search URL template containing a `%s` placeholder.
     /// - Returns: A validated URL, or `nil` if input is empty or specifies an unsafe scheme.
     public static func resolve(
         input: String,
-        searchEngine: BrowserSearchEngine = .duckDuckGo
+        template: String
     ) -> URL? {
         let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
@@ -80,7 +197,7 @@ public struct BrowserURLResolver {
         // Input does not have an http/https scheme.
         // If it contains spaces, it's definitely a search query.
         if trimmed.contains(" ") {
-            return makeSearchURL(for: trimmed, searchEngine: searchEngine)
+            return SearchURLBuilder.buildURL(query: trimmed, template: template)
         }
 
         // Check if it's localhost (e.g. localhost, localhost:8080, localhost/path)
@@ -97,7 +214,30 @@ public struct BrowserURLResolver {
         }
 
         // Fallback: search query
-        return makeSearchURL(for: trimmed, searchEngine: searchEngine)
+        return SearchURLBuilder.buildURL(query: trimmed, template: template)
+    }
+
+    /// Resolves user text input using a built-in search engine.
+    public static func resolve(
+        input: String,
+        searchEngine: BrowserSearchEngine = .duckDuckGo
+    ) -> URL? {
+        return resolve(input: input, template: searchEngine.urlTemplate)
+    }
+
+    /// Resolves user text input against either a custom or built-in search engine ID.
+    public static func resolve(
+        input: String,
+        engineID: String,
+        customEngines: [CustomSearchEngine] = []
+    ) -> URL? {
+        if let custom = customEngines.first(where: { $0.id == engineID }) {
+            return resolve(input: input, template: custom.urlTemplate)
+        }
+        if let builtIn = BrowserSearchEngine(rawValue: engineID) {
+            return resolve(input: input, template: builtIn.urlTemplate)
+        }
+        return resolve(input: input, template: BrowserSearchEngine.duckDuckGo.urlTemplate)
     }
 
     /// Verifies if a URL is permitted for normal in-app web navigation.
@@ -225,9 +365,6 @@ public struct BrowserURLResolver {
     }
 
     private static func makeSearchURL(for query: String, searchEngine: BrowserSearchEngine) -> URL? {
-        guard let encoded = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) else {
-            return nil
-        }
-        return URL(string: searchEngine.queryPrefix + encoded)
+        SearchURLBuilder.buildURL(query: query, template: searchEngine.urlTemplate)
     }
 }

@@ -27,6 +27,9 @@ final class AppSettingsTests: XCTestCase {
         XCTAssertEqual(settings.customCategoryFolders, [:])
         XCTAssertNil(settings.defaultDownloadDirectoryBookmark)
         XCTAssertEqual(settings.downloadSortOrder, .dateAddedDesc)
+        XCTAssertEqual(settings.browserSearchEngine, .duckDuckGo)
+        XCTAssertEqual(settings.activeSearchEngineID, BrowserSearchEngine.duckDuckGo.rawValue)
+        XCTAssertEqual(settings.customSearchEngines, [])
     }
 
     func testAppSettings_JSONRoundTrip() throws {
@@ -94,6 +97,9 @@ final class AppSettingsTests: XCTestCase {
         XCTAssertEqual(decoded.customCategoryFolders, [:])
         XCTAssertNil(decoded.defaultDownloadDirectoryBookmark)
         XCTAssertEqual(decoded.downloadSortOrder, .dateAddedDesc) // Safe fallback default
+        XCTAssertEqual(decoded.browserSearchEngine, .duckDuckGo)
+        XCTAssertEqual(decoded.activeSearchEngineID, BrowserSearchEngine.duckDuckGo.rawValue)
+        XCTAssertEqual(decoded.customSearchEngines, [])
     }
 
     func testAppSettings_MappingToEngineConfiguration() {

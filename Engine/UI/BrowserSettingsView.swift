@@ -22,6 +22,8 @@ public struct BrowserSettingsView: View {
     @State private var cookiePolicy: BrowserCookiePolicy = .blockThirdParty
     @State private var isPopupBlockerEnabled: Bool = true
     @State private var selectedSearchEngine: BrowserSearchEngine = .duckDuckGo
+    @State private var activeSearchEngineID: String = BrowserSearchEngine.duckDuckGo.rawValue
+    @State private var customSearchEngines: [CustomSearchEngine] = []
     @State private var isShowingClearDataSheet: Bool = false
 
     // Browser Navigation & Reader Experience
@@ -43,12 +45,34 @@ public struct BrowserSettingsView: View {
             // Section 1: Browser Navigation Experience
             Section(
                 header: Text("Browser & Navigation Experience"),
-                footer: Text("Configure search, homepage, tab restoration, and Safari-style Reader Mode appearance.")
+                footer: Text("Configure search, custom search engines, homepage, tab restoration, and Safari-style Reader Mode appearance.")
             ) {
-                Picker("Default Search Engine", selection: $selectedSearchEngine) {
-                    ForEach(BrowserSearchEngine.allCases) { engine in
-                        Text(engine.displayName).tag(engine)
+                Picker("Default Search Engine", selection: $activeSearchEngineID) {
+                    Section("Built-in") {
+                        ForEach(BrowserSearchEngine.allCases) { engine in
+                            Text(engine.displayName).tag(engine.rawValue)
+                        }
                     }
+                    if !customSearchEngines.isEmpty {
+                        Section("Custom") {
+                            ForEach(customSearchEngines) { custom in
+                                Text(custom.name).tag(custom.id)
+                            }
+                        }
+                    }
+                }
+                .onChange(of: activeSearchEngineID) { newID in
+                    if let builtIn = BrowserSearchEngine(rawValue: newID) {
+                        selectedSearchEngine = builtIn
+                    }
+                }
+
+                NavigationLink {
+                    SearchEngineManagementView {
+                        loadCurrentSettings()
+                    }
+                } label: {
+                    Label("Manage Search Engines...", systemImage: "magnifyingglass.circle")
                 }
 
                 HStack {
@@ -186,6 +210,8 @@ public struct BrowserSettingsView: View {
         self.cookiePolicy = settings.cookiePolicy
         self.isPopupBlockerEnabled = settings.isPopupBlockerEnabled
         self.selectedSearchEngine = settings.browserSearchEngine
+        self.activeSearchEngineID = settings.activeSearchEngineID
+        self.customSearchEngines = settings.customSearchEngines
         self.browserHomepage = settings.browserHomepage
         self.restoreTabsOnLaunch = settings.restoreTabsOnLaunch
         self.readerTheme = settings.readerTheme
@@ -200,7 +226,13 @@ public struct BrowserSettingsView: View {
         updated.isAnnoyanceBlockerEnabled = isAnnoyanceBlockerEnabled
         updated.cookiePolicy = cookiePolicy
         updated.isPopupBlockerEnabled = isPopupBlockerEnabled
-        updated.browserSearchEngine = selectedSearchEngine
+        updated.activeSearchEngineID = activeSearchEngineID
+        if let builtIn = BrowserSearchEngine(rawValue: activeSearchEngineID) {
+            updated.browserSearchEngine = builtIn
+        } else {
+            updated.browserSearchEngine = selectedSearchEngine
+        }
+        updated.customSearchEngines = customSearchEngines
         let cleanHomepage = browserHomepage.trimmingCharacters(in: .whitespacesAndNewlines)
         updated.browserHomepage = cleanHomepage.isEmpty ? "https://duckduckgo.com" : cleanHomepage
         updated.restoreTabsOnLaunch = restoreTabsOnLaunch

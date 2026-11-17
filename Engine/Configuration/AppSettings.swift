@@ -85,7 +85,7 @@ public enum BrowserReaderFontFamily: String, CaseIterable, Identifiable, Codable
 /// Codable user-facing preferences stored in UserDefaults (@AppStorage).
 /// Features a `version` field for seamless migrations across app updates.
 public struct AppSettings: Codable, Sendable, Equatable {
-    public static let currentVersion: Int = 7
+    public static let currentVersion: Int = 8
     public static let userDefaultsKey = "com.r4m335.SwiftDownloadEngine.AppSettings"
 
     public var version: Int
@@ -121,8 +121,10 @@ public struct AppSettings: Codable, Sendable, Equatable {
     // Interactive Download Sorting (Phase 4 Milestone 4.4)
     public var downloadSortOrder: DownloadSortOrder
 
-    // Browser Search Engine & Navigation (Workstream B Milestone B.1)
+    // Browser Search Engine & Navigation (Workstream B Milestone B.1 & Custom Search Engines)
     public var browserSearchEngine: BrowserSearchEngine
+    public var customSearchEngines: [CustomSearchEngine]
+    public var activeSearchEngineID: String
 
     // Browser Navigation & Reader Experience (Workstream B Milestone B.3)
     public var browserHomepage: String
@@ -159,6 +161,8 @@ public struct AppSettings: Codable, Sendable, Equatable {
         defaultDownloadDirectoryBookmark: nil,
         downloadSortOrder: .dateAddedDesc,
         browserSearchEngine: .duckDuckGo,
+        customSearchEngines: [],
+        activeSearchEngineID: BrowserSearchEngine.duckDuckGo.rawValue,
         browserHomepage: "https://duckduckgo.com",
         restoreTabsOnLaunch: true,
         readerTheme: .light,
@@ -194,6 +198,8 @@ public struct AppSettings: Codable, Sendable, Equatable {
         defaultDownloadDirectoryBookmark: Data? = nil,
         downloadSortOrder: DownloadSortOrder = .dateAddedDesc,
         browserSearchEngine: BrowserSearchEngine = .duckDuckGo,
+        customSearchEngines: [CustomSearchEngine] = [],
+        activeSearchEngineID: String? = nil,
         browserHomepage: String = "https://duckduckgo.com",
         restoreTabsOnLaunch: Bool = true,
         readerTheme: BrowserReaderTheme = .light,
@@ -227,6 +233,8 @@ public struct AppSettings: Codable, Sendable, Equatable {
         self.defaultDownloadDirectoryBookmark = defaultDownloadDirectoryBookmark
         self.downloadSortOrder = downloadSortOrder
         self.browserSearchEngine = browserSearchEngine
+        self.customSearchEngines = customSearchEngines
+        self.activeSearchEngineID = activeSearchEngineID ?? browserSearchEngine.rawValue
         self.browserHomepage = browserHomepage
         self.restoreTabsOnLaunch = restoreTabsOnLaunch
         self.readerTheme = readerTheme
@@ -262,12 +270,37 @@ public struct AppSettings: Codable, Sendable, Equatable {
         self.customCategoryFolders = try container.decodeIfPresent([String: String].self, forKey: .customCategoryFolders) ?? [:]
         self.defaultDownloadDirectoryBookmark = try container.decodeIfPresent(Data.self, forKey: .defaultDownloadDirectoryBookmark)
         self.downloadSortOrder = try container.decodeIfPresent(DownloadSortOrder.self, forKey: .downloadSortOrder) ?? .dateAddedDesc
-        self.browserSearchEngine = try container.decodeIfPresent(BrowserSearchEngine.self, forKey: .browserSearchEngine) ?? .duckDuckGo
+        self.customSearchEngines = try container.decodeIfPresent([CustomSearchEngine].self, forKey: .customSearchEngines) ?? []
+        let legacySearchEngine = try container.decodeIfPresent(BrowserSearchEngine.self, forKey: .browserSearchEngine) ?? .duckDuckGo
+        self.browserSearchEngine = legacySearchEngine
+        self.activeSearchEngineID = try container.decodeIfPresent(String.self, forKey: .activeSearchEngineID) ?? legacySearchEngine.rawValue
         self.browserHomepage = try container.decodeIfPresent(String.self, forKey: .browserHomepage) ?? "https://duckduckgo.com"
         self.restoreTabsOnLaunch = try container.decodeIfPresent(Bool.self, forKey: .restoreTabsOnLaunch) ?? true
         self.readerTheme = try container.decodeIfPresent(BrowserReaderTheme.self, forKey: .readerTheme) ?? .light
         self.readerFontFamily = try container.decodeIfPresent(BrowserReaderFontFamily.self, forKey: .readerFontFamily) ?? .serif
         self.readerFontSize = try container.decodeIfPresent(Double.self, forKey: .readerFontSize) ?? 18.0
+    }
+
+    /// Resolves the URL template of the currently active search engine (built-in or custom).
+    public var effectiveActiveSearchTemplate: String {
+        if let custom = customSearchEngines.first(where: { $0.id == activeSearchEngineID }) {
+            return custom.urlTemplate
+        }
+        if let builtIn = BrowserSearchEngine(rawValue: activeSearchEngineID) {
+            return builtIn.urlTemplate
+        }
+        return browserSearchEngine.urlTemplate
+    }
+
+    /// Resolves the human-readable display name of the currently active search engine.
+    public var effectiveActiveSearchEngineName: String {
+        if let custom = customSearchEngines.first(where: { $0.id == activeSearchEngineID }) {
+            return custom.name
+        }
+        if let builtIn = BrowserSearchEngine(rawValue: activeSearchEngineID) {
+            return builtIn.displayName
+        }
+        return browserSearchEngine.displayName
     }
 
     /// Resolves the effective subfolder name for a category.

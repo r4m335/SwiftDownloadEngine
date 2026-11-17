@@ -37,6 +37,9 @@ public final class BrowserViewModel: NSObject, ObservableObject {
     @Published public var estimatedProgress: Double = 0.0
     @Published public var errorMessage: String? = nil
     @Published public var selectedSearchEngine: BrowserSearchEngine = .duckDuckGo
+    @Published public var activeSearchEngineID: String = BrowserSearchEngine.duckDuckGo.rawValue
+    @Published public var customSearchEngines: [CustomSearchEngine] = []
+    @Published public var isShowingSearchEngineManager: Bool = false
     @Published public private(set) var tabs: [BrowserTabState] = []
     @Published public private(set) var activeTabID: UUID?
     @Published public var isShowingTabSwitcher: Bool = false
@@ -275,6 +278,8 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         self.isPopupBlockerEnabled = initialSettings.isPopupBlockerEnabled
         self.adBlockerWhitelistedDomains = Set(initialSettings.adBlockerWhitelistedDomains)
         self.selectedSearchEngine = initialSettings.browserSearchEngine
+        self.activeSearchEngineID = initialSettings.activeSearchEngineID
+        self.customSearchEngines = initialSettings.customSearchEngines
         self.browserHomepage = initialSettings.browserHomepage
         self.restoreTabsOnLaunch = initialSettings.restoreTabsOnLaunch
         self.readerSettings = BrowserReaderSettings(
@@ -445,11 +450,41 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         isShowingBookmarksAndHistory = true
     }
 
-    public func setSearchEngine(_ engine: BrowserSearchEngine) {
-        self.selectedSearchEngine = engine
+    public func setSearchEngine(id: String) {
+        self.activeSearchEngineID = id
+        if let builtIn = BrowserSearchEngine(rawValue: id) {
+            self.selectedSearchEngine = builtIn
+        }
         var settings = AppSettings.load()
-        settings.browserSearchEngine = engine
+        settings.activeSearchEngineID = id
+        if let builtIn = BrowserSearchEngine(rawValue: id) {
+            settings.browserSearchEngine = builtIn
+        }
         settings.save()
+    }
+
+    public func setSearchEngine(_ engine: BrowserSearchEngine) {
+        setSearchEngine(id: engine.rawValue)
+    }
+
+    public var currentSearchEngineName: String {
+        if let custom = customSearchEngines.first(where: { $0.id == activeSearchEngineID }) {
+            return custom.name
+        }
+        if let builtIn = BrowserSearchEngine(rawValue: activeSearchEngineID) {
+            return builtIn.displayName
+        }
+        return selectedSearchEngine.displayName
+    }
+
+    public var currentSearchEngineTemplate: String {
+        if let custom = customSearchEngines.first(where: { $0.id == activeSearchEngineID }) {
+            return custom.urlTemplate
+        }
+        if let builtIn = BrowserSearchEngine(rawValue: activeSearchEngineID) {
+            return builtIn.urlTemplate
+        }
+        return selectedSearchEngine.urlTemplate
     }
 
     public func openDownloads() {
@@ -2231,6 +2266,8 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         self.isPopupBlockerEnabled = currentSettings.isPopupBlockerEnabled
         self.adBlockerWhitelistedDomains = Set(currentSettings.adBlockerWhitelistedDomains)
         self.selectedSearchEngine = currentSettings.browserSearchEngine
+        self.activeSearchEngineID = currentSettings.activeSearchEngineID
+        self.customSearchEngines = currentSettings.customSearchEngines
         self.browserHomepage = currentSettings.browserHomepage
         self.restoreTabsOnLaunch = currentSettings.restoreTabsOnLaunch
         self.readerSettings = BrowserReaderSettings(
@@ -2929,7 +2966,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
 
-        guard let url = BrowserURLResolver.resolve(input: trimmed, searchEngine: selectedSearchEngine) else {
+        guard let url = BrowserURLResolver.resolve(input: trimmed, template: currentSearchEngineTemplate) else {
             errorMessage = "Invalid or unsupported web address. Only HTTP and HTTPS are permitted."
             return
         }
@@ -3667,6 +3704,11 @@ public struct BrowserView: View {
         .sheet(isPresented: $viewModel.isShowingShareSheet) {
             BrowserShareSheet(items: viewModel.shareItems)
         }
+        .sheet(isPresented: $viewModel.isShowingSearchEngineManager) {
+            SearchEngineManagementView {
+                viewModel.reloadSettings()
+            }
+        }
         .sheet(isPresented: $isShowingDiagnosticLogs) {
             DiagnosticLogView(configuration: viewModel.activeEngineConfiguration)
         }
@@ -3920,9 +3962,13 @@ public struct BrowserView: View {
     // MARK: - Address Bar Header
 
     private var addressBarHeader: some View {
-        HStack(spacing: 8) {
-            // Address Bar Capsule
-            HStack(spacing: 6) {
+        VStack(spacing: 4) {
+            // Quick Search Engine Switcher
+            searchEngineQuickSwitcher
+
+            HStack(spacing: 8) {
+                // Address Bar Capsule
+                HStack(spacing: 6) {
                 // Shield Protection Button
                 Button {
                     viewModel.isShowingShieldSheet = true
@@ -4052,8 +4098,71 @@ public struct BrowserView: View {
                 .font(.body.weight(.semibold))
             }
         }
+        }
         .padding(.horizontal, 12)
-        .padding(.vertical, 8)
+        .padding(.top, 4)
+        .padding(.bottom, 8)
+    }
+
+    private var searchEngineQuickSwitcher: some View {
+        HStack {
+            Menu {
+                Section("Search Engines") {
+                    ForEach(BrowserSearchEngine.allCases) { engine in
+                        Button {
+                            viewModel.setSearchEngine(id: engine.rawValue)
+                        } label: {
+                            if viewModel.activeSearchEngineID == engine.rawValue {
+                                Label(engine.displayName, systemImage: "checkmark")
+                            } else {
+                                Text(engine.displayName)
+                            }
+                        }
+                    }
+                    ForEach(viewModel.customSearchEngines) { custom in
+                        Button {
+                            viewModel.setSearchEngine(id: custom.id)
+                        } label: {
+                            if viewModel.activeSearchEngineID == custom.id {
+                                Label(custom.name, systemImage: "checkmark")
+                            } else {
+                                Text(custom.name)
+                            }
+                        }
+                    }
+                }
+
+                Divider()
+
+                Button {
+                    viewModel.isShowingSearchEngineManager = true
+                } label: {
+                    Label("Manage Search Engines...", systemImage: "gearshape")
+                }
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "magnifyingglass")
+                        .font(.system(size: 10, weight: .semibold))
+                    Text(viewModel.currentSearchEngineName)
+                        .font(.system(size: 11, weight: .semibold))
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.system(size: 9, weight: .bold))
+                }
+                .foregroundColor(.secondary)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 3)
+                #if canImport(UIKit)
+                .background(Color(UIColor.tertiarySystemFill))
+                #else
+                .background(Color.secondary.opacity(0.12))
+                #endif
+                .cornerRadius(12)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Active search engine: \(viewModel.currentSearchEngineName). Tap to switch.")
+
+            Spacer()
+        }
     }
 
     // MARK: - Top Navigation Toolbar
