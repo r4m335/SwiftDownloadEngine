@@ -23,6 +23,15 @@ final class QuickAccessTests: XCTestCase {
 
     // MARK: - 1. URL Validation & Normalization
 
+    private func assertValidationFailure(_ name: String, _ urlString: String, expected: QuickAccessValidationError, file: StaticString = #file, line: UInt = #line) {
+        switch QuickAccessURLValidator.validate(name: name, urlString: urlString) {
+        case .success(let val):
+            XCTFail("Expected failure for (\(name), \(urlString)), but succeeded with \(val)", file: file, line: line)
+        case .failure(let err):
+            XCTAssertEqual(err, expected, file: file, line: line)
+        }
+    }
+
     func testURLValidator_NormalizesValidDomains() {
         let result1 = QuickAccessURLValidator.validate(name: "GitHub", urlString: "github.com")
         switch result1 {
@@ -54,23 +63,17 @@ final class QuickAccessTests: XCTestCase {
 
     func testURLValidator_RejectsInvalidInputs() {
         // Empty Name
-        let r1 = QuickAccessURLValidator.validate(name: "  ", urlString: "https://example.com")
-        XCTAssertEqual(r1, .failure(.emptyName))
+        assertValidationFailure("  ", "https://example.com", expected: .emptyName)
 
         // Empty URL
-        let r2 = QuickAccessURLValidator.validate(name: "Example", urlString: "   ")
-        XCTAssertEqual(r2, .failure(.emptyURL))
+        assertValidationFailure("Example", "   ", expected: .emptyURL)
 
         // Insecure / Disallowed Schemes
-        let r3 = QuickAccessURLValidator.validate(name: "FTP", urlString: "ftp://files.example.com")
-        XCTAssertEqual(r3, .failure(.invalidScheme))
-
-        let r4 = QuickAccessURLValidator.validate(name: "JS", urlString: "javascript:alert(1)")
-        XCTAssertEqual(r4, .failure(.invalidScheme))
+        assertValidationFailure("FTP", "ftp://files.example.com", expected: .invalidScheme)
+        assertValidationFailure("JS", "javascript:alert(1)", expected: .invalidScheme)
 
         // Invalid Domain / No Dot
-        let r5 = QuickAccessURLValidator.validate(name: "Invalid", urlString: "randomwordwithoutdot")
-        XCTAssertEqual(r5, .failure(.invalidURL))
+        assertValidationFailure("Invalid", "randomwordwithoutdot", expected: .invalidURL)
     }
 
     // MARK: - 2. Default Shortcuts & Persistence
@@ -159,22 +162,22 @@ final class QuickAccessTests: XCTestCase {
         let historyStore = BrowserHistoryStore(customStorageURL: historyStoreURL)
         let quickAccessStore = QuickAccessStore(defaults: customUserDefaults, customStorageURL: customStoreURL)
 
-        let initialBookmarkCount = bookmarkStore.allBookmarks().count
-        let initialHistoryCount = historyStore.allHistory().count
+        let initialBookmarkCount = bookmarkStore.bookmarks(in: nil).count
+        let initialHistoryCount = historyStore.allEntries.count
 
         // Add Quick Access shortcut
         let shortcut = quickAccessStore.add(name: "Standalone", url: URL(string: "https://standalone.example.org")!)
 
         // Assert Bookmarks and History are untouched
-        XCTAssertEqual(bookmarkStore.allBookmarks().count, initialBookmarkCount)
-        XCTAssertEqual(historyStore.allHistory().count, initialHistoryCount)
+        XCTAssertEqual(bookmarkStore.bookmarks(in: nil).count, initialBookmarkCount)
+        XCTAssertEqual(historyStore.allEntries.count, initialHistoryCount)
 
         // Delete Quick Access shortcut
         quickAccessStore.delete(id: shortcut.id)
 
         // Assert Bookmarks and History still untouched
-        XCTAssertEqual(bookmarkStore.allBookmarks().count, initialBookmarkCount)
-        XCTAssertEqual(historyStore.allHistory().count, initialHistoryCount)
+        XCTAssertEqual(bookmarkStore.bookmarks(in: nil).count, initialBookmarkCount)
+        XCTAssertEqual(historyStore.allEntries.count, initialHistoryCount)
     }
 
     // MARK: - 5. Favicon Retrieval & Caching Service
