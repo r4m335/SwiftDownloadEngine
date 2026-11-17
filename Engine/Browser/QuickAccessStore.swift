@@ -60,6 +60,14 @@ public enum QuickAccessURLValidator {
         if lower.hasPrefix("http://") || lower.hasPrefix("https://") {
             return trimmed
         }
+        // If it starts with another explicit scheme (e.g. ftp://, file://, javascript:, mailto:)
+        if let colonIndex = trimmed.firstIndex(of: ":") {
+            let prefix = String(trimmed[..<colonIndex]).lowercased()
+            let afterColon = trimmed[trimmed.index(after: colonIndex)...]
+            if afterColon.hasPrefix("//") || prefix == "javascript" || prefix == "data" || prefix == "mailto" || prefix == "about" {
+                return trimmed
+            }
+        }
         return "https://" + trimmed
     }
 
