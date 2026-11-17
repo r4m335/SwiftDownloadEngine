@@ -3331,7 +3331,7 @@ public actor StreamingDownloadOrchestrator {
         let (data, response) = try await session.data(for: request)
         guard let httpResponse = response as? HTTPURLResponse,
               (httpResponse.statusCode == 200 || httpResponse.statusCode == 206) else {
-            throw StreamingDownloadOrchestratorError.segmentDownloadFailed(url)
+            throw StreamingDownloadOrchestratorError.segmentTransferFailed(order: 0)
         }
         return data
     }
