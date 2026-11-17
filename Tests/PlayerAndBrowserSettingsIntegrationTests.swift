@@ -48,27 +48,24 @@ final class PlayerAndBrowserSettingsIntegrationTests: XCTestCase {
 
     // MARK: - 2. Audio & Subtitle Language Matching
 
-    @MainActor
     func testTrackManager_MatchesLanguage() {
-        let manager = LIDTrackManager()
-
         // English matching
-        XCTAssertTrue(manager.matchesLanguage(languageCode: "en", displayName: "English", preferredLanguage: "English"))
-        XCTAssertTrue(manager.matchesLanguage(languageCode: "eng", displayName: "Track 1", preferredLanguage: "English"))
-        XCTAssertTrue(manager.matchesLanguage(languageCode: nil, displayName: "English [Commentary]", preferredLanguage: "English"))
-        XCTAssertFalse(manager.matchesLanguage(languageCode: "fr", displayName: "French", preferredLanguage: "English"))
+        XCTAssertTrue(LIDTrackManager.matchesLanguage(languageCode: "en", displayName: "English", preferredLanguage: "English"))
+        XCTAssertTrue(LIDTrackManager.matchesLanguage(languageCode: "eng", displayName: "Track 1", preferredLanguage: "English"))
+        XCTAssertTrue(LIDTrackManager.matchesLanguage(languageCode: nil, displayName: "English [Commentary]", preferredLanguage: "English"))
+        XCTAssertFalse(LIDTrackManager.matchesLanguage(languageCode: "fr", displayName: "French", preferredLanguage: "English"))
 
         // Spanish matching
-        XCTAssertTrue(manager.matchesLanguage(languageCode: "es", displayName: "Español", preferredLanguage: "Spanish"))
-        XCTAssertTrue(manager.matchesLanguage(languageCode: "spa", displayName: "Spanish 5.1", preferredLanguage: "Spanish"))
+        XCTAssertTrue(LIDTrackManager.matchesLanguage(languageCode: "es", displayName: "Español", preferredLanguage: "Spanish"))
+        XCTAssertTrue(LIDTrackManager.matchesLanguage(languageCode: "spa", displayName: "Spanish 5.1", preferredLanguage: "Spanish"))
 
         // Japanese matching
-        XCTAssertTrue(manager.matchesLanguage(languageCode: "ja", displayName: "Japanese Audio", preferredLanguage: "Japanese"))
-        XCTAssertTrue(manager.matchesLanguage(languageCode: "jpn", displayName: "Stereo", preferredLanguage: "Japanese"))
+        XCTAssertTrue(LIDTrackManager.matchesLanguage(languageCode: "ja", displayName: "Japanese Audio", preferredLanguage: "Japanese"))
+        XCTAssertTrue(LIDTrackManager.matchesLanguage(languageCode: "jpn", displayName: "Stereo", preferredLanguage: "Japanese"))
 
         // Any matching
-        XCTAssertTrue(manager.matchesLanguage(languageCode: "de", displayName: "German", preferredLanguage: "Any"))
-        XCTAssertTrue(manager.matchesLanguage(languageCode: nil, displayName: nil, preferredLanguage: "Any"))
+        XCTAssertTrue(LIDTrackManager.matchesLanguage(languageCode: "de", displayName: "German", preferredLanguage: "Any"))
+        XCTAssertTrue(LIDTrackManager.matchesLanguage(languageCode: nil, displayName: "", preferredLanguage: "Any"))
     }
 
     @MainActor
