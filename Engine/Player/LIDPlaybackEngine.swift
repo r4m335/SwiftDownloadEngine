@@ -111,18 +111,41 @@ public final class LIDPlaybackEngine: NSObject, ObservableObject, LIDMediaEngine
 
     // MARK: - Backend Routing
 
+    #if canImport(VLCKit)
+    public static let isVLCKitAvailable: Bool = true
+    #else
+    public static let isVLCKitAvailable: Bool = false
+    #endif
+
+    public static func isNativeSupportedExtension(_ ext: String) -> Bool {
+        let lower = ext.trimmingCharacters(in: CharacterSet(charactersIn: ". ")).lowercased()
+        return ["mp4", "m4v", "mov", "mp3", "m4a", "aac", "wav", "flac", "caf", "aiff", "alac", "m3u8"].contains(lower)
+    }
+
     /// Determines the optimal playback backend for a given media source based on container,
     /// stream protocol, and platform capabilities.
     public func selectBackend(for source: LIDPlayerSource) -> LIDMediaEngineBackendType {
-        switch source {
-        case .localFile, .partialDownload:
-            // Route all local media to VLCKit by default for universal container and codec decoding.
-            return .vlcKit
-        case .hlsStream, .torrentSwarm:
-            // Preserve native HLS adaptive bitrate streaming and BitTorrent AVAssetResourceLoader integration.
+        guard Self.isVLCKitAvailable else {
             return .avFoundation
-        case .dashStream, .networkStream:
-            // Direct network streams and DASH manifests route through VLCKit's demuxer.
+        }
+        switch source {
+        case .localFile(let url, _), .partialDownload(let url, _, _):
+            let ext = url.pathExtension
+            if Self.isNativeSupportedExtension(ext) {
+                return .avFoundation
+            } else {
+                return .vlcKit
+            }
+        case .networkStream(let url, _, _):
+            let ext = url.pathExtension
+            if Self.isNativeSupportedExtension(ext) {
+                return .avFoundation
+            } else {
+                return .vlcKit
+            }
+        case .hlsStream, .torrentSwarm:
+            return .avFoundation
+        case .dashStream:
             return .vlcKit
         }
     }

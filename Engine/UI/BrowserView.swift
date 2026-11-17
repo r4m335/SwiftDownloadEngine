@@ -2159,6 +2159,27 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                 dashAudioRepresentationID: selectedQualityOption?.dashAudioRepresentationID
             )
 
+            if selectedQualityOption?.isLive == true {
+                let docDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first ?? FileManager.default.temporaryDirectory
+                let videosDir = docDir.appendingPathComponent("Downloads/Videos", isDirectory: true)
+                let destination = videosDir.appendingPathComponent(effectiveFilename)
+                let req = LiveRecordingRequest(
+                    manifestURL: targetURL,
+                    manifestKind: selectedQualityOption?.manifestKind ?? .hls,
+                    destinationURL: destination,
+                    title: effectiveFilename,
+                    requestContext: resource.requestContext,
+                    preferredQualityOption: selectedQualityOption
+                )
+                do {
+                    try LiveStreamRecorder.shared.startRecording(request: req)
+                    self.downloadSuccessNotification = "Live stream recording started: \(effectiveFilename)"
+                } catch {
+                    self.streamingErrorMessage = "Live recording error: \(error.localizedDescription)"
+                }
+                return
+            }
+
             promptStreamingDownload(for: configuredResource, customFilename: effectiveFilename)
         } else if let candidate = qualityPickerTargetCandidate, let url = candidate.url ?? URL(string: candidate.rawURL) {
             var prefs: HLSVariantSelectionPreferences? = nil
@@ -2187,6 +2208,27 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                 effectiveFilename = candidate.suggestedFilename
             } else {
                 effectiveFilename = isAudio ? "audio.m4a" : "video.mp4"
+            }
+
+            if selectedQualityOption?.isLive == true {
+                let docDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first ?? FileManager.default.temporaryDirectory
+                let videosDir = docDir.appendingPathComponent("Downloads/Videos", isDirectory: true)
+                let destination = videosDir.appendingPathComponent(effectiveFilename)
+                let req = LiveRecordingRequest(
+                    manifestURL: targetURL,
+                    manifestKind: selectedQualityOption?.manifestKind ?? .hls,
+                    destinationURL: destination,
+                    title: effectiveFilename,
+                    requestContext: candidate.requestContext,
+                    preferredQualityOption: selectedQualityOption
+                )
+                do {
+                    try LiveStreamRecorder.shared.startRecording(request: req)
+                    self.downloadSuccessNotification = "Live stream recording started: \(effectiveFilename)"
+                } catch {
+                    self.streamingErrorMessage = "Live recording error: \(error.localizedDescription)"
+                }
+                return
             }
 
             let configuredResource = WebpageResource(

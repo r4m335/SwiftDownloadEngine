@@ -173,6 +173,12 @@ public struct StreamQualityPickerSheet: View {
                                             .font(.caption)
                                             .foregroundColor(.orange)
                                     }
+
+                                    if option.isLive {
+                                        Text("● LIVE")
+                                            .font(.system(size: 10, weight: .bold))
+                                            .foregroundColor(.red)
+                                    }
                                 }
 
                                 HStack(spacing: 6) {
@@ -235,8 +241,9 @@ public struct StreamQualityPickerSheet: View {
                 } label: {
                     HStack {
                         Spacer()
-                        Image(systemName: "arrow.down.circle.fill")
+                        Image(systemName: viewModel.selectedQualityOption?.isLive == true ? "record.circle.fill" : "arrow.down.circle.fill")
                             .font(.system(size: 17, weight: .semibold))
+                            .foregroundColor(viewModel.selectedQualityOption?.isLive == true ? .red : .blue)
                         Text(downloadButtonTitle)
                             .font(.system(size: 16, weight: .bold))
                         Spacer()
@@ -250,7 +257,9 @@ public struct StreamQualityPickerSheet: View {
 
     private var downloadButtonTitle: String {
         if let selected = viewModel.selectedQualityOption {
-            if selected.isAudioOnly {
+            if selected.isLive {
+                return "Record Live Stream"
+            } else if selected.isAudioOnly {
                 return "Download Audio Only"
             } else {
                 return "Download \(selected.qualityBadge)"

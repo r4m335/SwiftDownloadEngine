@@ -78,6 +78,7 @@ public enum HLSManifestParser {
         var currentMap: HLSInitializationMap?
         var currentEncryption: HLSEncryption?
         var currentEncryptionClass: HLSKeyClassification = .clear
+        var targetDuration: Double? = nil
         var pendingDiscontinuity = false
         var pendingProgramDate: Date?
         var variants: [HLSVariant] = []
@@ -202,7 +203,8 @@ public enum HLSManifestParser {
                 pendingSegment = (duration, title)
                 sawMediaTag = true
             } else if line.hasPrefix("#EXT-X-TARGETDURATION:") {
-                _ = try requiredNonNegativeInt(String(line.dropFirst("#EXT-X-TARGETDURATION:".count)), name: "EXT-X-TARGETDURATION")
+                let td = try requiredNonNegativeInt(String(line.dropFirst("#EXT-X-TARGETDURATION:".count)), name: "EXT-X-TARGETDURATION")
+                targetDuration = Double(td)
                 sawMediaTag = true
             } else if line.hasPrefix("#EXT-X-BYTERANGE:") {
                 pendingByteRange = try parseByteRange(String(line.dropFirst("#EXT-X-BYTERANGE:".count)))
@@ -281,7 +283,8 @@ public enum HLSManifestParser {
             version: version,
             independentSegments: independentSegments,
             segments: segments,
-            encryption: currentEncryptionClass
+            encryption: currentEncryptionClass,
+            targetDuration: targetDuration
         )
     }
 

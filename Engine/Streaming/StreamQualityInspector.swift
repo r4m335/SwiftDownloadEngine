@@ -99,10 +99,11 @@ public enum StreamQualityInspector {
         durationSeconds: Double? = nil
     ) throws -> [StreamQualityOption] {
         let manifest = try HLSManifestParser.parse(manifestText, baseURL: baseURL)
+        let isLive = manifest.lifecycle == .live || manifest.lifecycle == .event
 
         guard manifest.playlistType == .master, !manifest.variants.isEmpty else {
             // Media playlist (single variant)
-            return [StreamQualityOption.defaultMedia(url: baseURL, mimeType: "application/vnd.apple.mpegurl", kind: .hls)]
+            return [StreamQualityOption.defaultMedia(url: baseURL, mimeType: "application/vnd.apple.mpegurl", kind: .hls, isLive: isLive)]
         }
 
         // Rank variants highest to lowest
@@ -111,7 +112,8 @@ public enum StreamQualityInspector {
             StreamQualityOption.from(
                 variant: variant,
                 masterURL: baseURL,
-                durationSeconds: durationSeconds
+                durationSeconds: durationSeconds,
+                isLive: isLive
             )
         }
 
@@ -123,7 +125,8 @@ public enum StreamQualityInspector {
             let audioOption = StreamQualityOption.audioOnly(
                 rendition: audio,
                 masterURL: baseURL,
-                durationSeconds: durationSeconds
+                durationSeconds: durationSeconds,
+                isLive: isLive
             )
             // Prevent duplicate audio IDs
             if !options.contains(where: { $0.id == audioOption.id }) {
@@ -141,8 +144,9 @@ public enum StreamQualityInspector {
         durationSeconds: Double? = nil
     ) throws -> [StreamQualityOption] {
         let manifest = try DASHManifestParser.parse(Data(manifestText.utf8), baseURL: baseURL)
+        let isLive = manifest.presentationType == .dynamicPresentation
         guard let period = manifest.periods.first else {
-            return [StreamQualityOption.defaultMedia(url: baseURL, mimeType: "application/dash+xml", kind: .dash)]
+            return [StreamQualityOption.defaultMedia(url: baseURL, mimeType: "application/dash+xml", kind: .dash, isLive: isLive)]
         }
 
         // Find video adaptation sets and audio adaptation sets
@@ -173,7 +177,8 @@ public enum StreamQualityInspector {
                 dashRepresentation: rep,
                 audioRep: defaultAudio,
                 baseURL: baseURL,
-                durationSeconds: durationSeconds
+                durationSeconds: durationSeconds,
+                isLive: isLive
             )
         }
 
@@ -203,13 +208,14 @@ public enum StreamQualityInspector {
                 uri: audio.baseURL ?? baseURL,
                 manifestKind: .dash,
                 dashVideoRepresentationID: nil,
-                dashAudioRepresentationID: audio.id
+                dashAudioRepresentationID: audio.id,
+                isLive: isLive
             )
             options.append(audioOption)
         }
 
         if options.isEmpty {
-            return [StreamQualityOption.defaultMedia(url: baseURL, mimeType: "application/dash+xml", kind: .dash)]
+            return [StreamQualityOption.defaultMedia(url: baseURL, mimeType: "application/dash+xml", kind: .dash, isLive: isLive)]
         }
 
         return options

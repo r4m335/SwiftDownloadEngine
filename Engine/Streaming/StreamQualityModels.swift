@@ -28,6 +28,7 @@ public struct StreamQualityOption: Identifiable, Sendable, Equatable, Hashable {
     public let hlsVariant: HLSVariant?
     public let dashVideoRepresentationID: String?
     public let dashAudioRepresentationID: String?
+    public let isLive: Bool
 
     public init(
         id: String,
@@ -50,7 +51,8 @@ public struct StreamQualityOption: Identifiable, Sendable, Equatable, Hashable {
         manifestKind: StreamingManifestKind = .hls,
         hlsVariant: HLSVariant? = nil,
         dashVideoRepresentationID: String? = nil,
-        dashAudioRepresentationID: String? = nil
+        dashAudioRepresentationID: String? = nil,
+        isLive: Bool = false
     ) {
         self.id = id
         self.label = label
@@ -73,6 +75,7 @@ public struct StreamQualityOption: Identifiable, Sendable, Equatable, Hashable {
         self.hlsVariant = hlsVariant
         self.dashVideoRepresentationID = dashVideoRepresentationID
         self.dashAudioRepresentationID = dashAudioRepresentationID
+        self.isLive = isLive
     }
 
     public func hash(into hasher: inout Hasher) {
@@ -129,7 +132,8 @@ public struct StreamQualityOption: Identifiable, Sendable, Equatable, Hashable {
     public static func from(
         variant: HLSVariant,
         masterURL: URL,
-        durationSeconds: Double? = nil
+        durationSeconds: Double? = nil,
+        isLive: Bool = false
     ) -> StreamQualityOption {
         let height = variant.resolution?.height
         let qualityBadge: String = {
@@ -179,7 +183,8 @@ public struct StreamQualityOption: Identifiable, Sendable, Equatable, Hashable {
             estimatedSizeText: estText,
             uri: variant.uri,
             manifestKind: .hls,
-            hlsVariant: variant
+            hlsVariant: variant,
+            isLive: isLive
         )
     }
 
@@ -188,7 +193,8 @@ public struct StreamQualityOption: Identifiable, Sendable, Equatable, Hashable {
         rendition: HLSRendition,
         masterURL: URL,
         bandwidth: Int64 = 128_000,
-        durationSeconds: Double? = nil
+        durationSeconds: Double? = nil,
+        isLive: Bool = false
     ) -> StreamQualityOption {
         let estBytes = durationSeconds.flatMap { estimateSize(bandwidth: bandwidth, durationSeconds: $0) }
         let estText = estBytes.map { "~\(formatByteSize($0))" } ?? "Size unavailable"
@@ -214,7 +220,8 @@ public struct StreamQualityOption: Identifiable, Sendable, Equatable, Hashable {
             estimatedSizeText: estText,
             uri: targetURI,
             manifestKind: .hls,
-            hlsVariant: nil
+            hlsVariant: nil,
+            isLive: isLive
         )
     }
 
@@ -223,7 +230,8 @@ public struct StreamQualityOption: Identifiable, Sendable, Equatable, Hashable {
         dashRepresentation rep: DASHRepresentation,
         audioRep: DASHRepresentation? = nil,
         baseURL: URL,
-        durationSeconds: Double? = nil
+        durationSeconds: Double? = nil,
+        isLive: Bool = false
     ) -> StreamQualityOption {
         let bw = rep.bandwidth ?? 1_000_000
         let height = rep.height
@@ -281,7 +289,8 @@ public struct StreamQualityOption: Identifiable, Sendable, Equatable, Hashable {
             uri: targetURL,
             manifestKind: .dash,
             dashVideoRepresentationID: rep.id,
-            dashAudioRepresentationID: audioRep?.id
+            dashAudioRepresentationID: audioRep?.id,
+            isLive: isLive
         )
     }
 
@@ -290,7 +299,8 @@ public struct StreamQualityOption: Identifiable, Sendable, Equatable, Hashable {
         url: URL,
         mimeType: String? = nil,
         bandwidth: Int64 = 2_500_000,
-        kind: StreamingManifestKind = .hls
+        kind: StreamingManifestKind = .hls,
+        isLive: Bool = false
     ) -> StreamQualityOption {
         StreamQualityOption(
             id: "default-\(url.absoluteString)",
@@ -310,7 +320,8 @@ public struct StreamQualityOption: Identifiable, Sendable, Equatable, Hashable {
             estimatedSizeBytes: nil,
             estimatedSizeText: "Size unavailable",
             uri: url,
-            manifestKind: kind
+            manifestKind: kind,
+            isLive: isLive
         )
     }
 

@@ -707,6 +707,22 @@ The shared layer centralizes:
   - DRM manifests (Widevine, PlayReady, FairPlay) are cleanly rejected with actionable user-facing errors.
   - Verified across 7 dedicated tests in `DASHMultiPeriodAndSegmentBaseTests.swift` and all 1,245+ existing tests.
 
+### Milestone 9.4: LID Streaming Workstream Completion [Completed]
+- **Objective:** Complete the remaining streaming and media subsystem functionality in LID Download Manager, delivering dedicated local and network media playback, direct HLS and DASH playback integration, live sliding-window HLS and dynamic DASH recording, BitTorrent sequential swarm streaming validation, track selection, and lifecycle recovery without regressions.
+- **Implementation Scope:**
+  - `Engine/Streaming/LiveStreamRecorder.swift`: Implemented continuous live broadcast capture for HLS sliding-window and dynamic DASH manifests, sliding-window polling with target duration, segment deduplication by sequence/URI, scratch-disk streaming, and finalization assembly into playable media files registered in `LIDLibraryStore`.
+  - `Engine/Streaming/ManifestModels.swift` & `HLSManifestParser.swift`: Added `HLSManifest.targetDuration` parsing to determine exact live polling intervals without hammering servers.
+  - `Engine/Streaming/StreamQualityModels.swift` & `StreamQualityInspector.swift`: Added `isLive` stream quality classification for live HLS and dynamic DASH streams.
+  - `Engine/UI/StreamQualityPickerSheet.swift` & `BrowserView.swift`: Added `"● LIVE"` badge indication, "Record Live Stream" action, and direct live recording trigger integration.
+  - `Engine/Player/LIDPlaybackEngine.swift` & `LIDAVFoundationBackend.swift`: Established deterministic backend routing to `AVFoundation` for native containers (`mp4`, `mov`, `m4v`, `mp3`, `aac`, `m4a`, `wav`, `flac`) and network streams, integrated `LIDDASHStreamAdapter` for direct DASH streams, and wired HTTP request headers.
+  - `Engine/Player/LIDTorrentStreamAdapter.swift`: Validated sequential swarm piece prioritization (`calculatePieceMapping`) prioritizing head/tail moov atoms and in-progress playback range.
+  - `Tests/LiveStreamRecorderTests.swift`: Comprehensive test suite verifying sliding window deduplication, target duration parsing, dynamic DASH detection, DRM rejection, state transitions, assembly, deterministic routing, piece prioritization, and language matching.
+- **Completion Criteria & Verification:**
+  - Dedicated media player routes native formats and streams deterministically to hardware-accelerated AVFoundation.
+  - Live HLS and dynamic DASH streams can be continuously captured, deduplicated, and assembled into standard files.
+  - BitTorrent in-progress media playback routes directly to `LIDTorrentStreamAdapter` with moov atom prioritization.
+  - Full automated test suite passes with zero regressions.
+
 ---
 
 ## 2. Summary Dependency Graph

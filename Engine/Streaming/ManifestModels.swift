@@ -279,6 +279,7 @@ public struct HLSManifest: Codable, Sendable, Equatable {
     public let renditions: [HLSRendition]
     public let segments: [HLSMediaSegment]
     public let encryption: HLSKeyClassification
+    public let targetDuration: Double?
 
     public init(
         url: URL,
@@ -289,7 +290,8 @@ public struct HLSManifest: Codable, Sendable, Equatable {
         variants: [HLSVariant] = [],
         renditions: [HLSRendition] = [],
         segments: [HLSMediaSegment] = [],
-        encryption: HLSKeyClassification = .clear
+        encryption: HLSKeyClassification = .clear,
+        targetDuration: Double? = nil
     ) {
         self.url = url
         self.playlistType = playlistType
@@ -300,6 +302,7 @@ public struct HLSManifest: Codable, Sendable, Equatable {
         self.renditions = renditions
         self.segments = segments
         self.encryption = encryption
+        self.targetDuration = targetDuration
     }
 
     /// All renditions with TYPE=SUBTITLES extracted from the manifest.

@@ -95,6 +95,7 @@ public final class LIDAVFoundationBackend: NSObject, LIDMediaEngineProtocol {
     private var loadedTimeRangesObserver: NSKeyValueObservation?
     private var seekableTimeRangesObserver: NSKeyValueObservation?
     private var torrentStreamAdapter: LIDTorrentStreamAdapter?
+    private var dashStreamAdapter: LIDDASHStreamAdapter?
     #endif
 
     public var torrentEngine: TorrentEngine?
@@ -148,6 +149,20 @@ public final class LIDAVFoundationBackend: NSObject, LIDMediaEngineProtocol {
                 options["AVURLAssetHTTPHeaderFieldsKey"] = headers
             }
             asset = AVURLAsset(url: targetURL, options: options)
+
+        case .networkStream(let url, let headers, _):
+            var options: [String: Any] = [:]
+            if !headers.isEmpty {
+                options["AVURLAssetHTTPHeaderFieldsKey"] = headers
+            }
+            asset = AVURLAsset(url: url, options: options)
+
+        case .dashStream(let manifestURL, let repID, _, let requestContext):
+            let adapter = LIDDASHStreamAdapter(manifestURL: manifestURL, selectedRepresentationID: repID, requestContext: requestContext)
+            self.dashStreamAdapter = adapter
+            let customURL = adapter.customSchemeURL
+            asset = AVURLAsset(url: customURL)
+            asset.resourceLoader.setDelegate(adapter, queue: adapter.dispatchQueue)
 
         default:
             guard let url = source.url else {
@@ -219,6 +234,7 @@ public final class LIDAVFoundationBackend: NSObject, LIDMediaEngineProtocol {
         player = nil
         playerItem = nil
         torrentStreamAdapter = nil
+        dashStreamAdapter = nil
         #endif
 
         self.currentLoadedSource = nil
