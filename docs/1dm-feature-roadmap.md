@@ -654,6 +654,7 @@ The shared layer centralizes:
 | 9 | Unified Media Grabber Integration (B.4) | **Completed** |
 | 9.1 | iOS Runtime Readiness (Audio Session, Auto-PiP & Info.plist) | **Completed** |
 | 9.2 | Media Player Stability & Interaction Repair (.ts HLS wrapper, 1:1 gestures, published player, error & dismiss recovery) | **Completed** |
+| 9.3 | DASH VOD Completion & Real-World Validation (Multi-Period, SegmentBase/sidx, Full Attribute Inheritance, Actionable DRM) | **Completed** |
 | 10 | End-to-End Integration & Physical Hardware Verification | Next |
 
 ---
@@ -691,6 +692,20 @@ The shared layer centralizes:
   - Info.plist verified via automated test suite.
   - Media player configures audio session cleanly.
   - Auto-PiP configured for iOS 14.2+ inline transitions.
+
+### Milestone 9.3: DASH VOD Completion & Engineering Parity [Completed]
+- **Objective:** Bring supported DASH VOD downloading to the exact engineering standard and reliability as HLS VOD, supporting multi-period manifests, SegmentBase addressing with sidx subsegment expansion, full top-down attribute inheritance, and actionable DRM rejection without breaking boundaries or creating divergent download architectures.
+- **Implementation Scope:**
+  - `Engine/Streaming/ManifestModels.swift`: Added `DASHSegmentBase` and `DASHContentProtection` models; expanded `DASHRepresentation` and `DASHAdaptationSet` with `segmentBase` and `contentProtections`.
+  - `Engine/Streaming/DASHSidxParser.swift`: Implemented full ISO/IEC 14496-12 `sidx` box parser handling v0 and v1 segment indexes, anchor byte math, timescales, and subsegment byte ranges.
+  - `Engine/Streaming/DASHManifestParser.swift`: Added XML parsing for `SegmentBase` (with `Initialization`, `indexRange`, `mediaRange`), full top-down attribute inheritance (`MPD` -> `Period` -> `AdaptationSet` -> `Representation`), and `ContentProtection` extraction.
+  - `Engine/Streaming/DASHTransferPlanner.swift`: Implemented multi-period planning across sequential periods, `SegmentBase` plan generation (with `sidx` subsegment expansion and direct media ranges), and explicit DRM rejection (`.drmProtectedRepresentation`).
+  - `Engine/Streaming/StreamingDownloadOrchestrator.swift`: Integrated online `indexRange` range fetching for DASH candidates, feeding parsed `sidx` data directly to the planner.
+- **Completion Criteria & Verification:**
+  - Multi-period manifests generate unified, ordered segment lists across all periods with single initialization at index 0.
+  - `SegmentBase` representations are expanded into parallel subsegments via `sidx` or direct ranges.
+  - DRM manifests (Widevine, PlayReady, FairPlay) are cleanly rejected with actionable user-facing errors.
+  - Verified across 7 dedicated tests in `DASHMultiPeriodAndSegmentBaseTests.swift` and all 1,245+ existing tests.
 
 ---
 

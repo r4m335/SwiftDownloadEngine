@@ -1915,13 +1915,29 @@ public actor StreamingDownloadOrchestrator {
                 baseURL: finalURL,
                 limits: parsingLimits
             )
+            var sidxDataMap: [String: Data] = [:]
+            for period in parsed.periods {
+                for adaptationSet in period.adaptationSets {
+                    for rep in adaptationSet.representations {
+                        if let base = rep.segmentBase,
+                           let indexRange = base.indexRange,
+                           let repID = rep.id {
+                            let targetURL = rep.baseURL ?? adaptationSet.baseURL ?? period.baseURL ?? parsed.baseURL ?? finalURL
+                            if let sidxBytes = try? await fetchByteRange(url: targetURL, rangeString: indexRange, candidate: candidate) {
+                                sidxDataMap[repID] = sidxBytes
+                            }
+                        }
+                    }
+                }
+            }
             let plan: DASHVODTransferPlan
             do {
                 plan = try DASHTransferPlanner.makeVODPlan(
                     from: parsed,
                     videoRepresentationID: candidate.dashVideoRepresentationID,
                     audioRepresentationID: candidate.dashAudioRepresentationID,
-                    browserRequestContext: candidate.browserRequestContext
+                    browserRequestContext: candidate.browserRequestContext,
+                    sidxDataByRepresentationID: sidxDataMap
                 )
             } catch let error as DASHVODTransferPlanError {
                 if case .drmProtectedRepresentation = error {
@@ -3296,6 +3312,28 @@ public actor StreamingDownloadOrchestrator {
         case .hls(let plan): return plan.estimatedTransferBytes
         case .dash(let plan): return plan.estimatedTransferBytes
         }
+    }
+
+    private func fetchByteRange(
+        url: URL,
+        rangeString: String,
+        candidate: StreamingManifestCandidate
+    ) async throws -> Data {
+        var request = URLRequest(url: url)
+        request.setValue("bytes=\(rangeString)", forHTTPHeaderField: "Range")
+        if let context = candidate.browserRequestContext {
+            let headers = context.effectiveHeaders(for: url)
+            for (key, val) in headers {
+                request.setValue(val, forHTTPHeaderField: key)
+            }
+        }
+        let session = ForegroundURLSession.make(maximumConnectionsPerHost: 1)
+        let (data, response) = try await session.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse,
+              (httpResponse.statusCode == 200 || httpResponse.statusCode == 206) else {
+            throw StreamingDownloadOrchestratorError.segmentDownloadFailed(url)
+        }
+        return data
     }
 
     func downloadAndSaveSubtitle(

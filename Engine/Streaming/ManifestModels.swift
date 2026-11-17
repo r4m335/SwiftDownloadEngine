@@ -409,6 +409,58 @@ public struct DASHSegmentList: Codable, Sendable, Equatable {
     }
 }
 
+public struct DASHSegmentBase: Codable, Sendable, Equatable {
+    public let timescale: Int64
+    public let presentationTimeOffset: Int64
+    public let indexRange: String?
+    public let indexRangeExact: Bool
+    public let availabilityTimeOffset: Double?
+    public let initialization: DASHInitialization?
+    public let mediaRange: String?
+
+    public init(
+        timescale: Int64 = 1,
+        presentationTimeOffset: Int64 = 0,
+        indexRange: String? = nil,
+        indexRangeExact: Bool = false,
+        availabilityTimeOffset: Double? = nil,
+        initialization: DASHInitialization? = nil,
+        mediaRange: String? = nil
+    ) {
+        self.timescale = timescale
+        self.presentationTimeOffset = presentationTimeOffset
+        self.indexRange = indexRange
+        self.indexRangeExact = indexRangeExact
+        self.availabilityTimeOffset = availabilityTimeOffset
+        self.initialization = initialization
+        self.mediaRange = mediaRange
+    }
+}
+
+public struct DASHContentProtection: Codable, Sendable, Equatable {
+    public let schemeIdUri: String?
+    public let value: String?
+    public let defaultKID: String?
+
+    public init(schemeIdUri: String? = nil, value: String? = nil, defaultKID: String? = nil) {
+        self.schemeIdUri = schemeIdUri
+        self.value = value
+        self.defaultKID = defaultKID
+    }
+
+    public var isDRM: Bool {
+        guard let scheme = schemeIdUri?.lowercased() else {
+            return value != nil
+        }
+        return scheme.contains("edef8ba9-79d6-4ace-a3c8-27dcd51d21ed") || // Widevine
+               scheme.contains("9a04f079-9840-4286-ab92-e65be0885f95") || // PlayReady
+               scheme.contains("94ce86fb-07ff-4f43-adb8-93d2fa968ca2") || // FairPlay
+               scheme.contains("clearkey") ||
+               scheme.contains("cenc") ||
+               scheme.contains("cbcs")
+    }
+}
+
 public struct DASHRepresentation: Codable, Sendable, Equatable {
     public let id: String?
     public let bandwidth: Int64?
@@ -417,9 +469,11 @@ public struct DASHRepresentation: Codable, Sendable, Equatable {
     public let mimeType: String?
     public let codecs: String?
     public let hasContentProtection: Bool
+    public let contentProtections: [DASHContentProtection]
     public let baseURL: URL?
     public let segmentTemplate: DASHSegmentTemplate?
     public let segmentList: DASHSegmentList?
+    public let segmentBase: DASHSegmentBase?
 
     public init(
         id: String? = nil,
@@ -429,9 +483,11 @@ public struct DASHRepresentation: Codable, Sendable, Equatable {
         mimeType: String? = nil,
         codecs: String? = nil,
         hasContentProtection: Bool = false,
+        contentProtections: [DASHContentProtection] = [],
         baseURL: URL? = nil,
         segmentTemplate: DASHSegmentTemplate? = nil,
-        segmentList: DASHSegmentList? = nil
+        segmentList: DASHSegmentList? = nil,
+        segmentBase: DASHSegmentBase? = nil
     ) {
         self.id = id
         self.bandwidth = bandwidth
@@ -440,9 +496,11 @@ public struct DASHRepresentation: Codable, Sendable, Equatable {
         self.mimeType = mimeType
         self.codecs = codecs
         self.hasContentProtection = hasContentProtection
+        self.contentProtections = contentProtections
         self.baseURL = baseURL
         self.segmentTemplate = segmentTemplate
         self.segmentList = segmentList
+        self.segmentBase = segmentBase
     }
 }
 
@@ -453,9 +511,11 @@ public struct DASHAdaptationSet: Codable, Sendable, Equatable {
     public let codecs: String?
     public let language: String?
     public let hasContentProtection: Bool
+    public let contentProtections: [DASHContentProtection]
     public let baseURL: URL?
     public let segmentTemplate: DASHSegmentTemplate?
     public let segmentList: DASHSegmentList?
+    public let segmentBase: DASHSegmentBase?
     public let representations: [DASHRepresentation]
 
     public init(
@@ -465,9 +525,11 @@ public struct DASHAdaptationSet: Codable, Sendable, Equatable {
         codecs: String? = nil,
         language: String? = nil,
         hasContentProtection: Bool = false,
+        contentProtections: [DASHContentProtection] = [],
         baseURL: URL? = nil,
         segmentTemplate: DASHSegmentTemplate? = nil,
         segmentList: DASHSegmentList? = nil,
+        segmentBase: DASHSegmentBase? = nil,
         representations: [DASHRepresentation] = []
     ) {
         self.id = id
@@ -476,9 +538,11 @@ public struct DASHAdaptationSet: Codable, Sendable, Equatable {
         self.codecs = codecs
         self.language = language
         self.hasContentProtection = hasContentProtection
+        self.contentProtections = contentProtections
         self.baseURL = baseURL
         self.segmentTemplate = segmentTemplate
         self.segmentList = segmentList
+        self.segmentBase = segmentBase
         self.representations = representations
     }
 }

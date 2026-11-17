@@ -65,13 +65,24 @@ public enum DASHManifestParser {
         }
 
         let resolvedBase = try resolveBaseURL(node.child(named: "BaseURL")?.text, against: baseURL)
+        let manifestBase = resolvedBase ?? baseURL
+        let mpdTemplate = try parseSegmentTemplate(node.child(named: "SegmentTemplate"), baseURL: manifestBase)
+        let mpdList = try parseSegmentList(node.child(named: "SegmentList"), baseURL: manifestBase)
+        let mpdBase = try parseSegmentBase(node.child(named: "SegmentBase"), baseURL: manifestBase)
+
         let periodNodes = node.children(named: "Period")
         guard !periodNodes.isEmpty else {
             throw ManifestParserError.malformed(reason: "MPD must contain at least one Period.")
         }
 
         let periods = try periodNodes.map {
-            try parsePeriod($0, baseURL: resolvedBase ?? baseURL)
+            try parsePeriod(
+                $0,
+                baseURL: manifestBase,
+                inheritedTemplate: mpdTemplate,
+                inheritedList: mpdList,
+                inheritedBase: mpdBase
+            )
         }
 
         return DASHManifest(
@@ -85,14 +96,34 @@ public enum DASHManifestParser {
         )
     }
 
-    private static func parsePeriod(_ node: DASHXMLNode, baseURL: URL) throws -> DASHPeriod {
+    private static func parsePeriod(
+        _ node: DASHXMLNode,
+        baseURL: URL,
+        inheritedTemplate: DASHSegmentTemplate? = nil,
+        inheritedList: DASHSegmentList? = nil,
+        inheritedBase: DASHSegmentBase? = nil
+    ) throws -> DASHPeriod {
         let resolvedBase = try resolveBaseURL(node.child(named: "BaseURL")?.text, against: baseURL) ?? baseURL
+        let ownTemplate = try parseSegmentTemplate(node.child(named: "SegmentTemplate"), baseURL: resolvedBase)
+        let ownList = try parseSegmentList(node.child(named: "SegmentList"), baseURL: resolvedBase)
+        let ownBase = try parseSegmentBase(node.child(named: "SegmentBase"), baseURL: resolvedBase)
+
+        let periodTemplate = ownTemplate ?? inheritedTemplate
+        let periodList = ownList ?? inheritedList
+        let periodBase = ownBase ?? inheritedBase
+
         let adaptationNodes = node.children(named: "AdaptationSet")
         guard !adaptationNodes.isEmpty else {
             throw ManifestParserError.malformed(reason: "Period contains no AdaptationSet elements.")
         }
         let adaptations = try adaptationNodes.map {
-            try parseAdaptationSet($0, baseURL: resolvedBase)
+            try parseAdaptationSet(
+                $0,
+                baseURL: resolvedBase,
+                inheritedTemplate: periodTemplate,
+                inheritedList: periodList,
+                inheritedBase: periodBase
+            )
         }
         return DASHPeriod(
             id: node.attribute("id"),
@@ -103,13 +134,31 @@ public enum DASHManifestParser {
         )
     }
 
-    private static func parseAdaptationSet(_ node: DASHXMLNode, baseURL: URL) throws -> DASHAdaptationSet {
-        if node.child(named: "SegmentBase") != nil {
-            throw ManifestParserError.unsupported(reason: "SegmentBase is not supported by the initial parser.")
-        }
+    private static func parseAdaptationSet(
+        _ node: DASHXMLNode,
+        baseURL: URL,
+        inheritedTemplate: DASHSegmentTemplate? = nil,
+        inheritedList: DASHSegmentList? = nil,
+        inheritedBase: DASHSegmentBase? = nil
+    ) throws -> DASHAdaptationSet {
         let resolvedBase = try resolveBaseURL(node.child(named: "BaseURL")?.text, against: baseURL) ?? baseURL
-        let segmentTemplate = try parseSegmentTemplate(node.child(named: "SegmentTemplate"), baseURL: resolvedBase)
-        let segmentList = try parseSegmentList(node.child(named: "SegmentList"), baseURL: resolvedBase)
+        let ownTemplate = try parseSegmentTemplate(node.child(named: "SegmentTemplate"), baseURL: resolvedBase)
+        let ownList = try parseSegmentList(node.child(named: "SegmentList"), baseURL: resolvedBase)
+        let ownBase = try parseSegmentBase(node.child(named: "SegmentBase"), baseURL: resolvedBase)
+
+        let adaptationTemplate = ownTemplate ?? inheritedTemplate
+        let adaptationList = ownList ?? inheritedList
+        let adaptationBase = ownBase ?? inheritedBase
+
+        let contentType = node.attribute("contentType")
+        let mimeType = node.attribute("mimeType")
+        let codecs = node.attribute("codecs")
+        let language = node.attribute("lang")
+
+        let protectionNodes = node.children(named: "ContentProtection")
+        let hasProtection = !protectionNodes.isEmpty
+        let contentProtections = protectionNodes.map { parseContentProtection($0) }
+
         let representationNodes = node.children(named: "Representation")
         guard !representationNodes.isEmpty else {
             throw ManifestParserError.malformed(reason: "AdaptationSet contains no Representation elements.")
@@ -118,20 +167,27 @@ public enum DASHManifestParser {
             try parseRepresentation(
                 $0,
                 baseURL: resolvedBase,
-                inheritedTemplate: segmentTemplate,
-                inheritedList: segmentList
+                inheritedTemplate: adaptationTemplate,
+                inheritedList: adaptationList,
+                inheritedBase: adaptationBase,
+                inheritedMimeType: mimeType,
+                inheritedCodecs: codecs,
+                inheritedContentProtection: hasProtection,
+                inheritedProtections: contentProtections
             )
         }
         return DASHAdaptationSet(
             id: node.attribute("id"),
-            contentType: node.attribute("contentType"),
-            mimeType: node.attribute("mimeType"),
-            codecs: node.attribute("codecs"),
-            language: node.attribute("lang"),
-            hasContentProtection: node.child(named: "ContentProtection") != nil,
+            contentType: contentType,
+            mimeType: mimeType,
+            codecs: codecs,
+            language: language,
+            hasContentProtection: hasProtection,
+            contentProtections: contentProtections,
             baseURL: resolvedBase,
-            segmentTemplate: segmentTemplate,
-            segmentList: segmentList,
+            segmentTemplate: adaptationTemplate,
+            segmentList: adaptationList,
+            segmentBase: adaptationBase,
             representations: representations
         )
     }
@@ -140,25 +196,79 @@ public enum DASHManifestParser {
         _ node: DASHXMLNode,
         baseURL: URL,
         inheritedTemplate: DASHSegmentTemplate?,
-        inheritedList: DASHSegmentList?
+        inheritedList: DASHSegmentList?,
+        inheritedBase: DASHSegmentBase?,
+        inheritedMimeType: String?,
+        inheritedCodecs: String?,
+        inheritedContentProtection: Bool,
+        inheritedProtections: [DASHContentProtection]
     ) throws -> DASHRepresentation {
-        if node.child(named: "SegmentBase") != nil {
-            throw ManifestParserError.unsupported(reason: "SegmentBase is not supported by the initial parser.")
-        }
         let resolvedBase = try resolveBaseURL(node.child(named: "BaseURL")?.text, against: baseURL) ?? baseURL
         let ownTemplate = try parseSegmentTemplate(node.child(named: "SegmentTemplate"), baseURL: resolvedBase)
         let ownList = try parseSegmentList(node.child(named: "SegmentList"), baseURL: resolvedBase)
+        let ownBase = try parseSegmentBase(node.child(named: "SegmentBase"), baseURL: resolvedBase)
+
+        let ownProtectionNodes = node.children(named: "ContentProtection")
+        let ownHasProtection = !ownProtectionNodes.isEmpty
+        let ownProtections = ownProtectionNodes.map { parseContentProtection($0) }
+
+        let hasProtection = ownHasProtection || inheritedContentProtection
+        let protections = ownProtections.isEmpty ? inheritedProtections : ownProtections
+
         return DASHRepresentation(
             id: node.attribute("id"),
             bandwidth: try parseOptionalNonNegativeInt64(node.attribute("bandwidth"), name: "Representation@bandwidth"),
             width: try parseOptionalPositiveInt(node.attribute("width"), name: "Representation@width"),
             height: try parseOptionalPositiveInt(node.attribute("height"), name: "Representation@height"),
-            mimeType: node.attribute("mimeType"),
-            codecs: node.attribute("codecs"),
-            hasContentProtection: node.child(named: "ContentProtection") != nil,
+            mimeType: node.attribute("mimeType") ?? inheritedMimeType,
+            codecs: node.attribute("codecs") ?? inheritedCodecs,
+            hasContentProtection: hasProtection,
+            contentProtections: protections,
             baseURL: resolvedBase,
             segmentTemplate: ownTemplate ?? inheritedTemplate,
-            segmentList: ownList ?? inheritedList
+            segmentList: ownList ?? inheritedList,
+            segmentBase: ownBase ?? inheritedBase
+        )
+    }
+
+    private static func parseSegmentBase(_ node: DASHXMLNode?, baseURL: URL) throws -> DASHSegmentBase? {
+        guard let node else { return nil }
+        let initialization: DASHInitialization?
+        if let initNode = node.child(named: "Initialization") {
+            initialization = DASHInitialization(
+                sourceURL: try optionalURL(initNode.attribute("sourceURL"), against: baseURL),
+                range: initNode.attribute("range")
+            )
+        } else {
+            initialization = nil
+        }
+        let timescale = try parsePositiveInt64(node.attribute("timescale"), defaultValue: 1, name: "SegmentBase@timescale")
+        let presentationTimeOffset = try parseNonNegativeInt64(node.attribute("presentationTimeOffset"), defaultValue: 0, name: "SegmentBase@presentationTimeOffset")
+        let indexRange = node.attribute("indexRange")
+        let indexRangeExact = node.attribute("indexRangeExact")?.lowercased() == "true"
+        let availabilityTimeOffset = Double(node.attribute("availabilityTimeOffset") ?? "")
+        let mediaRange = node.attribute("mediaRange")
+
+        guard initialization != nil || indexRange != nil || mediaRange != nil else {
+            throw ManifestParserError.malformed(reason: "SegmentBase contains no initialization, indexRange, or mediaRange.")
+        }
+
+        return DASHSegmentBase(
+            timescale: timescale,
+            presentationTimeOffset: presentationTimeOffset,
+            indexRange: indexRange,
+            indexRangeExact: indexRangeExact,
+            availabilityTimeOffset: availabilityTimeOffset,
+            initialization: initialization,
+            mediaRange: mediaRange
+        )
+    }
+
+    private static func parseContentProtection(_ node: DASHXMLNode) -> DASHContentProtection {
+        DASHContentProtection(
+            schemeIdUri: node.attribute("schemeIdUri") ?? node.attribute("schemeIdURI") ?? node.attribute("schemeiduri"),
+            value: node.attribute("value"),
+            defaultKID: node.attribute("cenc:default_KID") ?? node.attribute("default_KID") ?? node.attribute("default_kid")
         )
     }
 
