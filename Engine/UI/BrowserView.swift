@@ -40,6 +40,8 @@ public final class BrowserViewModel: NSObject, ObservableObject {
     @Published public var activeSearchEngineID: String = BrowserSearchEngine.duckDuckGo.rawValue
     @Published public var customSearchEngines: [CustomSearchEngine] = []
     @Published public var isShowingSearchEngineManager: Bool = false
+    @Published public var quickAccessShortcuts: [QuickAccessShortcut] = []
+    public let quickAccessStore: QuickAccessStore = .shared
     @Published public private(set) var tabs: [BrowserTabState] = []
     @Published public private(set) var activeTabID: UUID?
     @Published public var isShowingTabSwitcher: Bool = false
@@ -282,6 +284,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         self.customSearchEngines = initialSettings.customSearchEngines
         self.browserHomepage = initialSettings.browserHomepage
         self.restoreTabsOnLaunch = initialSettings.restoreTabsOnLaunch
+        self.quickAccessShortcuts = quickAccessStore.load()
         self.readerSettings = BrowserReaderSettings(
             theme: initialSettings.readerTheme,
             fontFamily: initialSettings.readerFontFamily,
@@ -485,6 +488,37 @@ public final class BrowserViewModel: NSObject, ObservableObject {
             return builtIn.urlTemplate
         }
         return selectedSearchEngine.urlTemplate
+    }
+
+    // MARK: - Quick Access Management
+
+    public func addQuickAccessShortcut(name: String, url: URL, faviconURL: URL? = nil) {
+        quickAccessStore.add(name: name, url: url, faviconURL: faviconURL)
+        self.quickAccessShortcuts = quickAccessStore.load()
+    }
+
+    public func updateQuickAccessShortcut(_ shortcut: QuickAccessShortcut) {
+        quickAccessStore.update(shortcut)
+        self.quickAccessShortcuts = quickAccessStore.load()
+    }
+
+    public func deleteQuickAccessShortcut(id: String) {
+        quickAccessStore.delete(id: id)
+        self.quickAccessShortcuts = quickAccessStore.load()
+    }
+
+    public func moveQuickAccessShortcut(id: String, direction: QuickAccessMoveDirection) {
+        quickAccessStore.move(id: id, direction: direction)
+        self.quickAccessShortcuts = quickAccessStore.load()
+    }
+
+    public func moveQuickAccessShortcuts(fromOffsets source: IndexSet, toOffset destination: Int) {
+        quickAccessStore.move(fromOffsets: source, toOffset: destination)
+        self.quickAccessShortcuts = quickAccessStore.load()
+    }
+
+    public func reloadQuickAccessShortcuts() {
+        self.quickAccessShortcuts = quickAccessStore.load()
     }
 
     public func openDownloads() {
@@ -4334,6 +4368,14 @@ public struct BrowserView: View {
 
 public struct BrowserHomeView: View {
     @ObservedObject public var viewModel: BrowserViewModel
+    @State private var isShowingAddSheet: Bool = false
+    @State private var editingShortcut: QuickAccessShortcut? = nil
+    @State private var shortcutToDelete: QuickAccessShortcut? = nil
+    @State private var isShowingDeleteConfirm: Bool = false
+
+    private let columns = [
+        GridItem(.adaptive(minimum: 70, maximum: 90), spacing: 14)
+    ]
 
     public var body: some View {
         ScrollView {
@@ -4360,45 +4402,65 @@ public struct BrowserHomeView: View {
                         .padding(.horizontal, 24)
                 }
 
-                // Quick Links Grid
-                VStack(alignment: .leading, spacing: 12) {
-                    Text("Quick Access")
-                        .font(.headline)
-                        .padding(.horizontal, 16)
+                // Quick Access Section (Speed Dial)
+                VStack(alignment: .leading, spacing: 14) {
+                    HStack {
+                        Text("Quick Access")
+                            .font(.headline)
+                            .foregroundColor(.primary)
 
-                    LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
-                        ForEach(BrowserQuickLink.defaults) { link in
-                            Button {
-                                if let url = URL(string: link.urlString) {
-                                    viewModel.load(url: url)
-                                }
-                            } label: {
-                                HStack(spacing: 12) {
-                                    Image(systemName: link.systemImage)
-                                        .font(.system(size: 24))
-                                        .foregroundColor(.blue)
-                                        .frame(width: 32)
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text(link.title)
-                                            .font(.subheadline.weight(.semibold))
-                                            .foregroundColor(.primary)
-                                            .lineLimit(1)
-                                        Text(link.subtitle)
-                                            .font(.caption2)
-                                            .foregroundColor(.secondary)
-                                            .lineLimit(1)
-                                    }
-                                    Spacer(minLength: 0)
-                                }
-                                .padding(12)
-                                #if canImport(UIKit)
-                                .background(Color(UIColor.secondarySystemBackground))
-                                #else
-                                .background(Color.secondary.opacity(0.15))
-                                #endif
-                                .cornerRadius(12)
+                        Spacer()
+
+                        Button {
+                            isShowingAddSheet = true
+                        } label: {
+                            HStack(spacing: 4) {
+                                Image(systemName: "plus")
+                                Text("Add")
                             }
-                            .buttonStyle(PlainButtonStyle())
+                            .font(.caption.weight(.semibold))
+                            .foregroundColor(.blue)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 4)
+                            #if canImport(UIKit)
+                            .background(Color(UIColor.secondarySystemBackground))
+                            #else
+                            .background(Color.secondary.opacity(0.12))
+                            #endif
+                            .cornerRadius(12)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    .padding(.horizontal, 16)
+
+                    LazyVGrid(columns: columns, spacing: 16) {
+                        ForEach(viewModel.quickAccessShortcuts) { shortcut in
+                            QuickAccessItemView(
+                                shortcut: shortcut,
+                                onTap: {
+                                    viewModel.load(url: shortcut.url)
+                                },
+                                onOpenInNewTab: {
+                                    viewModel.createNewTab(with: shortcut.url)
+                                },
+                                onEdit: {
+                                    editingShortcut = shortcut
+                                },
+                                onDelete: {
+                                    shortcutToDelete = shortcut
+                                    isShowingDeleteConfirm = true
+                                },
+                                onMoveLeft: {
+                                    viewModel.moveQuickAccessShortcut(id: shortcut.id, direction: .left)
+                                },
+                                onMoveRight: {
+                                    viewModel.moveQuickAccessShortcut(id: shortcut.id, direction: .right)
+                                }
+                            )
+                        }
+
+                        QuickAccessAddButtonCell {
+                            isShowingAddSheet = true
                         }
                     }
                     .padding(.horizontal, 16)
@@ -4427,6 +4489,33 @@ public struct BrowserHomeView: View {
                 .padding(.horizontal, 16)
                 .padding(.bottom, 24)
             }
+        }
+        .sheet(isPresented: $isShowingAddSheet) {
+            QuickAccessEditSheet { name, url in
+                viewModel.addQuickAccessShortcut(name: name, url: url)
+            }
+        }
+        .sheet(item: $editingShortcut) { shortcut in
+            QuickAccessEditSheet(editingShortcut: shortcut) { name, url in
+                var updated = shortcut
+                updated.name = name
+                updated.url = url
+                viewModel.updateQuickAccessShortcut(updated)
+            }
+        }
+        .confirmationDialog(
+            "Delete '\(shortcutToDelete?.name ?? "Shortcut")'?",
+            isPresented: $isShowingDeleteConfirm,
+            titleVisibility: .visible
+        ) {
+            Button("Delete", role: .destructive) {
+                if let shortcut = shortcutToDelete {
+                    viewModel.deleteQuickAccessShortcut(id: shortcut.id)
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This shortcut will be removed from your Quick Access page. Your bookmarks and browsing history will not be affected.")
         }
     }
 }
