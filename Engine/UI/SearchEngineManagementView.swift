@@ -380,11 +380,13 @@ public struct AddOrEditSearchEngineSheet: View {
                     }
                 }
                 ToolbarItem(placement: .navigationBarTrailing) {
-                    Button("Save") {
+                    Button {
                         save()
+                    } label: {
+                        Text("Save")
+                            .font(.body.weight(.bold))
                     }
                     .disabled(!isValid)
-                    .bold()
                 }
                 #else
                 ToolbarItem {

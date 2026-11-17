@@ -48,35 +48,53 @@ final class SearchEngineTests: XCTestCase {
 
     // MARK: - 3. URL Template Validation
 
+    private func assertValidationSuccess(_ template: String, file: StaticString = #file, line: UInt = #line) {
+        switch SearchURLBuilder.validateTemplate(template) {
+        case .success:
+            break
+        case .failure(let error):
+            XCTFail("Expected success for '\(template)', but got error: \(error)", file: file, line: line)
+        }
+    }
+
+    private func assertValidationFailure(_ template: String, expected: SearchURLValidationError, file: StaticString = #file, line: UInt = #line) {
+        switch SearchURLBuilder.validateTemplate(template) {
+        case .success:
+            XCTFail("Expected failure for '\(template)', but succeeded", file: file, line: line)
+        case .failure(let error):
+            XCTAssertEqual(error, expected, file: file, line: line)
+        }
+    }
+
     func testTemplateValidation_Success() {
-        XCTAssertEqual(SearchURLBuilder.validateTemplate("https://kagi.com/search?q=%s"), .success(()))
-        XCTAssertEqual(SearchURLBuilder.validateTemplate("https://www.ecosia.org/search?method=index&q=%s&addon=opensearch"), .success(()))
-        XCTAssertEqual(SearchURLBuilder.validateTemplate("https://github.com/search?q=%s&type=repositories"), .success(()))
+        assertValidationSuccess("https://kagi.com/search?q=%s")
+        assertValidationSuccess("https://www.ecosia.org/search?method=index&q=%s&addon=opensearch")
+        assertValidationSuccess("https://github.com/search?q=%s&type=repositories")
     }
 
     func testTemplateValidation_Failures() {
         // Empty or whitespace
-        XCTAssertEqual(SearchURLBuilder.validateTemplate(""), .failure(.emptyTemplate))
-        XCTAssertEqual(SearchURLBuilder.validateTemplate("   \t  "), .failure(.emptyTemplate))
+        assertValidationFailure("", expected: .emptyTemplate)
+        assertValidationFailure("   \t  ", expected: .emptyTemplate)
 
         // Insecure scheme (HTTP, FTP, file, javascript)
-        XCTAssertEqual(SearchURLBuilder.validateTemplate("http://example.com/search?q=%s"), .failure(.missingHTTPS))
-        XCTAssertEqual(SearchURLBuilder.validateTemplate("ftp://example.com/search?q=%s"), .failure(.missingHTTPS))
-        XCTAssertEqual(SearchURLBuilder.validateTemplate("javascript:alert(%s)"), .failure(.missingHTTPS))
+        assertValidationFailure("http://example.com/search?q=%s", expected: .missingHTTPS)
+        assertValidationFailure("ftp://example.com/search?q=%s", expected: .missingHTTPS)
+        assertValidationFailure("javascript:alert(%s)", expected: .missingHTTPS)
 
         // Missing %s placeholder
-        XCTAssertEqual(SearchURLBuilder.validateTemplate("https://kagi.com/search?q="), .failure(.missingPlaceholder))
+        assertValidationFailure("https://kagi.com/search?q=", expected: .missingPlaceholder)
 
         // Multiple %s placeholders
-        XCTAssertEqual(SearchURLBuilder.validateTemplate("https://kagi.com/search?q=%s&alt=%s"), .failure(.multiplePlaceholders))
+        assertValidationFailure("https://kagi.com/search?q=%s&alt=%s", expected: .multiplePlaceholders)
 
         // Invalid or missing host
-        XCTAssertEqual(SearchURLBuilder.validateTemplate("https:///search?q=%s"), .failure(.invalidHost))
-        XCTAssertEqual(SearchURLBuilder.validateTemplate("https://localhost/search?q=%s"), .failure(.invalidHost))
+        assertValidationFailure("https:///search?q=%s", expected: .invalidHost)
+        assertValidationFailure("https://localhost/search?q=%s", expected: .invalidHost)
 
         // Control characters or newlines
-        XCTAssertEqual(SearchURLBuilder.validateTemplate("https://example.com/search?q=%s\n"), .failure(.invalidCharacters))
-        XCTAssertEqual(SearchURLBuilder.validateTemplate("https://example.com/search?q=%s\u{0000}"), .failure(.invalidCharacters))
+        assertValidationFailure("https://example.com/search?q=%s\n", expected: .invalidCharacters)
+        assertValidationFailure("https://example.com/search?q=%s\u{0000}", expected: .invalidCharacters)
     }
 
     // MARK: - 4. Search URL Construction & Query Percent Encoding
