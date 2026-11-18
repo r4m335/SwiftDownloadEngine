@@ -1576,6 +1576,7 @@ public actor StreamingDownloadOrchestrator {
 
         var sawUnsupportedEncryption = false
         var lastPlanningError: Error? = nil
+        var deferredSampleAESSelection: ResolvedHLSSelection? = nil
 
         for (index, variant) in rankedVariants.enumerated() {
             guard !Task.isCancelled else {
@@ -1831,7 +1832,7 @@ public actor StreamingDownloadOrchestrator {
                 ]
             )
 
-            return ResolvedHLSSelection(
+            let selection = ResolvedHLSSelection(
                 mediaPlaylist: parsedChild,
                 mediaURL: subResponse.finalURL,
                 selectedVariant: variant,
@@ -1840,6 +1841,22 @@ public actor StreamingDownloadOrchestrator {
                 audioPlan: audioPlan,
                 selectedSubtitleRendition: selectedSubtitleRendition
             )
+
+            let isSampleAES = parsedChild.segments.contains { $0.encryption?.classification == .sampleEncrypted }
+            if isSampleAES && rankedVariants.count > 1 && index < rankedVariants.count - 1 {
+                if deferredSampleAESSelection == nil {
+                    deferredSampleAESSelection = selection
+                }
+                PipelineLogger.shared.log("[HLS Pipeline] \(variantDesc) uses Sample-AES. Deferring in preference of potential Clear/AES-128 variants...")
+                continue
+            }
+
+            return selection
+        }
+
+        if let deferred = deferredSampleAESSelection {
+            PipelineLogger.shared.log("[HLS Pipeline] No Clear or AES-128 variants available; proceeding with compatible Sample-AES variant.")
+            return deferred
         }
 
         if sawUnsupportedEncryption {
