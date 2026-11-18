@@ -4444,7 +4444,8 @@ public struct BrowserView: View {
             .disabled(viewModel.currentURL == nil)
         } label: {
             ZStack(alignment: .topTrailing) {
-                Image(systemName: "ellipsis.vertical")
+                Image(systemName: "ellipsis")
+                    .rotationEffect(.degrees(90))
                     .font(.system(size: 18, weight: .semibold))
 
                 // Priority Badge Indicator: Blue for active downloads

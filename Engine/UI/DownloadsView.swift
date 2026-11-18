@@ -1193,6 +1193,34 @@ public struct DownloadMenuContent: View {
     }
 }
 
+// MARK: - Vertical Three-Dot Action Icon
+
+public struct VerticalThreeDotsButtonLabel: View {
+    public init() {}
+
+    public var body: some View {
+        ZStack {
+            Circle()
+                .fill(Color.secondary.opacity(0.2))
+                .frame(width: 32, height: 32)
+
+            VStack(spacing: 3) {
+                Circle()
+                    .fill(Color.primary)
+                    .frame(width: 3.5, height: 3.5)
+                Circle()
+                    .fill(Color.primary)
+                    .frame(width: 3.5, height: 3.5)
+                Circle()
+                    .fill(Color.primary)
+                    .frame(width: 3.5, height: 3.5)
+            }
+        }
+        .frame(width: 32, height: 32)
+        .contentShape(Circle())
+    }
+}
+
 // MARK: - Unified Transfer Row View
 
 public struct UnifiedTransferRowView: View {
@@ -1289,15 +1317,7 @@ public struct UnifiedTransferRowView: View {
                             onDeleteFile: onDeleteFile
                         )
                     } label: {
-                        ZStack {
-                            Circle()
-                                .fill(Color.secondary.opacity(0.2))
-                            Image(systemName: "ellipsis.vertical")
-                                .font(.system(size: 14, weight: .bold))
-                                .foregroundColor(.primary)
-                        }
-                        .frame(width: 32, height: 32)
-                        .contentShape(Circle())
+                        VerticalThreeDotsButtonLabel()
                     }
                     .buttonStyle(BorderlessButtonStyle())
                     .accessibilityLabel("Transfer actions for \(transfer.name)")
@@ -1665,15 +1685,7 @@ public struct DownloadRowView: View {
                             onDeleteFile: onDeleteFile
                         )
                     } label: {
-                        ZStack {
-                            Circle()
-                                .fill(Color.secondary.opacity(0.2))
-                            Image(systemName: "ellipsis.vertical")
-                                .font(.system(size: 14, weight: .bold))
-                                .foregroundColor(.primary)
-                        }
-                        .frame(width: 32, height: 32)
-                        .contentShape(Circle())
+                        VerticalThreeDotsButtonLabel()
                     }
                     .buttonStyle(BorderlessButtonStyle())
                     .accessibilityLabel("Download actions for \(download.destinationURL.lastPathComponent)")
