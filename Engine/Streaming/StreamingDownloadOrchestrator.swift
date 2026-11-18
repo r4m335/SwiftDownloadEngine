@@ -1667,12 +1667,21 @@ public actor StreamingDownloadOrchestrator {
             if parsedChild.playlistType == .master {
                 // Nested master playlist: recursively evaluate compatible variant
                 do {
-                    return try await resolveCompatibleHLSVariant(
+                    let nestedSelection = try await resolveCompatibleHLSVariant(
                         manifest: parsedChild,
                         baseURL: subResponse.finalURL,
                         candidate: variantCandidate,
                         depth: depth + 1
                     )
+                    let isNestedSampleAES = nestedSelection.mediaPlaylist.segments.contains { $0.encryption?.classification == .sampleEncrypted }
+                    if isNestedSampleAES && rankedVariants.count > 1 && index < rankedVariants.count - 1 {
+                        if deferredSampleAESSelection == nil {
+                            deferredSampleAESSelection = nestedSelection
+                        }
+                        PipelineLogger.shared.log("[HLS Pipeline] \(variantDesc) resolved to Sample-AES nested variant. Deferring in preference of potential Clear/AES-128 variants...")
+                        continue
+                    }
+                    return nestedSelection
                 } catch StreamingDownloadOrchestratorError.unsupportedEncryption {
                     sawUnsupportedEncryption = true
                     PipelineLogger.shared.log("[HLS Pipeline] Nested master playlist rejected due to unsupported encryption. Trying next variant...")
