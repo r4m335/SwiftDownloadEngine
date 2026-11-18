@@ -723,6 +723,23 @@ The shared layer centralizes:
   - BitTorrent in-progress media playback routes directly to `LIDTorrentStreamAdapter` with moov atom prioritization.
   - Full automated test suite passes with zero regressions.
 
+### Milestone 9.5: Browser & History Completion [Completed]
+- **Objective:** Complete the browser bookmarks, history, privacy isolation, and desktop mode functionality in LID Download Manager, delivering full bookmark CRUD, nested folder management with circular hierarchy protection, Netscape Bookmark HTML format export and import, URL normalization duplicate detection, searchable chronological browsing history, time-range selective history clearing, strict non-persistent incognito isolation, and per-tab desktop mode retention.
+- **Implementation Scope:**
+  - `Engine/Browser/BrowserBookmarks.swift`: Added `BrowserBookmarkError` enum, `didChangeNotification`, `findDuplicate(for:)`, URL normalization via `BookmarkURLNormalizer`, `moveBookmark(id:toFolderID:)`, `renameFolder(id:newTitle:)`, `canMoveFolder(id:toParentID:)` with circular reference protection, `moveFolder(id:toParentID:) throws`, recursive `deleteFolder(id:)`, and corrupt JSON backup recovery.
+  - `Engine/Browser/BrowserBookmarkImportExport.swift`: Implemented `BookmarkImportSummary`, `BookmarkURLNormalizer`, `BrowserBookmarkExporter` (standard Netscape Bookmark File Format HTML with `<H1>`, `<DL><p>`, `<DT><H3>`, `<DT><A HREF="...">`, entity escaping, and timestamps), and `BrowserBookmarkImporter` (folder hierarchy parsing via stack, entity unescaping, numeric HTML entities `&#DDD;`, URL scheme validation, duplicate checking).
+  - `Engine/Browser/BrowserHistory.swift`: Added `BrowserHistoryStore.didChangeNotification`, notification broadcast in `save()`, corrupt JSON recovery in `load()` with automatic timestamped backup, and time-range selective clearing (`clearHistory(since:)`).
+  - `Engine/UI/BrowserBookmarksAndHistoryView.swift`: Integrated reactive store listening (`.onReceive` for store change notifications), full bookmark edit sheet (title, URL, folder picker), folder rename and move sheets, folder deletion confirmation, duplicate bookmark warning alert, Netscape HTML export via native `BrowserShareSheet`, Netscape HTML import sheet with clipboard integration and summary metrics alert, and time-range history clearing dialog.
+  - `Engine/Browser/BrowserTabs.swift` & `BrowserTabPreviewCache.swift`: Verified and enforced per-tab `isDesktopMode` retention, `isIncognito` isolation with `WKWebsiteDataStore.nonPersistent()`, and strict memory-only thumbnail previews purged on tab closure.
+  - `Tests/BrowserBookmarksAndHistoryTests.swift`: Comprehensive unit test coverage for URL normalization, duplicate detection, folder rename and movement, circular hierarchy prevention, Netscape HTML export/import, round-trip fidelity, corrupt JSON recovery, history time-range clearing, per-tab desktop mode retention, and change notification broadcasts.
+- **Completion Criteria & Verification:**
+  - Full CRUD operations on bookmarks and arbitrary nested folders.
+  - Circular folder movement prevention guarantees tree integrity.
+  - Netscape HTML bookmarks import and export interoperate with Safari, Chrome, and Firefox.
+  - History entries support chronological grouping, search, deduplication, and time-range clearing.
+  - Private tabs maintain strict ephemeral isolation with zero disk writes.
+  - Full automated test suite passes with zero regressions.
+
 ---
 
 ## 2. Summary Dependency Graph

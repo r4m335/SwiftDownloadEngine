@@ -178,4 +178,261 @@ final class BrowserBookmarksAndHistoryTests: XCTestCase {
             XCTAssertEqual(decoded?.version, AppSettings.currentVersion)
         }
     }
+
+    // MARK: - Bookmark URL Normalization & Duplicate Detection
+
+    func testBookmarkDuplicateDetectionAndURLNormalization() {
+        let storageURL = tempDirectory.appendingPathComponent("test_dup_bookmarks.json")
+        let store = BrowserBookmarkStore(customStorageURL: storageURL)
+
+        let originalURL = URL(string: "https://apple.com/iphone/")!
+        store.addBookmark(title: "Apple iPhone", url: originalURL)
+
+        // Trailing slash difference
+        let trailingSlashVariant = URL(string: "https://apple.com/iphone")!
+        XCTAssertTrue(store.isBookmarked(url: trailingSlashVariant))
+        XCTAssertEqual(store.findDuplicate(for: trailingSlashVariant)?.title, "Apple iPhone")
+
+        // Host casing difference
+        let uppercaseVariant = URL(string: "HTTPS://APPLE.COM/iphone/")!
+        XCTAssertTrue(store.isBookmarked(url: uppercaseVariant))
+        XCTAssertEqual(store.findDuplicate(for: uppercaseVariant)?.title, "Apple iPhone")
+
+        // Different path -> not duplicate
+        let differentURL = URL(string: "https://apple.com/mac")!
+        XCTAssertFalse(store.isBookmarked(url: differentURL))
+        XCTAssertNil(store.findDuplicate(for: differentURL))
+    }
+
+    // MARK: - Folder Movement, Rename & Circular Hierarchy Protection
+
+    func testFolderRenameMovementAndCircularProtection() throws {
+        let storageURL = tempDirectory.appendingPathComponent("test_folder_hierarchy.json")
+        let store = BrowserBookmarkStore(customStorageURL: storageURL)
+
+        let rootA = store.createFolder(title: "Root A")
+        let rootB = store.createFolder(title: "Root B")
+        let childB1 = store.createFolder(title: "Child B1", parentFolderID: rootB.id)
+        let subChildB2 = store.createFolder(title: "SubChild B2", parentFolderID: childB1.id)
+
+        // Test rename
+        store.renameFolder(id: rootA.id, newTitle: "Engineering")
+        XCTAssertEqual(store.allFolders.first(where: { $0.id == rootA.id })?.title, "Engineering")
+
+        // Moving to self must be disallowed
+        XCTAssertFalse(store.canMoveFolder(id: rootB.id, toParentID: rootB.id))
+
+        // Moving into descendant (circular) must be disallowed
+        XCTAssertFalse(store.canMoveFolder(id: rootB.id, toParentID: childB1.id))
+        XCTAssertFalse(store.canMoveFolder(id: rootB.id, toParentID: subChildB2.id))
+
+        // Moving to unrelated or ancestor must be allowed
+        XCTAssertTrue(store.canMoveFolder(id: childB1.id, toParentID: rootA.id))
+        XCTAssertTrue(store.canMoveFolder(id: childB1.id, toParentID: nil))
+
+        // Throw on circular move
+        XCTAssertThrowsError(try store.moveFolder(id: rootB.id, toParentID: subChildB2.id)) { error in
+            XCTAssertEqual(error as? BrowserBookmarkError, BrowserBookmarkError.circularFolderReference)
+        }
+
+        // Valid move
+        try store.moveFolder(id: childB1.id, toParentID: rootA.id)
+        XCTAssertEqual(store.allFolders.first(where: { $0.id == childB1.id })?.parentFolderID, rootA.id)
+    }
+
+    // MARK: - Netscape Bookmark HTML Export & Import
+
+    func testBookmarkNetscapeHTMLExport() {
+        let storageURL = tempDirectory.appendingPathComponent("test_export_bookmarks.json")
+        let store = BrowserBookmarkStore(customStorageURL: storageURL)
+
+        let folder = store.createFolder(title: "Development & Tools")
+        store.addBookmark(title: "Google <Search> & More", url: URL(string: "https://google.com?q=test&lang=en")!, folderID: folder.id)
+
+        let html = BrowserBookmarkExporter.exportToHTML(store: store)
+
+        XCTAssertTrue(html.contains("<!DOCTYPE NETSCAPE-Bookmark-file-1>"))
+        XCTAssertTrue(html.contains("<TITLE>Bookmarks</TITLE>"))
+        XCTAssertTrue(html.contains("<H1>Bookmarks</H1>"))
+        XCTAssertTrue(html.contains("<DL><p>"))
+        XCTAssertTrue(html.contains("Development &amp; Tools"))
+        XCTAssertTrue(html.contains("Google &lt;Search&gt; &amp; More"))
+        XCTAssertTrue(html.contains("https://google.com?q=test&amp;lang=en"))
+    }
+
+    func testBookmarkNetscapeHTMLImport() {
+        let storageURL = tempDirectory.appendingPathComponent("test_import_bookmarks.json")
+        let store = BrowserBookmarkStore(customStorageURL: storageURL)
+
+        let rawHTML = """
+        <!DOCTYPE NETSCAPE-Bookmark-file-1>
+        <TITLE>Bookmarks</TITLE>
+        <H1>Bookmarks</H1>
+        <DL><p>
+            <DT><H3 ADD_DATE="1600000000">Imported Dev</H3>
+            <DL><p>
+                <DT><A HREF="https://swift.org" ADD_DATE="1600000001">Swift Language</A>
+                <DT><A HREF="https://rust-lang.org">Rust &amp; Systems</A>
+            </DL><p>
+            <DT><A HREF="https://wikipedia.org">Wikipedia</A>
+            <DT><A HREF="javascript:alert(1)">Invalid Scheme Script</A>
+        </DL><p>
+        """
+
+        let summary = BrowserBookmarkImporter.importHTMLString(rawHTML, store: store, skipDuplicates: true)
+
+        XCTAssertEqual(summary.totalFound, 4)
+        XCTAssertEqual(summary.importedFoldersCount, 1)
+        XCTAssertEqual(summary.importedBookmarksCount, 2) // swift.org, rust-lang.org. wikipedia.org is already default duplicate
+        XCTAssertEqual(summary.duplicateCount, 1) // wikipedia.org
+        XCTAssertEqual(summary.skippedCount, 2) // 1 invalid javascript: scheme + 1 duplicate wikipedia
+
+        XCTAssertTrue(store.isBookmarked(url: URL(string: "https://swift.org")!))
+        XCTAssertTrue(store.isBookmarked(url: URL(string: "https://rust-lang.org")!))
+        XCTAssertEqual(store.allBookmarks.first(where: { $0.url.absoluteString == "https://rust-lang.org" })?.title, "Rust & Systems")
+    }
+
+    func testBookmarkRoundTripExportAndImport() {
+        let storeAURL = tempDirectory.appendingPathComponent("storeA.json")
+        let storeBURL = tempDirectory.appendingPathComponent("storeB.json")
+
+        let storeA = BrowserBookmarkStore(customStorageURL: storeAURL)
+        let f1 = storeA.createFolder(title: "Favorites")
+        storeA.addBookmark(title: "GitHub", url: URL(string: "https://github.com")!, folderID: f1.id)
+        storeA.addBookmark(title: "Substack", url: URL(string: "https://substack.com")!, folderID: nil)
+
+        let exportedHTML = BrowserBookmarkExporter.exportToHTML(store: storeA)
+
+        // Fresh store B (clear default bookmarks for clean comparison)
+        let storeB = BrowserBookmarkStore(customStorageURL: storeBURL)
+        for b in storeB.allBookmarks { storeB.deleteBookmark(id: b.id) }
+
+        let summary = BrowserBookmarkImporter.importHTMLString(exportedHTML, store: storeB, skipDuplicates: false)
+
+        XCTAssertEqual(summary.importedBookmarksCount, 2)
+        XCTAssertEqual(summary.importedFoldersCount, 1)
+        XCTAssertTrue(storeB.isBookmarked(url: URL(string: "https://github.com")!))
+        XCTAssertTrue(storeB.isBookmarked(url: URL(string: "https://substack.com")!))
+    }
+
+    // MARK: - Corrupt JSON Recovery Tests
+
+    func testHistoryCorruptFileRecovery() {
+        let storageURL = tempDirectory.appendingPathComponent("corrupt_history.json")
+        try? "INVALID_JSON_CORRUPTED_BYTES{{{".data(using: .utf8)?.write(to: storageURL)
+
+        let store = BrowserHistoryStore(customStorageURL: storageURL)
+        XCTAssertEqual(store.allEntries.count, 0, "Corrupt history file must load cleanly as empty")
+
+        // Verify that the corrupt file was renamed
+        let files = (try? FileManager.default.contentsOfDirectory(atPath: tempDirectory.path)) ?? []
+        XCTAssertTrue(files.contains(where: { $0.contains("corrupt_history.corrupt") }), "Corrupt file should be backed up with timestamp suffix")
+    }
+
+    func testBookmarkCorruptFileRecovery() {
+        let storageURL = tempDirectory.appendingPathComponent("corrupt_bookmarks.json")
+        try? "NOT_A_VALID_BOOKMARK_JSON_PAYLOAD".data(using: .utf8)?.write(to: storageURL)
+
+        let store = BrowserBookmarkStore(customStorageURL: storageURL)
+        // Corrupt file recovered: default initial bookmarks restored
+        XCTAssertFalse(store.allBookmarks.isEmpty)
+        XCTAssertTrue(store.allBookmarks.contains(where: { $0.title == "DuckDuckGo" }))
+
+        let files = (try? FileManager.default.contentsOfDirectory(atPath: tempDirectory.path)) ?? []
+        XCTAssertTrue(files.contains(where: { $0.contains("corrupt_bookmarks.corrupt") }))
+    }
+
+    // MARK: - History Time-Range Selective Clearing
+
+    func testHistoryTimeRangeClearing() {
+        let storageURL = tempDirectory.appendingPathComponent("test_time_clear_history.json")
+        let store = BrowserHistoryStore(customStorageURL: storageURL)
+
+        let calendar = Calendar.current
+        let now = Date()
+        let halfHourAgo = calendar.date(byAdding: .minute, value: -30, to: now)!
+        let threeHoursAgo = calendar.date(byAdding: .hour, value: -3, to: now)!
+        let twoDaysAgo = calendar.date(byAdding: .day, value: -2, to: now)!
+
+        let entry1 = BrowserHistoryEntry(title: "Recent", url: URL(string: "https://recent.com")!, visitDate: halfHourAgo)
+        let entry2 = BrowserHistoryEntry(title: "Earlier Today", url: URL(string: "https://earlier.com")!, visitDate: threeHoursAgo)
+        let entry3 = BrowserHistoryEntry(title: "Old", url: URL(string: "https://old.com")!, visitDate: twoDaysAgo)
+
+        // Seed entries directly via persistence payload
+        if let data = try? JSONEncoder().encode([entry1, entry2, entry3]) {
+            try? data.write(to: storageURL)
+        }
+        store.load()
+        XCTAssertEqual(store.allEntries.count, 3)
+
+        // 1. Clear last hour -> entry1 removed
+        let oneHourCutoff = calendar.date(byAdding: .hour, value: -1, to: now)!
+        store.clearHistory(since: oneHourCutoff)
+        XCTAssertEqual(store.allEntries.count, 2)
+        XCTAssertFalse(store.allEntries.contains(where: { $0.title == "Recent" }))
+        XCTAssertTrue(store.allEntries.contains(where: { $0.title == "Earlier Today" }))
+
+        // 2. Clear today -> entry2 removed, entry3 remains
+        let startOfToday = calendar.startOfDay(for: now)
+        store.clearHistory(since: startOfToday)
+        XCTAssertEqual(store.allEntries.count, 1)
+        XCTAssertEqual(store.allEntries.first?.title, "Old")
+
+        // 3. Clear all -> entry3 removed
+        store.clearAllHistory()
+        XCTAssertEqual(store.allEntries.count, 0)
+    }
+
+    // MARK: - Desktop Mode Per-Tab State Retention
+
+    func testDesktopModePerTabStateRetention() {
+        var manager = BrowserTabManager()
+        let tab1ID = manager.tabs[0].id
+        XCTAssertFalse(manager.activeTab?.isDesktopMode ?? true)
+
+        let tab2ID = manager.createTab(select: true, isDesktopMode: true)
+        XCTAssertTrue(manager.activeTab?.isDesktopMode ?? false)
+
+        manager.selectTab(id: tab1ID)
+        XCTAssertFalse(manager.activeTab?.isDesktopMode ?? true)
+
+        manager.selectTab(id: tab2ID)
+        XCTAssertTrue(manager.activeTab?.isDesktopMode ?? false)
+    }
+
+    // MARK: - Store Change Notification Broadcast
+
+    func testStoreChangeNotificationsBroadcast() {
+        let bURL = tempDirectory.appendingPathComponent("notif_b.json")
+        let hURL = tempDirectory.appendingPathComponent("notif_h.json")
+
+        let bStore = BrowserBookmarkStore(customStorageURL: bURL)
+        let hStore = BrowserHistoryStore(customStorageURL: hURL)
+
+        let bExpectation = expectation(description: "Bookmark didChangeNotification")
+        let bObserver = NotificationCenter.default.addObserver(
+            forName: BrowserBookmarkStore.didChangeNotification,
+            object: nil,
+            queue: .main
+        ) { _ in
+            bExpectation.fulfill()
+        }
+
+        bStore.addBookmark(title: "Test", url: URL(string: "https://test.org")!)
+        wait(for: [bExpectation], timeout: 2.0)
+        NotificationCenter.default.removeObserver(bObserver)
+
+        let hExpectation = expectation(description: "History didChangeNotification")
+        let hObserver = NotificationCenter.default.addObserver(
+            forName: BrowserHistoryStore.didChangeNotification,
+            object: nil,
+            queue: .main
+        ) { _ in
+            hExpectation.fulfill()
+        }
+
+        hStore.recordVisit(url: URL(string: "https://test.org")!, title: "Test", isIncognito: false)
+        wait(for: [hExpectation], timeout: 2.0)
+        NotificationCenter.default.removeObserver(hObserver)
+    }
 }

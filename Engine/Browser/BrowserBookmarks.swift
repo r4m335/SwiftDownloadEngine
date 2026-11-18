@@ -50,8 +50,25 @@ public enum BrowserBookmarkSort: String, CaseIterable, Identifiable, Sendable {
     public var id: String { rawValue }
 }
 
+public enum BrowserBookmarkError: LocalizedError, Equatable, Sendable {
+    case duplicateURL(existingID: UUID)
+    case circularFolderReference
+    case folderNotFound
+    case bookmarkNotFound
+
+    public var errorDescription: String? {
+        switch self {
+        case .duplicateURL: return "A bookmark for this URL already exists."
+        case .circularFolderReference: return "Cannot move a folder into itself or one of its subfolders."
+        case .folderNotFound: return "Target folder not found."
+        case .bookmarkNotFound: return "Bookmark not found."
+        }
+    }
+}
+
 public final class BrowserBookmarkStore: @unchecked Sendable {
     public static let shared = BrowserBookmarkStore()
+    public static let didChangeNotification = Notification.Name("BrowserBookmarkStoreDidChangeNotification")
 
     private let lock = NSLock()
     private var folders: [BrowserBookmarkFolder] = []
@@ -81,39 +98,69 @@ public final class BrowserBookmarkStore: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
 
-        guard let storageURL,
-              let data = try? Data(contentsOf: storageURL),
-              let payload = try? JSONDecoder().decode(BookmarkStoragePayload.self, from: data) else {
-            // Default initial bookmark
-            if bookmarks.isEmpty {
-                bookmarks = [
-                    BrowserBookmarkItem(title: "DuckDuckGo", url: URL(string: "https://duckduckgo.com")!),
-                    BrowserBookmarkItem(title: "Wikipedia", url: URL(string: "https://www.wikipedia.org")!)
-                ]
-            }
+        guard let storageURL else {
+            setDefaultBookmarksIfNeeded()
             return
         }
-        self.folders = payload.folders
-        self.bookmarks = payload.bookmarks
+
+        guard FileManager.default.fileExists(atPath: storageURL.path) else {
+            setDefaultBookmarksIfNeeded()
+            return
+        }
+
+        do {
+            let data = try Data(contentsOf: storageURL)
+            let payload = try JSONDecoder().decode(BookmarkStoragePayload.self, from: data)
+            self.folders = payload.folders
+            self.bookmarks = payload.bookmarks
+        } catch {
+            let timestamp = Int(Date().timeIntervalSince1970)
+            let corruptURL = storageURL.deletingPathExtension()
+                .appendingPathExtension("corrupt.\(timestamp).json")
+            try? FileManager.default.moveItem(at: storageURL, to: corruptURL)
+            self.folders = []
+            self.bookmarks = []
+            setDefaultBookmarksIfNeeded()
+        }
+    }
+
+    private func setDefaultBookmarksIfNeeded() {
+        if bookmarks.isEmpty {
+            bookmarks = [
+                BrowserBookmarkItem(title: "DuckDuckGo", url: URL(string: "https://duckduckgo.com")!),
+                BrowserBookmarkItem(title: "Wikipedia", url: URL(string: "https://www.wikipedia.org")!)
+            ]
+        }
     }
 
     public func save() {
         lock.lock()
-        defer { lock.unlock() }
-
-        guard let storageURL else { return }
+        guard let storageURL else {
+            lock.unlock()
+            return
+        }
         let payload = BookmarkStoragePayload(folders: folders, bookmarks: bookmarks)
         if let data = try? JSONEncoder().encode(payload) {
             try? data.write(to: storageURL, options: .atomic)
+        }
+        lock.unlock()
+
+        DispatchQueue.main.async {
+            NotificationCenter.default.post(name: Self.didChangeNotification, object: self)
         }
     }
 
     // MARK: - Bookmark CRUD
 
     @discardableResult
-    public func addBookmark(title: String, url: URL, folderID: UUID? = nil) -> BrowserBookmarkItem {
+    public func addBookmark(
+        title: String,
+        url: URL,
+        folderID: UUID? = nil,
+        dateAdded: Date = Date()
+    ) -> BrowserBookmarkItem {
         lock.lock()
-        let item = BrowserBookmarkItem(title: title, url: url, folderID: folderID)
+        let item = BrowserBookmarkItem(title: title, url: url, folderID: folderID, dateAdded: dateAdded)
         bookmarks.append(item)
         lock.unlock()
         save()
@@ -131,6 +178,15 @@ public final class BrowserBookmarkStore: @unchecked Sendable {
         save()
     }
 
+    public func moveBookmark(id: UUID, toFolderID: UUID?) {
+        lock.lock()
+        if let index = bookmarks.firstIndex(where: { $0.id == id }) {
+            bookmarks[index].folderID = toFolderID
+        }
+        lock.unlock()
+        save()
+    }
+
     public func deleteBookmark(id: UUID) {
         lock.lock()
         bookmarks.removeAll(where: { $0.id == id })
@@ -138,21 +194,30 @@ public final class BrowserBookmarkStore: @unchecked Sendable {
         save()
     }
 
+    public func findDuplicate(for url: URL) -> BrowserBookmarkItem? {
+        lock.lock()
+        defer { lock.unlock() }
+        let target = BookmarkURLNormalizer.normalize(url)
+        return bookmarks.first {
+            BookmarkURLNormalizer.normalize($0.url) == target
+        }
+    }
+
     public func isBookmarked(url: URL) -> Bool {
         lock.lock()
         defer { lock.unlock() }
-        let clean = url.absoluteString.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let target = BookmarkURLNormalizer.normalize(url)
         return bookmarks.contains {
-            $0.url.absoluteString.trimmingCharacters(in: CharacterSet(charactersIn: "/")) == clean
+            BookmarkURLNormalizer.normalize($0.url) == target
         }
     }
 
     public func bookmark(for url: URL) -> BrowserBookmarkItem? {
         lock.lock()
         defer { lock.unlock() }
-        let clean = url.absoluteString.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let target = BookmarkURLNormalizer.normalize(url)
         return bookmarks.first {
-            $0.url.absoluteString.trimmingCharacters(in: CharacterSet(charactersIn: "/")) == clean
+            BookmarkURLNormalizer.normalize($0.url) == target
         }
     }
 
@@ -168,11 +233,51 @@ public final class BrowserBookmarkStore: @unchecked Sendable {
         return folder
     }
 
+    public func renameFolder(id: UUID, newTitle: String) {
+        let clean = newTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !clean.isEmpty else { return }
+        lock.lock()
+        if let index = folders.firstIndex(where: { $0.id == id }) {
+            folders[index].title = clean
+        }
+        lock.unlock()
+        save()
+    }
+
     public func updateFolder(id: UUID, title: String, parentFolderID: UUID?) {
         lock.lock()
         if let index = folders.firstIndex(where: { $0.id == id }) {
             folders[index].title = title
             folders[index].parentFolderID = parentFolderID
+        }
+        lock.unlock()
+        save()
+    }
+
+    public func canMoveFolder(id: UUID, toParentID targetParentID: UUID?) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let targetParentID else { return true }
+        if id == targetParentID { return false }
+
+        var current: UUID? = targetParentID
+        var visited = Set<UUID>()
+        while let p = current {
+            if p == id { return false }
+            if visited.contains(p) { return false }
+            visited.insert(p)
+            current = folders.first(where: { $0.id == p })?.parentFolderID
+        }
+        return true
+    }
+
+    public func moveFolder(id: UUID, toParentID targetParentID: UUID?) throws {
+        guard canMoveFolder(id: id, toParentID: targetParentID) else {
+            throw BrowserBookmarkError.circularFolderReference
+        }
+        lock.lock()
+        if let index = folders.firstIndex(where: { $0.id == id }) {
+            folders[index].parentFolderID = targetParentID
         }
         lock.unlock()
         save()

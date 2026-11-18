@@ -24,6 +24,7 @@ public struct BrowserHistoryEntry: Identifiable, Codable, Equatable, Sendable {
 
 public final class BrowserHistoryStore: @unchecked Sendable {
     public static let shared = BrowserHistoryStore()
+    public static let didChangeNotification = Notification.Name("BrowserHistoryStoreDidChangeNotification")
 
     private let lock = NSLock()
     private var entries: [BrowserHistoryEntry] = []
@@ -47,21 +48,35 @@ public final class BrowserHistoryStore: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
 
-        guard let storageURL,
-              let data = try? Data(contentsOf: storageURL),
-              let loaded = try? JSONDecoder().decode([BrowserHistoryEntry].self, from: data) else {
-            return
+        guard let storageURL else { return }
+        guard FileManager.default.fileExists(atPath: storageURL.path) else { return }
+
+        do {
+            let data = try Data(contentsOf: storageURL)
+            let loaded = try JSONDecoder().decode([BrowserHistoryEntry].self, from: data)
+            self.entries = loaded
+        } catch {
+            let timestamp = Int(Date().timeIntervalSince1970)
+            let corruptURL = storageURL.deletingPathExtension()
+                .appendingPathExtension("corrupt.\(timestamp).json")
+            try? FileManager.default.moveItem(at: storageURL, to: corruptURL)
+            self.entries = []
         }
-        self.entries = loaded
     }
 
     public func save() {
         lock.lock()
-        defer { lock.unlock() }
-
-        guard let storageURL else { return }
+        guard let storageURL else {
+            lock.unlock()
+            return
+        }
         if let data = try? JSONEncoder().encode(entries) {
             try? data.write(to: storageURL, options: .atomic)
+        }
+        lock.unlock()
+
+        DispatchQueue.main.async {
+            NotificationCenter.default.post(name: Self.didChangeNotification, object: self)
         }
     }
 

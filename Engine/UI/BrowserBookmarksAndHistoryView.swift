@@ -1,6 +1,10 @@
 #if canImport(SwiftUI)
 import SwiftUI
 
+#if canImport(UIKit)
+import UIKit
+#endif
+
 public struct BrowserBookmarksAndHistoryView: View {
     @ObservedObject public var viewModel: BrowserViewModel
     @Environment(\.dismiss) private var dismiss
@@ -16,15 +20,55 @@ public struct BrowserBookmarksAndHistoryView: View {
     @State private var currentFolderID: UUID? = nil
     @State private var folderPath: [BrowserBookmarkFolder] = []
     @State private var bookmarkSort: BrowserBookmarkSort = .dateAddedDesc
+    @State private var changeToken: UUID = UUID()
+
+    // Folder creation & rename
     @State private var isShowingNewFolderDialog: Bool = false
     @State private var newFolderTitle: String = ""
-    @State private var isShowingClearHistoryAlert: Bool = false
+    @State private var isShowingRenameFolderDialog: Bool = false
+    @State private var folderToRename: BrowserBookmarkFolder? = nil
+    @State private var renameFolderTitle: String = ""
+
+    // Folder move
+    @State private var isShowingMoveFolderSheet: Bool = false
+    @State private var folderToMove: BrowserBookmarkFolder? = nil
+    @State private var moveTargetParentID: UUID? = nil
+
+    // Folder delete alert
+    @State private var isShowingDeleteFolderAlert: Bool = false
+    @State private var folderToDelete: BrowserBookmarkFolder? = nil
+
+    // Bookmark edit
+    @State private var isShowingEditBookmarkSheet: Bool = false
+    @State private var bookmarkToEdit: BrowserBookmarkItem? = nil
+    @State private var editBookmarkTitle: String = ""
+    @State private var editBookmarkURLString: String = ""
+    @State private var editBookmarkFolderID: UUID? = nil
+
+    // Duplicate bookmark prompt
+    @State private var isShowingDuplicateAlert: Bool = false
+    @State private var pendingBookmark: (title: String, url: URL, folderID: UUID?)? = nil
+    @State private var duplicateExistingTitle: String = ""
+
+    // History clear
+    @State private var isShowingClearHistoryDialog: Bool = false
+
+    // Share Sheet
+    @State private var isShowingShareSheet: Bool = false
+    @State private var shareItems: [Any] = []
+
+    // Import / Export
+    @State private var isShowingImportSheet: Bool = false
+    @State private var importHTMLText: String = ""
+    @State private var isShowingImportSummaryAlert: Bool = false
+    @State private var importSummary: BookmarkImportSummary = BookmarkImportSummary()
 
     public init(viewModel: BrowserViewModel) {
         self.viewModel = viewModel
     }
 
     public var body: some View {
+        let _ = changeToken
         NavigationView {
             VStack(spacing: 0) {
                 Picker("View", selection: $selectedMode) {
@@ -60,6 +104,14 @@ public struct BrowserBookmarksAndHistoryView: View {
                     trailingToolbarItem
                 }
             }
+            // Listen for reactive store changes
+            .onReceive(NotificationCenter.default.publisher(for: BrowserBookmarkStore.didChangeNotification)) { _ in
+                changeToken = UUID()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: BrowserHistoryStore.didChangeNotification)) { _ in
+                changeToken = UUID()
+            }
+            // New Folder dialog
             .alert("New Folder", isPresented: $isShowingNewFolderDialog) {
                 TextField("Folder name", text: $newFolderTitle)
                 Button("Cancel", role: .cancel) { }
@@ -71,13 +123,88 @@ public struct BrowserBookmarksAndHistoryView: View {
             } message: {
                 Text("Enter a name for the new bookmark folder.")
             }
-            .alert("Clear Browsing History?", isPresented: $isShowingClearHistoryAlert) {
+            // Rename Folder dialog
+            .alert("Rename Folder", isPresented: $isShowingRenameFolderDialog) {
+                TextField("Folder name", text: $renameFolderTitle)
                 Button("Cancel", role: .cancel) { }
-                Button("Clear All", role: .destructive) {
-                    BrowserHistoryStore.shared.clearAllHistory()
+                Button("Save") {
+                    guard let folder = folderToRename else { return }
+                    let title = renameFolderTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !title.isEmpty else { return }
+                    BrowserBookmarkStore.shared.renameFolder(id: folder.id, newTitle: title)
+                    if let index = folderPath.firstIndex(where: { $0.id == folder.id }) {
+                        folderPath[index].title = title
+                    }
                 }
             } message: {
-                Text("This action will permanently delete all recorded browsing history. It cannot be undone.")
+                Text("Enter a new name for '\(folderToRename?.title ?? "Folder")'.")
+            }
+            // Delete Folder confirmation
+            .alert("Delete Folder?", isPresented: $isShowingDeleteFolderAlert) {
+                Button("Cancel", role: .cancel) { folderToDelete = nil }
+                Button("Delete", role: .destructive) {
+                    if let f = folderToDelete {
+                        BrowserBookmarkStore.shared.deleteFolder(id: f.id)
+                        folderToDelete = nil
+                    }
+                }
+            } message: {
+                Text("Deleting '\(folderToDelete?.title ?? "this folder")' will permanently remove all of its subfolders and bookmarks.")
+            }
+            // Duplicate Bookmark Alert
+            .alert("Bookmark Already Exists", isPresented: $isShowingDuplicateAlert) {
+                Button("Cancel", role: .cancel) { pendingBookmark = nil }
+                Button("Add Anyway") {
+                    if let p = pendingBookmark {
+                        BrowserBookmarkStore.shared.addBookmark(
+                            title: p.title,
+                            url: p.url,
+                            folderID: p.folderID
+                        )
+                    }
+                    pendingBookmark = nil
+                }
+            } message: {
+                Text("A bookmark for this URL already exists ('\(duplicateExistingTitle)'). Would you like to add it anyway?")
+            }
+            // Clear History Dialog
+            .confirmationDialog("Clear Browsing History", isPresented: $isShowingClearHistoryDialog, titleVisibility: .visible) {
+                Button("Last Hour", role: .destructive) {
+                    let cutoff = Calendar.current.date(byAdding: .hour, value: -1, to: Date())
+                    BrowserHistoryStore.shared.clearHistory(since: cutoff)
+                }
+                Button("Today", role: .destructive) {
+                    let cutoff = Calendar.current.startOfDay(for: Date())
+                    BrowserHistoryStore.shared.clearHistory(since: cutoff)
+                }
+                Button("All Time", role: .destructive) {
+                    BrowserHistoryStore.shared.clearAllHistory()
+                }
+                Button("Cancel", role: .cancel) { }
+            } message: {
+                Text("Select the time range of browsing history to remove.")
+            }
+            // Import Summary Alert
+            .alert("Bookmarks Imported", isPresented: $isShowingImportSummaryAlert) {
+                Button("OK", role: .cancel) { }
+            } message: {
+                Text("Found: \(importSummary.totalFound)\nImported: \(importSummary.importedBookmarksCount) bookmarks, \(importSummary.importedFoldersCount) folders\nSkipped: \(importSummary.skippedCount) (\(importSummary.duplicateCount) duplicates)")
+            }
+            // Edit Bookmark Sheet
+            .sheet(isPresented: $isShowingEditBookmarkSheet) {
+                editBookmarkSheetView
+            }
+            // Move Folder Sheet
+            .sheet(isPresented: $isShowingMoveFolderSheet) {
+                moveFolderSheetView
+            }
+            // Import Bookmarks Sheet
+            .sheet(isPresented: $isShowingImportSheet) {
+                importBookmarksSheetView
+            }
+            // Share Sheet
+            .sheet(isPresented: $isShowingShareSheet) {
+                BrowserShareSheet(items: shareItems)
             }
         }
     }
@@ -124,12 +251,27 @@ public struct BrowserBookmarksAndHistoryView: View {
                         }
                     }
                 }
+
+                Divider()
+
+                Button {
+                    exportBookmarks()
+                } label: {
+                    Label("Export Bookmarks (HTML)...", systemImage: "square.and.arrow.up")
+                }
+
+                Button {
+                    importHTMLText = ""
+                    isShowingImportSheet = true
+                } label: {
+                    Label("Import Bookmarks (HTML)...", systemImage: "square.and.arrow.down")
+                }
             } label: {
                 Image(systemName: "ellipsis.circle")
             }
         } else {
             Button {
-                isShowingClearHistoryAlert = true
+                isShowingClearHistoryDialog = true
             } label: {
                 Text("Clear")
                     .foregroundColor(.red)
@@ -193,7 +335,7 @@ public struct BrowserBookmarksAndHistoryView: View {
                 emptyState(
                     icon: "star",
                     title: "No Bookmarks",
-                    message: "Tap the options menu at the top to bookmark the active page or create a folder."
+                    message: "Tap the options menu at the top to bookmark the active page, create a folder, or import bookmarks."
                 )
             } else {
                 List {
@@ -215,28 +357,12 @@ public struct BrowserBookmarksAndHistoryView: View {
                     if !subfolders.isEmpty {
                         Section("Folders") {
                             ForEach(subfolders) { folder in
-                                Button {
-                                    folderPath.append(folder)
-                                    currentFolderID = folder.id
-                                } label: {
-                                    HStack(spacing: 12) {
-                                        Image(systemName: "folder.fill")
-                                            .foregroundColor(.yellow)
-                                        Text(folder.title)
-                                            .foregroundColor(.primary)
-                                        Spacer()
-                                        Text("\(store.bookmarks(in: folder.id).count)")
-                                            .font(.caption)
-                                            .foregroundColor(.secondary)
-                                        Image(systemName: "chevron.forward")
-                                            .font(.caption)
-                                            .foregroundColor(.secondary)
-                                    }
-                                }
+                                folderRow(folder)
                             }
                             .onDelete { indexSet in
                                 for i in indexSet {
-                                    store.deleteFolder(id: subfolders[i].id)
+                                    folderToDelete = subfolders[i]
+                                    isShowingDeleteFolderAlert = true
                                 }
                             }
                         }
@@ -261,7 +387,57 @@ public struct BrowserBookmarksAndHistoryView: View {
     }
 
     @ViewBuilder
+    private func folderRow(_ folder: BrowserBookmarkFolder) -> some View {
+        let store = BrowserBookmarkStore.shared
+        Button {
+            folderPath.append(folder)
+            currentFolderID = folder.id
+        } label: {
+            HStack(spacing: 12) {
+                Image(systemName: "folder.fill")
+                    .foregroundColor(.yellow)
+                Text(folder.title)
+                    .foregroundColor(.primary)
+                Spacer()
+                Text("\(store.bookmarks(in: folder.id).count)")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                Image(systemName: "chevron.forward")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+        }
+        .contextMenu {
+            Button {
+                folderToRename = folder
+                renameFolderTitle = folder.title
+                isShowingRenameFolderDialog = true
+            } label: {
+                Label("Rename", systemImage: "pencil")
+            }
+
+            Button {
+                folderToMove = folder
+                moveTargetParentID = folder.parentFolderID
+                isShowingMoveFolderSheet = true
+            } label: {
+                Label("Move Folder...", systemImage: "folder.badge.gearshape")
+            }
+
+            Divider()
+
+            Button(role: .destructive) {
+                folderToDelete = folder
+                isShowingDeleteFolderAlert = true
+            } label: {
+                Label("Delete", systemImage: "trash")
+            }
+        }
+    }
+
+    @ViewBuilder
     private func bookmarkRow(_ item: BrowserBookmarkItem) -> some View {
+        let store = BrowserBookmarkStore.shared
         Button {
             viewModel.load(url: item.url)
             dismiss()
@@ -286,16 +462,80 @@ public struct BrowserBookmarksAndHistoryView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .contextMenu {
+            Button {
+                viewModel.load(url: item.url)
+                dismiss()
+            } label: {
+                Label("Open", systemImage: "arrow.up.right")
+            }
+
+            Button {
+                _ = viewModel.createNewTab(with: item.url)
+                dismiss()
+            } label: {
+                Label("Open in New Tab", systemImage: "plus.rectangle.on.rectangle")
+            }
+
+            Button {
+                bookmarkToEdit = item
+                editBookmarkTitle = item.title
+                editBookmarkURLString = item.url.absoluteString
+                editBookmarkFolderID = item.folderID
+                isShowingEditBookmarkSheet = true
+            } label: {
+                Label("Edit Bookmark", systemImage: "pencil")
+            }
+
+            Button {
+                #if canImport(UIKit)
+                UIPasteboard.general.string = item.url.absoluteString
+                #endif
+            } label: {
+                Label("Copy URL", systemImage: "doc.on.doc")
+            }
+
+            Button {
+                shareItems = [item.url]
+                isShowingShareSheet = true
+            } label: {
+                Label("Share Link", systemImage: "square.and.arrow.up")
+            }
+
+            Divider()
+
+            Button(role: .destructive) {
+                store.deleteBookmark(id: item.id)
+            } label: {
+                Label("Delete", systemImage: "trash")
+            }
+        }
     }
 
     private func addCurrentPageBookmark() {
         guard let url = viewModel.currentURL else { return }
         let title = viewModel.pageTitle.isEmpty ? (url.host ?? "Bookmark") : viewModel.pageTitle
-        BrowserBookmarkStore.shared.addBookmark(
-            title: title,
-            url: url,
-            folderID: currentFolderID
-        )
+        let store = BrowserBookmarkStore.shared
+        if let existing = store.findDuplicate(for: url) {
+            duplicateExistingTitle = existing.title
+            pendingBookmark = (title: title, url: url, folderID: currentFolderID)
+            isShowingDuplicateAlert = true
+        } else {
+            store.addBookmark(
+                title: title,
+                url: url,
+                folderID: currentFolderID
+            )
+        }
+    }
+
+    private func exportBookmarks() {
+        let store = BrowserBookmarkStore.shared
+        let html = BrowserBookmarkExporter.exportToHTML(store: store)
+        let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent("bookmarks.html")
+        try? html.write(to: tempURL, atomically: true, encoding: .utf8)
+        shareItems = [tempURL]
+        isShowingShareSheet = true
     }
 
     // MARK: - History View
@@ -346,6 +586,7 @@ public struct BrowserBookmarksAndHistoryView: View {
 
     @ViewBuilder
     private func historyRow(_ entry: BrowserHistoryEntry) -> some View {
+        let store = BrowserHistoryStore.shared
         Button {
             viewModel.load(url: entry.url)
             dismiss()
@@ -385,6 +626,44 @@ public struct BrowserBookmarksAndHistoryView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .contextMenu {
+            Button {
+                viewModel.load(url: entry.url)
+                dismiss()
+            } label: {
+                Label("Open", systemImage: "arrow.up.right")
+            }
+
+            Button {
+                _ = viewModel.createNewTab(with: entry.url)
+                dismiss()
+            } label: {
+                Label("Open in New Tab", systemImage: "plus.rectangle.on.rectangle")
+            }
+
+            Button {
+                #if canImport(UIKit)
+                UIPasteboard.general.string = entry.url.absoluteString
+                #endif
+            } label: {
+                Label("Copy URL", systemImage: "doc.on.doc")
+            }
+
+            Button {
+                shareItems = [entry.url]
+                isShowingShareSheet = true
+            } label: {
+                Label("Share Link", systemImage: "square.and.arrow.up")
+            }
+
+            Divider()
+
+            Button(role: .destructive) {
+                store.deleteEntry(id: entry.id)
+            } label: {
+                Label("Delete", systemImage: "trash")
+            }
+        }
     }
 
     @ViewBuilder
@@ -404,6 +683,166 @@ public struct BrowserBookmarksAndHistoryView: View {
             Spacer()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    // MARK: - Subviews & Sheets
+
+    @ViewBuilder
+    private var editBookmarkSheetView: some View {
+        NavigationView {
+            Form {
+                Section("Bookmark Details") {
+                    TextField("Title", text: $editBookmarkTitle)
+                    TextField("URL", text: $editBookmarkURLString)
+                        #if canImport(UIKit)
+                        .autocapitalization(.none)
+                        .keyboardType(.URL)
+                        #endif
+                        .disableAutocorrection(true)
+                }
+
+                Section("Folder") {
+                    Picker("Folder", selection: $editBookmarkFolderID) {
+                        Text("Root / Bookmarks").tag(UUID?.none)
+                        ForEach(BrowserBookmarkStore.shared.allFolders) { folder in
+                            Text(folder.title).tag(UUID?.some(folder.id))
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Edit Bookmark")
+            #if canImport(UIKit)
+            .navigationBarTitleDisplayMode(.inline)
+            #endif
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") {
+                        isShowingEditBookmarkSheet = false
+                    }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") {
+                        guard let item = bookmarkToEdit,
+                              let url = URL(string: editBookmarkURLString.trimmingCharacters(in: .whitespacesAndNewlines)),
+                              !editBookmarkTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                            return
+                        }
+                        BrowserBookmarkStore.shared.updateBookmark(
+                            id: item.id,
+                            title: editBookmarkTitle.trimmingCharacters(in: .whitespacesAndNewlines),
+                            url: url,
+                            folderID: editBookmarkFolderID
+                        )
+                        isShowingEditBookmarkSheet = false
+                    }
+                    .disabled(
+                        editBookmarkTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
+                        URL(string: editBookmarkURLString.trimmingCharacters(in: .whitespacesAndNewlines)) == nil
+                    )
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var moveFolderSheetView: some View {
+        let store = BrowserBookmarkStore.shared
+        let candidateFolders = store.allFolders.filter { f in
+            guard let moving = folderToMove else { return true }
+            return f.id != moving.id && store.canMoveFolder(id: moving.id, toParentID: f.id)
+        }
+
+        NavigationView {
+            Form {
+                Section("Target Location") {
+                    Picker("Move To", selection: $moveTargetParentID) {
+                        Text("Top Level / Root").tag(UUID?.none)
+                        ForEach(candidateFolders) { folder in
+                            Text(folder.title).tag(UUID?.some(folder.id))
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Move Folder")
+            #if canImport(UIKit)
+            .navigationBarTitleDisplayMode(.inline)
+            #endif
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") {
+                        isShowingMoveFolderSheet = false
+                    }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Move") {
+                        if let moving = folderToMove {
+                            try? store.moveFolder(id: moving.id, toParentID: moveTargetParentID)
+                        }
+                        isShowingMoveFolderSheet = false
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var importBookmarksSheetView: some View {
+        NavigationView {
+            VStack(spacing: 16) {
+                Text("Paste Netscape Bookmark HTML below or tap 'Paste from Clipboard'.")
+                    .font(.footnote)
+                    .foregroundColor(.secondary)
+                    .padding(.horizontal)
+                    .padding(.top, 8)
+
+                #if canImport(UIKit)
+                Button {
+                    if let string = UIPasteboard.general.string {
+                        importHTMLText = string
+                    }
+                } label: {
+                    Label("Paste from Clipboard", systemImage: "doc.on.clipboard")
+                }
+                .buttonStyle(.bordered)
+                #endif
+
+                TextEditor(text: $importHTMLText)
+                    .padding(4)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8)
+                            .stroke(Color.secondary.opacity(0.3), lineWidth: 1)
+                    )
+                    .padding(.horizontal)
+
+                Spacer()
+            }
+            .navigationTitle("Import Bookmarks")
+            #if canImport(UIKit)
+            .navigationBarTitleDisplayMode(.inline)
+            #endif
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") {
+                        isShowingImportSheet = false
+                    }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Import") {
+                        let store = BrowserBookmarkStore.shared
+                        let summary = BrowserBookmarkImporter.importHTMLString(
+                            importHTMLText,
+                            intoFolderID: currentFolderID,
+                            store: store,
+                            skipDuplicates: true
+                        )
+                        importSummary = summary
+                        isShowingImportSheet = false
+                        isShowingImportSummaryAlert = true
+                    }
+                    .disabled(importHTMLText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+            }
+        }
     }
 }
 #endif
