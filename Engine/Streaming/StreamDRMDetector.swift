@@ -69,12 +69,11 @@ public enum StreamDRMDetector {
                     )
                 }
 
-                if upper.contains("METHOD=SAMPLE-AES") || upper.contains("METHOD=\"SAMPLE-AES\"") ||
-                   upper.contains("METHOD=SAMPLE-AES-CTR") {
+                if upper.contains("SKD://") {
                     return DRMResult(
                         isProtected: true,
-                        protectionType: "Sample-AES",
-                        reason: "HLS Sample-level AES encryption detected"
+                        protectionType: "FairPlay",
+                        reason: "Apple FairPlay skd:// key protocol detected"
                     )
                 }
             }

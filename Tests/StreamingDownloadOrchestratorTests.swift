@@ -80,7 +80,7 @@ final class StreamingDownloadOrchestratorTests: XCTestCase {
         let playlist = """
         #EXTM3U
         #EXT-X-PLAYLIST-TYPE:VOD
-        #EXT-X-KEY:METHOD=SAMPLE-AES,URI="key.bin"
+        #EXT-X-KEY:METHOD=SAMPLE-AES,KEYFORMAT="com.apple.streamingkeydelivery",URI="skd://fps.key"
         #EXTINF:2,
         segment.ts
         #EXT-X-ENDLIST
@@ -97,6 +97,27 @@ final class StreamingDownloadOrchestratorTests: XCTestCase {
         } catch let error as StreamingDownloadOrchestratorError {
             XCTAssertEqual(error, .unsupportedEncryption)
         }
+    }
+
+    func testSampleAESHLSEncryptionIsPlannedWithKeyAndSegments() async throws {
+        let url = URL(string: "https://video.example/index.m3u8")!
+        let playlist = """
+        #EXTM3U
+        #EXT-X-PLAYLIST-TYPE:VOD
+        #EXT-X-KEY:METHOD=SAMPLE-AES,URI="key.bin"
+        #EXTINF:2,
+        segment.ts
+        #EXT-X-ENDLIST
+        """
+        let orchestrator = StreamingDownloadOrchestrator(
+            manifestLoader: RecordingManifestLoader(data: Data(playlist.utf8), finalURL: url, mimeType: "application/vnd.apple.mpegurl"),
+            segmentExecutor: RecordingSegmentExecutor()
+        )
+        let candidate = try StreamingManifestCandidate(url: url)
+        let proposal = try await orchestrator.prepare(candidate: candidate)
+        XCTAssertEqual(proposal.resources.count, 2)
+        XCTAssertEqual(proposal.resources[0].identity.kind, .encryptionKey)
+        XCTAssertEqual(proposal.resources[1].identity.kind, .mediaSegment)
     }
 
     func testAES128HLSEncryptionIsPlannedWithKeyAndSegments() async throws {
@@ -1571,7 +1592,7 @@ final class StreamingDownloadOrchestratorTests: XCTestCase {
         #EXTM3U
         #EXT-X-VERSION:3
         #EXT-X-PLAYLIST-TYPE:VOD
-        #EXT-X-KEY:METHOD=SAMPLE-AES,URI="https://video.example/key.bin"
+        #EXT-X-KEY:METHOD=SAMPLE-AES,KEYFORMAT="com.apple.streamingkeydelivery",URI="skd://fps.key"
         #EXTINF:5.0,
         segment1.ts
         #EXT-X-ENDLIST
@@ -2372,7 +2393,7 @@ final class StreamingDownloadOrchestratorTests: XCTestCase {
         let highPlaylist = """
         #EXTM3U
         #EXT-X-PLAYLIST-TYPE:VOD
-        #EXT-X-KEY:METHOD=SAMPLE-AES,URI="key1.bin"
+        #EXT-X-KEY:METHOD=SAMPLE-AES,KEYFORMAT="com.apple.streamingkeydelivery",URI="skd://key1.bin"
         #EXTINF:2.0,
         segment-1080.ts
         #EXT-X-ENDLIST
@@ -2381,7 +2402,7 @@ final class StreamingDownloadOrchestratorTests: XCTestCase {
         let lowPlaylist = """
         #EXTM3U
         #EXT-X-PLAYLIST-TYPE:VOD
-        #EXT-X-KEY:METHOD=SAMPLE-AES,URI="key2.bin"
+        #EXT-X-KEY:METHOD=SAMPLE-AES,KEYFORMAT="com.apple.streamingkeydelivery",URI="skd://key2.bin"
         #EXTINF:2.0,
         segment-720.ts
         #EXT-X-ENDLIST

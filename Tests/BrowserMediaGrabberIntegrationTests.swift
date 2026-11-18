@@ -85,8 +85,7 @@ final class BrowserMediaGrabberIntegrationTests: XCTestCase {
         segment1.ts
         """
         let sampleResult = StreamDRMDetector.evaluate(manifestText: sampleAESManifest)
-        XCTAssertTrue(sampleResult.isProtected)
-        XCTAssertEqual(sampleResult.protectionType, "Sample-AES")
+        XCTAssertFalse(sampleResult.isProtected)
     }
 
     func testDRMStreamDetectionDASHWidevineAndPlayReady() {

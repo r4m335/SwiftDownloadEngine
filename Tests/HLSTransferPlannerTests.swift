@@ -139,7 +139,7 @@ final class HLSTransferPlannerTests: XCTestCase {
         let encryptedPlaylist = """
         #EXTM3U
         #EXT-X-PLAYLIST-TYPE:VOD
-        #EXT-X-KEY:METHOD=SAMPLE-AES,URI="keys/drm.key"
+        #EXT-X-KEY:METHOD=SAMPLE-AES,URI="skd://keys/drm.key",KEYFORMAT="com.apple.streamingkeydelivery"
         #EXTINF:4,
         encrypted.m4s
         #EXT-X-ENDLIST
@@ -148,6 +148,25 @@ final class HLSTransferPlannerTests: XCTestCase {
         XCTAssertThrowsError(try HLSTransferPlanner.makeVODPlan(from: encrypted)) { error in
             XCTAssertEqual(error as? HLSVODTransferPlanError, .unsupportedEncryption(.sampleEncrypted))
             XCTAssertFalse(error.localizedDescription.contains("drm.key"))
+        }
+
+        let sampleAESPlaylist = """
+        #EXTM3U
+        #EXT-X-PLAYLIST-TYPE:VOD
+        #EXT-X-KEY:METHOD=SAMPLE-AES,URI="keys/sample.key"
+        #EXTINF:4,
+        segment1.ts
+        #EXT-X-ENDLIST
+        """
+        let sampleParsed = try HLSManifestParser.parse(sampleAESPlaylist, baseURL: manifestURL)
+        let samplePlan = try HLSTransferPlanner.makeVODPlan(from: sampleParsed)
+        XCTAssertEqual(samplePlan.resources.count, 2)
+        XCTAssertEqual(samplePlan.resources[0].kind, .encryptionKey)
+        XCTAssertEqual(samplePlan.resources[1].kind, .mediaSegment)
+        if case let .sampleAES(keyURL, _) = samplePlan.resources[1].encryption {
+            XCTAssertEqual(keyURL.lastPathComponent, "sample.key")
+        } else {
+            XCTFail("Expected sampleAES encryption requirement on segment")
         }
 
         let unsafe = HLSManifest(

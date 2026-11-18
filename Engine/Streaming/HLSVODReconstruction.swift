@@ -262,6 +262,7 @@ public enum HLSVODReconstructor {
             var videoClearFiles: [URL] = []
             var audioClearResources: [HLSPlannedResource] = []
             var audioClearFiles: [URL] = []
+            var sampleAESKeyData: Data? = nil
 
             for (index, completed) in completedResources.enumerated() {
                 let isVideo = index < transferPlan.resources.count
@@ -308,6 +309,11 @@ public enum HLSVODReconstructor {
                             throw HLSVODReconstructionError.decryptionFailed(.fileWriteError(decryptedURL.path))
                         }
                         fileURLToUse = decryptedURL
+                    } else if case let .sampleAES(keyURL, _) = completed.resource.encryption {
+                        if let keyData = keyMap[keyURL] {
+                            sampleAESKeyData = keyData
+                        }
+                        fileURLToUse = completed.fileURL
                     } else {
                         fileURLToUse = completed.fileURL
                     }
@@ -345,6 +351,14 @@ public enum HLSVODReconstructor {
             }
             resolvedCompleted = zip(allClearResources, allClearFiles).map {
                 HLSCompletedResource(resource: $0.0, fileURL: $0.1)
+            }
+
+            if let keyData = sampleAESKeyData {
+                let tempKeyURL = effectiveTempDir.appendingPathComponent("key.bin")
+                try? keyData.write(to: tempKeyURL)
+                let destParentKeyURL = effectiveDestination.deletingLastPathComponent().appendingPathComponent("key.bin")
+                try? keyData.write(to: destParentKeyURL)
+                decryptedFilesToCleanUp.append(tempKeyURL)
             }
         } else {
             resolvedPlan = transferPlan

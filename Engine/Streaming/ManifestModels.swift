@@ -144,6 +144,17 @@ public struct HLSEncryption: Codable, Sendable, Equatable {
         self.keyFormatVersions = keyFormatVersions
     }
 
+    public var isFairPlayDRM: Bool {
+        let format = keyFormat?.lowercased() ?? ""
+        let scheme = keyURL?.scheme?.lowercased() ?? ""
+        return format.contains("streamingkeydelivery") || scheme == "skd"
+    }
+
+    public var isIdentityKey: Bool {
+        let format = keyFormat?.lowercased() ?? "identity"
+        return (format == "identity" || format.isEmpty) && !isFairPlayDRM
+    }
+
     public var classification: HLSKeyClassification {
         let normalizedMethod = method.uppercased()
         let normalizedFormat = keyFormat?.lowercased() ?? "identity"

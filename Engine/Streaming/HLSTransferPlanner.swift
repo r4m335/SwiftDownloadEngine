@@ -11,6 +11,7 @@ public enum HLSPlannedResourceKind: String, Codable, Sendable, Equatable {
 public enum HLSTransferEncryptionRequirement: Sendable, Equatable {
     case clear
     case aes128(keyURL: URL, iv: String?)
+    case sampleAES(keyURL: URL, iv: String?)
 }
 
 /// One ordered, validated resource in an HLS VOD transfer plan.
@@ -190,6 +191,16 @@ public enum HLSTransferPlanner {
                     to: &resources,
                     seen: &seenResources
                 )
+            } else if case let .sampleAES(keyURL, _) = encryption {
+                appendIfNeeded(
+                    HLSPlannedResource(
+                        order: resources.count,
+                        kind: .encryptionKey,
+                        url: keyURL
+                    ),
+                    to: &resources,
+                    seen: &seenResources
+                )
             }
 
             resources.append(
@@ -254,7 +265,15 @@ public enum HLSTransferPlanner {
                 keyURL: try validatedURL(keyURL, against: baseURL),
                 iv: encryption.iv
             )
-        case .sampleEncrypted, .unsupported:
+        case .sampleEncrypted:
+            guard !encryption.isFairPlayDRM, let keyURL = encryption.keyURL, keyURL.scheme?.lowercased() != "skd" else {
+                throw HLSVODTransferPlanError.unsupportedEncryption(encryption.classification)
+            }
+            return .sampleAES(
+                keyURL: try validatedURL(keyURL, against: baseURL),
+                iv: encryption.iv
+            )
+        case .unsupported:
             throw HLSVODTransferPlanError.unsupportedEncryption(encryption.classification)
         }
     }

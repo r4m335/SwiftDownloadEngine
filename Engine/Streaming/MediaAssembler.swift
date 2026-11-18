@@ -394,12 +394,20 @@ public enum MediaAssembler {
         if container == .mpegTS {
             let m3u8URL = temporaryDirectoryURL
                 .appendingPathComponent("manifest-\(kind.rawValue)-\(UUID().uuidString).m3u8", isDirectory: false)
+            let tempKeyURL = temporaryDirectoryURL.appendingPathComponent("key.bin")
+            let sourceKeyURL = sourceURL.deletingLastPathComponent().appendingPathComponent("key.bin")
+            if !fileManager.fileExists(atPath: tempKeyURL.path) && fileManager.fileExists(atPath: sourceKeyURL.path) {
+                try? fileManager.copyItem(at: sourceKeyURL, to: tempKeyURL)
+            }
+            let keyTag = fileManager.fileExists(atPath: tempKeyURL.path)
+                ? "#EXT-X-KEY:METHOD=SAMPLE-AES,URI=\"key.bin\"\n"
+                : ""
             let m3u8Content = """
             #EXTM3U
             #EXT-X-VERSION:3
             #EXT-X-TARGETDURATION:7200
             #EXT-X-MEDIA-SEQUENCE:0
-            #EXTINF:7200.0,
+            \(keyTag)#EXTINF:7200.0,
             \(sourceURL.lastPathComponent)
             #EXT-X-ENDLIST
             """
@@ -1029,17 +1037,33 @@ public enum MediaAssembler {
 
         // Create a local single-segment HLS manifest wrapper so AVFoundation can demux MPEG-TS reliably on iOS & macOS
         let playlistURL = tempDir.appendingPathComponent("manifest-\(UUID().uuidString).m3u8", isDirectory: false)
+        let tempKeyURL = tempDir.appendingPathComponent("key.bin")
+        let sourceKeyURL = sourceTSURL.deletingLastPathComponent().appendingPathComponent("key.bin")
+        let destKeyURL = destinationMP4URL.deletingLastPathComponent().appendingPathComponent("key.bin")
+        if !fileManager.fileExists(atPath: tempKeyURL.path) {
+            if fileManager.fileExists(atPath: sourceKeyURL.path) {
+                try? fileManager.copyItem(at: sourceKeyURL, to: tempKeyURL)
+            } else if fileManager.fileExists(atPath: destKeyURL.path) {
+                try? fileManager.copyItem(at: destKeyURL, to: tempKeyURL)
+            }
+        }
+        let keyTag = fileManager.fileExists(atPath: tempKeyURL.path)
+            ? "#EXT-X-KEY:METHOD=SAMPLE-AES,URI=\"key.bin\"\n"
+            : ""
         let m3u8Content = """
         #EXTM3U
         #EXT-X-VERSION:3
         #EXT-X-TARGETDURATION:7200
         #EXT-X-MEDIA-SEQUENCE:0
-        #EXTINF:7200.0,
+        \(keyTag)#EXTINF:7200.0,
         \(tsFileURL.lastPathComponent)
         #EXT-X-ENDLIST
         """
         try? m3u8Content.write(to: playlistURL, atomically: true, encoding: .utf8)
-        defer { try? fileManager.removeItem(at: playlistURL) }
+        defer {
+            try? fileManager.removeItem(at: playlistURL)
+            try? fileManager.removeItem(at: tempKeyURL)
+        }
 
         let tsAsset = AVURLAsset(url: tsFileURL)
         let loadSema = DispatchSemaphore(value: 0)
