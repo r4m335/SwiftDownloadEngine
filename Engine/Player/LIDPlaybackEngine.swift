@@ -132,8 +132,16 @@ public final class LIDPlaybackEngine: NSObject, ObservableObject, LIDMediaEngine
         case .hlsStream, .torrentSwarm:
             // Preserve native HLS adaptive bitrate streaming and BitTorrent AVAssetResourceLoader integration.
             return .avFoundation
-        case .dashStream, .networkStream:
-            // Direct network streams and DASH manifests route through VLCKit's demuxer.
+        case .dashStream:
+            // MPEG-DASH manifests route through VLCKit's demuxer.
+            return .vlcKit
+        case .networkStream(let url, _, _):
+            let ext = url.pathExtension.lowercased()
+            // Direct MP4, M4V, MOV, M4A, MP3 network streams route through AVFoundation for hardware decoding
+            // and AVURLAssetHTTPHeaderFieldsKey support.
+            if ["mp4", "m4v", "mov", "m4a", "mp3", "aac"].contains(ext) {
+                return .avFoundation
+            }
             return .vlcKit
         }
     }
@@ -265,6 +273,14 @@ public final class LIDPlaybackEngine: NSObject, ObservableObject, LIDMediaEngine
                     return
                 }
             }
+        }
+
+        if let targetURL = source.url, targetURL.scheme?.lowercased() == "blob" {
+            let err = "Browser blob URLs cannot be opened in external players. Please download the file or use direct stream URL."
+            self.playbackState = .failed(error: err)
+            PipelineLogger.shared.logPlayer(session: sid, category: "PlayerError", message: err)
+            delegate?.engineDidFail(self, error: err)
+            return
         }
 
         #if os(iOS) && canImport(AVFoundation)

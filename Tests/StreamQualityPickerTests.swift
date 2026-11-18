@@ -419,6 +419,50 @@ final class StreamQualityPickerTests: XCTestCase {
         XCTAssertFalse(vm.isShowingDownloadSheet)
         XCTAssertEqual(vm.activeStreamingFilename, "custom_renamed_480p.mp4")
     }
+
+    func testAudioRenditionExactURIFallbackInVariantRanking() throws {
+        let masterPlaylist = """
+        #EXTM3U
+        #EXT-X-VERSION:4
+        #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="audio",NAME="English",DEFAULT=YES,AUTOSELECT=YES,URI="audio.m3u8"
+        #EXT-X-STREAM-INF:BANDWIDTH=3000000,RESOLUTION=1280x720,AUDIO="audio"
+        720p.m3u8
+        #EXT-X-STREAM-INF:BANDWIDTH=1500000,RESOLUTION=854x480,AUDIO="audio"
+        480p.m3u8
+        """
+        let manifest = try HLSManifestParser.parse(masterPlaylist, baseURL: masterURL)
+        let audioURI = URL(string: "https://cdn.example.com/stream/audio.m3u8")!
+        let prefs = HLSVariantSelectionPreferences(exactURI: audioURI)
+
+        // When exactURI targets audio rendition, HLSVariantSelector.rank gracefully falls back rather than throwing
+        let ranked = try HLSVariantSelector.rank(from: manifest, preferences: prefs)
+        XCTAssertFalse(ranked.isEmpty)
+        XCTAssertEqual(ranked.first?.resolution?.height, 720)
+    }
+
+    func testPlayerBackendSelectionForNetworkStream() {
+        let engine = LIDPlaybackEngine()
+        let mp4URL = URL(string: "https://cdn.example.com/video.mp4")!
+        let mkvURL = URL(string: "https://cdn.example.com/video.mkv")!
+
+        let mp4Source = LIDPlayerSource.networkStream(url: mp4URL, headers: [:], title: "MP4 Video")
+        let mkvSource = LIDPlayerSource.networkStream(url: mkvURL, headers: [:], title: "MKV Video")
+
+        XCTAssertEqual(engine.selectBackend(for: mp4Source), .avFoundation)
+        XCTAssertEqual(engine.selectBackend(for: mkvSource), .vlcKit)
+    }
+
+    func testLIDPlayerSourceRejectsBlobResources() {
+        let blobResource = WebpageResource(
+            id: "blob-123",
+            url: URL(string: "blob:https://example.com/1234-5678")!,
+            title: "Blob Stream",
+            suggestedFilename: "stream.blob",
+            resourceType: .video
+        )
+        let source = LIDPlayerSource.make(from: blobResource)
+        XCTAssertNil(source)
+    }
     #endif
 }
 

@@ -124,12 +124,7 @@ public struct HLSVODTransferPlan: Sendable, Equatable {
     /// automatically when the resource is on a different origin from the manifest.
     public func requestHeaders(for resource: HLSPlannedResource) -> [String: String] {
         guard let browserRequestContext else { return [:] }
-        let headers = browserRequestContext.effectiveHeaders(for: resource.url)
-        return BrowserHeaderFilter.stripCredentialsOnRedirect(
-            headers: headers,
-            from: manifestURL,
-            to: resource.url
-        )
+        return browserRequestContext.effectiveHeaders(for: resource.url)
     }
 }
 

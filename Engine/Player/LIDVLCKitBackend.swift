@@ -187,22 +187,31 @@ public final class LIDVLCKitBackend: NSObject, LIDMediaEngineProtocol, VLCMediaP
         // Permit hardware decoding when supported, with automatic software decoding fallback
         media.addOptions([":avcodec-hw": "any"])
 
-        // Inject request headers if present
-        if let reqContext = source.requestContext {
-            let headers = reqContext.effectiveHeaders(for: targetURL)
-            if let ua = headers["User-Agent"] ?? reqContext.userAgent {
+        // Inject request headers if present (from networkStream headers or source requestContext)
+        var effectiveHeaders: [String: String] = [:]
+        if case .networkStream(_, let headers, _) = source {
+            effectiveHeaders = headers
+        } else if let reqContext = source.requestContext {
+            effectiveHeaders = reqContext.effectiveHeaders(for: targetURL)
+        }
+
+        if !effectiveHeaders.isEmpty {
+            if let ua = effectiveHeaders["User-Agent"] ?? source.requestContext?.userAgent {
                 media.addOptions(["--http-user-agent": ua])
             }
-            if let ref = headers["Referer"] ?? reqContext.referer {
+            if let ref = effectiveHeaders["Referer"] ?? source.requestContext?.referer {
                 media.addOptions(["--http-referrer": ref])
             }
-            if let cookie = headers["Cookie"], !cookie.isEmpty {
+            if let cookie = effectiveHeaders["Cookie"], !cookie.isEmpty {
                 media.addOptions(["--http-header": "Cookie: \(cookie)"])
             }
-            if let origin = headers["Origin"], !origin.isEmpty {
+            if let origin = effectiveHeaders["Origin"], !origin.isEmpty {
                 media.addOptions(["--http-header": "Origin: \(origin)"])
             }
-            for (k, v) in headers where k != "Cookie" && k != "Origin" && k != "Referer" && k != "User-Agent" {
+            for (k, v) in effectiveHeaders where k.caseInsensitiveCompare("Cookie") != .orderedSame &&
+                                                 k.caseInsensitiveCompare("Origin") != .orderedSame &&
+                                                 k.caseInsensitiveCompare("Referer") != .orderedSame &&
+                                                 k.caseInsensitiveCompare("User-Agent") != .orderedSame {
                 media.addOptions(["--http-header": "\(k): \(v)"])
             }
         }

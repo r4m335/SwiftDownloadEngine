@@ -92,6 +92,9 @@ public enum LIDPlayerSource: Equatable, Sendable {
     /// Factory converting a discovered `WebpageResource` into an appropriate native `LIDPlayerSource`
     /// preserving variant selection preferences, origin authentication cookies, User-Agent, and Referer headers.
     public static func make(from resource: WebpageResource, title: String? = nil) -> LIDPlayerSource? {
+        if resource.isBlobResource {
+            return nil
+        }
         let displayTitle: String
         if let custom = title?.trimmingCharacters(in: .whitespacesAndNewlines), !custom.isEmpty {
             displayTitle = custom

@@ -364,6 +364,10 @@ public struct BrowserResourceInspectorSheet: View {
                     drmWarningAlert = "This media stream is encrypted with Digital Rights Management (\(resource.drmProtectionType ?? "DRM")) and cannot be played directly."
                     return
                 }
+                if resource.isBlobResource {
+                    drmWarningAlert = "Browser blob media cannot be previewed in external player. Please download it directly."
+                    return
+                }
                 let title = resource.suggestedFilename.isEmpty ? resource.title : resource.suggestedFilename
                 if let source = LIDPlayerSource.make(from: resource, title: title) {
                     activePlaybackSource = source

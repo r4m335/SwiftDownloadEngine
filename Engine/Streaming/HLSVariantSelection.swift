@@ -50,8 +50,13 @@ public enum HLSVariantSelector {
             throw HLSVariantSelectionError.noVariants
         }
         let matching = master.variants.filter { variant in
-            if let exactURI = preferences.exactURI, variant.uri != exactURI {
-                return false
+            if let exactURI = preferences.exactURI {
+                let matches = variant.uri == exactURI ||
+                    variant.uri.absoluteString == exactURI.absoluteString ||
+                    variant.uri.path == exactURI.path
+                if !matches {
+                    return false
+                }
             }
             if let maximumBandwidth = preferences.maximumBandwidth, variant.bandwidth > maximumBandwidth {
                 return false
@@ -72,11 +77,42 @@ public enum HLSVariantSelector {
             }
             return true
         }
-        guard !matching.isEmpty else {
+
+        var finalMatching = matching
+        if finalMatching.isEmpty && preferences.exactURI != nil {
+            // Fallback: If exactURI failed to match any variant (e.g. query token rotation),
+            // evaluate variants matching quality preferences without the strict exactURI check
+            finalMatching = master.variants.filter { variant in
+                if let maximumBandwidth = preferences.maximumBandwidth, variant.bandwidth > maximumBandwidth {
+                    return false
+                }
+                if let maximumWidth = preferences.maximumWidth,
+                   let width = variant.resolution?.width,
+                   width > maximumWidth {
+                    return false
+                }
+                if let maximumHeight = preferences.maximumHeight,
+                   let height = variant.resolution?.height,
+                   height > maximumHeight {
+                    return false
+                }
+                if let prefix = preferences.preferredCodecPrefix,
+                   !(variant.codecs?.lowercased().hasPrefix(prefix) == true) {
+                    return false
+                }
+                return true
+            }
+            if finalMatching.isEmpty {
+                // If quality filters were also too strict, fallback to all variants
+                finalMatching = master.variants
+            }
+        }
+
+        guard !finalMatching.isEmpty else {
             throw HLSVariantSelectionError.noVariantMatchesPreferences
         }
 
-        return matching.sorted { lhs, rhs in
+        return finalMatching.sorted { lhs, rhs in
             let lhsBandwidth = lhs.averageBandwidth ?? lhs.bandwidth
             let rhsBandwidth = rhs.averageBandwidth ?? rhs.bandwidth
             if lhsBandwidth != rhsBandwidth { return lhsBandwidth > rhsBandwidth }

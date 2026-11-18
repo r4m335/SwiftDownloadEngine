@@ -1551,6 +1551,64 @@ public actor StreamingDownloadOrchestrator {
             )
         }
 
+        // Direct audio rendition match: when the candidate exactURI matches an audio rendition from master manifest
+        if let exactURI = candidate.hlsVariantPreferences.exactURI,
+           let matchedAudio = manifest.renditions.first(where: {
+               $0.type.uppercased() == "AUDIO" && ($0.uri == exactURI || $0.uri?.absoluteString == exactURI.absoluteString || ($0.uri != nil && $0.uri?.path == exactURI.path))
+           }), let audioURI = matchedAudio.uri {
+            PipelineLogger.shared.log("[HLS Pipeline] Direct audio rendition match found: \(audioURI.absoluteString)")
+            let effectiveAudioURI: URL
+            if (audioURI.query == nil || audioURI.query?.isEmpty == true),
+               let parentQuery = baseURL.query ?? candidate.url.query, !parentQuery.isEmpty,
+               var components = URLComponents(url: audioURI, resolvingAgainstBaseURL: false) {
+                components.query = parentQuery
+                effectiveAudioURI = components.url ?? audioURI
+            } else {
+                effectiveAudioURI = audioURI
+            }
+
+            let audioCachedText = cachedManifestTextsByURL[effectiveAudioURI.absoluteString] ?? cachedManifestTextsByURL[effectiveAudioURI.absoluteString.lowercased()]
+            let audioCandidate = try StreamingManifestCandidate(
+                url: effectiveAudioURI,
+                mimeType: "application/vnd.apple.mpegurl",
+                browserRequestContext: candidate.browserRequestContext,
+                browserSessionSnapshot: candidate.browserSessionSnapshot,
+                hlsVariantPreferences: candidate.hlsVariantPreferences,
+                cachedManifestText: audioCachedText
+            )
+            do {
+                let audioSubResponse = try await loadManifestResponse(
+                    candidate: audioCandidate,
+                    headers: manifestHeaders(for: audioCandidate)
+                )
+                let parsedAudio = try HLSManifestParser.parse(
+                    audioSubResponse.data,
+                    baseURL: audioSubResponse.finalURL,
+                    limits: parsingLimits
+                )
+                if parsedAudio.playlistType == .media {
+                    let audioPlan = try HLSTransferPlanner.makeVODPlan(
+                        manifest: parsedAudio,
+                        baseURL: audioSubResponse.finalURL,
+                        limits: parsingLimits,
+                        browserRequestContext: candidate.browserRequestContext
+                    )
+                    PipelineLogger.shared.log("[HLS Pipeline] Successfully resolved audio-only HLS plan with \(audioPlan.resources.count) segments.")
+                    return ResolvedHLSSelection(
+                        mediaPlaylist: parsedAudio,
+                        mediaURL: audioSubResponse.finalURL,
+                        selectedVariant: nil,
+                        selectedVariantBandwidth: nil,
+                        videoPlan: audioPlan,
+                        audioPlan: nil,
+                        selectedSubtitleRendition: nil
+                    )
+                }
+            } catch {
+                PipelineLogger.shared.log("[HLS Pipeline] Audio-only rendition fetch failed (\(error.localizedDescription)). Falling back to variant evaluation...")
+            }
+        }
+
         let rankedVariants: [HLSVariant]
         do {
             rankedVariants = try HLSVariantSelector.rank(
@@ -3243,12 +3301,7 @@ public actor StreamingDownloadOrchestrator {
 
     private func manifestHeaders(for candidate: StreamingManifestCandidate) -> [String: String] {
         guard let context = candidate.browserRequestContext else { return [:] }
-        let headers = context.effectiveHeaders(for: candidate.url)
-        return BrowserHeaderFilter.stripCredentialsOnRedirect(
-            headers: headers,
-            from: context.url,
-            to: candidate.url
-        )
+        return context.effectiveHeaders(for: candidate.url)
     }
 
     private func requestHeaders(
@@ -3263,20 +3316,14 @@ public actor StreamingDownloadOrchestrator {
             context = plan.browserRequestContext
         }
         guard let context else { return [:] }
-        let headers: [String: String]
         switch manifest {
         case .hls(let plan):
             guard let planned = plan.allResources.first(where: { $0.url == resource.url && $0.order == resource.identity.order }) else { return [:] }
-            headers = plan.requestHeaders(for: planned)
+            return plan.requestHeaders(for: planned)
         case .dash(let plan):
             guard let planned = plan.resources.first(where: { $0.url == resource.url && $0.order == resource.identity.order }) else { return [:] }
-            headers = plan.requestHeaders(for: planned)
+            return plan.requestHeaders(for: planned)
         }
-        return BrowserHeaderFilter.stripCredentialsOnRedirect(
-            headers: headers,
-            from: context.url,
-            to: resource.url
-        )
     }
 
     private func makeResources(
