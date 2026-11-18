@@ -274,7 +274,7 @@ final class BrowserBookmarksAndHistoryTests: XCTestCase {
                 <DT><A HREF="https://swift.org" ADD_DATE="1600000001">Swift Language</A>
                 <DT><A HREF="https://rust-lang.org">Rust &amp; Systems</A>
             </DL><p>
-            <DT><A HREF="https://wikipedia.org">Wikipedia</A>
+            <DT><A HREF="https://www.wikipedia.org">Wikipedia</A>
             <DT><A HREF="javascript:alert(1)">Invalid Scheme Script</A>
         </DL><p>
         """
@@ -283,8 +283,8 @@ final class BrowserBookmarksAndHistoryTests: XCTestCase {
 
         XCTAssertEqual(summary.totalFound, 4)
         XCTAssertEqual(summary.importedFoldersCount, 1)
-        XCTAssertEqual(summary.importedBookmarksCount, 2) // swift.org, rust-lang.org. wikipedia.org is already default duplicate
-        XCTAssertEqual(summary.duplicateCount, 1) // wikipedia.org
+        XCTAssertEqual(summary.importedBookmarksCount, 2) // swift.org, rust-lang.org. www.wikipedia.org is default duplicate
+        XCTAssertEqual(summary.duplicateCount, 1) // www.wikipedia.org
         XCTAssertEqual(summary.skippedCount, 2) // 1 invalid javascript: scheme + 1 duplicate wikipedia
 
         XCTAssertTrue(store.isBookmarked(url: URL(string: "https://swift.org")!))
@@ -297,6 +297,7 @@ final class BrowserBookmarksAndHistoryTests: XCTestCase {
         let storeBURL = tempDirectory.appendingPathComponent("storeB.json")
 
         let storeA = BrowserBookmarkStore(customStorageURL: storeAURL)
+        for b in storeA.allBookmarks { storeA.deleteBookmark(id: b.id) }
         let f1 = storeA.createFolder(title: "Favorites")
         storeA.addBookmark(title: "GitHub", url: URL(string: "https://github.com")!, folderID: f1.id)
         storeA.addBookmark(title: "Substack", url: URL(string: "https://substack.com")!, folderID: nil)
@@ -410,12 +411,17 @@ final class BrowserBookmarksAndHistoryTests: XCTestCase {
         let hStore = BrowserHistoryStore(customStorageURL: hURL)
 
         let bExpectation = expectation(description: "Bookmark didChangeNotification")
+        bExpectation.assertForOverFulfill = false
+        var bFulfilled = false
         let bObserver = NotificationCenter.default.addObserver(
             forName: BrowserBookmarkStore.didChangeNotification,
-            object: nil,
+            object: bStore,
             queue: .main
         ) { _ in
-            bExpectation.fulfill()
+            if !bFulfilled {
+                bFulfilled = true
+                bExpectation.fulfill()
+            }
         }
 
         bStore.addBookmark(title: "Test", url: URL(string: "https://test.org")!)
@@ -423,12 +429,17 @@ final class BrowserBookmarksAndHistoryTests: XCTestCase {
         NotificationCenter.default.removeObserver(bObserver)
 
         let hExpectation = expectation(description: "History didChangeNotification")
+        hExpectation.assertForOverFulfill = false
+        var hFulfilled = false
         let hObserver = NotificationCenter.default.addObserver(
             forName: BrowserHistoryStore.didChangeNotification,
-            object: nil,
+            object: hStore,
             queue: .main
         ) { _ in
-            hExpectation.fulfill()
+            if !hFulfilled {
+                hFulfilled = true
+                hExpectation.fulfill()
+            }
         }
 
         hStore.recordVisit(url: URL(string: "https://test.org")!, title: "Test", isIncognito: false)
