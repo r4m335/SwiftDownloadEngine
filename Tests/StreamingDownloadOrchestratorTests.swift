@@ -116,8 +116,8 @@ final class StreamingDownloadOrchestratorTests: XCTestCase {
         let candidate = try StreamingManifestCandidate(url: url)
         let proposal = try await orchestrator.prepare(candidate: candidate)
         XCTAssertEqual(proposal.resources.count, 2)
-        XCTAssertEqual(proposal.resources[0].identity.kind, .encryptionKey)
-        XCTAssertEqual(proposal.resources[1].identity.kind, .mediaSegment)
+        XCTAssertEqual(proposal.resources[0].url, URL(string: "https://video.example/key.bin")!)
+        XCTAssertEqual(proposal.resources[1].url, URL(string: "https://video.example/segment.ts")!)
     }
 
     func testAES128HLSEncryptionIsPlannedWithKeyAndSegments() async throws {
