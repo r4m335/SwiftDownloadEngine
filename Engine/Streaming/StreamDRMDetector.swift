@@ -19,21 +19,35 @@ public enum StreamDRMDetector {
 
     /// Evaluates raw manifest text, MIME type, and optional URL for DRM indicators.
     public static func evaluate(manifestText: String, url: URL? = nil) -> DRMResult {
+        // 0. Check URL path and query parameters for DRM indicators
+        if let url = url {
+            let lowerURL = url.absoluteString.lowercased()
+            if lowerURL.contains("/hls_drm/") || lowerURL.contains("_drm/") || lowerURL.contains("/drm/") || lowerURL.contains("drm.m3u8") || lowerURL.contains("_drm.") {
+                return DRMResult(
+                    isProtected: true,
+                    protectionType: "DRM",
+                    reason: "Media URL path explicitly indicates DRM protection (\(url.lastPathComponent))"
+                )
+            }
+        }
+
         let text = manifestText
         guard !text.isEmpty else { return .clear }
 
-        // 1. Check HLS Key Delivery & Encryption
-        if text.contains("#EXT-X-KEY:") {
+        // 1. Check HLS Key Delivery, Session Keys, & Encryption (#EXT-X-KEY and #EXT-X-SESSION-KEY)
+        if text.contains("#EXT-X-KEY") || text.contains("#EXT-X-SESSION-KEY") || text.contains("METHOD=SAMPLE-AES") {
             let lines = text.components(separatedBy: .newlines)
-            for line in lines where line.hasPrefix("#EXT-X-KEY:") {
-                let upper = line.uppercased()
+            for rawLine in lines {
+                let trimmed = rawLine.trimmingCharacters(in: .whitespaces)
+                guard trimmed.hasPrefix("#EXT-X-KEY:") || trimmed.hasPrefix("#EXT-X-SESSION-KEY:") else { continue }
+                let upper = trimmed.uppercased()
 
                 if upper.contains("KEYFORMAT=\"COM.APPLE.STREAMINGKEYDELIVERY\"") ||
                    upper.contains("KEYFORMAT=COM.APPLE.STREAMINGKEYDELIVERY") {
                     return DRMResult(
                         isProtected: true,
                         protectionType: "FairPlay",
-                        reason: "Apple FairPlay streaming key delivery detected (#EXT-X-KEY)"
+                        reason: "Apple FairPlay streaming key delivery detected"
                     )
                 }
 
@@ -42,7 +56,7 @@ public enum StreamDRMDetector {
                     return DRMResult(
                         isProtected: true,
                         protectionType: "Widevine",
-                        reason: "Google Widevine DRM key format detected (#EXT-X-KEY)"
+                        reason: "Google Widevine DRM key format detected"
                     )
                 }
 
@@ -51,7 +65,7 @@ public enum StreamDRMDetector {
                     return DRMResult(
                         isProtected: true,
                         protectionType: "PlayReady",
-                        reason: "Microsoft PlayReady DRM key format detected (#EXT-X-KEY)"
+                        reason: "Microsoft PlayReady DRM key format detected"
                     )
                 }
 
@@ -60,10 +74,20 @@ public enum StreamDRMDetector {
                     return DRMResult(
                         isProtected: true,
                         protectionType: "Sample-AES",
-                        reason: "HLS Sample-level AES encryption detected (#EXT-X-KEY)"
+                        reason: "HLS Sample-level AES encryption detected"
                     )
                 }
             }
+        }
+
+        // 1b. Check if master manifest references child variant playlists containing DRM paths
+        let lower = text.lowercased()
+        if lower.contains("/hls_drm/") || lower.contains("_drm/") || lower.contains("/drm/") {
+            return DRMResult(
+                isProtected: true,
+                protectionType: "DRM",
+                reason: "Manifest references DRM-protected stream variants"
+            )
         }
 
         // 2. Check DASH MPD ContentProtection elements

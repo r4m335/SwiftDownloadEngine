@@ -121,6 +121,23 @@ final class BrowserMediaGrabberIntegrationTests: XCTestCase {
         XCTAssertEqual(playReadyResult.protectionType, "PlayReady")
     }
 
+    func testDRMStreamDetectionSessionKeyAndURLPath() {
+        let sessionKeyMaster = """
+        #EXTM3U
+        #EXT-X-SESSION-KEY:METHOD=SAMPLE-AES,KEYFORMAT="com.apple.streamingkeydelivery",URI="skd://fps.key"
+        #EXT-X-STREAM-INF:BANDWIDTH=4000000,RESOLUTION=1920x1080
+        variant.m3u8
+        """
+        let sessionResult = StreamDRMDetector.evaluate(manifestText: sessionKeyMaster)
+        XCTAssertTrue(sessionResult.isProtected)
+        XCTAssertEqual(sessionResult.protectionType, "FairPlay")
+
+        let drmURL = URL(string: "https://vikiplatform.akamaized.net/1274303v/hls/hls_drm/1274303v_video_high_480p_fd49d6_2611170410.m3u8")!
+        let urlResult = StreamDRMDetector.evaluate(manifestText: "", url: drmURL)
+        XCTAssertTrue(urlResult.isProtected)
+        XCTAssertEqual(urlResult.protectionType, "DRM")
+    }
+
     func testDRMManifestFlaggingDuringExpanderWorkflow() {
         let fairplayMaster = """
         #EXTM3U

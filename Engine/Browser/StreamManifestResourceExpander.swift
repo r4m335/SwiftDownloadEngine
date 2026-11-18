@@ -218,7 +218,16 @@ public actor StreamManifestResourceExpander {
         }()
 
         let effectiveText = manifestText ?? masterResource.manifestText ?? ""
-        let drmResult = StreamDRMDetector.evaluate(manifestText: effectiveText, url: masterResource.url)
+        var drmResult = StreamDRMDetector.evaluate(manifestText: effectiveText, url: masterResource.url)
+        if !drmResult.isProtected {
+            for option in options {
+                let optDrm = StreamDRMDetector.evaluate(manifestText: "", url: option.uri)
+                if optDrm.isProtected {
+                    drmResult = optDrm
+                    break
+                }
+            }
+        }
 
         var variants: [WebpageResource] = []
         var items: [HLSVariantStreamItem] = []
@@ -255,8 +264,9 @@ public actor StreamManifestResourceExpander {
                 exactURI: option.uri
             )
 
-            let isSupported = !drmResult.isProtected
-            let unsupportedReason = drmResult.reason
+            let optionDrm = drmResult.isProtected ? drmResult : StreamDRMDetector.evaluate(manifestText: "", url: option.uri)
+            let isSupported = !optionDrm.isProtected
+            let unsupportedReason = optionDrm.reason
 
             let resource = WebpageResource(
                 id: variantID,
@@ -273,8 +283,8 @@ public actor StreamManifestResourceExpander {
                 hlsVariantPreferences: preferences,
                 dashVideoRepresentationID: option.dashVideoRepresentationID,
                 dashAudioRepresentationID: option.dashAudioRepresentationID,
-                isDRMProtected: drmResult.isProtected,
-                drmProtectionType: drmResult.protectionType
+                isDRMProtected: optionDrm.isProtected,
+                drmProtectionType: optionDrm.protectionType
             )
             variants.append(resource)
 

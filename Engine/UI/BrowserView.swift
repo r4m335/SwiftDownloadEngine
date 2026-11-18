@@ -1769,7 +1769,6 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         streamingErrorMessage = nil
         streamingProposal = nil
         streamingProgress = nil
-        downloadSuccessNotification = "Streaming download started"
 
         Task { @MainActor [weak self] in
             guard let self else { return }
@@ -1856,12 +1855,19 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                 print("[HLS Pipeline] Proposal prepared successfully. Automatically starting streaming download in background...")
                 self.streamingProposal = proposal
                 self.isPreparingStreaming = false
+                self.downloadSuccessNotification = "Streaming download started"
                 self.executeStreamingProposal()
             } catch {
-                let errorMsg = "Streaming preparation failed: \(error.localizedDescription)"
+                let errorMsg: String
+                if case StreamingDownloadOrchestratorError.unsupportedEncryption = error {
+                    errorMsg = "Download Failed: This video is protected by DRM (Digital Rights Management) and cannot be downloaded."
+                } else {
+                    errorMsg = "Streaming preparation failed: \(error.localizedDescription)"
+                }
                 print("[HLS Pipeline] \(errorMsg)")
                 self.streamingErrorMessage = errorMsg
                 self.blobCaptureErrorMessage = errorMsg
+                self.downloadSuccessNotification = nil
                 self.isPreparingStreaming = false
             }
         }
