@@ -380,6 +380,7 @@ final class DownloadsViewInteractionTests: XCTestCase {
             name: "active.mp4",
             type: .http,
             state: .downloading,
+            completedBytes: 500,
             destinationURL: tempDirectory.appendingPathComponent("active.mp4"),
             source: "https://example.com/active.mp4"
         )
@@ -388,6 +389,7 @@ final class DownloadsViewInteractionTests: XCTestCase {
             name: "paused.mp4",
             type: .http,
             state: .paused,
+            completedBytes: 250,
             destinationURL: tempDirectory.appendingPathComponent("paused.mp4"),
             source: "https://example.com/paused.mp4"
         )
@@ -396,6 +398,7 @@ final class DownloadsViewInteractionTests: XCTestCase {
             name: "completed.mp4",
             type: .http,
             state: .completed,
+            completedBytes: 1000,
             destinationURL: tempDirectory.appendingPathComponent("completed.mp4"),
             source: "https://example.com/completed.mp4"
         )
@@ -403,7 +406,8 @@ final class DownloadsViewInteractionTests: XCTestCase {
             id: "t-failed",
             name: "failed.mp4",
             type: .http,
-            state: .failed,
+            state: .failed(reason: "Network timeout"),
+            completedBytes: 50,
             destinationURL: tempDirectory.appendingPathComponent("failed.mp4"),
             source: "https://example.com/failed.mp4"
         )
@@ -440,6 +444,7 @@ final class DownloadsViewInteractionTests: XCTestCase {
             name: "song.mp3",
             type: .http,
             state: .completed,
+            completedBytes: 1024,
             destinationURL: tempDirectory.appendingPathComponent("song.mp3"),
             source: "https://example.com/song.mp3"
         )
