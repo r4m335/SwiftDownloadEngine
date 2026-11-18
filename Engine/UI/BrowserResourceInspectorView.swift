@@ -148,15 +148,22 @@ public struct BrowserResourceInspectorSheet: View {
                 // Search & Quick Selection Bar
                 searchAndSelectionHeader
 
-                // Main Content: Loading, Empty, or List
-                if viewModel.isScanningResources {
+                // Main Content: List, Loading, Empty, or Error
+                if !filteredResources.isEmpty {
+                    VStack(spacing: 0) {
+                        if viewModel.isScanningResources {
+                            ProgressView()
+                                .progressViewStyle(LinearProgressViewStyle())
+                                .padding(.horizontal)
+                        }
+                        resourceList
+                    }
+                } else if viewModel.isScanningResources {
                     loadingView
                 } else if let error = viewModel.resourceScanError {
                     errorView(error)
-                } else if filteredResources.isEmpty {
+                } else {
                     emptyView
-                } else if !filteredResources.isEmpty {
-                    resourceList
                 }
             }
             .navigationTitle("Find Resources")
@@ -166,6 +173,8 @@ public struct BrowserResourceInspectorSheet: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Done") {
+                        viewModel.isScanningResources = false
+                        viewModel.isShowingResourceInspector = false
                         presentationMode.wrappedValue.dismiss()
                     }
                 }
@@ -338,10 +347,12 @@ public struct BrowserResourceInspectorSheet: View {
                 }
             },
             onOpenBrowser: {
+                viewModel.isShowingResourceInspector = false
                 presentationMode.wrappedValue.dismiss()
                 viewModel.load(url: resource.url)
             },
             onOpenAddDownload: {
+                viewModel.isShowingResourceInspector = false
                 presentationMode.wrappedValue.dismiss()
                 viewModel.sendToGlobalAddDownload(for: resource)
             },

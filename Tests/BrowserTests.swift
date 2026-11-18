@@ -1402,6 +1402,33 @@ final class BrowserTests: XCTestCase {
         XCTAssertTrue(vm.downloadSuccessNotification?.contains("blob_video.mp4") == true)
     }
 
+    @MainActor
+    func testOpenResourceInspector_ImmediatelySyncsMediaCandidatesWithoutBlocking() {
+        let mockDelegate = MockDownloadDelegate()
+        let vm = BrowserViewModel(downloadDelegate: mockDelegate)
+
+        let res = WebpageResource(
+            url: URL(string: "https://example.com/live/master.m3u8")!,
+            title: "Master Playlist",
+            suggestedFilename: "master.m3u8",
+            resourceType: .video,
+            mimeType: "application/vnd.apple.mpegurl",
+            isSupported: true
+        )
+        vm.ingestMediaResources([res], tabID: vm.activeTabID)
+
+        XCTAssertEqual(vm.discoveredResources.count, 1)
+
+        // When user opens resource inspector
+        vm.openResourceInspector()
+
+        // Must immediately be presented without waiting for DOM evaluation or getting stuck scanning
+        XCTAssertTrue(vm.isShowingResourceInspector)
+        XCTAssertFalse(vm.isScanningResources, "Should not be stuck scanning when resources are already detected")
+        XCTAssertEqual(vm.discoveredResources.count, 1)
+        XCTAssertEqual(vm.discoveredResources.first?.url, res.url)
+    }
+
     func testWebpageResource_SegmentChunkClassification() {
         let tsResource = WebpageResource(
             url: URL(string: "https://example.com/segment_0001.ts")!,

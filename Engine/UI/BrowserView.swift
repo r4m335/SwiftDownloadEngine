@@ -828,6 +828,11 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         cancelMSECapture(for: tabID)
         tabSessions[tabID]?.mediaDiscoveryBridge.reset()
         resetMediaCandidateCatalog(for: tabID)
+        if tabID == activeTabID {
+            discoveredResources = []
+            selectedResourceIDs = []
+            variantStreamItems = [:]
+        }
     }
 
     fileprivate func webView(for tabID: UUID?) -> WKWebView? {
@@ -1449,9 +1454,105 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         return rm.matcher.match(resource: resource, transfers: transfers)
     }
 
+    /// Synchronizes all media candidates captured dynamically during video playback
+    /// directly into discoveredResources, ensuring the resource grabber can display
+    /// grabbed links immediately without waiting for DOM evaluation or showing a blocking spinner.
+    public func syncMediaCandidatesToDiscoveredResources() {
+        for candidate in mediaCandidates {
+            guard candidate.kind != .unknown,
+                  candidate.availability != .unsupported,
+                  let url = candidate.url ?? URL(string: candidate.rawURL) else {
+                continue
+            }
+            let ext = url.pathExtension.lowercased()
+            if ext == "ts" || ext == "m4s" { continue }
+            if let mime = candidate.mimeType?.lowercased(), mime.contains("mp2t") || mime.contains("iso.segment") { continue }
+
+            let urlStr = url.absoluteString.lowercased()
+            if let existingIndex = discoveredResources.firstIndex(where: { $0.url.absoluteString.lowercased() == urlStr }) {
+                // If existing resource doesn't have manifestText but candidate does, update it
+                if (discoveredResources[existingIndex].manifestText == nil || discoveredResources[existingIndex].manifestText?.isEmpty == true),
+                   let cachedText = candidate.cachedManifestText, !cachedText.isEmpty {
+                    let old = discoveredResources[existingIndex]
+                    discoveredResources[existingIndex] = WebpageResource(
+                        id: old.id,
+                        url: old.url,
+                        title: old.title,
+                        suggestedFilename: old.suggestedFilename,
+                        resourceType: old.resourceType,
+                        mimeType: old.mimeType,
+                        estimatedSize: old.estimatedSize,
+                        isSupported: old.isSupported,
+                        unsupportedReason: old.unsupportedReason,
+                        requestContext: old.requestContext ?? candidate.requestContext,
+                        manifestText: cachedText,
+                        hlsVariantPreferences: old.hlsVariantPreferences,
+                        dashVideoRepresentationID: old.dashVideoRepresentationID,
+                        dashAudioRepresentationID: old.dashAudioRepresentationID,
+                        isDRMProtected: old.isDRMProtected,
+                        drmProtectionType: old.drmProtectionType
+                    )
+                }
+                continue
+            }
+
+            let resourceType: WebpageResourceType
+            switch candidate.kind {
+            case .directMedia, .hlsManifest, .dashManifest, .mediaSource, .protectedMedia:
+                resourceType = .video
+            case .completeBlob:
+                if let mime = candidate.mimeType?.lowercased(), mime.contains("audio") {
+                    resourceType = .audio
+                } else {
+                    resourceType = .video
+                }
+            case .directFile:
+                let isAudio = (candidate.mimeType?.lowercased().contains("audio") == true) ||
+                    ["mp3", "m4a", "aac", "wav", "flac", "ogg"].contains(ext)
+                resourceType = isAudio ? .audio : .other
+            case .unknown:
+                continue
+            }
+
+            let isManifest = candidate.kind == .hlsManifest || candidate.kind == .dashManifest
+            let defaultFilename: String
+            if isManifest {
+                defaultFilename = candidate.kind == .dashManifest ? "stream.mpd" : "stream.m3u8"
+            } else {
+                defaultFilename = "video.mp4"
+            }
+
+            let finalFilename = candidate.suggestedFilename.isEmpty ? defaultFilename : candidate.suggestedFilename
+            let title = candidate.suggestedFilename.isEmpty
+                ? (isManifest ? (candidate.kind == .dashManifest ? "DASH Manifest" : "HLS Master Playlist") : "Media Stream")
+                : candidate.suggestedFilename
+            let effectiveMime = candidate.mimeType ?? (isManifest ? (candidate.kind == .dashManifest ? "application/dash+xml" : "application/vnd.apple.mpegurl") : "video/mp4")
+
+            let res = WebpageResource(
+                id: candidate.id,
+                url: url,
+                title: title,
+                suggestedFilename: finalFilename,
+                resourceType: resourceType,
+                mimeType: effectiveMime,
+                estimatedSize: candidate.estimatedSize,
+                isSupported: true,
+                requestContext: candidate.requestContext,
+                manifestText: candidate.cachedManifestText,
+                isDRMProtected: candidate.kind == .protectedMedia
+            )
+            discoveredResources.append(res)
+        }
+    }
+
     public func openResourceInspector() {
+        syncMediaCandidatesToDiscoveredResources()
         isShowingResourceInspector = true
-        inspectCurrentPageResources()
+        if discoveredResources.isEmpty {
+            inspectCurrentPageResources()
+        } else {
+            expandStreamingManifests()
+        }
     }
 
     public func promptDownloadFromInspector(for resource: WebpageResource) {
@@ -2576,14 +2677,18 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                 let resources = WebpageResourceExtractor.extractFromRawCandidates(rawCandidates, baseURL: url)
                 self.captureRequestContexts(for: resources, pageURL: url, webView: wv) { [weak self] contextualResources in
                     guard let self = self else { return }
-                    self.discoveredResources = contextualResources
-                    self.selectedResourceIDs = []
-                    if let manifest = contextualResources.first(where: { $0.isStreamingManifest }) {
+                    // Merge newly discovered DOM resources into discoveredResources without removing existing ones
+                    for newRes in contextualResources {
+                        if !self.discoveredResources.contains(where: { $0.url.absoluteString.lowercased() == newRes.url.absoluteString.lowercased() }) {
+                            self.discoveredResources.append(newRes)
+                        }
+                    }
+                    if self.selectedResourceIDs.isEmpty,
+                       let manifest = self.discoveredResources.first(where: { $0.isStreamingManifest }) {
                         self.selectedResourceIDs.insert(manifest.id)
                     }
-                    self.resetMediaCandidateCatalog(for: self.activeTabID)
                     self.ingestMediaResources(contextualResources, tabID: self.activeTabID)
-                    self.expandStreamingManifests(in: contextualResources)
+                    self.expandStreamingManifests(in: self.discoveredResources)
                 }
             }
         }
