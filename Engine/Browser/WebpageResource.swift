@@ -264,7 +264,13 @@ public struct WebpageResourceExtractor {
         }
 
         if let e = cleanExt {
-            if videoExtensions.contains(e) { return .video }
+            if videoExtensions.contains(e) || e == "blob" {
+                if let m = cleanMime {
+                    if m.hasPrefix("audio/") { return .audio }
+                    if m.hasPrefix("image/") { return .image }
+                }
+                return .video
+            }
             if audioExtensions.contains(e) { return .audio }
             if documentExtensions.contains(e) { return .document }
             if archiveExtensions.contains(e) { return .archive }
@@ -394,7 +400,7 @@ public struct WebpageResourceExtractor {
         }
 
         // Direct media elements and images are always relevant
-        if let t = tag?.lowercased(), t == "video" || t == "audio" || t == "source" || t == "img" {
+        if let t = tag?.lowercased(), t == "video" || t == "audio" || t == "source" || t == "img" || t == "mediasource" || t == "blob" {
             return true
         }
 
@@ -443,8 +449,22 @@ public struct WebpageResourceExtractor {
                 type = .video
             case "source" where declaredMIME?.lowercased().hasPrefix("audio/") == true:
                 type = .audio
+            case "mediasource", "sourcebuffer", "blob":
+                if declaredMIME?.lowercased().hasPrefix("audio/") == true {
+                    type = .audio
+                } else {
+                    type = .video
+                }
             default:
-                break
+                if resolvedURL.scheme?.lowercased() == "blob" || ext?.lowercased() == "blob" {
+                    if declaredMIME?.lowercased().hasPrefix("audio/") == true {
+                        type = .audio
+                    } else if declaredMIME?.lowercased().hasPrefix("image/") == true {
+                        type = .image
+                    } else {
+                        type = .video
+                    }
+                }
             }
 
             // Filter out ordinary web navigation links that are not downloads or media

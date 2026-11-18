@@ -105,6 +105,7 @@ public struct BrowserResourceInspectorSheet: View {
             let matchesCategory = selectedCategory == nil || res.resourceType == selectedCategory
             let hasStreamingManifest = eligibleResources.contains(where: { $0.isStreamingManifest })
             let matchesDefaultMedia = showsAllResources ||
+                selectedCategory != nil ||
                 (res.resourceType == .video && (!res.isMediaSourceBlob || !hasStreamingManifest)) ||
                 res.resourceType == .audio
             let matchesSearch = searchText.isEmpty ||

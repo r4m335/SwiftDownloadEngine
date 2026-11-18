@@ -214,6 +214,57 @@ public enum BrowserFrameBustingDefense {
     #endif
 }
 
+// MARK: - 4b. Media Playback Optimization
+
+/// Ensures video elements configure inline playback and disable remote playback restrictions
+/// preventing WebKit on iOS from stalling ManagedMediaSource / MediaSource adaptive video pipelines.
+public enum BrowserMediaPlaybackOptimization {
+
+    public static let script: String = """
+    (function() {
+        "use strict";
+        try {
+            var origPlay = HTMLMediaElement.prototype.play;
+            if (origPlay) {
+                HTMLMediaElement.prototype.play = function() {
+                    try {
+                        if (this.disableRemotePlayback !== true) {
+                            this.disableRemotePlayback = true;
+                        }
+                    } catch (_) {}
+                    return origPlay.apply(this, arguments);
+                };
+            }
+            var srcDesc = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, "src");
+            if (srcDesc && srcDesc.set) {
+                var prevSet = srcDesc.set;
+                Object.defineProperty(HTMLMediaElement.prototype, "src", {
+                    set: function(val) {
+                        try {
+                            this.playsInline = true;
+                            this.setAttribute("playsinline", "");
+                            this.setAttribute("webkit-playsinline", "");
+                            this.disableRemotePlayback = true;
+                        } catch (_) {}
+                        return prevSet.call(this, val);
+                    }
+                });
+            }
+        } catch (_) {}
+    })();
+    """
+
+    #if canImport(WebKit)
+    public static func makeUserScript() -> WKUserScript {
+        WKUserScript(
+            source: script,
+            injectionTime: .atDocumentStart,
+            forMainFrameOnly: false
+        )
+    }
+    #endif
+}
+
 // MARK: - 5. Security & Permission Prompts
 
 public struct BrowserCertificatePrompt: Identifiable, Sendable {

@@ -371,6 +371,11 @@ public struct BrowserDownloadClassifier {
         if !lastComponent.isEmpty && lastComponent != "/" && lastComponent.contains(".") {
             let sanitized = sanitizeFilename(lastComponent)
             if !sanitized.isEmpty && sanitized != "download.bin" {
+                if sanitized.lowercased().hasSuffix(".blob") {
+                    let base = (sanitized as NSString).deletingPathExtension
+                    let ext = mimeType.flatMap { fileExtension(forMimeType: $0) } ?? "mp4"
+                    return "\(base).\(ext)"
+                }
                 return sanitized
             }
         }

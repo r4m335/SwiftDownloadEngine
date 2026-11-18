@@ -612,6 +612,13 @@ public final class BrowserMediaDiscoveryBridge: NSObject, @unchecked Sendable {
                 if (cl !== null && cl > MAX_INSPECTION_BYTES) {
                     return Promise.resolve(null);
                 }
+                var ct = "";
+                try { ct = (response.headers && response.headers.get ? response.headers.get("content-type") : "") || ""; } catch (_) {}
+                var ctLower = ct.toLowerCase();
+                // Never clone or stream-inspect binary video or audio chunks to prevent WebKit stream stalls
+                if (ctLower.indexOf("video/") === 0 || ctLower.indexOf("audio/") === 0) {
+                    return Promise.resolve(null);
+                }
                 var clone = response.clone();
                 if (clone.body && typeof clone.body.getReader === "function") {
                     var reader = clone.body.getReader();

@@ -376,6 +376,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
     }
 
     public static let defaultDesktopUserAgent = BrowserTabState.defaultDesktopUserAgent
+    public static let defaultMobileUserAgent = BrowserTabState.defaultMobileUserAgent
 
     public var activeTab: BrowserTabState? {
         tabManager.activeTab
@@ -438,7 +439,9 @@ public final class BrowserViewModel: NSObject, ObservableObject {
 
         #if canImport(WebKit)
         if let session = tabSessions[id] {
-            session.webView.customUserAgent = tab.isDesktopMode ? Self.defaultDesktopUserAgent : nil
+            session.webView.customUserAgent = tab.isDesktopMode
+                ? Self.defaultDesktopUserAgent
+                : (settings.customUserAgent ?? Self.defaultMobileUserAgent)
             #if os(iOS)
             if #available(iOS 13.0, *) {
                 session.webView.configuration.defaultWebpagePreferences.preferredContentMode = tab.isDesktopMode ? .desktop : .mobile
@@ -5634,11 +5637,13 @@ final class BrowserWebViewSession {
 
         // Frame-busting & anti-hijack defense (Milestone B.2)
         config.userContentController.addUserScript(BrowserFrameBustingDefense.makeUserScript())
+        // Media playback optimization (ManagedMediaSource & playsinline activation)
+        config.userContentController.addUserScript(BrowserMediaPlaybackOptimization.makeUserScript())
 
         let webView = WKWebView(frame: .zero, configuration: config)
-        if isDesktop {
-            webView.customUserAgent = BrowserViewModel.defaultDesktopUserAgent
-        }
+        webView.customUserAgent = isDesktop
+            ? BrowserViewModel.defaultDesktopUserAgent
+            : (viewModel.settings.customUserAgent ?? BrowserViewModel.defaultMobileUserAgent)
         self.webView = webView
         let coordinator = BrowserWebViewCoordinator(viewModel: viewModel, tabID: tabID)
         self.coordinator = coordinator
