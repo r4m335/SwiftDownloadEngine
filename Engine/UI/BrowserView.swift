@@ -3375,7 +3375,6 @@ public final class BrowserViewModel: NSObject, ObservableObject {
             _ = tabManager.updateTab(tab)
         }
         currentURL = nil
-        displayURL = ""
         urlInputText = ""
         pageTitle = ""
         publishTabState()

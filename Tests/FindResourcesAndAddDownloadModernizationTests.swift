@@ -287,7 +287,7 @@ final class FindResourcesAndAddDownloadModernizationTests: XCTestCase {
 
         vm.goHome()
         XCTAssertNil(vm.currentURL)
-        XCTAssertEqual(vm.displayURL, "")
+        XCTAssertEqual(vm.urlInputText, "")
         XCTAssertEqual(vm.activeTab?.url, nil)
     }
 
