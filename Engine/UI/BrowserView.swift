@@ -4660,7 +4660,18 @@ public struct BrowserTabSwitcherView: View {
                     } else {
                         LazyVGrid(columns: columns, spacing: 14) {
                             ForEach(viewModel.tabs) { tab in
-                                tabGridCard(for: tab)
+                                BrowserTabCardView(
+                                    tab: tab,
+                                    isActive: tab.id == viewModel.activeTabID,
+                                    previewData: BrowserTabPreviewCache.shared.preview(for: tab.id),
+                                    onSelect: {
+                                        _ = viewModel.selectTab(tab.id)
+                                        dismiss()
+                                    },
+                                    onClose: {
+                                        close(tab.id)
+                                    }
+                                )
                             }
                         }
                     }
@@ -4719,56 +4730,127 @@ public struct BrowserTabSwitcherView: View {
         }
     }
 
-    @ViewBuilder
-    private func tabGridCard(for tab: BrowserTabState) -> some View {
-        let isActive = tab.id == viewModel.activeTabID
-        let previewData = BrowserTabPreviewCache.shared.preview(for: tab.id)
+    private func close(_ tabID: UUID) {
+        withAnimation(.easeInOut(duration: 0.25)) {
+            _ = viewModel.closeTab(tabID)
+        }
+    }
+}
 
-        Button {
-            _ = viewModel.selectTab(tab.id)
-            dismiss()
-        } label: {
-            VStack(alignment: .leading, spacing: 0) {
-                // Card Header
-                HStack(spacing: 6) {
-                    if tab.isIncognito {
-                        Image(systemName: "eyeglasses")
-                            .font(.system(size: 11, weight: .bold))
-                            .foregroundColor(.purple)
-                    } else {
-                        Image(systemName: "globe")
-                            .font(.system(size: 11))
-                            .foregroundColor(.blue)
+// MARK: - Browser Tab Card View with Interactive Swipe-to-Close
+
+public struct BrowserTabCardView: View {
+    public let tab: BrowserTabState
+    public let isActive: Bool
+    public let previewData: Data?
+    public let onSelect: () -> Void
+    public let onClose: () -> Void
+
+    @State private var dragOffset: CGSize = .zero
+    @State private var isDismissing: Bool = false
+
+    public init(
+        tab: BrowserTabState,
+        isActive: Bool,
+        previewData: Data?,
+        onSelect: @escaping () -> Void,
+        onClose: @escaping () -> Void
+    ) {
+        self.tab = tab
+        self.isActive = isActive
+        self.previewData = previewData
+        self.onSelect = onSelect
+        self.onClose = onClose
+    }
+
+    public var body: some View {
+        ZStack {
+            cardContent
+        }
+        .offset(dragOffset)
+        .opacity(isDismissing ? 0 : max(0.2, 1.0 - Double(abs(dragOffset.width) / 160.0)))
+        .scaleEffect(isDismissing ? 0.8 : max(0.92, 1.0 - (abs(dragOffset.width) / 800.0)))
+        .gesture(
+            DragGesture(minimumDistance: 15)
+                .onChanged { value in
+                    if abs(value.translation.width) > abs(value.translation.height) {
+                        dragOffset = CGSize(width: value.translation.width, height: 0)
+                    } else if value.translation.height < -20 {
+                        dragOffset = CGSize(width: 0, height: value.translation.height)
                     }
-
-                    Text(tab.displayName)
-                        .font(.system(size: 12, weight: .semibold))
-                        .lineLimit(1)
-                        .foregroundColor(.primary)
-
-                    Spacer(minLength: 0)
-
-                    Button {
-                        close(tab.id)
-                    } label: {
-                        Image(systemName: "xmark.circle.fill")
-                            .font(.system(size: 15))
-                            .foregroundColor(.secondary)
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("Close \(tab.displayName)")
                 }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 8)
-                #if canImport(UIKit)
-                .background(Color(UIColor.secondarySystemBackground))
-                #else
-                .background(Color.secondary.opacity(0.12))
-                #endif
+                .onEnded { value in
+                    let horizontalSwipe = abs(value.translation.width) > 65
+                    let verticalSwipeUp = value.translation.height < -65 && abs(value.translation.height) > abs(value.translation.width)
+                    if horizontalSwipe || verticalSwipeUp {
+                        withAnimation(.easeOut(duration: 0.2)) {
+                            if horizontalSwipe {
+                                dragOffset.width = value.translation.width > 0 ? 350 : -350
+                            } else {
+                                dragOffset.height = -350
+                            }
+                            isDismissing = true
+                        }
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                            onClose()
+                        }
+                    } else {
+                        withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
+                            dragOffset = .zero
+                        }
+                    }
+                }
+        )
+    }
 
-                Divider()
+    private var cardContent: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            // Header: Title & Independent Close Button
+            HStack(spacing: 6) {
+                if tab.isIncognito {
+                    Image(systemName: "eyeglasses")
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundColor(.purple)
+                } else {
+                    Image(systemName: "globe")
+                        .font(.system(size: 11))
+                        .foregroundColor(.blue)
+                }
 
-                // Card Thumbnail / Preview Body
+                Text(tab.displayName)
+                    .font(.system(size: 12, weight: .semibold))
+                    .lineLimit(1)
+                    .foregroundColor(.primary)
+
+                Spacer(minLength: 4)
+
+                // Dedicated Close Button with explicit hit target
+                Button {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        onClose()
+                    }
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 18))
+                        .foregroundColor(.secondary)
+                        .padding(4)
+                }
+                .buttonStyle(.plain)
+                .contentShape(Rectangle())
+                .accessibilityLabel("Close \(tab.displayName)")
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            #if canImport(UIKit)
+            .background(Color(UIColor.secondarySystemBackground))
+            #else
+            .background(Color.secondary.opacity(0.12))
+            #endif
+
+            Divider()
+
+            // Thumbnail / Preview Body
+            Button(action: onSelect) {
                 ZStack {
                     #if canImport(UIKit)
                     if let previewData, let uiImage = UIImage(data: previewData) {
@@ -4778,20 +4860,23 @@ public struct BrowserTabSwitcherView: View {
                             .frame(maxWidth: .infinity, maxHeight: 115)
                             .clipped()
                     } else {
-                        placeholderPreview(for: tab)
+                        placeholderPreview
                     }
                     #else
-                    placeholderPreview(for: tab)
+                    placeholderPreview
                     #endif
                 }
                 .frame(maxWidth: .infinity, minHeight: 115, maxHeight: 115)
                 .background(tab.isIncognito ? Color.purple.opacity(0.06) : Color.secondary.opacity(0.04))
+            }
+            .buttonStyle(.plain)
 
-                Divider()
+            Divider()
 
-                // Card Footer
+            // Footer
+            Button(action: onSelect) {
                 HStack(spacing: 4) {
-                    Text(displayURL(for: tab))
+                    Text(displayURL)
                         .font(.system(size: 10))
                         .foregroundColor(.secondary)
                         .lineLimit(1)
@@ -4822,31 +4907,22 @@ public struct BrowserTabSwitcherView: View {
                 .background(Color.secondary.opacity(0.12))
                 #endif
             }
-            .clipShape(RoundedRectangle(cornerRadius: 12))
-            .overlay(
-                RoundedRectangle(cornerRadius: 12)
-                    .stroke(
-                        isActive
-                            ? (tab.isIncognito ? Color.purple : Color.blue)
-                            : (tab.isIncognito ? Color.purple.opacity(0.3) : Color.secondary.opacity(0.2)),
-                        lineWidth: isActive ? 2.5 : 1
-                    )
-            )
-            .shadow(color: Color.black.opacity(0.06), radius: 4, x: 0, y: 2)
+            .buttonStyle(.plain)
         }
-        .buttonStyle(.plain)
-        .simultaneousGesture(
-            DragGesture(minimumDistance: 20)
-                .onEnded { value in
-                    guard value.translation.height < -50,
-                          abs(value.translation.height) > abs(value.translation.width) else { return }
-                    close(tab.id)
-                }
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(
+                    isActive
+                        ? (tab.isIncognito ? Color.purple : Color.blue)
+                        : (tab.isIncognito ? Color.purple.opacity(0.3) : Color.secondary.opacity(0.2)),
+                    lineWidth: isActive ? 2.5 : 1
+                )
         )
+        .shadow(color: Color.black.opacity(0.06), radius: 4, x: 0, y: 2)
     }
 
-    @ViewBuilder
-    private func placeholderPreview(for tab: BrowserTabState) -> some View {
+    private var placeholderPreview: some View {
         VStack(spacing: 6) {
             Image(systemName: tab.isIncognito ? "eyeglasses" : "globe")
                 .font(.system(size: 26))
@@ -4861,14 +4937,7 @@ public struct BrowserTabSwitcherView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    private func close(_ tabID: UUID) {
-        _ = viewModel.closeTab(tabID)
-        if viewModel.tabs.isEmpty {
-            dismiss()
-        }
-    }
-
-    private func displayURL(for tab: BrowserTabState) -> String {
+    private var displayURL: String {
         guard let url = tab.url else { return "New tab" }
         return BrowserURLResolver.sanitizeURLForLogging(url)
     }
