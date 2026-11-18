@@ -2698,13 +2698,17 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                 self.captureRequestContexts(for: resources, pageURL: url, webView: wv) { [weak self] contextualResources in
                     guard let self = self else { return }
                     // Merge newly discovered DOM resources at index 0 (newest on top) with O(1) deduplication
+                    var newToInsert: [WebpageResource] = []
                     var seenURLs = Set(self.discoveredResources.map { $0.url.absoluteString.lowercased() })
                     for newRes in contextualResources {
                         let lower = newRes.url.absoluteString.lowercased()
                         if !seenURLs.contains(lower) {
                             seenURLs.insert(lower)
-                            self.discoveredResources.insert(newRes, at: 0)
+                            newToInsert.append(newRes)
                         }
+                    }
+                    if !newToInsert.isEmpty {
+                        self.discoveredResources.insert(contentsOf: newToInsert, at: 0)
                     }
                     if self.selectedResourceIDs.isEmpty,
                        let manifest = self.discoveredResources.first(where: { $0.isStreamingManifest }) {
@@ -2956,11 +2960,17 @@ public final class BrowserViewModel: NSObject, ObservableObject {
     ) {
         guard let targetTabID = tabID ?? activeTabID else { return }
         var catalog = mediaCandidateCatalogs[targetTabID] ?? BrowserMediaCandidateCatalog()
+        var newToInsert: [WebpageResource] = []
+        var seenURLs = Set(discoveredResources.map { $0.url })
         for resource in resources {
             _ = catalog.ingest(resource: resource)
-            if !discoveredResources.contains(where: { $0.url == resource.url }) {
-                discoveredResources.insert(resource, at: 0)
+            if !seenURLs.contains(resource.url) {
+                seenURLs.insert(resource.url)
+                newToInsert.append(resource)
             }
+        }
+        if !newToInsert.isEmpty {
+            discoveredResources.insert(contentsOf: newToInsert, at: 0)
         }
         mediaCandidateCatalogs[targetTabID] = catalog
         if selectedResourceIDs.isEmpty,

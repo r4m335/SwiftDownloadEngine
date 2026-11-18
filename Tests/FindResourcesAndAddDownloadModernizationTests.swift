@@ -282,7 +282,7 @@ final class FindResourcesAndAddDownloadModernizationTests: XCTestCase {
     @MainActor
     func testGoHomeNavigatesToLIDBrowserHomePage() {
         let vm = BrowserViewModel()
-        let tabID = vm.createNewTab(with: URL(string: "https://duckduckgo.com")!)
+        vm.load(url: URL(string: "https://duckduckgo.com")!)
         XCTAssertNotNil(vm.currentURL)
 
         vm.goHome()
