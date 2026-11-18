@@ -3217,17 +3217,12 @@ public actor StreamingDownloadOrchestrator {
 
     private func manifestHeaders(for candidate: StreamingManifestCandidate) -> [String: String] {
         guard let context = candidate.browserRequestContext else { return [:] }
-        var headers = context.effectiveHeaders(for: candidate.url)
-        // Ensure Referer and Origin are preserved for CDN subresource authorization
-        if headers["Referer"] == nil, let ref = context.referer ?? context.pageURL?.absoluteString {
-            if !ref.hasPrefix("file:") {
-                headers["Referer"] = ref
-            }
-        }
-        if headers["Origin"] == nil, let origin = context.origin {
-            headers["Origin"] = origin
-        }
-        return headers
+        let headers = context.effectiveHeaders(for: candidate.url)
+        return BrowserHeaderFilter.stripCredentialsOnRedirect(
+            headers: headers,
+            from: context.url,
+            to: candidate.url
+        )
     }
 
     private func requestHeaders(
@@ -3242,7 +3237,7 @@ public actor StreamingDownloadOrchestrator {
             context = plan.browserRequestContext
         }
         guard let context else { return [:] }
-        var headers: [String: String]
+        let headers: [String: String]
         switch manifest {
         case .hls(let plan):
             guard let planned = plan.allResources.first(where: { $0.url == resource.url && $0.order == resource.identity.order }) else { return [:] }
@@ -3251,16 +3246,11 @@ public actor StreamingDownloadOrchestrator {
             guard let planned = plan.resources.first(where: { $0.url == resource.url && $0.order == resource.identity.order }) else { return [:] }
             headers = plan.requestHeaders(for: planned)
         }
-        // Preserve Referer and Origin for segment requests against CDN hotlink protection
-        if headers["Referer"] == nil, let ref = context.referer ?? context.pageURL?.absoluteString {
-            if !ref.hasPrefix("file:") {
-                headers["Referer"] = ref
-            }
-        }
-        if headers["Origin"] == nil, let origin = context.origin {
-            headers["Origin"] = origin
-        }
-        return headers
+        return BrowserHeaderFilter.stripCredentialsOnRedirect(
+            headers: headers,
+            from: context.url,
+            to: resource.url
+        )
     }
 
     private func makeResources(
