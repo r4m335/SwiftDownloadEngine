@@ -133,9 +133,16 @@ public struct BrowserResourceInspectorSheet: View {
                 rhsPriority = 2
             }
 
-            return lhsPriority == rhsPriority
-                ? $0.suggestedFilename.localizedCaseInsensitiveCompare($1.suggestedFilename) == .orderedAscending
-                : lhsPriority < rhsPriority
+            if lhsPriority != rhsPriority {
+                return lhsPriority < rhsPriority
+            }
+
+            // Always put newest capture on top
+            if $0.discoveredAt != $1.discoveredAt {
+                return $0.discoveredAt > $1.discoveredAt
+            }
+
+            return $0.suggestedFilename.localizedCaseInsensitiveCompare($1.suggestedFilename) == .orderedAscending
         }
     }
 
@@ -180,7 +187,7 @@ public struct BrowserResourceInspectorSheet: View {
                 }
                 ToolbarItem(placement: .primaryAction) {
                     Button {
-                        viewModel.inspectCurrentPageResources()
+                        viewModel.inspectCurrentPageResources(includeNonVideo: showsAllResources || (selectedCategory != nil && selectedCategory != .video && selectedCategory != .audio))
                     } label: {
                         Image(systemName: "arrow.clockwise")
                     }
@@ -206,15 +213,27 @@ public struct BrowserResourceInspectorSheet: View {
 
     // MARK: - Category Filter Bar
 
+    private var categoryCounts: (media: Int, total: Int, byType: [WebpageResourceType: Int]) {
+        let items = eligibleResources
+        var counts: [WebpageResourceType: Int] = [:]
+        var mediaCount = 0
+        for res in items {
+            counts[res.resourceType, default: 0] += 1
+            if res.resourceType == .video || res.resourceType == .audio {
+                mediaCount += 1
+            }
+        }
+        return (media: mediaCount, total: items.count, byType: counts)
+    }
+
     private var categoryFilterBar: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
+        let counts = categoryCounts
+        return ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
-                // "All" Pill
+                // "Media" Pill
                 FilterPill(
                     title: "Media",
-                    count: eligibleResources.filter {
-                        $0.resourceType == .video || $0.resourceType == .audio
-                    }.count,
+                    count: counts.media,
                     isSelected: selectedCategory == nil && !showsAllResources
                 ) {
                     selectedCategory = nil
@@ -223,16 +242,17 @@ public struct BrowserResourceInspectorSheet: View {
 
                 FilterPill(
                     title: "All",
-                    count: eligibleResources.count,
+                    count: counts.total,
                     isSelected: selectedCategory == nil && showsAllResources
                 ) {
                     selectedCategory = nil
                     showsAllResources = true
+                    viewModel.inspectCurrentPageResources(includeNonVideo: true)
                 }
 
                 // Per-type Pills
                 ForEach(WebpageResourceType.allCases) { cat in
-                    let count = eligibleResources.filter { $0.resourceType == cat }.count
+                    let count = counts.byType[cat, default: 0]
                     if count > 0 {
                         FilterPill(
                             title: cat.rawValue,
@@ -241,6 +261,9 @@ public struct BrowserResourceInspectorSheet: View {
                         ) {
                             selectedCategory = cat
                             showsAllResources = true
+                            if cat != .video && cat != .audio {
+                                viewModel.inspectCurrentPageResources(includeNonVideo: true)
+                            }
                         }
                     }
                 }
@@ -395,7 +418,7 @@ public struct BrowserResourceInspectorSheet: View {
                 .padding(.horizontal, 32)
 
             Button("Scan Again") {
-                viewModel.inspectCurrentPageResources()
+                viewModel.inspectCurrentPageResources(includeNonVideo: showsAllResources || (selectedCategory != nil && selectedCategory != .video && selectedCategory != .audio))
             }
             .buttonStyle(.bordered)
             .padding(.top, 8)

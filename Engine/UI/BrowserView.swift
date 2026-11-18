@@ -1490,7 +1490,8 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                         dashVideoRepresentationID: old.dashVideoRepresentationID,
                         dashAudioRepresentationID: old.dashAudioRepresentationID,
                         isDRMProtected: old.isDRMProtected,
-                        drmProtectionType: old.drmProtectionType
+                        drmProtectionType: old.drmProtectionType,
+                        discoveredAt: old.discoveredAt
                     )
                 }
                 continue
@@ -1541,7 +1542,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                 manifestText: candidate.cachedManifestText,
                 isDRMProtected: candidate.kind == .protectedMedia
             )
-            discoveredResources.append(res)
+            discoveredResources.insert(res, at: 0)
         }
     }
 
@@ -2607,7 +2608,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         isShowingShareSheet = true
     }
 
-    public func inspectCurrentPageResources() {
+    public func inspectCurrentPageResources(includeNonVideo: Bool = false) {
         guard let url = currentURL else {
             resourceScanError = "No active webpage is currently loaded."
             discoveredResources = []
@@ -2626,39 +2627,52 @@ public final class BrowserViewModel: NSObject, ObservableObject {
             return
         }
 
-        let jsScript = """
-        (function() {
-            var candidates = [];
-            document.querySelectorAll('video').forEach(function(v) {
-                if (v.src) {
-                    var isMSE = (window.__grabberBlobRegistry && window.__grabberBlobRegistry[v.src] === 'MediaSource') ||
-                                (v.src.indexOf('blob:') === 0);
-                    candidates.push({
-                        rawURL: v.src,
-                        tag: 'video',
-                        text: v.title || v.getAttribute('aria-label') || '',
-                        declaredType: isMSE ? 'application/x-mediasource' : null
-                    });
-                }
-            });
-            document.querySelectorAll('audio').forEach(function(a) {
-                if (a.src) candidates.push({ rawURL: a.src, tag: 'audio', text: a.title || a.getAttribute('aria-label') || '' });
-            });
-            document.querySelectorAll('source').forEach(function(s) {
-                if (s.src) candidates.push({ rawURL: s.src, tag: 'source', declaredType: s.type || null });
-            });
+        let nonVideoClause = includeNonVideo ? """
             document.querySelectorAll('a[href]').forEach(function(a) {
                 var href = a.getAttribute('href');
                 if (href && !href.startsWith('#') && !href.startsWith('javascript:')) {
-                    candidates.push({ rawURL: href, tag: 'a', text: (a.innerText || a.textContent || '').trim(), declaredType: a.getAttribute('type') || null });
+                    add(href, 'a', (a.innerText || a.textContent || '').trim(), a.getAttribute('type') || null);
                 }
             });
             document.querySelectorAll('img[src]').forEach(function(img) {
                 var src = img.getAttribute('src');
                 if (src && !src.startsWith('data:')) {
-                    candidates.push({ rawURL: src, tag: 'img', text: (img.getAttribute('alt') || '').trim() });
+                    add(src, 'img', (img.getAttribute('alt') || '').trim(), null);
                 }
             });
+        """ : """
+            var mediaExts = /\\.(mp4|m3u8|mpd|mkv|webm|mov|flv|ts|avi|m4v|3gp|mp3|aac|flac|wav|m4a)($|\\?|#)/i;
+            document.querySelectorAll('a[href]').forEach(function(a) {
+                var href = a.getAttribute('href');
+                if (href && mediaExts.test(href)) {
+                    add(href, 'a', (a.innerText || a.textContent || '').trim(), a.getAttribute('type') || null);
+                }
+            });
+        """
+
+        let jsScript = """
+        (function() {
+            var candidates = [];
+            var seen = {};
+            function add(u, tag, text, type) {
+                if (!u || seen[u]) return;
+                seen[u] = true;
+                candidates.push({ rawURL: u, tag: tag, text: text || '', declaredType: type || null });
+            }
+            document.querySelectorAll('video').forEach(function(v) {
+                if (v.src) {
+                    var isMSE = (window.__grabberBlobRegistry && window.__grabberBlobRegistry[v.src] === 'MediaSource') ||
+                                (v.src.indexOf('blob:') === 0);
+                    add(v.src, 'video', v.title || v.getAttribute('aria-label') || '', isMSE ? 'application/x-mediasource' : null);
+                }
+            });
+            document.querySelectorAll('audio').forEach(function(a) {
+                if (a.src) add(a.src, 'audio', a.title || a.getAttribute('aria-label') || '', null);
+            });
+            document.querySelectorAll('source').forEach(function(s) {
+                if (s.src) add(s.src, 'source', '', s.type || null);
+            });
+            \(nonVideoClause)
             return JSON.stringify(candidates);
         })()
         """
@@ -2683,10 +2697,13 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                 let resources = WebpageResourceExtractor.extractFromRawCandidates(rawCandidates, baseURL: url)
                 self.captureRequestContexts(for: resources, pageURL: url, webView: wv) { [weak self] contextualResources in
                     guard let self = self else { return }
-                    // Merge newly discovered DOM resources into discoveredResources without removing existing ones
+                    // Merge newly discovered DOM resources at index 0 (newest on top) with O(1) deduplication
+                    var seenURLs = Set(self.discoveredResources.map { $0.url.absoluteString.lowercased() })
                     for newRes in contextualResources {
-                        if !self.discoveredResources.contains(where: { $0.url.absoluteString.lowercased() == newRes.url.absoluteString.lowercased() }) {
-                            self.discoveredResources.append(newRes)
+                        let lower = newRes.url.absoluteString.lowercased()
+                        if !seenURLs.contains(lower) {
+                            seenURLs.insert(lower)
+                            self.discoveredResources.insert(newRes, at: 0)
                         }
                     }
                     if self.selectedResourceIDs.isEmpty,
@@ -2694,7 +2711,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                         self.selectedResourceIDs.insert(manifest.id)
                     }
                     self.ingestMediaResources(contextualResources, tabID: self.activeTabID)
-                    self.expandStreamingManifests(in: self.discoveredResources)
+                    self.expandStreamingManifests(in: contextualResources)
                 }
             }
         }
@@ -2876,7 +2893,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                       }) else {
                     return
                 }
-                self.discoveredResources.append(contextualResource)
+                self.discoveredResources.insert(contextualResource, at: 0)
                 if self.selectedResourceIDs.isEmpty,
                    let manifest = self.discoveredResources.first(where: { $0.isStreamingManifest }) {
                     self.selectedResourceIDs.insert(manifest.id)
@@ -2904,7 +2921,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                 requestContext: resource.requestContext ?? fallbackContext,
                 manifestText: resource.manifestText
             )
-            discoveredResources.append(contextualResource)
+            discoveredResources.insert(contextualResource, at: 0)
             if selectedResourceIDs.isEmpty,
                let manifest = discoveredResources.first(where: { $0.isStreamingManifest }) {
                 selectedResourceIDs.insert(manifest.id)
@@ -2942,7 +2959,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         for resource in resources {
             _ = catalog.ingest(resource: resource)
             if !discoveredResources.contains(where: { $0.url == resource.url }) {
-                discoveredResources.append(resource)
+                discoveredResources.insert(resource, at: 0)
             }
         }
         mediaCandidateCatalogs[targetTabID] = catalog
@@ -3337,13 +3354,6 @@ public final class BrowserViewModel: NSObject, ObservableObject {
     }
 
     public func goHome() {
-        if let homeURL = URL(string: browserHomepage),
-           !browserHomepage.isEmpty,
-           browserHomepage != "about:blank" {
-            load(url: homeURL)
-            return
-        }
-
         #if canImport(WebKit)
         webView?.stopLoading()
         if let blank = URL(string: "about:blank") {
@@ -3364,6 +3374,10 @@ public final class BrowserViewModel: NSObject, ObservableObject {
             tab.estimatedProgress = 0
             _ = tabManager.updateTab(tab)
         }
+        currentURL = nil
+        displayURL = ""
+        urlInputText = ""
+        pageTitle = ""
         publishTabState()
         syncActiveTabState()
         resetMediaCandidateCatalog(for: activeTabID)
@@ -5360,261 +5374,201 @@ public struct BrowserDownloadSheet: View {
         return (badge, resText, details, isAudio, title)
     }
 
+    private var downloadFileInfo: (badge: String, badgeColor: Color, resolution: String?, details: String?, isAudio: Bool, buttonTitle: String) {
+        if isPreSelectedVariant {
+            let info = preSelectedVariantQualityInfo
+            return (info.badge, info.isAudio ? Color.orange : Color.blue, info.resolution, info.details, info.isAudio, info.buttonTitle)
+        }
+
+        let res = viewModel.activeDownloadResource
+        let cand = viewModel.activeDownloadCandidate
+        let url = viewModel.downloadCandidateURL
+
+        let ext = fileExtension.lowercased()
+        let isAudio = res?.resourceType == .audio || (cand?.kind == .completeBlob && cand?.mimeType?.contains("audio") == true) || ["mp3", "m4a", "aac", "flac", "wav", "ogg"].contains(ext)
+        let isVideo = res?.resourceType == .video || cand?.kind == .directMedia || ["mp4", "mkv", "webm", "mov", "avi", "flv", "m4v"].contains(ext)
+
+        let badge: String = {
+            if !ext.isEmpty {
+                return ext.uppercased()
+            }
+            if isAudio { return "Audio" }
+            if isVideo { return "Video" }
+            return "File"
+        }()
+
+        let badgeColor: Color = isAudio ? .orange : (isVideo ? .blue : .purple)
+
+        var detailsParts: [String] = []
+        if let size = res?.estimatedSize ?? cand?.estimatedSize, size > 0 {
+            detailsParts.append(StreamQualityOption.formatByteSize(size))
+        }
+        if let host = url?.host {
+            detailsParts.append(host)
+        }
+        let details = detailsParts.isEmpty ? nil : detailsParts.joined(separator: " • ")
+
+        let buttonTitle = isAudio ? "Download Audio" : (isVideo ? "Download \(badge)" : "Start Download")
+        return (badge, badgeColor, nil, details, isAudio, buttonTitle)
+    }
+
     public var body: some View {
         NavigationView {
             Form {
-                if isPreSelectedVariant {
-                    // MARK: - Simplified HLS Variant Download View (One-Screen Confirmation)
-                    Section(header: Text("FILE NAME")) {
-                        HStack(alignment: .center, spacing: 6) {
-                            TextField("Filename", text: $baseFilename)
-                                #if canImport(UIKit)
-                                .autocapitalization(.none)
-                                #endif
-                                .disableAutocorrection(true)
-                                .font(.system(size: 15, weight: .medium))
-                                .onChange(of: baseFilename) { newBase in
-                                    let cleanBase = FilenameExtensionHelper.sanitizeFilename(newBase)
-                                    viewModel.downloadCandidateFilename = FilenameExtensionHelper.combine(base: cleanBase, ext: fileExtension)
-                                }
-
-                            Text(".")
-                                .font(.system(size: 15, weight: .bold))
-                                .foregroundColor(.secondary)
-
-                            TextField("ext", text: $fileExtension)
-                                #if canImport(UIKit)
-                                .autocapitalization(.none)
-                                #endif
-                                .disableAutocorrection(true)
-                                .font(.system(size: 15, weight: .medium))
-                                .frame(width: 55)
-                                .onChange(of: fileExtension) { newExt in
-                                    let cleanExt = FilenameExtensionHelper.sanitizeFilename(newExt)
-                                    viewModel.downloadCandidateFilename = FilenameExtensionHelper.combine(base: baseFilename, ext: cleanExt)
-                                }
-                        }
-                    }
-
-                    Section(header: Text(preSelectedVariantQualityInfo.isAudio ? "AUDIO QUALITY" : "VIDEO QUALITY")) {
-                        HStack(spacing: 12) {
-                            Text(preSelectedVariantQualityInfo.badge)
-                                .font(.system(size: 13, weight: .bold))
-                                .foregroundColor(.white)
-                                .padding(.horizontal, 8)
-                                .padding(.vertical, 4)
-                                .background(preSelectedVariantQualityInfo.isAudio ? Color.orange : Color.blue)
-                                .cornerRadius(6)
-
-                            if let res = preSelectedVariantQualityInfo.resolution {
-                                Text(res)
-                                    .font(.system(size: 15, weight: .semibold))
-                                    .foregroundColor(.primary)
+                // MARK: - FILE NAME
+                Section(header: Text("FILE NAME")) {
+                    HStack(alignment: .center, spacing: 6) {
+                        TextField("Filename", text: $baseFilename)
+                            #if canImport(UIKit)
+                            .autocapitalization(.none)
+                            #endif
+                            .disableAutocorrection(true)
+                            .font(.system(size: 15, weight: .medium))
+                            .onChange(of: baseFilename) { newBase in
+                                let cleanBase = FilenameExtensionHelper.sanitizeFilename(newBase)
+                                viewModel.downloadCandidateFilename = FilenameExtensionHelper.combine(base: cleanBase, ext: fileExtension)
                             }
 
-                            Spacer()
+                        Text(".")
+                            .font(.system(size: 15, weight: .bold))
+                            .foregroundColor(.secondary)
 
-                            if let details = preSelectedVariantQualityInfo.details, !details.isEmpty {
-                                Text(details)
+                        TextField("ext", text: $fileExtension)
+                            #if canImport(UIKit)
+                            .autocapitalization(.none)
+                            #endif
+                            .disableAutocorrection(true)
+                            .font(.system(size: 15, weight: .medium))
+                            .frame(width: 55)
+                            .onChange(of: fileExtension) { newExt in
+                                let cleanExt = FilenameExtensionHelper.sanitizeFilename(newExt)
+                                viewModel.downloadCandidateFilename = FilenameExtensionHelper.combine(base: baseFilename, ext: cleanExt)
+                            }
+                    }
+                }
+
+                // MARK: - DOWNLOAD DETAILS
+                let info = downloadFileInfo
+                Section(header: Text(info.isAudio ? "AUDIO QUALITY" : (info.badge == "Video" || ["MKV", "MP4", "WEBM", "MOV"].contains(info.badge) || isPreSelectedVariant ? "VIDEO QUALITY" : "DOWNLOAD DETAILS"))) {
+                    HStack(spacing: 12) {
+                        Text(info.badge)
+                            .font(.system(size: 13, weight: .bold))
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(info.badgeColor)
+                            .cornerRadius(6)
+
+                        if let res = info.resolution {
+                            Text(res)
+                                .font(.system(size: 15, weight: .semibold))
+                                .foregroundColor(.primary)
+                        }
+
+                        Spacer()
+
+                        if let details = info.details, !details.isEmpty {
+                            Text(details)
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                    .padding(.vertical, 4)
+                }
+
+                // If unexpanded HLS or DASH manifest, provide the quality picker button
+                if !isPreSelectedVariant,
+                   let cand = viewModel.activeDownloadCandidate,
+                   (cand.kind == .hlsManifest || cand.kind == .dashManifest || cand.url?.pathExtension.lowercased() == "m3u8" || cand.url?.pathExtension.lowercased() == "mpd") {
+                    Section(header: Text("Stream Resolution"), footer: Text("Choose from available multi-variant resolutions or download audio only.")) {
+                        Button {
+                            viewModel.isShowingDownloadSheet = false
+                            if let res = viewModel.activeDownloadResource {
+                                viewModel.presentQualityPicker(for: res)
+                            } else {
+                                viewModel.presentQualityPicker(for: cand)
+                            }
+                        } label: {
+                            HStack {
+                                Label("Select Stream Quality...", systemImage: "slider.horizontal.3")
+                                    .font(.subheadline.weight(.medium))
+                                Spacer()
+                                if let selected = viewModel.selectedQualityOption {
+                                    Text(selected.qualityBadge)
+                                        .font(.caption.bold())
+                                        .foregroundColor(.white)
+                                        .padding(.horizontal, 8)
+                                        .padding(.vertical, 3)
+                                        .background(selected.badgeColor)
+                                        .cornerRadius(5)
+                                } else {
+                                    Text("Choose")
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                }
+                                Image(systemName: "chevron.right")
                                     .font(.caption)
                                     .foregroundColor(.secondary)
                             }
                         }
+                    }
+                }
+
+                // MARK: - Advanced Options (Collapsed by default so it stays clean)
+                Section {
+                    DisclosureGroup("Advanced Settings") {
+                        VStack(spacing: 12) {
+                            Stepper("Worker Threads: \(viewModel.downloadCandidateThreads)", value: $viewModel.downloadCandidateThreads, in: 1...32)
+
+                            HStack {
+                                Text("Speed Limit (KB/s)")
+                                Spacer()
+                                TextField("Unlimited", text: $viewModel.downloadCandidateSpeedLimitKBps)
+                                    #if canImport(UIKit)
+                                    .keyboardType(.numberPad)
+                                    #endif
+                                    .multilineTextAlignment(.trailing)
+                                    .frame(maxWidth: 120)
+                            }
+
+                            if viewModel.downloadCandidateRequestContext != nil {
+                                Toggle("Use browser credentials", isOn: $viewModel.useBrowserCredentials)
+                            }
+                        }
                         .padding(.vertical, 4)
                     }
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+                }
 
-                    if let err = submitErrorMessage {
-                        Section {
-                            Text(err)
-                                .foregroundColor(.red)
-                                .font(.caption)
-                        }
-                    }
-
+                if let err = submitErrorMessage {
                     Section {
-                        Button {
-                            submitDownload()
-                        } label: {
-                            HStack {
-                                Spacer()
-                                if isSubmitting {
-                                    ProgressView()
-                                        .padding(.trailing, 8)
-                                }
-                                Text(preSelectedVariantQualityInfo.buttonTitle)
-                                    .font(.system(size: 17, weight: .bold))
-                                    .foregroundColor(.white)
-                                Spacer()
-                            }
-                            .padding(.vertical, 6)
-                        }
-                        .disabled(isSubmitting || viewModel.downloadCandidateURL == nil)
-                        .listRowBackground(Color.blue)
+                        Text(err)
+                            .foregroundColor(.red)
+                            .font(.caption)
                     }
-                } else {
-                    // MARK: - Standard Download File View (Direct Files & Master Manifests)
-                    Section(header: Text("Source URL")) {
-                        if let url = viewModel.downloadCandidateURL {
-                            Text(BrowserURLResolver.sanitizeURLForDisplay(url))
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                                .lineLimit(3)
-                        } else {
-                            Text("No URL")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                        }
-                    }
+                }
 
-                    if let candidate = viewModel.activeDownloadCandidate {
-                        Section(header: Text("Media Classification")) {
-                            HStack {
-                                Text("Category")
-                                Spacer()
-                                Text(candidate.kind.rawValue)
-                                    .font(.caption.bold())
-                                    .foregroundColor(.blue)
-                            }
-                            if let mime = candidate.mimeType {
-                                HStack {
-                                    Text("Format / MIME")
-                                    Spacer()
-                                    Text(mime)
-                                        .font(.caption)
-                                        .foregroundColor(.secondary)
-                                }
-                            }
-                        }
-
-                        if candidate.kind == .hlsManifest || candidate.kind == .dashManifest || candidate.url?.pathExtension.lowercased() == "m3u8" || candidate.url?.pathExtension.lowercased() == "mpd" {
-                            Section(header: Text("Stream Resolution"), footer: Text("Choose from available multi-variant resolutions or download audio only.")) {
-                                Button {
-                                    viewModel.isShowingDownloadSheet = false
-                                    if let res = viewModel.activeDownloadResource {
-                                        viewModel.presentQualityPicker(for: res)
-                                    } else {
-                                        viewModel.presentQualityPicker(for: candidate)
-                                    }
-                                } label: {
-                                    HStack {
-                                        Label("Select Stream Quality...", systemImage: "slider.horizontal.3")
-                                            .font(.subheadline.weight(.medium))
-                                        Spacer()
-                                        if let selected = viewModel.selectedQualityOption {
-                                            Text(selected.qualityBadge)
-                                                .font(.caption.bold())
-                                                .foregroundColor(.white)
-                                                .padding(.horizontal, 8)
-                                                .padding(.vertical, 3)
-                                                .background(selected.badgeColor)
-                                                .cornerRadius(5)
-                                        } else {
-                                            Text("Choose")
-                                                .font(.caption)
-                                                .foregroundColor(.secondary)
-                                        }
-                                        Image(systemName: "chevron.right")
-                                            .font(.caption)
-                                            .foregroundColor(.secondary)
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    Section(
-                        header: Text("Destination Filename"),
-                        footer: Text("Saved as: \(FilenameExtensionHelper.combine(base: baseFilename, ext: fileExtension))")
-                    ) {
-                        HStack(alignment: .center, spacing: 8) {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text("Filename")
-                                    .font(.caption2)
-                                    .foregroundColor(.secondary)
-                                TextField("Filename", text: $baseFilename)
-                                    #if canImport(UIKit)
-                                    .autocapitalization(.none)
-                                    #endif
-                                    .disableAutocorrection(true)
-                                    .onChange(of: baseFilename) { newBase in
-                                        let cleanBase = FilenameExtensionHelper.sanitizeFilename(newBase)
-                                        viewModel.downloadCandidateFilename = FilenameExtensionHelper.combine(base: cleanBase, ext: fileExtension)
-                                    }
-                            }
-
-                            Text(".")
-                                .font(.title3)
-                                .bold()
-                                .foregroundColor(.secondary)
-                                .padding(.top, 14)
-
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text("Extension")
-                                    .font(.caption2)
-                                    .foregroundColor(.secondary)
-                                TextField("ext", text: $fileExtension)
-                                    #if canImport(UIKit)
-                                    .autocapitalization(.none)
-                                    #endif
-                                    .disableAutocorrection(true)
-                                    .frame(width: 70)
-                                    .onChange(of: fileExtension) { newExt in
-                                        let cleanExt = FilenameExtensionHelper.sanitizeFilename(newExt)
-                                        viewModel.downloadCandidateFilename = FilenameExtensionHelper.combine(base: baseFilename, ext: cleanExt)
-                                    }
-                            }
-                        }
-                    }
-
-                    if viewModel.downloadCandidateRequestContext != nil {
-                        Section(
-                            header: Text("Browser Session"),
-                            footer: Text("Cookies and authentication headers are limited to the captured resource origin and are not retained in download history.")
-                        ) {
-                            Toggle("Use browser credentials", isOn: $viewModel.useBrowserCredentials)
-                        }
-                    }
-
-                    Section(header: Text("Acceleration & Threads"), footer: Text("The download coordinator will allocate parallel segmented workers if the host server supports HTTP range requests.")) {
-                        Stepper("Worker Threads: \(viewModel.downloadCandidateThreads)", value: $viewModel.downloadCandidateThreads, in: 1...32)
-
+                // MARK: - Action Button
+                Section {
+                    Button {
+                        submitDownload()
+                    } label: {
                         HStack {
-                            Text("Speed Limit (KB/s)")
                             Spacer()
-                            TextField("Unlimited", text: $viewModel.downloadCandidateSpeedLimitKBps)
-                                #if canImport(UIKit)
-                                .keyboardType(.numberPad)
-                                #endif
-                                .multilineTextAlignment(.trailing)
-                                .frame(maxWidth: 120)
-                        }
-                    }
-
-                    if let err = submitErrorMessage {
-                        Section {
-                            Text(err)
-                                .foregroundColor(.red)
-                                .font(.caption)
-                        }
-                    }
-
-                    Section {
-                        Button {
-                            submitDownload()
-                        } label: {
-                            HStack {
-                                Spacer()
-                                if isSubmitting {
-                                    ProgressView()
-                                        .padding(.trailing, 8)
-                                }
-                                Text("Start Download")
-                                    .bold()
-                                Spacer()
+                            if isSubmitting {
+                                ProgressView()
+                                    .padding(.trailing, 8)
                             }
+                            Text(info.buttonTitle)
+                                .font(.system(size: 17, weight: .bold))
+                                .foregroundColor(.white)
+                            Spacer()
                         }
-                        .disabled(isSubmitting || viewModel.downloadCandidateURL == nil)
+                        .padding(.vertical, 6)
                     }
+                    .disabled(isSubmitting || viewModel.downloadCandidateURL == nil)
+                    .listRowBackground(Color.blue)
                 }
             }
             .navigationTitle("Download File")

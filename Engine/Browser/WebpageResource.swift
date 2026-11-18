@@ -49,6 +49,8 @@ public struct WebpageResource: Identifiable, Hashable, Sendable {
     public let isDRMProtected: Bool
     /// Identified DRM encryption system if protected (e.g. "FairPlay", "Widevine", "PlayReady", "Sample-AES").
     public let drmProtectionType: String?
+    /// Timestamp when this resource was discovered or captured.
+    public let discoveredAt: Date
 
     /// Manifest candidates are intentionally kept outside the ordinary
     /// `isSupported` download path. They require planning and coordinator-
@@ -153,7 +155,8 @@ public struct WebpageResource: Identifiable, Hashable, Sendable {
         dashVideoRepresentationID: String? = nil,
         dashAudioRepresentationID: String? = nil,
         isDRMProtected: Bool = false,
-        drmProtectionType: String? = nil
+        drmProtectionType: String? = nil,
+        discoveredAt: Date = Date()
     ) {
         self.id = id
         self.url = url
@@ -171,6 +174,7 @@ public struct WebpageResource: Identifiable, Hashable, Sendable {
         self.dashAudioRepresentationID = dashAudioRepresentationID
         self.isDRMProtected = isDRMProtected
         self.drmProtectionType = drmProtectionType
+        self.discoveredAt = discoveredAt
     }
 
     /// Evaluates whether this resource URL has already passed its signed expiration timestamp.

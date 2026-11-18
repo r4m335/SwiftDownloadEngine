@@ -140,7 +140,8 @@ public actor StreamManifestResourceExpander {
                     isSupported: true,
                     unsupportedReason: nil,
                     requestContext: manifestResource.requestContext,
-                    manifestText: effectiveText.isEmpty ? manifestResource.manifestText : effectiveText
+                    manifestText: effectiveText.isEmpty ? manifestResource.manifestText : effectiveText,
+                    discoveredAt: manifestResource.discoveredAt
                 )
 
                 return ExpansionResult(
@@ -284,7 +285,8 @@ public actor StreamManifestResourceExpander {
                 dashVideoRepresentationID: option.dashVideoRepresentationID,
                 dashAudioRepresentationID: option.dashAudioRepresentationID,
                 isDRMProtected: optionDrm.isProtected,
-                drmProtectionType: optionDrm.protectionType
+                drmProtectionType: optionDrm.protectionType,
+                discoveredAt: masterResource.discoveredAt
             )
             variants.append(resource)
 

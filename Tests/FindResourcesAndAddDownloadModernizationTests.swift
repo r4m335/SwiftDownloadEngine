@@ -253,6 +253,44 @@ final class FindResourcesAndAddDownloadModernizationTests: XCTestCase {
         XCTAssertEqual(audioResource.resourceType, .audio)
     }
 
+    func testWebpageResourceDiscoveredAtNewestFirst() {
+        let olderDate = Date(timeIntervalSince1970: 1000)
+        let newerDate = Date(timeIntervalSince1970: 2000)
+
+        let olderRes = WebpageResource(
+            url: URL(string: "https://example.com/older.mp4")!,
+            title: "Older Video",
+            suggestedFilename: "older.mp4",
+            resourceType: .video,
+            discoveredAt: olderDate
+        )
+
+        let newerRes = WebpageResource(
+            url: URL(string: "https://example.com/newer.mp4")!,
+            title: "Newer Video",
+            suggestedFilename: "newer.mp4",
+            resourceType: .video,
+            discoveredAt: newerDate
+        )
+
+        XCTAssertTrue(newerRes.discoveredAt > olderRes.discoveredAt)
+
+        let sorted = [olderRes, newerRes].sorted { $0.discoveredAt > $1.discoveredAt }
+        XCTAssertEqual(sorted.first?.suggestedFilename, "newer.mp4")
+    }
+
+    @MainActor
+    func testGoHomeNavigatesToLIDBrowserHomePage() {
+        let vm = BrowserViewModel()
+        let tabID = vm.createNewTab(with: URL(string: "https://duckduckgo.com")!)
+        XCTAssertNotNil(vm.currentURL)
+
+        vm.goHome()
+        XCTAssertNil(vm.currentURL)
+        XCTAssertEqual(vm.displayURL, "")
+        XCTAssertEqual(vm.activeTab?.url, nil)
+    }
+
     // MARK: - 5. Add Download Input Mode Architecture Tests
 
     func testAddDownloadInputModes() {
