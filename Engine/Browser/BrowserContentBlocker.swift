@@ -704,7 +704,7 @@ public final class BrowserContentBlocker: ObservableObject {
             isAdBlockerEnabled: isEnabled,
             isTrackerBlockerEnabled: isEnabled,
             isAnnoyanceBlockerEnabled: isEnabled,
-            cookiePolicy: .blockThirdParty,
+            cookiePolicy: isEnabled ? .blockThirdParty : .allowAll,
             isCurrentDomainWhitelisted: isCurrentDomainWhitelisted
         )
     }
@@ -739,7 +739,7 @@ public final class BrowserContentBlocker: ObservableObject {
             isAdBlockerEnabled: isEnabled,
             isTrackerBlockerEnabled: isEnabled,
             isAnnoyanceBlockerEnabled: isEnabled,
-            cookiePolicy: .blockThirdParty,
+            cookiePolicy: isEnabled ? .blockThirdParty : .allowAll,
             isCurrentDomainWhitelisted: isCurrentDomainWhitelisted
         )
     }

@@ -5514,15 +5514,19 @@ final class BrowserWebViewSession {
         config.preferences.javaScriptCanOpenWindowsAutomatically = !viewModel.isPopupBlockerEnabled
 #if os(iOS)
         config.allowsInlineMediaPlayback = true
+        config.mediaTypesRequiringUserActionForPlayback = []
         if #available(iOS 13.0, *) {
             config.defaultWebpagePreferences.preferredContentMode = isDesktop ? .desktop : .mobile
         }
 #endif
 
-        // Native Content Blocking & Ad Blocker (Phase 3 Milestone 3.2)
+        // Native Content Blocking & Privacy Shields (Granular Multi-List Configuration)
         BrowserContentBlocker.shared.apply(
             to: config,
-            isEnabled: viewModel.isAdBlockerEnabled,
+            isAdBlockerEnabled: viewModel.isAdBlockerEnabled,
+            isTrackerBlockerEnabled: viewModel.isTrackerBlockerEnabled,
+            isAnnoyanceBlockerEnabled: viewModel.isAnnoyanceBlockerEnabled,
+            cookiePolicy: viewModel.cookiePolicy,
             isCurrentDomainWhitelisted: false
         )
 

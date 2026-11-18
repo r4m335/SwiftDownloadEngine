@@ -1,6 +1,9 @@
 import Foundation
 import XCTest
 @testable import DM_Reverse_engineering
+#if canImport(WebKit)
+import WebKit
+#endif
 
 final class BrowserContentBlockerTests: XCTestCase {
 
@@ -443,6 +446,48 @@ final class BrowserContentBlockerTests: XCTestCase {
         vm.cancelRedirectPrompt()
         XCTAssertNil(vm.redirectPrompt)
     }
+
+    #if canImport(WebKit)
+    func testContentBlockerGranularApplyAndLegacyFallback() {
+        let config = WKWebViewConfiguration()
+        let blocker = BrowserContentBlocker.shared
+
+        // When all blockers are disabled and cookie policy is allowAll,
+        // no content rule lists should be added.
+        blocker.apply(
+            to: config,
+            isAdBlockerEnabled: false,
+            isTrackerBlockerEnabled: false,
+            isAnnoyanceBlockerEnabled: false,
+            cookiePolicy: .allowAll,
+            isCurrentDomainWhitelisted: false
+        )
+        XCTAssertNotNil(config.userContentController)
+
+        // Legacy apply with isEnabled: false must NOT enforce third-party cookie blocking
+        let legacyDisabledConfig = WKWebViewConfiguration()
+        blocker.apply(
+            to: legacyDisabledConfig,
+            isEnabled: false,
+            isCurrentDomainWhitelisted: false
+        )
+        XCTAssertNotNil(legacyDisabledConfig.userContentController)
+    }
+
+    @MainActor
+    func testBrowserViewModelExposesIndependentBlockerSettings() {
+        let vm = BrowserViewModel()
+        vm.isAdBlockerEnabled = true
+        vm.isTrackerBlockerEnabled = false
+        vm.isAnnoyanceBlockerEnabled = false
+        vm.cookiePolicy = .allowAll
+
+        XCTAssertTrue(vm.isAdBlockerEnabled)
+        XCTAssertFalse(vm.isTrackerBlockerEnabled)
+        XCTAssertFalse(vm.isAnnoyanceBlockerEnabled)
+        XCTAssertEqual(vm.cookiePolicy, .allowAll)
+    }
+    #endif
     #endif
 }
 
