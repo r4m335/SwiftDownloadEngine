@@ -1289,15 +1289,16 @@ public struct UnifiedTransferRowView: View {
                             onDeleteFile: onDeleteFile
                         )
                     } label: {
-                        Image(systemName: "ellipsis.vertical")
-                            .font(.system(size: 16, weight: .bold))
+                        Image(systemName: "ellipsis")
+                            .rotationEffect(.degrees(90))
+                            .font(.system(size: 15, weight: .bold))
                             .foregroundColor(.primary)
                             .frame(width: 32, height: 32)
                             .background(
                                 Circle()
-                                    .fill(Color.secondary.opacity(0.14))
+                                    .fill(Color.secondary.opacity(0.2))
                             )
-                            .contentShape(Rectangle())
+                            .contentShape(Circle())
                     }
                     .buttonStyle(BorderlessButtonStyle())
                     .accessibilityLabel("Transfer actions for \(transfer.name)")
@@ -1665,15 +1666,16 @@ public struct DownloadRowView: View {
                             onDeleteFile: onDeleteFile
                         )
                     } label: {
-                        Image(systemName: "ellipsis.vertical")
-                            .font(.system(size: 16, weight: .bold))
+                        Image(systemName: "ellipsis")
+                            .rotationEffect(.degrees(90))
+                            .font(.system(size: 15, weight: .bold))
                             .foregroundColor(.primary)
                             .frame(width: 32, height: 32)
                             .background(
                                 Circle()
-                                    .fill(Color.secondary.opacity(0.14))
+                                    .fill(Color.secondary.opacity(0.2))
                             )
-                            .contentShape(Rectangle())
+                            .contentShape(Circle())
                     }
                     .buttonStyle(BorderlessButtonStyle())
                     .accessibilityLabel("Download actions for \(download.destinationURL.lastPathComponent)")
