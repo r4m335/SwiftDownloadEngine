@@ -393,10 +393,10 @@ final class BrowserBookmarksAndHistoryTests: XCTestCase {
         let tab2ID = manager.createTab(select: true, isDesktopMode: true)
         XCTAssertTrue(manager.activeTab?.isDesktopMode ?? false)
 
-        manager.selectTab(id: tab1ID)
+        _ = manager.selectTab(tab1ID)
         XCTAssertFalse(manager.activeTab?.isDesktopMode ?? true)
 
-        manager.selectTab(id: tab2ID)
+        _ = manager.selectTab(tab2ID)
         XCTAssertTrue(manager.activeTab?.isDesktopMode ?? false)
     }
 
