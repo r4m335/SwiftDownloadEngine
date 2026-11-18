@@ -441,7 +441,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         if let session = tabSessions[id] {
             session.webView.customUserAgent = tab.isDesktopMode
                 ? Self.defaultDesktopUserAgent
-                : (settings.customUserAgent ?? Self.defaultMobileUserAgent)
+                : Self.defaultMobileUserAgent
             #if os(iOS)
             if #available(iOS 13.0, *) {
                 session.webView.configuration.defaultWebpagePreferences.preferredContentMode = tab.isDesktopMode ? .desktop : .mobile
@@ -5712,7 +5712,7 @@ final class BrowserWebViewSession {
         let webView = WKWebView(frame: .zero, configuration: config)
         webView.customUserAgent = isDesktop
             ? BrowserViewModel.defaultDesktopUserAgent
-            : (viewModel.settings.customUserAgent ?? BrowserViewModel.defaultMobileUserAgent)
+            : BrowserViewModel.defaultMobileUserAgent
         self.webView = webView
         let coordinator = BrowserWebViewCoordinator(viewModel: viewModel, tabID: tabID)
         self.coordinator = coordinator
