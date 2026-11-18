@@ -95,24 +95,59 @@ public actor StreamManifestResourceExpander {
         session: URLSession
     ) async -> ExpansionResult {
         let url = manifestResource.url
-        let initialText = manifestResource.manifestText ?? ""
+        var effectiveText = manifestResource.manifestText ?? ""
+
+        // If manifest text was not captured during interception, load it using origin request context
+        if effectiveText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            if let loaded = try? await StreamQualityInspector.loadManifestText(
+                from: url,
+                requestContext: manifestResource.requestContext,
+                session: session
+            ) {
+                effectiveText = loaded
+            }
+        }
 
         do {
             let options = try await StreamQualityInspector.inspect(
-                manifestText: initialText,
+                manifestText: effectiveText,
                 url: url,
                 mimeType: manifestResource.mimeType,
                 requestContext: manifestResource.requestContext,
                 session: session
             )
 
-            // If only 1 option was returned and it's a default/generic media fallback, keep master resource
+            // If only 1 option was returned and it's a default/generic media fallback,
+            // check if this is an HLS media playlist containing #EXT-X-TARGETDURATION
             if options.isEmpty || (options.count == 1 && (options[0].id.hasPrefix("default-") || (options[0].resolution == nil && options[0].hlsVariant == nil))) {
+                let isMediaPlaylist = effectiveText.contains("#EXT-X-TARGETDURATION")
+                let updatedTitle: String
+                if isMediaPlaylist && !manifestResource.title.contains("Media Playlist") {
+                    let base = manifestResource.title.isEmpty ? manifestResource.suggestedFilename : manifestResource.title
+                    updatedTitle = "\(base) (Media Playlist)"
+                } else {
+                    updatedTitle = manifestResource.title
+                }
+
+                let mediaResource = WebpageResource(
+                    id: manifestResource.id,
+                    url: manifestResource.url,
+                    title: updatedTitle,
+                    suggestedFilename: manifestResource.suggestedFilename,
+                    resourceType: manifestResource.resourceType,
+                    mimeType: manifestResource.mimeType,
+                    estimatedSize: manifestResource.estimatedSize,
+                    isSupported: true,
+                    unsupportedReason: nil,
+                    requestContext: manifestResource.requestContext,
+                    manifestText: effectiveText.isEmpty ? manifestResource.manifestText : effectiveText
+                )
+
                 return ExpansionResult(
                     masterURL: url,
-                    manifestText: initialText,
+                    manifestText: effectiveText,
                     options: options,
-                    variants: [manifestResource],
+                    variants: [mediaResource],
                     variantStreamItems: [],
                     isExpanded: false
                 )
@@ -121,12 +156,12 @@ public actor StreamManifestResourceExpander {
             let (variants, items) = Self.buildVariants(
                 from: options,
                 masterResource: manifestResource,
-                manifestText: initialText
+                manifestText: effectiveText
             )
 
             return ExpansionResult(
                 masterURL: url,
-                manifestText: initialText,
+                manifestText: effectiveText,
                 options: options,
                 variants: variants,
                 variantStreamItems: items,
@@ -135,9 +170,9 @@ public actor StreamManifestResourceExpander {
         } catch {
             // Graceful fallback on network or parsing error:
             // Attempt to parse existing text without child playlist if text was present
-            if !initialText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            if !effectiveText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 if let options = try? StreamQualityInspector.inspect(
-                    manifestText: initialText,
+                    manifestText: effectiveText,
                     url: url,
                     mimeType: manifestResource.mimeType,
                     durationSeconds: nil
@@ -145,11 +180,11 @@ public actor StreamManifestResourceExpander {
                     let (variants, items) = Self.buildVariants(
                         from: options,
                         masterResource: manifestResource,
-                        manifestText: initialText
+                        manifestText: effectiveText
                     )
                     return ExpansionResult(
                         masterURL: url,
-                        manifestText: initialText,
+                        manifestText: effectiveText,
                         options: options,
                         variants: variants,
                         variantStreamItems: items,
@@ -160,7 +195,7 @@ public actor StreamManifestResourceExpander {
 
             return ExpansionResult(
                 masterURL: url,
-                manifestText: initialText,
+                manifestText: effectiveText,
                 options: [],
                 variants: [manifestResource],
                 variantStreamItems: [],

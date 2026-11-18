@@ -791,6 +791,102 @@ final class BrowserMediaDiscoveryTests: XCTestCase {
         XCTAssertTrue(vm.discoveredResources.first?.isStreamingManifest == true)
         XCTAssertEqual(vm.selectedResourceIDs, [resource.id], "Streaming manifest should be automatically selected for download")
     }
+
+    func testHLSManifestParserRelativeURLPreservesBaseQueryParams() throws {
+        let masterText = """
+        #EXTM3U
+        #EXT-X-STREAM-INF:BANDWIDTH=800000,RESOLUTION=854x480
+        480p.m3u8
+        #EXT-X-STREAM-INF:BANDWIDTH=2000000,RESOLUTION=1280x720
+        720p.m3u8
+        #EXT-X-STREAM-INF:BANDWIDTH=5000000,RESOLUTION=1920x1080
+        1080p.m3u8
+        """
+        let signedBaseURL = URL(string: "https://cdn.example.com/vod/stream.m3u8?token=xyz123&expires=1700000000")!
+        let manifest = try HLSManifestParser.parse(masterText, baseURL: signedBaseURL)
+
+        XCTAssertEqual(manifest.playlistType, .master)
+        XCTAssertEqual(manifest.variants.count, 3)
+
+        // Verify all child variant URLs inherited the signed token from the master manifest!
+        for variant in manifest.variants {
+            XCTAssertTrue(variant.uri.query?.contains("token=xyz123") == true, "Variant URL must inherit signed CDN token: \(variant.uri)")
+            XCTAssertTrue(variant.uri.query?.contains("expires=1700000000") == true)
+        }
+
+        // Test segments in media playlist inherit signed query parameters as well
+        let mediaText = """
+        #EXTM3U
+        #EXT-X-TARGETDURATION:6
+        #EXTINF:6.0,
+        segment0.ts
+        #EXTINF:6.0,
+        segment1.ts?custom=1
+        """
+        let mediaManifest = try HLSManifestParser.parse(mediaText, baseURL: signedBaseURL)
+        XCTAssertEqual(mediaManifest.playlistType, .media)
+        XCTAssertEqual(mediaManifest.segments.count, 2)
+        XCTAssertEqual(mediaManifest.segments[0].uri.absoluteString, "https://cdn.example.com/vod/segment0.ts?token=xyz123&expires=1700000000")
+        // Segment with existing custom query keeps its own
+        XCTAssertEqual(mediaManifest.segments[1].uri.absoluteString, "https://cdn.example.com/vod/segment1.ts?custom=1")
+    }
+
+    func testMasterManifestExpandsIntoResolutionVariantsAndExcludesRawChunks() {
+        let masterText = """
+        #EXTM3U
+        #EXT-X-STREAM-INF:BANDWIDTH=800000,RESOLUTION=854x480
+        480p.m3u8
+        #EXT-X-STREAM-INF:BANDWIDTH=2500000,RESOLUTION=1280x720
+        720p.m3u8
+        """
+        let masterURL = URL(string: "https://cdn.example.com/vod/stream.m3u8")!
+        let masterResource = WebpageResource(
+            id: "master-res",
+            url: masterURL,
+            title: "stream.m3u8",
+            suggestedFilename: "stream.m3u8",
+            resourceType: .video,
+            mimeType: "application/vnd.apple.mpegurl",
+            manifestText: masterText
+        )
+
+        let result = StreamManifestResourceExpander.expandSynchronously(masterResource: masterResource, manifestText: masterText)
+        XCTAssertEqual(result.variants.count, 2)
+        let labels = result.variants.map { $0.title }
+        XCTAssertTrue(labels.contains("HLS 720p"))
+        XCTAssertTrue(labels.contains("HLS 480p"))
+
+        // Verify LIDPlayerSource.make resolves master resource to highest resolution child variant
+        if let source = LIDPlayerSource.make(from: masterResource, title: "Stream") {
+            if case .hlsStream(let url, let preferences, _, _) = source {
+                XCTAssertEqual(url, masterURL)
+                XCTAssertNotNil(preferences?.exactURI)
+                XCTAssertEqual(preferences?.maximumHeight, 720)
+                XCTAssertEqual(preferences?.exactURI?.absoluteString, "https://cdn.example.com/vod/720p.m3u8")
+            } else {
+                XCTFail("Expected .hlsStream source")
+            }
+        } else {
+            XCTFail("Failed to create LIDPlayerSource")
+        }
+    }
+
+    @MainActor
+    func testLIDPlaybackEngineAVFoundationFallbackToVLCKit() {
+        let engine = LIDPlaybackEngine()
+        let streamURL = URL(string: "https://cdn.example.com/vod/stream.m3u8")!
+        let source = LIDPlayerSource.hlsStream(url: streamURL, variantPreferences: nil, title: "Test Stream")
+
+        // Load HLS stream which defaults to AVFoundation
+        engine.load(source: source, autoPlay: false)
+        XCTAssertEqual(engine.activeBackendType, .avFoundation)
+
+        // Simulate AVFoundation reporting permission/authorization error
+        engine.engineDidFail(engine.avBackend, error: "You do not have permission to access the requested resource.")
+
+        // Verify graceful fallback to VLCKit
+        XCTAssertEqual(engine.activeBackendType, .vlcKit, "Engine must automatically switch to VLCKit on AVFoundation failure")
+    }
     #endif
 }
 

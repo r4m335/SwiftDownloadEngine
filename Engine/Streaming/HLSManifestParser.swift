@@ -363,6 +363,16 @@ public enum HLSManifestParser {
         guard !value.isEmpty, let resolved = URL(string: value, relativeTo: baseURL)?.absoluteURL, isHTTPURL(resolved) else {
             throw ManifestParserError.invalidURL
         }
+        // If the resolved URI has no query parameters, but the base URL carried query parameters
+        // (such as signed CDN tokens, HMAC, session auth, or expiration timestamps),
+        // preserve the base URL's query parameters so child variants and segments do not lose authorization.
+        if resolved.query == nil, let baseQuery = baseURL.query, !baseQuery.isEmpty {
+            var components = URLComponents(url: resolved, resolvingAgainstBaseURL: false)
+            components?.query = baseQuery
+            if let withQuery = components?.url {
+                return withQuery
+            }
+        }
         return resolved
     }
 
@@ -373,9 +383,16 @@ public enum HLSManifestParser {
 
     private static func resolveKeyURL(_ value: String?, method: String, baseURL: URL) throws -> URL? {
         guard let value else { return nil }
-        guard let resolved = URL(string: value, relativeTo: baseURL)?.absoluteURL,
+        guard var resolved = URL(string: value, relativeTo: baseURL)?.absoluteURL,
               let scheme = resolved.scheme?.lowercased(), !scheme.isEmpty else {
             throw ManifestParserError.invalidURL
+        }
+        if resolved.query == nil, let baseQuery = baseURL.query, !baseQuery.isEmpty {
+            var components = URLComponents(url: resolved, resolvingAgainstBaseURL: false)
+            components?.query = baseQuery
+            if let withQuery = components?.url {
+                resolved = withQuery
+            }
         }
         if method.uppercased() == "AES-128" && !isHTTPURL(resolved) {
             throw ManifestParserError.invalidURL

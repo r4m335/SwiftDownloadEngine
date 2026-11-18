@@ -223,25 +223,19 @@ public enum StreamQualityInspector {
 
     // MARK: - Private Network Helper
 
-    private static func loadManifestText(
+    public static func loadManifestText(
         from url: URL,
-        requestContext: BrowserRequestContext?,
-        session: URLSession
+        requestContext: BrowserRequestContext? = nil,
+        session: URLSession = .shared
     ) async throws -> String {
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
         request.timeoutInterval = 15.0
 
         if let context = requestContext {
-            if let ua = context.userAgent, !ua.isEmpty {
-                request.setValue(ua, forHTTPHeaderField: "User-Agent")
-            }
-            if let ref = context.referer, !ref.isEmpty {
-                request.setValue(ref, forHTTPHeaderField: "Referer")
-            }
-            let cookieHeader = context.cookies.map { "\($0.name)=\($0.value)" }.joined(separator: "; ")
-            if !cookieHeader.isEmpty {
-                request.setValue(cookieHeader, forHTTPHeaderField: "Cookie")
+            let headers = context.effectiveHeaders(for: url)
+            for (headerKey, headerValue) in headers {
+                request.setValue(headerValue, forHTTPHeaderField: headerKey)
             }
         }
 

@@ -73,8 +73,7 @@ public struct BrowserResourceInspectorSheet: View {
 
             // Expand master playlist synchronously if text is present and not already expanded
             if res.isStreamingManifest, res.hlsVariantPreferences == nil, res.dashVideoRepresentationID == nil,
-               let text = res.manifestText, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-               !hasExpandedVariants {
+               let text = res.manifestText, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 let syncResult = StreamManifestResourceExpander.expandSynchronously(masterResource: res, manifestText: text)
                 if !syncResult.variants.isEmpty && (syncResult.variants.count > 1 || syncResult.variants[0].id != res.id) {
                     expanded.append(contentsOf: syncResult.variants)

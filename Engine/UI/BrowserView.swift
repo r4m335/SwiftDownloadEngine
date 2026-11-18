@@ -2643,10 +2643,23 @@ public final class BrowserViewModel: NSObject, ObservableObject {
             let manifestType = observation.manifestKind == .dash
                 ? "application/dash+xml"
                 : "application/vnd.apple.mpegurl"
+            let baseName = BrowserURLResolver.suggestedFilename(from: resourceURL)
+            let manifestTitle: String
+            if let prefix = observation.manifestPrefix {
+                if prefix.contains("#EXT-X-STREAM-INF") {
+                    manifestTitle = "\(baseName) (Master Playlist)"
+                } else if prefix.contains("#EXT-X-TARGETDURATION") {
+                    manifestTitle = "\(baseName) (Media Playlist)"
+                } else {
+                    manifestTitle = baseName
+                }
+            } else {
+                manifestTitle = baseName
+            }
             resources = [WebpageResource(
                 url: resourceURL,
-                title: BrowserURLResolver.suggestedFilename(from: resourceURL),
-                suggestedFilename: BrowserURLResolver.suggestedFilename(from: resourceURL),
+                title: manifestTitle,
+                suggestedFilename: baseName,
                 resourceType: .video,
                 mimeType: observation.declaredType ?? manifestType,
                 estimatedSize: observation.contentLength,
@@ -2663,10 +2676,18 @@ public final class BrowserViewModel: NSObject, ObservableObject {
             if let prefix = observation.manifestPrefix, !prefix.isEmpty {
                 let existing = discoveredResources[existingIndex]
                 if existing.manifestText == nil || existing.manifestText?.isEmpty == true {
+                    let updatedTitle: String
+                    if prefix.contains("#EXT-X-STREAM-INF") && !existing.title.contains("Master Playlist") {
+                        updatedTitle = "\(existing.title) (Master Playlist)"
+                    } else if prefix.contains("#EXT-X-TARGETDURATION") && !existing.title.contains("Media Playlist") {
+                        updatedTitle = "\(existing.title) (Media Playlist)"
+                    } else {
+                        updatedTitle = existing.title
+                    }
                     let updated = WebpageResource(
                         id: existing.id,
                         url: existing.url,
-                        title: existing.title,
+                        title: updatedTitle,
                         suggestedFilename: existing.suggestedFilename,
                         resourceType: existing.resourceType,
                         mimeType: existing.mimeType ?? observation.declaredType,
@@ -2688,23 +2709,44 @@ public final class BrowserViewModel: NSObject, ObservableObject {
             let manifestType = observation.manifestKind == .dash
                 ? "application/dash+xml"
                 : "application/vnd.apple.mpegurl"
+            let prefix = resource.manifestText ?? observation.manifestPrefix
+            let dynamicTitle: String
+            if let p = prefix {
+                if p.contains("#EXT-X-STREAM-INF") && !resource.title.contains("Master Playlist") {
+                    dynamicTitle = "\(resource.title) (Master Playlist)"
+                } else if p.contains("#EXT-X-TARGETDURATION") && !resource.title.contains("Media Playlist") {
+                    dynamicTitle = "\(resource.title) (Media Playlist)"
+                } else {
+                    dynamicTitle = resource.title
+                }
+            } else {
+                dynamicTitle = resource.title
+            }
             resource = WebpageResource(
                 id: resource.id,
                 url: resource.url,
-                title: resource.title,
+                title: dynamicTitle,
                 suggestedFilename: resource.suggestedFilename,
                 resourceType: .video,
                 mimeType: resource.mimeType ?? observation.declaredType ?? manifestType,
                 estimatedSize: observation.contentLength ?? resource.estimatedSize,
                 isSupported: false,
                 unsupportedReason: "Streaming playlist manifest. Prepare a manifest-aware transfer to continue.",
-                manifestText: resource.manifestText ?? observation.manifestPrefix
+                manifestText: prefix
             )
         } else if resource.manifestText == nil, let prefix = observation.manifestPrefix {
+            let dynamicTitle: String
+            if prefix.contains("#EXT-X-STREAM-INF") && !resource.title.contains("Master Playlist") {
+                dynamicTitle = "\(resource.title) (Master Playlist)"
+            } else if prefix.contains("#EXT-X-TARGETDURATION") && !resource.title.contains("Media Playlist") {
+                dynamicTitle = "\(resource.title) (Media Playlist)"
+            } else {
+                dynamicTitle = resource.title
+            }
             resource = WebpageResource(
                 id: resource.id,
                 url: resource.url,
-                title: resource.title,
+                title: dynamicTitle,
                 suggestedFilename: resource.suggestedFilename,
                 resourceType: resource.resourceType,
                 mimeType: resource.mimeType,
@@ -2716,37 +2758,55 @@ public final class BrowserViewModel: NSObject, ObservableObject {
             )
         }
 
-        // A resource observed by a cross-origin frame, or a resource hosted on
-        // another origin, is deliberately added without browser credentials.
-        guard observation.mayUseBrowserCredentials,
-              let wv = webView else {
-            discoveredResources.append(resource)
+        // Always preserve request context (Referer, Origin, User-Agent) for discovered media
+        let effectivePageURL = currentURL ?? observation.pageOrigin ?? URL(string: "about:blank")!
+        if let wv = webView {
+            captureRequestContexts(
+                for: [resource],
+                pageURL: effectivePageURL,
+                webView: wv
+            ) { [weak self] contextualResources in
+                guard let self,
+                      let contextualResource = contextualResources.first,
+                      !self.discoveredResources.contains(where: {
+                          $0.url.absoluteString.lowercased() == contextualResource.url.absoluteString.lowercased()
+                      }) else {
+                    return
+                }
+                self.discoveredResources.append(contextualResource)
+                if self.selectedResourceIDs.isEmpty,
+                   let manifest = self.discoveredResources.first(where: { $0.isStreamingManifest }) {
+                    self.selectedResourceIDs.insert(manifest.id)
+                }
+                self.ingestMediaResource(contextualResource, tabID: tabID ?? self.activeTabID)
+            }
+        } else {
+            let fallbackContext = BrowserRequestContext(
+                url: resource.url,
+                pageURL: effectivePageURL,
+                userAgent: BrowserViewModel.defaultDesktopUserAgent,
+                cookies: [],
+                source: .webpageResource
+            )
+            let contextualResource = WebpageResource(
+                id: resource.id,
+                url: resource.url,
+                title: resource.title,
+                suggestedFilename: resource.suggestedFilename,
+                resourceType: resource.resourceType,
+                mimeType: resource.mimeType,
+                estimatedSize: resource.estimatedSize,
+                isSupported: resource.isSupported,
+                unsupportedReason: resource.unsupportedReason,
+                requestContext: resource.requestContext ?? fallbackContext,
+                manifestText: resource.manifestText
+            )
+            discoveredResources.append(contextualResource)
             if selectedResourceIDs.isEmpty,
                let manifest = discoveredResources.first(where: { $0.isStreamingManifest }) {
                 selectedResourceIDs.insert(manifest.id)
             }
-            ingestMediaResource(resource, tabID: tabID ?? activeTabID)
-            return
-        }
-
-        captureRequestContexts(
-            for: [resource],
-            pageURL: currentURL ?? observation.pageOrigin,
-            webView: wv
-        ) { [weak self] contextualResources in
-            guard let self,
-                  let contextualResource = contextualResources.first,
-                  !self.discoveredResources.contains(where: {
-                      $0.url.absoluteString.lowercased() == contextualResource.url.absoluteString.lowercased()
-                  }) else {
-                return
-            }
-            self.discoveredResources.append(contextualResource)
-            if self.selectedResourceIDs.isEmpty,
-               let manifest = self.discoveredResources.first(where: { $0.isStreamingManifest }) {
-                self.selectedResourceIDs.insert(manifest.id)
-            }
-            self.ingestMediaResource(contextualResource, tabID: tabID ?? self.activeTabID)
+            ingestMediaResource(contextualResource, tabID: tabID ?? activeTabID)
         }
     }
 

@@ -114,9 +114,22 @@ public enum LIDPlayerSource: Equatable, Sendable {
                     requestContext: resource.requestContext
                 )
             } else {
+                var preferences = resource.hlsVariantPreferences
+                if preferences == nil, let text = resource.manifestText,
+                   let manifest = try? HLSManifestParser.parse(text, baseURL: resource.url),
+                   manifest.playlistType == .master,
+                   let best = manifest.variants.max(by: { $0.bandwidth < $1.bandwidth }) {
+                    preferences = HLSVariantSelectionPreferences(
+                        maximumBandwidth: best.bandwidth,
+                        maximumWidth: best.resolution?.width,
+                        maximumHeight: best.resolution?.height,
+                        exactURI: best.uri
+                    )
+                }
+
                 return .hlsStream(
                     url: resource.url,
-                    variantPreferences: resource.hlsVariantPreferences,
+                    variantPreferences: preferences,
                     title: displayTitle,
                     requestContext: resource.requestContext
                 )

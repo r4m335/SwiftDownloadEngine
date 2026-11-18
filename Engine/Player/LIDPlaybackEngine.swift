@@ -657,6 +657,20 @@ public final class LIDPlaybackEngine: NSObject, ObservableObject, LIDMediaEngine
 
     public func engineDidFail(_ engine: LIDMediaEngineProtocol, error: String) {
         guard engine.backendType == self.activeBackendType else { return }
+
+        // If AVFoundation fails on a network or HLS stream (e.g. 403 Forbidden, unauthorized, or unsupported codec),
+        // automatically fall back to VLCKit to handle the direct stream transport.
+        if engine.backendType == .avFoundation, let source = currentSource {
+            PipelineLogger.shared.logPlayer(
+                session: currentSessionId,
+                category: "PlayerFallback",
+                message: "AVFoundation failed with error (\(error)). Gracefully falling back to VLCKit backend."
+            )
+            self.activeBackendType = .vlcKit
+            self.vlcBackend.load(source: source, autoPlay: true)
+            return
+        }
+
         self.playbackState = .failed(error: error)
         PipelineLogger.shared.logPlayer(
             session: currentSessionId,

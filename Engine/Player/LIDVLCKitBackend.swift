@@ -189,11 +189,21 @@ public final class LIDVLCKitBackend: NSObject, LIDMediaEngineProtocol, VLCMediaP
 
         // Inject request headers if present
         if let reqContext = source.requestContext {
-            if let ua = reqContext.userAgent {
+            let headers = reqContext.effectiveHeaders(for: targetURL)
+            if let ua = headers["User-Agent"] ?? reqContext.userAgent {
                 media.addOptions(["--http-user-agent": ua])
             }
-            if let ref = reqContext.referer {
+            if let ref = headers["Referer"] ?? reqContext.referer {
                 media.addOptions(["--http-referrer": ref])
+            }
+            if let cookie = headers["Cookie"], !cookie.isEmpty {
+                media.addOptions([":http-header=Cookie: \(cookie)"])
+            }
+            if let origin = headers["Origin"], !origin.isEmpty {
+                media.addOptions([":http-header=Origin: \(origin)"])
+            }
+            for (k, v) in headers where k != "Cookie" && k != "Origin" && k != "Referer" && k != "User-Agent" {
+                media.addOptions([":http-header=\(k): \(v)"])
             }
         }
 
