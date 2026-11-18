@@ -131,7 +131,7 @@ public enum HLSManifestParser {
                 }
                 let resolution = try parseResolution(attributes["RESOLUTION"])
                 let frameRate = try optionalPositiveDouble(attributes["FRAME-RATE"], name: "FRAME-RATE")
-                guard let uri = try resolveURL(line, against: baseURL) else {
+                guard let uri = try resolveVariantURL(line, against: baseURL) else {
                     throw ManifestParserError.invalidURL
                 }
                 variants.append(HLSVariant(
@@ -363,9 +363,16 @@ public enum HLSManifestParser {
         guard !value.isEmpty, let resolved = URL(string: value, relativeTo: baseURL)?.absoluteURL, isHTTPURL(resolved) else {
             throw ManifestParserError.invalidURL
         }
-        // If the resolved URI has no query parameters, but the base URL carried query parameters
+        return resolved
+    }
+
+    private static func resolveVariantURL(_ value: String, against baseURL: URL) throws -> URL? {
+        guard !value.isEmpty, let resolved = URL(string: value, relativeTo: baseURL)?.absoluteURL, isHTTPURL(resolved) else {
+            throw ManifestParserError.invalidURL
+        }
+        // If the child variant URL has no query parameters, but the master manifest URL carried query parameters
         // (such as signed CDN tokens, HMAC, session auth, or expiration timestamps),
-        // preserve the base URL's query parameters so child variants and segments do not lose authorization.
+        // preserve the master URL's query parameters so child variants do not lose authorization.
         if resolved.query == nil, let baseQuery = baseURL.query, !baseQuery.isEmpty {
             var components = URLComponents(url: resolved, resolvingAgainstBaseURL: false)
             components?.query = baseQuery

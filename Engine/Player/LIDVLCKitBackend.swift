@@ -197,13 +197,13 @@ public final class LIDVLCKitBackend: NSObject, LIDMediaEngineProtocol, VLCMediaP
                 media.addOptions(["--http-referrer": ref])
             }
             if let cookie = headers["Cookie"], !cookie.isEmpty {
-                media.addOptions([":http-header=Cookie: \(cookie)"])
+                media.addOptions(["--http-header": "Cookie: \(cookie)"])
             }
             if let origin = headers["Origin"], !origin.isEmpty {
-                media.addOptions([":http-header=Origin: \(origin)"])
+                media.addOptions(["--http-header": "Origin: \(origin)"])
             }
             for (k, v) in headers where k != "Cookie" && k != "Origin" && k != "Referer" && k != "User-Agent" {
-                media.addOptions([":http-header=\(k): \(v)"])
+                media.addOptions(["--http-header": "\(k): \(v)"])
             }
         }
 

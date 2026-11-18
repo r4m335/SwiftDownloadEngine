@@ -814,7 +814,7 @@ final class BrowserMediaDiscoveryTests: XCTestCase {
             XCTAssertTrue(variant.uri.query?.contains("expires=1700000000") == true)
         }
 
-        // Test segments in media playlist inherit signed query parameters as well
+        // Test segments in media playlist resolve against baseURL
         let mediaText = """
         #EXTM3U
         #EXT-X-TARGETDURATION:6
@@ -826,8 +826,7 @@ final class BrowserMediaDiscoveryTests: XCTestCase {
         let mediaManifest = try HLSManifestParser.parse(mediaText, baseURL: signedBaseURL)
         XCTAssertEqual(mediaManifest.playlistType, .media)
         XCTAssertEqual(mediaManifest.segments.count, 2)
-        XCTAssertEqual(mediaManifest.segments[0].uri.absoluteString, "https://cdn.example.com/vod/segment0.ts?token=xyz123&expires=1700000000")
-        // Segment with existing custom query keeps its own
+        XCTAssertEqual(mediaManifest.segments[0].uri.absoluteString, "https://cdn.example.com/vod/segment0.ts")
         XCTAssertEqual(mediaManifest.segments[1].uri.absoluteString, "https://cdn.example.com/vod/segment1.ts?custom=1")
     }
 
