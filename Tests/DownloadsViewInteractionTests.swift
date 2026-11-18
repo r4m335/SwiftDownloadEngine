@@ -357,6 +357,106 @@ final class DownloadsViewInteractionTests: XCTestCase {
         )
         XCTAssertNil(mediaView.onDismiss, "Media tab root view must not show a modal Done button")
     }
+
+    @MainActor
+    func testDownloadFilterPagerNavigation() {
+        XCTAssertEqual(DownloadFilter.all.next, .active)
+        XCTAssertEqual(DownloadFilter.active.next, .paused)
+        XCTAssertEqual(DownloadFilter.paused.next, .completed)
+        XCTAssertEqual(DownloadFilter.completed.next, .failed)
+        XCTAssertNil(DownloadFilter.failed.next)
+
+        XCTAssertEqual(DownloadFilter.failed.previous, .completed)
+        XCTAssertEqual(DownloadFilter.completed.previous, .paused)
+        XCTAssertEqual(DownloadFilter.paused.previous, .active)
+        XCTAssertEqual(DownloadFilter.active.previous, .all)
+        XCTAssertNil(DownloadFilter.all.previous)
+    }
+
+    @MainActor
+    func testFilteredTransfersForCategoryPager() {
+        let activeTransfer = UnifiedTransfer(
+            id: "t-active",
+            name: "active.mp4",
+            type: .http,
+            state: .downloading,
+            destinationURL: tempDirectory.appendingPathComponent("active.mp4"),
+            source: "https://example.com/active.mp4"
+        )
+        let pausedTransfer = UnifiedTransfer(
+            id: "t-paused",
+            name: "paused.mp4",
+            type: .http,
+            state: .paused,
+            destinationURL: tempDirectory.appendingPathComponent("paused.mp4"),
+            source: "https://example.com/paused.mp4"
+        )
+        let completedTransfer = UnifiedTransfer(
+            id: "t-completed",
+            name: "completed.mp4",
+            type: .http,
+            state: .completed,
+            destinationURL: tempDirectory.appendingPathComponent("completed.mp4"),
+            source: "https://example.com/completed.mp4"
+        )
+        let failedTransfer = UnifiedTransfer(
+            id: "t-failed",
+            name: "failed.mp4",
+            type: .http,
+            state: .failed,
+            destinationURL: tempDirectory.appendingPathComponent("failed.mp4"),
+            source: "https://example.com/failed.mp4"
+        )
+
+        viewModel.unifiedTransfers = [activeTransfer, pausedTransfer, completedTransfer, failedTransfer]
+
+        XCTAssertEqual(viewModel.filteredTransfers(for: .all).count, 4)
+        XCTAssertEqual(viewModel.filteredTransfers(for: .active).count, 1)
+        XCTAssertEqual(viewModel.filteredTransfers(for: .active).first?.id, "t-active")
+        XCTAssertEqual(viewModel.filteredTransfers(for: .paused).count, 1)
+        XCTAssertEqual(viewModel.filteredTransfers(for: .paused).first?.id, "t-paused")
+        XCTAssertEqual(viewModel.filteredTransfers(for: .completed).count, 1)
+        XCTAssertEqual(viewModel.filteredTransfers(for: .completed).first?.id, "t-completed")
+        XCTAssertEqual(viewModel.filteredTransfers(for: .failed).count, 1)
+        XCTAssertEqual(viewModel.filteredTransfers(for: .failed).first?.id, "t-failed")
+
+        // Switching selectedFilter updates default filteredTransfers property
+        viewModel.selectedFilter = .active
+        XCTAssertEqual(viewModel.filteredTransfers.count, 1)
+        XCTAssertEqual(viewModel.filteredTransfers.first?.id, "t-active")
+
+        viewModel.selectedFilter = .completed
+        XCTAssertEqual(viewModel.filteredTransfers.count, 1)
+        XCTAssertEqual(viewModel.filteredTransfers.first?.id, "t-completed")
+    }
+
+    @MainActor
+    func testThreeDotMenuAlwaysAccessibleDirectlyOnCard() {
+        var menuActionInvoked = false
+        var detailsInvoked = false
+
+        let transfer = UnifiedTransfer(
+            id: "t-card-menu",
+            name: "song.mp3",
+            type: .http,
+            state: .completed,
+            destinationURL: tempDirectory.appendingPathComponent("song.mp3"),
+            source: "https://example.com/song.mp3"
+        )
+
+        let rowView = UnifiedTransferRowView(
+            viewModel: viewModel,
+            transfer: transfer,
+            isSelectingMultiple: false,
+            onTapContent: { detailsInvoked = true },
+            onOpen: { menuActionInvoked = true }
+        )
+
+        XCTAssertFalse(rowView.isSelectingMultiple, "Individual card three-dot menu must not be hidden")
+        rowView.onOpen()
+        XCTAssertTrue(menuActionInvoked, "Three-dot menu actions must be directly callable without long-press requirement")
+        XCTAssertFalse(detailsInvoked, "Direct three-dot menu action must not trigger row tap navigation")
+    }
 #else
     func testDownloadsViewInteractionLinuxNoOp() {
         // SwiftUI is not available on Linux platforms.

@@ -35,6 +35,18 @@ public enum DownloadFilter: String, CaseIterable, Sendable, Identifiable {
     case failed = "Failed"
 
     public var id: String { rawValue }
+
+    public var next: DownloadFilter? {
+        let all = Self.allCases
+        guard let idx = all.firstIndex(of: self), idx + 1 < all.count else { return nil }
+        return all[idx + 1]
+    }
+
+    public var previous: DownloadFilter? {
+        let all = Self.allCases
+        guard let idx = all.firstIndex(of: self), idx > 0 else { return nil }
+        return all[idx - 1]
+    }
 }
 
 /// Real-time aggregate count summary for download statuses across all unified transfers (HTTP & BitTorrent).
@@ -958,8 +970,8 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
         )
     }
 
-    /// Returns unified transfers (HTTP + Torrent) matching current search query, status filter, and optional category filter.
-    public var filteredTransfers: [UnifiedTransfer] {
+    /// Returns unified transfers (HTTP + Torrent) matching current search query, given status filter, and optional category filter.
+    public func filteredTransfers(for filter: DownloadFilter) -> [UnifiedTransfer] {
         unifiedTransfers.filter { item in
             if !filterText.isEmpty {
                 let query = filterText.lowercased()
@@ -971,7 +983,7 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
                 }
             }
 
-            guard item.matchesFilter(selectedFilter) else { return false }
+            guard item.matchesFilter(filter) else { return false }
 
             if let category = selectedCategory {
                 guard item.category == category else { return false }
@@ -979,6 +991,11 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
 
             return true
         }
+    }
+
+    /// Returns unified transfers (HTTP + Torrent) matching current search query, status filter, and optional category filter.
+    public var filteredTransfers: [UnifiedTransfer] {
+        filteredTransfers(for: selectedFilter)
     }
 
     // MARK: - Download Lifecycle Actions (HTTP)
