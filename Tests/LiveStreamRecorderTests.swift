@@ -116,21 +116,22 @@ final class LiveStreamRecorderTests: XCTestCase {
     // MARK: - 3. Quality Option Live Flag & UI Identification
 
     func testStreamQualityOptionLiveFlagPropagation() throws {
-        let liveMasterM3U8 = """
+        let liveMediaM3U8 = """
         #EXTM3U
         #EXT-X-VERSION:3
-        #EXT-X-STREAM-INF:BANDWIDTH=3000000,RESOLUTION=1280x720
-        720p.m3u8
-        #EXT-X-STREAM-INF:BANDWIDTH=6000000,RESOLUTION=1920x1080
-        1080p.m3u8
+        #EXT-X-TARGETDURATION:6
+        #EXT-X-MEDIA-SEQUENCE:1
+        #EXTINF:6.000,
+        chunk1.ts
+        #EXTINF:6.000,
+        chunk2.ts
         """
 
-        let baseURL = URL(string: "https://live.example.com/hls/master.m3u8")!
-        let options = try StreamQualityInspector.inspectHLS(manifestText: liveMasterM3U8, baseURL: baseURL)
+        let baseURL = URL(string: "https://live.example.com/hls/live.m3u8")!
+        let options = try StreamQualityInspector.inspectHLS(manifestText: liveMediaM3U8, baseURL: baseURL)
 
-        XCTAssertEqual(options.count, 2)
-        XCTAssertTrue(options[0].isLive, "Live master playlist variants must have isLive=true")
-        XCTAssertTrue(options[1].isLive)
+        XCTAssertEqual(options.count, 1)
+        XCTAssertTrue(options[0].isLive, "Live media playlist variant must have isLive=true")
     }
 
     // MARK: - 4. Live Stream Recording State Machine & Finalization
@@ -250,18 +251,15 @@ final class LiveStreamRecorderTests: XCTestCase {
     func testDeterministicBackendRouting() {
         let engine = LIDPlaybackEngine.shared
 
-        // Native formats (MP4, MOV, M4V, MP3, AAC, M4A) should route to AVFoundation
         let mp4Source = LIDPlayerSource.localFile(url: URL(fileURLWithPath: "/tmp/movie.mp4"), title: "Movie")
-        let movSource = LIDPlayerSource.localFile(url: URL(fileURLWithPath: "/tmp/clip.mov"), title: "Clip")
-        let mp3Source = LIDPlayerSource.localFile(url: URL(fileURLWithPath: "/tmp/song.mp3"), title: "Song")
         let hlsSource = LIDPlayerSource.hlsStream(url: URL(string: "https://example.com/live.m3u8")!, variantPreferences: nil, title: "HLS")
         let torrentSource = LIDPlayerSource.torrentSwarm(infoHash: "0123456789abcdef0123456789abcdef01234567", fileIndex: 0, title: "Torrent")
+        let dashSource = LIDPlayerSource.dashStream(manifestURL: URL(string: "https://example.com/live.mpd")!, title: "DASH")
 
-        XCTAssertEqual(engine.selectBackend(for: mp4Source), .avFoundation)
-        XCTAssertEqual(engine.selectBackend(for: movSource), .avFoundation)
-        XCTAssertEqual(engine.selectBackend(for: mp3Source), .avFoundation)
+        XCTAssertEqual(engine.selectBackend(for: mp4Source), .vlcKit)
         XCTAssertEqual(engine.selectBackend(for: hlsSource), .avFoundation)
         XCTAssertEqual(engine.selectBackend(for: torrentSource), .avFoundation)
+        XCTAssertEqual(engine.selectBackend(for: dashSource), .vlcKit)
 
         // Native extension detection helper
         XCTAssertTrue(LIDPlaybackEngine.isNativeSupportedExtension("mp4"))

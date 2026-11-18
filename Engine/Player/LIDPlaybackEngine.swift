@@ -125,27 +125,15 @@ public final class LIDPlaybackEngine: NSObject, ObservableObject, LIDMediaEngine
     /// Determines the optimal playback backend for a given media source based on container,
     /// stream protocol, and platform capabilities.
     public func selectBackend(for source: LIDPlayerSource) -> LIDMediaEngineBackendType {
-        guard Self.isVLCKitAvailable else {
-            return .avFoundation
-        }
         switch source {
-        case .localFile(let url, _), .partialDownload(let url, _, _):
-            let ext = url.pathExtension
-            if Self.isNativeSupportedExtension(ext) {
-                return .avFoundation
-            } else {
-                return .vlcKit
-            }
-        case .networkStream(let url, _, _):
-            let ext = url.pathExtension
-            if Self.isNativeSupportedExtension(ext) {
-                return .avFoundation
-            } else {
-                return .vlcKit
-            }
+        case .localFile, .partialDownload:
+            // Route all local media to VLCKit by default for universal container and codec decoding.
+            return .vlcKit
         case .hlsStream, .torrentSwarm:
+            // Preserve native HLS adaptive bitrate streaming and BitTorrent AVAssetResourceLoader integration.
             return .avFoundation
-        case .dashStream:
+        case .dashStream, .networkStream:
+            // Direct network streams and DASH manifests route through VLCKit's demuxer.
             return .vlcKit
         }
     }
