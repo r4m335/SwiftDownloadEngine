@@ -448,6 +448,7 @@ final class BrowserContentBlockerTests: XCTestCase {
     }
 
     #if canImport(WebKit)
+    @MainActor
     func testContentBlockerGranularApplyAndLegacyFallback() {
         let config = WKWebViewConfiguration()
         let blocker = BrowserContentBlocker.shared
