@@ -413,17 +413,6 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                 recordTabOrigin(host, for: id)
             }
             #endif
-        } else if !isIncognito,
-                  let homeURL = URL(string: browserHomepage),
-                  !browserHomepage.isEmpty,
-                  browserHomepage != "about:blank" {
-            #if canImport(WebKit)
-            let session = webViewSession(for: id)
-            session.webView.load(URLRequest(url: homeURL))
-            if let host = homeURL.host {
-                recordTabOrigin(host, for: id)
-            }
-            #endif
         }
         return id
     }

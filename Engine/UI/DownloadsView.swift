@@ -1201,20 +1201,13 @@ public struct VerticalThreeDotsButtonLabel: View {
     public var body: some View {
         ZStack {
             Circle()
-                .fill(Color.secondary.opacity(0.2))
+                .fill(Color.secondary.opacity(0.22))
                 .frame(width: 32, height: 32)
 
-            VStack(spacing: 3) {
-                Circle()
-                    .fill(Color.primary)
-                    .frame(width: 3.5, height: 3.5)
-                Circle()
-                    .fill(Color.primary)
-                    .frame(width: 3.5, height: 3.5)
-                Circle()
-                    .fill(Color.primary)
-                    .frame(width: 3.5, height: 3.5)
-            }
+            Image(systemName: "ellipsis")
+                .rotationEffect(.degrees(90))
+                .font(.system(size: 14, weight: .bold))
+                .foregroundColor(.primary)
         }
         .frame(width: 32, height: 32)
         .contentShape(Circle())
