@@ -118,7 +118,7 @@ public final class LIDTrackManager: ObservableObject {
     // MARK: - Language & Preference Resolution
 
     /// Determines if a track matches the user's preferred language string (e.g. "English", "Spanish", "Any").
-    public static func matchesLanguage(languageCode: String?, displayName: String, preferredLanguage: String) -> Bool {
+    nonisolated public static func matchesLanguage(languageCode: String?, displayName: String, preferredLanguage: String) -> Bool {
         let pref = preferredLanguage.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !pref.isEmpty, pref != "any" else { return true }
 

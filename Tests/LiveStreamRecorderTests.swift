@@ -300,6 +300,7 @@ final class LiveStreamRecorderTests: XCTestCase {
 
     // MARK: - 10. Audio Track and Subtitle Track Language Preference Matching
 
+    @MainActor
     func testLanguagePreferenceMatching() {
         // English
         XCTAssertTrue(LIDTrackManager.matchesLanguage(languageCode: "en", displayName: "English", preferredLanguage: "English"))
