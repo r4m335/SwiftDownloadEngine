@@ -366,8 +366,8 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         #if canImport(WebKit)
         if activeTab.url == nil {
             webView = nil
-        } else if let activeTabID {
-            let session = webViewSession(for: activeTabID)
+        } else if let activeTabID,
+           let session = tabSessions[activeTabID] {
             webView = session.webView
             canGoBack = session.webView.canGoBack
             canGoForward = session.webView.canGoForward
