@@ -199,7 +199,7 @@ public enum DASHVODReconstructor {
             temporaryDirectoryURL: temporaryDirectoryURL
         )
         do {
-            return try MediaAssembler.assemble(reconstructionPlan.assemblyRequest)
+            return try await MediaAssembler.assemble(reconstructionPlan.assemblyRequest)
         } catch let error as MediaAssemblyError {
             throw DASHVODReconstructionError.assemblyFailed(error)
         }

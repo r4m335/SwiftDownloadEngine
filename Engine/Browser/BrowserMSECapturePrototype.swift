@@ -830,7 +830,7 @@ public actor BrowserMSECapturePrototypeWriter {
         )
 
         do {
-            let output = try MediaAssembler.assemble(request)
+            let output = try await MediaAssembler.assemble(request)
             return output.destinationURL
         } catch let error as MediaAssemblyError {
             switch error {

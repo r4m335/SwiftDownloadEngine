@@ -391,7 +391,7 @@ public enum HLSVODReconstructor {
             temporaryDirectoryURL: effectiveTempDir
         )
         do {
-            let output = try MediaAssembler.assemble(reconstructionPlan.assemblyRequest)
+            let output = try await MediaAssembler.assemble(reconstructionPlan.assemblyRequest)
             return output
         } catch let error as MediaAssemblyError {
             throw HLSVODReconstructionError.assemblyFailed(error)

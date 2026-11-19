@@ -16,23 +16,21 @@ public struct DefaultMediaReadabilityVerifier: MediaReadabilityVerifier {
     public func isMediaReadable(at fileURL: URL) async -> Bool {
         #if canImport(AVFoundation)
         let asset = AVURLAsset(url: fileURL)
-        let sema = DispatchSemaphore(value: 0)
-        asset.loadValuesAsynchronously(forKeys: ["tracks", "playable"]) {
-            sema.signal()
-        }
-        _ = sema.wait(timeout: .now() + 3.0)
-        var isReadable = false
-        if #available(macOS 12.0, iOS 15.0, *) {
-            isReadable = asset.isPlayable || !asset.tracks.isEmpty
-        } else {
-            isReadable = !asset.tracks.isEmpty
-        }
-        if !isReadable && fileURL.pathExtension.lowercased() == "ts" {
-            if let size = FileManager.default.fileSize(atPath: fileURL.path), size > 0, size % 188 == 0 {
-                isReadable = true
+        do {
+            let isPlayable = try await asset.load(.isPlayable)
+            let tracks = try await asset.load(.tracks)
+            if isPlayable || !tracks.isEmpty {
+                return true
             }
+        } catch {
+            PipelineLogger.shared.log(stage: .assembler, message: "AVURLAsset load failed for \(fileURL.lastPathComponent): \(error)")
         }
-        return isReadable
+
+        if fileURL.pathExtension.lowercased() == "ts" {
+            let validation = MediaIntegrityValidator.validateMPEGTS(fileURL: fileURL)
+            return validation.isConfirmedValid
+        }
+        return false
         #else
         return true
         #endif

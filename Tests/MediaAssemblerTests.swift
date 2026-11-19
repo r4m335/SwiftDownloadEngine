@@ -158,7 +158,16 @@ final class MediaAssemblerTests: XCTestCase {
         }
     }
 
-    func testMPEGTSAssemblyPublishesOrderedValidatedBytes() throws {
+    private func assertThrowsAsyncError<T>(_ expression: @autoclosure () async throws -> T, _ errorHandler: (Error) -> Void = { _ in }) async {
+        do {
+            _ = try await expression()
+            XCTFail("Expected expression to throw an error, but it succeeded")
+        } catch {
+            errorHandler(error)
+        }
+    }
+
+    func testMPEGTSAssemblyPublishesOrderedValidatedBytes() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("media-assembler-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -184,14 +193,14 @@ final class MediaAssemblerTests: XCTestCase {
             )],
             destinationURL: output
         )
-        let result = try MediaAssembler.assemble(request)
+        let result = try await MediaAssembler.assemble(request)
 
         XCTAssertEqual(result.container, .mpegTS)
         XCTAssertEqual(result.byteCount, 376)
         XCTAssertEqual(try Data(contentsOf: output), firstBytes + secondBytes)
     }
 
-    func testTruncatedMPEGTSNeverPublishesOutput() throws {
+    func testTruncatedMPEGTSNeverPublishesOutput() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("media-assembler-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -210,13 +219,13 @@ final class MediaAssemblerTests: XCTestCase {
             destinationURL: output
         )
 
-        XCTAssertThrowsError(try MediaAssembler.assemble(request)) { error in
+        await assertThrowsAsyncError(try await MediaAssembler.assemble(request)) { error in
             XCTAssertEqual(error as? MediaAssemblyError, .invalidMediaData(.mpegTS))
         }
         XCTAssertFalse(FileManager.default.fileExists(atPath: output.path))
     }
 
-    func testFragmentedMP4AssemblyRequiresInitializationAndMediaFragments() throws {
+    func testFragmentedMP4AssemblyRequiresInitializationAndMediaFragments() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("media-assembler-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -249,13 +258,13 @@ final class MediaAssemblerTests: XCTestCase {
             )],
             destinationURL: output
         )
-        let result = try MediaAssembler.assemble(request)
+        let result = try await MediaAssembler.assemble(request)
 
         XCTAssertEqual(result.container, .fragmentedMP4)
         XCTAssertEqual(try Data(contentsOf: output), initBytes + mediaBytes)
     }
 
-    func testInvalidFragmentedMP4NeverReplacesExistingOutput() throws {
+    func testInvalidFragmentedMP4NeverReplacesExistingOutput() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("media-assembler-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -280,13 +289,13 @@ final class MediaAssemblerTests: XCTestCase {
             destinationURL: output
         )
 
-        XCTAssertThrowsError(try MediaAssembler.assemble(request)) { error in
+        await assertThrowsAsyncError(try await MediaAssembler.assemble(request)) { error in
             XCTAssertEqual(error as? MediaAssemblyError, .invalidMediaData(.fragmentedMP4))
         }
         XCTAssertEqual(try Data(contentsOf: output), existing)
     }
 
-    func testAssembleMultipleTracksFragmentedMP4() throws {
+    func testAssembleMultipleTracksFragmentedMP4() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("media-assembler-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -328,18 +337,18 @@ final class MediaAssemblerTests: XCTestCase {
         )
 
 #if canImport(AVFoundation)
-        let result = try MediaAssembler.assemble(request)
+        let result = try await MediaAssembler.assemble(request)
         XCTAssertEqual(result.container, .fragmentedMP4)
         XCTAssertEqual(result.trackCount, 2)
         XCTAssertTrue(FileManager.default.fileExists(atPath: output.path))
 #else
-        XCTAssertThrowsError(try MediaAssembler.assemble(request)) { error in
+        await assertThrowsAsyncError(try await MediaAssembler.assemble(request)) { error in
             XCTAssertEqual(error as? MediaAssemblyError, .muxingUnavailable)
         }
 #endif
     }
 
-    func testAssembleMultipleTracksFailsAndQuarantinesWhenMuxingFails() throws {
+    func testAssembleMultipleTracksFailsAndQuarantinesWhenMuxingFails() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("media-assembler-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -377,7 +386,7 @@ final class MediaAssemblerTests: XCTestCase {
 
 #if canImport(AVFoundation)
         // Multi-track assembly must NOT return a successful 1-track output when muxing fails!
-        XCTAssertThrowsError(try MediaAssembler.assemble(request)) { error in
+        await assertThrowsAsyncError(try await MediaAssembler.assemble(request)) { error in
             XCTAssertTrue(error is MediaAssemblyError)
         }
         // Incomplete single-track fallback must NOT be published at destination
@@ -388,13 +397,13 @@ final class MediaAssemblerTests: XCTestCase {
         let quarantineDirName = contents.first { $0.contains(".media-quarantine-") }
         XCTAssertNotNil(quarantineDirName, "Quarantine directory must be created when muxing fails")
 #else
-        XCTAssertThrowsError(try MediaAssembler.assemble(request)) { error in
+        await assertThrowsAsyncError(try await MediaAssembler.assemble(request)) { error in
             XCTAssertEqual(error as? MediaAssemblyError, .muxingUnavailable)
         }
 #endif
     }
 
-    func testAssemblySynchronizesAndReplacesExistingDestinationDurably() throws {
+    func testAssemblySynchronizesAndReplacesExistingDestinationDurably() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("media-assembler-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -425,7 +434,7 @@ final class MediaAssemblerTests: XCTestCase {
             )],
             destinationURL: output
         )
-        let result = try MediaAssembler.assemble(request)
+        let result = try await MediaAssembler.assemble(request)
 
         XCTAssertEqual(result.container, .mpegTS)
         XCTAssertEqual(result.byteCount, 376)
@@ -433,7 +442,7 @@ final class MediaAssemblerTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: output), firstBytes + secondBytes)
     }
 
-    func testAssemblyFailsGracefullyWhenTemporaryFileCreationFails() throws {
+    func testAssemblyFailsGracefullyWhenTemporaryFileCreationFails() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("media-assembler-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -458,13 +467,13 @@ final class MediaAssemblerTests: XCTestCase {
             temporaryDirectoryURL: invalidTempDir
         )
 
-        XCTAssertThrowsError(try MediaAssembler.assemble(request)) { error in
+        await assertThrowsAsyncError(try await MediaAssembler.assemble(request)) { error in
             XCTAssertEqual(error as? MediaAssemblyError, .fileOperationFailed)
         }
         XCTAssertFalse(FileManager.default.fileExists(atPath: output.path))
     }
 
-    func testAssemblyPreservesExistingDestinationWhenStagedOutputCorrupted() throws {
+    func testAssemblyPreservesExistingDestinationWhenStagedOutputCorrupted() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("media-assembler-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -490,7 +499,7 @@ final class MediaAssemblerTests: XCTestCase {
             destinationURL: output
         )
 
-        XCTAssertThrowsError(try MediaAssembler.assemble(request)) { error in
+        await assertThrowsAsyncError(try await MediaAssembler.assemble(request)) { error in
             XCTAssertEqual(error as? MediaAssemblyError, .invalidMediaData(.mpegTS))
         }
         // Original destination must remain completely untouched
@@ -564,7 +573,7 @@ final class MediaAssemblerTests: XCTestCase {
 
     // MARK: - Regression Tests for Item 4
 
-    func testMPEGTSMissingPATPMTRejectedDuringAssemblyValidation() throws {
+    func testMPEGTSMissingPATPMTRejectedDuringAssemblyValidation() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("media-assembler-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -586,12 +595,12 @@ final class MediaAssemblerTests: XCTestCase {
             destinationURL: output
         )
 
-        XCTAssertThrowsError(try MediaAssembler.assemble(request)) { error in
+        await assertThrowsAsyncError(try await MediaAssembler.assemble(request)) { error in
             XCTAssertTrue(error is MediaAssemblyError)
         }
     }
 
-    func testMPEGTSDeclaringNoMediaStreamsRejected() throws {
+    func testMPEGTSDeclaringNoMediaStreamsRejected() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("media-assembler-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -613,12 +622,12 @@ final class MediaAssemblerTests: XCTestCase {
             destinationURL: output
         )
 
-        XCTAssertThrowsError(try MediaAssembler.assemble(request)) { error in
+        await assertThrowsAsyncError(try await MediaAssembler.assemble(request)) { error in
             XCTAssertTrue(error is MediaAssemblyError)
         }
     }
 
-    func testMediaAssemblyStatesRecordedInValidationReport() throws {
+    func testMediaAssemblyStatesRecordedInValidationReport() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("media-assembler-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -651,14 +660,14 @@ final class MediaAssemblerTests: XCTestCase {
             )],
             destinationURL: output
         )
-        let result = try MediaAssembler.assemble(request)
+        let result = try await MediaAssembler.assemble(request)
 
         XCTAssertEqual(result.validation.state, .outputValidated)
         XCTAssertTrue(result.validation.isStructurallyValid)
         XCTAssertNotNil(result.validation.validationDetails)
     }
 
-    func testAssembleMPEGTSWithMP4DestinationPerformsRealRemuxing() throws {
+    func testAssembleMPEGTSWithMP4DestinationPerformsRealRemuxing() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("media-assembler-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -683,19 +692,19 @@ final class MediaAssemblerTests: XCTestCase {
             destinationURL: outputMP4
         )
 
-        let result = try MediaAssembler.assemble(request)
+        let result = try await MediaAssembler.assemble(request)
         let publishedURL = result.destinationURL
         XCTAssertTrue(FileManager.default.fileExists(atPath: publishedURL.path))
         XCTAssertGreaterThan(result.byteCount, 0)
     }
 
     struct FailingRemuxer: MPEGTSMediaRemuxer {
-        func remux(sourceTSURL: URL, destinationMP4URL: URL) throws {
+        func remux(sourceTSURL: URL, destinationMP4URL: URL) async throws {
             throw MediaAssemblyError.assetWriterFailed(reason: "Mock remux failure")
         }
     }
 
-    func testAssembleMPEGTSToMP4FallsBackToTSWhenRemuxerFails() throws {
+    func testAssembleMPEGTSToMP4FallsBackToTSWhenRemuxerFails() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("media-assembler-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -720,7 +729,7 @@ final class MediaAssemblerTests: XCTestCase {
             destinationURL: outputMP4
         )
 
-        let result = try MediaAssembler.assemble(request, remuxer: FailingRemuxer())
+        let result = try await MediaAssembler.assemble(request, remuxer: FailingRemuxer())
         // When remuxer fails, it safely falls back to preserving the valid MPEG-TS output as .ts
         XCTAssertEqual(result.container, .mpegTS)
         let expectedTS = directory.appendingPathComponent("output.ts")

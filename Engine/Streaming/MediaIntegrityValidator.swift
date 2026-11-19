@@ -895,30 +895,22 @@ public extension MediaIntegrityValidator {
     /// Distinguishes structural container validity from platform-confirmed playability.
     static func checkAVFoundationPlayability(
         fileURL: URL
-    ) -> (isPlayable: Bool, trackCount: Int, reason: String?) {
+    ) async -> (isPlayable: Bool, trackCount: Int, reason: String?) {
         #if canImport(AVFoundation)
         let asset = AVURLAsset(url: fileURL)
-        let sema = DispatchSemaphore(value: 0)
-        asset.loadValuesAsynchronously(forKeys: ["tracks", "playable"]) {
-            sema.signal()
+        do {
+            let tracks = try await asset.load(.tracks)
+            let videoTracks = tracks.filter { $0.mediaType == AVMediaType.video }
+            let audioTracks = tracks.filter { $0.mediaType == AVMediaType.audio }
+            let totalCount = videoTracks.count + audioTracks.count
+            guard totalCount > 0 else {
+                return (false, 0, "No audio or video tracks identified by AVFoundation")
+            }
+            let playable = try await asset.load(.isPlayable)
+            return (playable, totalCount, playable ? nil : "AVAsset isPlayable returned false")
+        } catch {
+            return (false, 0, "Could not load asset tracks: \(error.localizedDescription)")
         }
-        _ = sema.wait(timeout: .now() + 5.0)
-
-        var error: NSError? = nil
-        let status = asset.statusOfValue(forKey: "tracks", error: &error)
-        guard status == .loaded else {
-            return (false, 0, "Could not load tracks: \(error?.localizedDescription ?? "unknown error")")
-        }
-
-        let tracks = asset.tracks
-        let videoTracks = tracks.filter { $0.mediaType == AVMediaType.video }
-        let audioTracks = tracks.filter { $0.mediaType == AVMediaType.audio }
-        let totalCount = videoTracks.count + audioTracks.count
-        guard totalCount > 0 else {
-            return (false, 0, "No audio or video tracks identified by AVFoundation")
-        }
-        let playable = asset.isPlayable
-        return (playable, totalCount, playable ? nil : "AVAsset isPlayable returned false")
         #else
         return (true, 0, nil)
         #endif

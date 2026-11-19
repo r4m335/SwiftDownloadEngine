@@ -13,14 +13,14 @@ public protocol MediaAssemblyExecutor: Sendable {
 
 /// Remuxing contract for converting MPEG-TS containers to MP4.
 public protocol MPEGTSMediaRemuxer: Sendable {
-    func remux(sourceTSURL: URL, destinationMP4URL: URL) throws
+    func remux(sourceTSURL: URL, destinationMP4URL: URL) async throws
 }
 
 public struct AVFoundationMPEGTSMediaRemuxer: MPEGTSMediaRemuxer {
     public init() {}
-    public func remux(sourceTSURL: URL, destinationMP4URL: URL) throws {
+    public func remux(sourceTSURL: URL, destinationMP4URL: URL) async throws {
         #if canImport(AVFoundation)
-        try MediaAssembler.remuxMPEGTSFileToMP4(sourceTSURL: sourceTSURL, destinationMP4URL: destinationMP4URL)
+        try await MediaAssembler.remuxMPEGTSFileToMP4(sourceTSURL: sourceTSURL, destinationMP4URL: destinationMP4URL)
         #else
         throw MediaAssemblyError.muxingUnavailable
         #endif
@@ -145,11 +145,11 @@ public enum MediaAssembler {
     public static func assemble(
         _ request: MediaAssemblyRequest,
         remuxer: MPEGTSMediaRemuxer = AVFoundationMPEGTSMediaRemuxer()
-    ) throws -> MediaAssemblyOutput {
+    ) async throws -> MediaAssemblyOutput {
         let validation = try validateInput(request)
         if request.tracks.count > 1 {
 #if canImport(AVFoundation)
-            return try assembleMultipleTracks(request, validation: validation)
+            return try await assembleMultipleTracks(request, validation: validation)
 #else
             throw MediaAssemblyError.muxingUnavailable
 #endif
@@ -233,7 +233,7 @@ public enum MediaAssembler {
                 #if canImport(AVFoundation)
                 let remuxStaging = parentDir.appendingPathComponent(".remux-\(UUID().uuidString).mp4")
                 do {
-                    try remuxer.remux(sourceTSURL: temporaryOutput, destinationMP4URL: remuxStaging)
+                    try await remuxer.remux(sourceTSURL: temporaryOutput, destinationMP4URL: remuxStaging)
                     stagingPublishedURL = remuxStaging
                     needsRemuxCleanup = true
                     finalContainer = .fragmentedMP4
@@ -384,7 +384,7 @@ public enum MediaAssembler {
             }
 
             #if canImport(AVFoundation)
-            let playability = MediaIntegrityValidator.checkAVFoundationPlayability(fileURL: publishedDestinationURL)
+            let playability = await MediaIntegrityValidator.checkAVFoundationPlayability(fileURL: publishedDestinationURL)
             let isPlayableConfirmed: Bool? = playability.isPlayable
             let details = playability.isPlayable
                 ? "Published file validated and confirmed playable: \(byteCount) bytes"
@@ -458,25 +458,133 @@ public enum MediaAssembler {
         let fileSize: Int64
     }
 
+    private static func extractPTSFromPacket(_ chunk: Data, offset: Int) -> UInt64? {
+        guard offset + 188 <= chunk.count, chunk[offset] == 0x47 else { return nil }
+        let byte1 = chunk[offset + 1]
+        let pusi = (byte1 & 0x40) != 0
+        guard pusi else { return nil }
+
+        let byte3 = chunk[offset + 3]
+        let afc = (byte3 >> 4) & 0x03
+        var payloadOffset = offset + 4
+        if afc == 0 || afc == 2 {
+            return nil
+        } else if afc == 3 {
+            let adaptationLength = Int(chunk[offset + 4])
+            payloadOffset = offset + 5 + adaptationLength
+        }
+        guard payloadOffset + 14 <= offset + 188 else { return nil }
+        guard chunk[payloadOffset] == 0x00,
+              chunk[payloadOffset + 1] == 0x00,
+              chunk[payloadOffset + 2] == 0x01 else { return nil }
+        let streamID = chunk[payloadOffset + 3]
+        guard (streamID >= 0xC0 && streamID <= 0xDF) || (streamID >= 0xE0 && streamID <= 0xEF) else {
+            return nil
+        }
+        let ptsDtsFlags = (chunk[payloadOffset + 7] >> 6) & 0x03
+        guard (ptsDtsFlags & 0x02) != 0 else { return nil }
+
+        let b0 = UInt64(chunk[payloadOffset + 9])
+        let b1 = UInt64(chunk[payloadOffset + 10])
+        let b2 = UInt64(chunk[payloadOffset + 11])
+        let b3 = UInt64(chunk[payloadOffset + 12])
+        let b4 = UInt64(chunk[payloadOffset + 13])
+        return ((b0 & 0x0E) << 29) |
+               ((b1 & 0xFF) << 22) |
+               ((b2 & 0xFE) << 14) |
+               ((b3 & 0xFF) << 7)  |
+               ((b4 & 0xFE) >> 1)
+    }
+
+    private static func readMPEGTSFirstPTS(fileURL: URL) -> UInt64? {
+        guard let handle = try? FileHandle(forReadingFrom: fileURL) else { return nil }
+        defer {
+            do {
+                try handle.close()
+            } catch {
+                PipelineLogger.shared.log("[MediaAssembler] Failed to close handle in readMPEGTSFirstPTS: \(error)")
+            }
+        }
+        let scanSize = 188 * 512
+        guard let chunk = try? handle.read(upToCount: scanSize), chunk.count >= 188 else { return nil }
+        let count = chunk.count / 188
+        for i in 0..<count {
+            if let pts = extractPTSFromPacket(chunk, offset: i * 188) {
+                return pts
+            }
+        }
+        return nil
+    }
+
+    private static func readMPEGTSLastPTS(fileURL: URL, fileSize: Int64) -> UInt64? {
+        guard let handle = try? FileHandle(forReadingFrom: fileURL) else { return nil }
+        defer {
+            do {
+                try handle.close()
+            } catch {
+                PipelineLogger.shared.log("[MediaAssembler] Failed to close handle in readMPEGTSLastPTS: \(error)")
+            }
+        }
+        let scanSize = Int64(188 * 512)
+        let offset = max(0, fileSize - scanSize)
+        do {
+            try handle.seek(toOffset: UInt64(offset))
+            guard let chunk = try handle.readToEnd(), chunk.count >= 188 else { return nil }
+            let count = chunk.count / 188
+            for i in stride(from: count - 1, through: 0, by: -1) {
+                if let pts = extractPTSFromPacket(chunk, offset: i * 188) {
+                    return pts
+                }
+            }
+        } catch {
+            return nil
+        }
+        return nil
+    }
+
+    private static func estimateMPEGTSDuration(fileURL: URL, asset: AVAsset? = nil) async -> Double {
+        if let asset {
+            if let dur = try? await asset.load(.duration), dur.isNumeric && dur.seconds > 0 {
+                return dur.seconds
+            }
+        }
+
+        guard let fileSize = FileManager.default.fileSize(atPath: fileURL.path), fileSize >= 188 else {
+            return 10.0
+        }
+
+        let firstPTS = readMPEGTSFirstPTS(fileURL: fileURL)
+        let lastPTS = readMPEGTSLastPTS(fileURL: fileURL, fileSize: fileSize)
+        if let first = firstPTS, let last = lastPTS, last > first {
+            let dur = Double(last - first) / 90000.0
+            if dur > 0.05 && dur < 86400.0 {
+                return dur
+            }
+        }
+
+        let estimated = Double(fileSize * 8) / 2_000_000.0
+        return max(1.0, min(estimated, 14400.0))
+    }
+
     private static func loadTrackAsset(
         sourceURL: URL,
         kind: MediaAssemblyTrackKind,
         container: MediaAssemblyContainer,
         temporaryDirectoryURL: URL
-    ) -> LoadedSourceTrack {
+    ) async -> LoadedSourceTrack {
         let fileManager = FileManager.default
         let size = fileManager.fileSize(atPath: sourceURL.path) ?? 0
         let directAsset = AVURLAsset(url: sourceURL)
-        let sema = DispatchSemaphore(value: 0)
-        directAsset.loadValuesAsynchronously(forKeys: ["tracks", "playable", "duration"]) {
-            sema.signal()
-        }
-        _ = sema.wait(timeout: .now() + 5.0)
+        _ = try? await directAsset.load(.tracks, .playable, .duration)
 
         var manifestURL: URL? = nil
         var targetAsset: AVAsset = directAsset
 
-        if container == .mpegTS {
+        let directTracks = (try? await directAsset.load(.tracks)) ?? []
+        if container == .mpegTS && directTracks.isEmpty {
+            let estimatedDuration = await estimateMPEGTSDuration(fileURL: sourceURL, asset: directAsset)
+            let targetDuration = max(1, Int(ceil(estimatedDuration)))
+
             let m3u8URL = temporaryDirectoryURL
                 .appendingPathComponent("manifest-\(kind.rawValue)-\(UUID().uuidString).m3u8", isDirectory: false)
             let tempKeyURL = temporaryDirectoryURL.appendingPathComponent("key.bin")
@@ -494,9 +602,9 @@ public enum MediaAssembler {
             let m3u8Content = """
             #EXTM3U
             #EXT-X-VERSION:3
-            #EXT-X-TARGETDURATION:7200
+            #EXT-X-TARGETDURATION:\(targetDuration)
             #EXT-X-MEDIA-SEQUENCE:0
-            \(keyTag)#EXTINF:7200.0,
+            \(keyTag)#EXTINF:\(String(format: "%.3f", estimatedDuration)),
             \(sourceURL.lastPathComponent)
             #EXT-X-ENDLIST
             """
@@ -507,24 +615,21 @@ public enum MediaAssembler {
                 PipelineLogger.shared.log("[MediaAssembler] Failed to write manifest wrapper: \(error)")
             }
 
-            if directAsset.tracks.isEmpty, let mURL = manifestURL {
+            if let mURL = manifestURL {
                 let playlistAsset = AVURLAsset(url: mURL)
-                let pSema = DispatchSemaphore(value: 0)
-                playlistAsset.loadValuesAsynchronously(forKeys: ["tracks", "playable", "duration"]) {
-                    pSema.signal()
-                }
-                _ = pSema.wait(timeout: .now() + 5.0)
-                if !playlistAsset.tracks.isEmpty {
+                _ = try? await playlistAsset.load(.tracks, .playable, .duration)
+                let pTracks = (try? await playlistAsset.load(.tracks)) ?? []
+                if !pTracks.isEmpty {
                     targetAsset = playlistAsset
                 }
             }
         }
 
-        var error: NSError? = nil
-        let trackStatus = targetAsset.statusOfValue(forKey: "tracks", error: &error)
-        let mediaTypes = targetAsset.tracks.map { $0.mediaType.rawValue }.joined(separator: ", ")
-        let duration = targetAsset.duration.isNumeric ? targetAsset.duration.seconds : -1.0
-        PipelineLogger.shared.log("[MediaAssembler] Loaded source track diagnostics: kind=\(kind.rawValue), file=\(sourceURL.lastPathComponent), size=\(size) bytes, container=\(container), tracks=\(targetAsset.tracks.count) [\(mediaTypes)], status=\(trackStatus.rawValue), duration=\(duration)s, error=\(error?.localizedDescription ?? "none")")
+        let loadedTracks = (try? await targetAsset.load(.tracks)) ?? []
+        let mediaTypes = loadedTracks.map { $0.mediaType.rawValue }.joined(separator: ", ")
+        let dur = (try? await targetAsset.load(.duration)) ?? .zero
+        let duration = dur.isNumeric ? dur.seconds : -1.0
+        PipelineLogger.shared.log("[MediaAssembler] Loaded source track diagnostics: kind=\(kind.rawValue), file=\(sourceURL.lastPathComponent), size=\(size) bytes, container=\(container), tracks=\(loadedTracks.count) [\(mediaTypes)], duration=\(duration)s")
 
         return LoadedSourceTrack(
             directAsset: directAsset,
@@ -652,7 +757,7 @@ public enum MediaAssembler {
     private static func assembleMultipleTracks(
         _ request: MediaAssemblyRequest,
         validation: MediaAssemblyValidationReport
-    ) throws -> MediaAssemblyOutput {
+    ) async throws -> MediaAssemblyOutput {
         let fileManager = FileManager.default
         do {
             try fileManager.createDirectory(
@@ -742,13 +847,15 @@ public enum MediaAssembler {
         }
 
         // Deep Source Diagnostics & AVAsset Asynchronous Loading
-        let loadedTracks = zip(request.tracks, sourceURLs).map { track, sourceURL in
-            loadTrackAsset(
+        var loadedTracks: [LoadedSourceTrack] = []
+        for (track, sourceURL) in zip(request.tracks, sourceURLs) {
+            let loaded = await loadTrackAsset(
                 sourceURL: sourceURL,
                 kind: track.kind,
                 container: request.container,
                 temporaryDirectoryURL: request.temporaryDirectoryURL
             )
+            loadedTracks.append(loaded)
         }
         for loaded in loadedTracks {
             if let mURL = loaded.manifestURL {
@@ -825,110 +932,117 @@ public enum MediaAssembler {
 
                 if canUseWriter && writer.startWriting() {
                     let muxQueue = DispatchQueue(label: "com.engine.media-assembler.muxQueue")
-                    let completionSemaphore = DispatchSemaphore(value: 0)
                     var hasFailed = false
                     var failureReason: String? = nil
                     var sessionStarted = false
                     var isCompleted = false
 
-                    let pumpSamples: @Sendable () -> Void = {
-                        muxQueue.async {
-                            guard !hasFailed, !isCompleted else { return }
-                            if writer.status == .failed || writer.status == .cancelled {
-                                hasFailed = true
-                                failureReason = writer.error?.localizedDescription ?? "Writer status: \(writer.status.rawValue)"
-                                isCompleted = true
-                                completionSemaphore.signal()
-                                return
+                    await withCheckedContinuation { continuation in
+                        var resumed = false
+                        let resumeOnce: @Sendable () -> Void = {
+                            if !resumed {
+                                resumed = true
+                                continuation.resume()
                             }
+                        }
 
-                            while true {
-                                // 1. Fetch next sample for active tracks needing one
-                                for ctx in contexts where !ctx.isFinished && ctx.nextSample == nil {
-                                    if let sample = ctx.output.copyNextSampleBuffer() {
-                                        ctx.nextSample = sample
-                                    } else {
-                                        ctx.isFinished = true
-                                        ctx.input.markAsFinished()
-                                        if ctx.reader.status == .failed {
-                                            let rErr = ctx.reader.error?.localizedDescription ?? "unknown"
-                                            PipelineLogger.shared.log("[MediaAssembler] Reader for \(ctx.kind.rawValue) failed: \(rErr)")
-                                            hasFailed = true
-                                            failureReason = "Reader for \(ctx.kind.rawValue) failed: \(rErr)"
-                                            isCompleted = true
-                                            completionSemaphore.signal()
-                                            return
+                        let pumpSamples: @Sendable () -> Void = {
+                            muxQueue.async {
+                                guard !hasFailed, !isCompleted else { return }
+                                if writer.status == .failed || writer.status == .cancelled {
+                                    hasFailed = true
+                                    failureReason = writer.error?.localizedDescription ?? "Writer status: \(writer.status.rawValue)"
+                                    isCompleted = true
+                                    resumeOnce()
+                                    return
+                                }
+
+                                while true {
+                                    // 1. Fetch next sample for active tracks needing one
+                                    for ctx in contexts where !ctx.isFinished && ctx.nextSample == nil {
+                                        if let sample = ctx.output.copyNextSampleBuffer() {
+                                            ctx.nextSample = sample
+                                        } else {
+                                            ctx.isFinished = true
+                                            ctx.input.markAsFinished()
+                                            if ctx.reader.status == .failed {
+                                                let rErr = ctx.reader.error?.localizedDescription ?? "unknown"
+                                                PipelineLogger.shared.log("[MediaAssembler] Reader for \(ctx.kind.rawValue) failed: \(rErr)")
+                                                hasFailed = true
+                                                failureReason = "Reader for \(ctx.kind.rawValue) failed: \(rErr)"
+                                                isCompleted = true
+                                                resumeOnce()
+                                                return
+                                            }
                                         }
                                     }
-                                }
 
-                                // 2. If all tracks are finished, complete
-                                if contexts.allSatisfy({ $0.isFinished }) {
-                                    isCompleted = true
-                                    completionSemaphore.signal()
-                                    return
-                                }
+                                    // 2. If all tracks are finished, complete
+                                    if contexts.allSatisfy({ $0.isFinished }) {
+                                        isCompleted = true
+                                        resumeOnce()
+                                        return
+                                    }
 
-                                // 3. Find active tracks with buffered sample
-                                let activeContexts = contexts.filter { !$0.isFinished && $0.nextSample != nil }
-                                if activeContexts.isEmpty {
-                                    break
-                                }
+                                    // 3. Find active tracks with buffered sample
+                                    let activeContexts = contexts.filter { !$0.isFinished && $0.nextSample != nil }
+                                    if activeContexts.isEmpty {
+                                        break
+                                    }
 
-                                // If some unfinished tracks have not buffered a sample yet, wait for them
-                                let unfinishedWithoutSample = contexts.filter { !$0.isFinished && $0.nextSample == nil }
-                                if !unfinishedWithoutSample.isEmpty {
-                                    break
-                                }
+                                    // If some unfinished tracks have not buffered a sample yet, wait for them
+                                    let unfinishedWithoutSample = contexts.filter { !$0.isFinished && $0.nextSample == nil }
+                                    if !unfinishedWithoutSample.isEmpty {
+                                        break
+                                    }
 
-                                // 4. Select the sample with earliest Presentation Timestamp (PTS)
-                                guard let nextCtx = activeContexts.min(by: { a, b in
-                                    guard let sampleA = a.nextSample, let sampleB = b.nextSample else { return false }
-                                    let timeA = CMSampleBufferGetPresentationTimeStamp(sampleA)
-                                    let timeB = CMSampleBufferGetPresentationTimeStamp(sampleB)
-                                    return CMTimeCompare(timeA, timeB) < 0
-                                }), let sampleToAppend = nextCtx.nextSample else {
-                                    break
-                                }
+                                    // 4. Select the sample with earliest Presentation Timestamp (PTS)
+                                    guard let nextCtx = activeContexts.min(by: { a, b in
+                                        guard let sampleA = a.nextSample, let sampleB = b.nextSample else { return false }
+                                        let timeA = CMSampleBufferGetPresentationTimeStamp(sampleA)
+                                        let timeB = CMSampleBufferGetPresentationTimeStamp(sampleB)
+                                        return CMTimeCompare(timeA, timeB) < 0
+                                    }), let sampleToAppend = nextCtx.nextSample else {
+                                        break
+                                    }
 
-                                // 5. Ensure the chosen input is ready for more media data
-                                guard nextCtx.input.isReadyForMoreMediaData else {
-                                    break
-                                }
+                                    // 5. Ensure the chosen input is ready for more media data
+                                    guard nextCtx.input.isReadyForMoreMediaData else {
+                                        break
+                                    }
 
-                                // 6. Start the session at the timestamp of the first appended sample
-                                let pts = CMSampleBufferGetPresentationTimeStamp(sampleToAppend)
-                                if !sessionStarted {
-                                    writer.startSession(atSourceTime: pts)
-                                    sessionStarted = true
-                                }
+                                    // 6. Start the session at the timestamp of the first appended sample
+                                    let pts = CMSampleBufferGetPresentationTimeStamp(sampleToAppend)
+                                    if !sessionStarted {
+                                        writer.startSession(atSourceTime: pts)
+                                        sessionStarted = true
+                                    }
 
-                                // 7. Append sample buffer
-                                if nextCtx.input.append(sampleToAppend) {
-                                    nextCtx.nextSample = nil
-                                } else {
-                                    let wErr = writer.error?.localizedDescription ?? "unknown writer error"
-                                    PipelineLogger.shared.log("[MediaAssembler] Failed appending \(nextCtx.kind.rawValue) sample: \(wErr)")
-                                    hasFailed = true
-                                    failureReason = wErr
-                                    isCompleted = true
-                                    completionSemaphore.signal()
-                                    return
+                                    // 7. Append sample buffer
+                                    if nextCtx.input.append(sampleToAppend) {
+                                        nextCtx.nextSample = nil
+                                    } else {
+                                        let wErr = writer.error?.localizedDescription ?? "unknown writer error"
+                                        PipelineLogger.shared.log("[MediaAssembler] Failed appending \(nextCtx.kind.rawValue) sample: \(wErr)")
+                                        hasFailed = true
+                                        failureReason = wErr
+                                        isCompleted = true
+                                        resumeOnce()
+                                        return
+                                    }
                                 }
                             }
                         }
-                    }
 
-                    for ctx in contexts {
-                        ctx.input.requestMediaDataWhenReady(on: muxQueue) {
-                            pumpSamples()
+                        for ctx in contexts {
+                            ctx.input.requestMediaDataWhenReady(on: muxQueue) {
+                                pumpSamples()
+                            }
                         }
+
+                        // Initial pump
+                        pumpSamples()
                     }
-
-                    // Initial pump
-                    pumpSamples()
-
-                    completionSemaphore.wait()
 
                     if hasFailed || (writer.status != .writing && writer.status != .completed) {
                         for ctx in contexts { ctx.reader.cancelReading() }
@@ -936,15 +1050,11 @@ public enum MediaAssembler {
                         let reason = failureReason ?? writer.error?.localizedDescription ?? "Muxing failed"
                         PipelineLogger.shared.log("[MediaAssembler] AVAssetWriter muxing failed: \(reason)")
                     } else {
-                        let finishSemaphore = DispatchSemaphore(value: 0)
-                        writer.finishWriting {
-                            finishSemaphore.signal()
-                        }
-                        finishSemaphore.wait()
+                        await writer.finishWriting()
 
                         if writer.status == .completed {
                             do {
-                                try validateMuxedOutput(
+                                try await validateMuxedOutput(
                                     temporaryOutput,
                                     expectedKinds: request.tracks.map(\.kind),
                                     writerError: writer.error
@@ -967,7 +1077,7 @@ public enum MediaAssembler {
 
             if !muxSucceeded {
                 PipelineLogger.shared.log("[MediaAssembler] AVAssetWriter muxing unsuccessful. Attempting AVAssetExportSession passthrough fallback...")
-                if exportMultipleTracksWithPassthrough(request: request, loadedTracks: loadedTracks, outputURL: temporaryOutput) {
+                if await exportMultipleTracksWithPassthrough(request: request, loadedTracks: loadedTracks, outputURL: temporaryOutput) {
                     PipelineLogger.shared.log("[MediaAssembler] AVAssetExportSession passthrough fallback succeeded.")
                     muxSucceeded = true
                 } else {
@@ -1067,7 +1177,7 @@ public enum MediaAssembler {
         _ url: URL,
         expectedKinds: [MediaAssemblyTrackKind],
         writerError: Error?
-    ) throws {
+    ) async throws {
         guard let size = FileManager.default.fileSize(atPath: url.path),
               size > 0 else {
             let reason = writerError?.localizedDescription ?? "Muxed output file is empty or missing"
@@ -1076,20 +1186,27 @@ public enum MediaAssembler {
         }
 
         let asset = AVURLAsset(url: url)
-        let sema = DispatchSemaphore(value: 0)
-        asset.loadValuesAsynchronously(forKeys: ["tracks", "duration", "playable"]) {
-            sema.signal()
+        let tracks: [AVAssetTrack]
+        let duration: CMTime
+        let isPlayable: Bool
+        do {
+            tracks = try await asset.load(.tracks)
+            duration = try await asset.load(.duration)
+            isPlayable = try await asset.load(.isPlayable)
+        } catch {
+            let reason = writerError?.localizedDescription ?? "Could not load muxed output properties: \(error.localizedDescription)"
+            PipelineLogger.shared.log("[MediaAssembler] validateMuxedOutput failed: \(reason)")
+            throw MediaAssemblyError.assetWriterFailed(reason: reason)
         }
-        _ = sema.wait(timeout: .now() + 5.0)
 
-        guard !asset.tracks.isEmpty else {
+        guard !tracks.isEmpty else {
             let reason = writerError?.localizedDescription ?? "Muxed output has no media tracks"
             PipelineLogger.shared.log("[MediaAssembler] validateMuxedOutput failed: \(reason)")
             throw MediaAssemblyError.assetWriterFailed(reason: reason)
         }
 
-        let hasVideo = !asset.tracks(withMediaType: .video).isEmpty
-        let hasAudio = !asset.tracks(withMediaType: .audio).isEmpty
+        let hasVideo = !tracks.filter { $0.mediaType == .video }.isEmpty
+        let hasAudio = !tracks.filter { $0.mediaType == .audio }.isEmpty
         if expectedKinds.contains(.video) && !hasVideo {
             let reason = writerError?.localizedDescription ?? "Muxed output is missing expected video track"
             PipelineLogger.shared.log("[MediaAssembler] validateMuxedOutput failed: \(reason)")
@@ -1100,18 +1217,16 @@ public enum MediaAssembler {
             PipelineLogger.shared.log("[MediaAssembler] validateMuxedOutput failed: \(reason)")
             throw MediaAssemblyError.assetWriterFailed(reason: reason)
         }
-        guard asset.duration.isNumeric && asset.duration.seconds > 0 else {
+        guard duration.isNumeric && duration.seconds > 0 else {
             let reason = writerError?.localizedDescription ?? "Muxed output duration is non-numeric or zero"
             PipelineLogger.shared.log("[MediaAssembler] validateMuxedOutput failed: \(reason)")
             throw MediaAssemblyError.assetWriterFailed(reason: reason)
         }
 
-        if #available(macOS 12.0, iOS 15.0, *) {
-            guard asset.isPlayable else {
-                let reason = writerError?.localizedDescription ?? "Muxed output is not playable"
-                PipelineLogger.shared.log("[MediaAssembler] validateMuxedOutput failed: \(reason)")
-                throw MediaAssemblyError.assetWriterFailed(reason: reason)
-            }
+        guard isPlayable else {
+            let reason = writerError?.localizedDescription ?? "Muxed output is not playable"
+            PipelineLogger.shared.log("[MediaAssembler] validateMuxedOutput failed: \(reason)")
+            throw MediaAssemblyError.assetWriterFailed(reason: reason)
         }
     }
 
@@ -1119,7 +1234,7 @@ public enum MediaAssembler {
         request: MediaAssemblyRequest,
         loadedTracks: [LoadedSourceTrack],
         outputURL: URL
-    ) -> Bool {
+    ) async -> Bool {
         let composition = AVMutableComposition()
         for (track, loaded) in zip(request.tracks, loadedTracks) {
             let mediaType: AVMediaType = track.kind == .video ? .video : .audio
@@ -1162,15 +1277,15 @@ public enum MediaAssembler {
             exportSession.outputFileType = .mp4
             exportSession.shouldOptimizeForNetworkUse = true
 
-            let sema = DispatchSemaphore(value: 0)
-            exportSession.exportAsynchronously {
-                sema.signal()
+            await withCheckedContinuation { continuation in
+                exportSession.exportAsynchronously {
+                    continuation.resume()
+                }
             }
-            sema.wait()
 
             if exportSession.status == .completed && FileManager.default.fileExists(atPath: outputURL.path) {
                 let size = FileManager.default.fileSize(atPath: outputURL.path) ?? 0
-                if size > 0 && validateRemuxedMP4(outputURL) {
+                if size > 0 && await validateRemuxedMP4(outputURL) {
                     PipelineLogger.shared.log("[MediaAssembler] Passthrough export succeeded with preset \(preset): \(size) bytes")
                     return true
                 }
@@ -1181,34 +1296,32 @@ public enum MediaAssembler {
         return false
     }
 
-    private static func validateRemuxedMP4(_ url: URL) -> Bool {
+    private static func validateRemuxedMP4(_ url: URL) async -> Bool {
         let fileManager = FileManager.default
         guard let size = fileManager.fileSize(atPath: url.path), size > 0 else {
             return false
         }
         let asset = AVURLAsset(url: url)
-        let sema = DispatchSemaphore(value: 0)
-        asset.loadValuesAsynchronously(forKeys: ["tracks", "duration"]) {
-            sema.signal()
-        }
-        _ = sema.wait(timeout: .now() + 3.0)
-        guard !asset.tracks.isEmpty else {
+        do {
+            let tracks = try await asset.load(.tracks)
+            guard !tracks.isEmpty else { return false }
+            let duration = try await asset.load(.duration)
+            guard duration.isNumeric && duration.seconds > 0 else { return false }
+            return true
+        } catch {
             return false
         }
-        guard asset.duration.isNumeric && asset.duration.seconds > 0 else {
-            return false
-        }
-        return true
     }
-
-    public static func remuxMPEGTSFileToMP4(sourceTSURL: URL, destinationMP4URL: URL) throws {
+    public static func remuxMPEGTSFileToMP4(sourceTSURL: URL, destinationMP4URL: URL) async throws {
         let fileManager = FileManager.default
         let tempDir = destinationMP4URL.deletingLastPathComponent()
         let tempMP4 = tempDir
             .appendingPathComponent("remux-\(UUID().uuidString).mp4", isDirectory: false)
         defer {
             do {
-                try fileManager.removeItem(at: tempMP4)
+                if fileManager.fileExists(atPath: tempMP4.path) {
+                    try fileManager.removeItem(at: tempMP4)
+                }
             } catch {
                 PipelineLogger.shared.log("[MediaAssembler] Failed to remove tempMP4 \(tempMP4.path): \(error)")
             }
@@ -1261,49 +1374,51 @@ public enum MediaAssembler {
         let keyTag = fileManager.fileExists(atPath: tempKeyURL.path)
             ? "#EXT-X-KEY:METHOD=SAMPLE-AES,URI=\"key.bin\"\n"
             : ""
-        let m3u8Content = """
-        #EXTM3U
-        #EXT-X-VERSION:3
-        #EXT-X-TARGETDURATION:7200
-        #EXT-X-MEDIA-SEQUENCE:0
-        \(keyTag)#EXTINF:7200.0,
-        \(tsFileURL.lastPathComponent)
-        #EXT-X-ENDLIST
-        """
-        do {
-            try m3u8Content.write(to: playlistURL, atomically: true, encoding: .utf8)
-        } catch {
-            PipelineLogger.shared.log("[MediaAssembler] Failed to write playlistURL: \(error)")
-        }
-        defer {
-            do {
-                try fileManager.removeItem(at: playlistURL)
-            } catch {
-                PipelineLogger.shared.log("[MediaAssembler] Failed to remove playlistURL \(playlistURL.path): \(error)")
-            }
-            do {
-                try fileManager.removeItem(at: tempKeyURL)
-            } catch {
-                PipelineLogger.shared.log("[MediaAssembler] Failed to remove tempKeyURL \(tempKeyURL.path): \(error)")
-            }
-        }
 
         let tsAsset = AVURLAsset(url: tsFileURL)
-        let loadSema = DispatchSemaphore(value: 0)
-        tsAsset.loadValuesAsynchronously(forKeys: ["tracks", "playable", "duration"]) {
-            loadSema.signal()
-        }
-        _ = loadSema.wait(timeout: .now() + 5.0)
+        _ = try? await tsAsset.load(.tracks, .playable, .duration)
+        let tsTracks = (try? await tsAsset.load(.tracks)) ?? []
 
-        var targetAsset = tsAsset
-        if tsAsset.tracks.isEmpty {
-            let playlistAsset = AVURLAsset(url: playlistURL)
-            let pSema = DispatchSemaphore(value: 0)
-            playlistAsset.loadValuesAsynchronously(forKeys: ["tracks", "playable", "duration"]) {
-                pSema.signal()
+        var targetAsset: AVAsset = tsAsset
+        if tsTracks.isEmpty {
+            let estimatedDuration = await estimateMPEGTSDuration(fileURL: tsFileURL, asset: tsAsset)
+            let targetDuration = max(1, Int(ceil(estimatedDuration)))
+
+            let m3u8Content = """
+            #EXTM3U
+            #EXT-X-VERSION:3
+            #EXT-X-TARGETDURATION:\(targetDuration)
+            #EXT-X-MEDIA-SEQUENCE:0
+            \(keyTag)#EXTINF:\(String(format: "%.3f", estimatedDuration)),
+            \(tsFileURL.lastPathComponent)
+            #EXT-X-ENDLIST
+            """
+            do {
+                try m3u8Content.write(to: playlistURL, atomically: true, encoding: .utf8)
+            } catch {
+                PipelineLogger.shared.log("[MediaAssembler] Failed to write playlistURL: \(error)")
             }
-            _ = pSema.wait(timeout: .now() + 5.0)
-            if !playlistAsset.tracks.isEmpty {
+            defer {
+                do {
+                    if fileManager.fileExists(atPath: playlistURL.path) {
+                        try fileManager.removeItem(at: playlistURL)
+                    }
+                } catch {
+                    PipelineLogger.shared.log("[MediaAssembler] Failed to remove playlistURL \(playlistURL.path): \(error)")
+                }
+                do {
+                    if fileManager.fileExists(atPath: tempKeyURL.path) {
+                        try fileManager.removeItem(at: tempKeyURL)
+                    }
+                } catch {
+                    PipelineLogger.shared.log("[MediaAssembler] Failed to remove tempKeyURL \(tempKeyURL.path): \(error)")
+                }
+            }
+
+            let playlistAsset = AVURLAsset(url: playlistURL)
+            _ = try? await playlistAsset.load(.tracks, .playable, .duration)
+            let pTracks = (try? await playlistAsset.load(.tracks)) ?? []
+            if !pTracks.isEmpty {
                 targetAsset = playlistAsset
             }
         }
@@ -1342,14 +1457,14 @@ public enum MediaAssembler {
             exportSession.outputURL = tempMP4
             exportSession.outputFileType = .mp4
             exportSession.shouldOptimizeForNetworkUse = true
-            let sema = DispatchSemaphore(value: 0)
-            exportSession.exportAsynchronously {
-                sema.signal()
+            await withCheckedContinuation { continuation in
+                exportSession.exportAsynchronously {
+                    continuation.resume()
+                }
             }
-            sema.wait()
             if exportSession.status == .completed && fileManager.fileExists(atPath: tempMP4.path) {
                 let size = fileManager.fileSize(atPath: tempMP4.path) ?? 0
-                if size > 0 && validateRemuxedMP4(tempMP4) {
+                if size > 0 && await validateRemuxedMP4(tempMP4) {
                     PipelineLogger.shared.log("[MediaAssembler] Remux Attempt 1 succeeded: \(size) bytes")
                     didSucceed = true
                 } else {
@@ -1378,14 +1493,14 @@ public enum MediaAssembler {
                 exportSession.outputURL = tempMP4
                 exportSession.outputFileType = .mp4
                 exportSession.shouldOptimizeForNetworkUse = true
-                let sema = DispatchSemaphore(value: 0)
-                exportSession.exportAsynchronously {
-                    sema.signal()
+                await withCheckedContinuation { continuation in
+                    exportSession.exportAsynchronously {
+                        continuation.resume()
+                    }
                 }
-                sema.wait()
                 if exportSession.status == .completed && fileManager.fileExists(atPath: tempMP4.path) {
                     let size = fileManager.fileSize(atPath: tempMP4.path) ?? 0
-                    if size > 0 && validateRemuxedMP4(tempMP4) {
+                    if size > 0 && await validateRemuxedMP4(tempMP4) {
                         PipelineLogger.shared.log("[MediaAssembler] Remux Attempt 2 succeeded: \(size) bytes")
                         didSucceed = true
                     } else {
@@ -1455,39 +1570,57 @@ public enum MediaAssembler {
                         reader.cancelReading()
                     } else {
                         writer.startSession(atSourceTime: .zero)
-                        let group = DispatchGroup()
                         let state = MuxState()
 
-                        for (output, input, kind) in outputsAndInputs {
-                            group.enter()
-                            input.requestMediaDataWhenReady(on: DispatchQueue(label: "remux-track-\(UUID().uuidString)")) {
-                                while input.isReadyForMoreMediaData {
-                                    guard let sample = output.copyNextSampleBuffer() else {
-                                        input.markAsFinished()
-                                        group.leave()
-                                        return
-                                    }
-                                    if input.append(sample) {
-                                        state.lock.lock()
-                                        state.samplesAppended += 1
-                                        state.lock.unlock()
-                                    } else {
-                                        let wErr = writer.error?.localizedDescription ?? "unknown writer error"
-                                        PipelineLogger.shared.log("[MediaAssembler] Remux Attempt 3: failed appending \(kind.rawValue) sample: \(wErr)")
-                                        state.lock.lock()
-                                        state.appendFailed = true
-                                        state.lastError = wErr
-                                        state.lock.unlock()
-                                        reader.cancelReading()
-                                        input.markAsFinished()
-                                        group.leave()
-                                        return
+                        await withCheckedContinuation { continuation in
+                            var resumed = false
+                            let pending = outputsAndInputs.count
+                            var completed = 0
+                            let countLock = NSLock()
+
+                            for (output, input, kind) in outputsAndInputs {
+                                input.requestMediaDataWhenReady(on: DispatchQueue(label: "remux-track-\(UUID().uuidString)")) {
+                                    while input.isReadyForMoreMediaData {
+                                        guard let sample = output.copyNextSampleBuffer() else {
+                                            input.markAsFinished()
+                                            countLock.lock()
+                                            completed += 1
+                                            let isAllDone = completed >= pending
+                                            countLock.unlock()
+                                            if isAllDone && !resumed {
+                                                resumed = true
+                                                continuation.resume()
+                                            }
+                                            return
+                                        }
+                                        if input.append(sample) {
+                                            state.lock.lock()
+                                            state.samplesAppended += 1
+                                            state.lock.unlock()
+                                        } else {
+                                            let wErr = writer.error?.localizedDescription ?? "unknown writer error"
+                                            PipelineLogger.shared.log("[MediaAssembler] Remux Attempt 3: failed appending \(kind.rawValue) sample: \(wErr)")
+                                            state.lock.lock()
+                                            state.appendFailed = true
+                                            state.lastError = wErr
+                                            state.lock.unlock()
+                                            reader.cancelReading()
+                                            input.markAsFinished()
+                                            countLock.lock()
+                                            completed += 1
+                                            let isAllDone = completed >= pending
+                                            countLock.unlock()
+                                            if isAllDone && !resumed {
+                                                resumed = true
+                                                continuation.resume()
+                                            }
+                                            return
+                                        }
                                     }
                                 }
                             }
                         }
 
-                        group.wait()
                         state.lock.lock()
                         let failed = state.appendFailed
                         let samples = state.samplesAppended
@@ -1495,12 +1628,10 @@ public enum MediaAssembler {
                         state.lock.unlock()
 
                         if !failed && samples > 0 {
-                            let finishSem = DispatchSemaphore(value: 0)
-                            writer.finishWriting { finishSem.signal() }
-                            finishSem.wait()
+                            await writer.finishWriting()
                             if writer.status == .completed && fileManager.fileExists(atPath: tempMP4.path) {
                                 let size = fileManager.fileSize(atPath: tempMP4.path) ?? 0
-                                if size > 0 && validateRemuxedMP4(tempMP4) {
+                                if size > 0 && await validateRemuxedMP4(tempMP4) {
                                     PipelineLogger.shared.log("[MediaAssembler] Remux Attempt 3 succeeded: \(size) bytes, \(samples) samples appended")
                                     didSucceed = true
                                 } else {
@@ -1707,35 +1838,7 @@ public enum MediaAssembler {
     }
 
     private static func validateMPEGTSFile(_ url: URL) -> Bool {
-        guard let size = FileManager.default.fileSize(atPath: url.path),
-              size > 0,
-              size % 188 == 0,
-              let handle = try? FileHandle(forReadingFrom: url) else {
-            return false
-        }
-        defer {
-            do {
-                try handle.close()
-            } catch {
-                PipelineLogger.shared.log("[MediaAssembler] Failed to close handle: \(error)")
-            }
-        }
-        let packetsPerBuffer = 256
-        let bufferSize = 188 * packetsPerBuffer
-        do {
-            while true {
-                let chunk = try handle.read(upToCount: bufferSize) ?? Data()
-                if chunk.isEmpty { break }
-                guard chunk.count % 188 == 0 else { return false }
-                let packetCount = chunk.count / 188
-                for i in 0..<packetCount {
-                    guard chunk[i * 188] == 0x47 else { return false }
-                }
-            }
-            return true
-        } catch {
-            return false
-        }
+        MediaIntegrityValidator.validateMPEGTS(fileURL: url).isConfirmedValid
     }
 
     private static func validateISOBaseMediaFile(
@@ -1795,6 +1898,6 @@ public struct FileMediaAssemblyExecutor: MediaAssemblyExecutor, Sendable {
     public init() {}
 
     public func assemble(_ request: MediaAssemblyRequest) async throws -> MediaAssemblyOutput {
-        try MediaAssembler.assemble(request)
+        try await MediaAssembler.assemble(request)
     }
 }
