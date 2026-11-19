@@ -1026,7 +1026,7 @@ public enum MediaAssembler {
         return true
     }
 
-    private static func remuxMPEGTSFileToMP4(sourceTSURL: URL, destinationMP4URL: URL) throws {
+    public static func remuxMPEGTSFileToMP4(sourceTSURL: URL, destinationMP4URL: URL) throws {
         let fileManager = FileManager.default
         let tempDir = destinationMP4URL.deletingLastPathComponent()
         let tempMP4 = tempDir
