@@ -210,9 +210,12 @@ public final class QuickAccessStore: @unchecked Sendable {
             }
         }
 
-        if let data = defaults.data(forKey: Self.userDefaultsKey),
-           let decoded = try? JSONDecoder().decode([QuickAccessShortcut].self, from: data) {
-            return decoded.sorted { $0.displayOrder < $1.displayOrder }
+        if let data = defaults.data(forKey: Self.userDefaultsKey) {
+            if let payload = try? JSONDecoder().decode(QuickAccessPayload.self, from: data) {
+                return payload.shortcuts.sorted { $0.displayOrder < $1.displayOrder }
+            } else if let legacy = try? JSONDecoder().decode([QuickAccessShortcut].self, from: data) {
+                return legacy.sorted { $0.displayOrder < $1.displayOrder }
+            }
         }
 
         return Self.defaultShortcuts

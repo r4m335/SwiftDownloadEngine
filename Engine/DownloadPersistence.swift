@@ -267,7 +267,19 @@ public struct DownloadRecord: Codable, Equatable, Identifiable, Sendable, Schema
         self.resolvedURL = try container.decodeIfPresent(URL.self, forKey: .resolvedURL)
         self.destinationURL = try container.decode(URL.self, forKey: .destinationURL)
         self.totalSize = try container.decode(Int64.self, forKey: .totalSize)
-        self.state = try container.decode(DownloadState.self, forKey: .state)
+        if let stateString = try? container.decode(String.self, forKey: .state) {
+            switch stateString.lowercased() {
+            case "pending": self.state = .pending
+            case "probing": self.state = .probing
+            case "downloading": self.state = .downloading
+            case "paused": self.state = .paused
+            case "completed": self.state = .completed
+            case "cancelled": self.state = .cancelled
+            default: self.state = .failed(reason: stateString)
+            }
+        } else {
+            self.state = try container.decode(DownloadState.self, forKey: .state)
+        }
         self.storageMode = try container.decode(DownloadStorageMode.self, forKey: .storageMode)
         self.transportPolicy = try container.decodeIfPresent(HTTPTransportPolicy.self, forKey: .transportPolicy) ?? .foreground
         self.networkPolicy = try container.decodeIfPresent(DownloadNetworkPolicy.self, forKey: .networkPolicy) ?? .anyNetwork
