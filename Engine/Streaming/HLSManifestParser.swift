@@ -387,12 +387,6 @@ public enum HLSManifestParser {
         // (such as signed CDN tokens, HMAC, session auth, or expiration timestamps),
         // preserve the master URL's query parameters so child variants do not lose authorization.
         if resolved.query == nil, let baseQuery = baseURL.query, !baseQuery.isEmpty {
-            if var components = URLComponents(url: resolved, resolvingAgainstBaseURL: false) {
-                components.query = baseQuery
-                if let withQuery = components.url {
-                    return withQuery
-                }
-            }
             let sep = resolved.absoluteString.contains("?") ? "&" : "?"
             if let withQuery = URL(string: "\(resolved.absoluteString)\(sep)\(baseQuery)") {
                 return withQuery
@@ -413,9 +407,8 @@ public enum HLSManifestParser {
             throw ManifestParserError.invalidURL
         }
         if resolved.query == nil, let baseQuery = baseURL.query, !baseQuery.isEmpty {
-            var components = URLComponents(url: resolved, resolvingAgainstBaseURL: false)
-            components?.query = baseQuery
-            if let withQuery = components?.url {
+            let sep = resolved.absoluteString.contains("?") ? "&" : "?"
+            if let withQuery = URL(string: "\(resolved.absoluteString)\(sep)\(baseQuery)") {
                 resolved = withQuery
             }
         }
@@ -425,9 +418,26 @@ public enum HLSManifestParser {
         return resolved
     }
 
+    private static func extractHost(from url: URL) -> String? {
+        if let host = url.host, !host.isEmpty {
+            return host
+        }
+        if let compHost = URLComponents(url: url, resolvingAgainstBaseURL: false)?.host, !compHost.isEmpty {
+            return compHost
+        }
+        let str = url.absoluteString
+        guard let schemeEnd = str.range(of: "://")?.upperBound else { return nil }
+        let afterScheme = str[schemeEnd...]
+        let authority = afterScheme.prefix { $0 != "/" && $0 != "?" && $0 != "#" }
+        let hostPart = authority.split(separator: "@").last ?? authority[...]
+        let hostWithoutPort = hostPart.split(separator: ":").first ?? hostPart[...]
+        let trimmed = hostWithoutPort.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
     private static func isHTTPURL(_ url: URL) -> Bool {
         guard let scheme = url.scheme?.lowercased(), (scheme == "http" || scheme == "https"),
-              let host = url.host, !host.isEmpty else { return false }
+              let host = extractHost(from: url), !host.isEmpty else { return false }
         return true
     }
 

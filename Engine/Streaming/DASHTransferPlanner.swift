@@ -1052,12 +1052,29 @@ public enum DASHTransferPlanner {
         return total
     }
 
+    private static func extractHost(from url: URL) -> String? {
+        if let host = url.host, !host.isEmpty {
+            return host
+        }
+        if let compHost = URLComponents(url: url, resolvingAgainstBaseURL: false)?.host, !compHost.isEmpty {
+            return compHost
+        }
+        let str = url.absoluteString
+        guard let schemeEnd = str.range(of: "://")?.upperBound else { return nil }
+        let afterScheme = str[schemeEnd...]
+        let authority = afterScheme.prefix { $0 != "/" && $0 != "?" && $0 != "#" }
+        let hostPart = authority.split(separator: "@").last ?? authority[...]
+        let hostWithoutPort = hostPart.split(separator: ":").first ?? hostPart[...]
+        let trimmed = hostWithoutPort.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
     private static func validatedURL(
         _ rawURL: URL,
         against baseURL: URL,
         limits: DASHTransferPlanningLimits
     ) throws -> URL {
-        let resolved: URL
+        var resolved: URL?
         if rawURL.scheme != nil {
             resolved = rawURL
         } else if let combined = URL(string: rawURL.relativeString, relativeTo: baseURL)?.absoluteURL {
@@ -1065,26 +1082,29 @@ public enum DASHTransferPlanner {
         } else if let combined = URL(string: rawURL.absoluteString, relativeTo: baseURL)?.absoluteURL {
             resolved = combined
         } else {
-            throw DASHVODTransferPlanError.invalidResourceURL
-        }
-
-        guard resolved.absoluteString.utf8.count <= limits.maxExpandedURLLength,
-              let scheme = resolved.scheme?.lowercased(),
-              (scheme == "http" || scheme == "https"),
-              let host = resolved.host, !host.isEmpty,
-              resolved.user == nil,
-              resolved.password == nil else {
-            throw DASHVODTransferPlanError.invalidResourceURL
-        }
-
-        if resolved.fragment != nil {
-            if var components = URLComponents(url: resolved, resolvingAgainstBaseURL: false) {
-                components.fragment = nil
-                if let sanitized = components.url {
-                    return sanitized
-                }
+            let baseStr = baseURL.absoluteString
+            let baseWithoutQuery = baseStr.components(separatedBy: "?").first ?? baseStr
+            let lastSlash = baseWithoutQuery.lastIndex(of: "/")
+            let basePath = lastSlash.map { String(baseWithoutQuery[..<$0]) } ?? baseWithoutQuery
+            let rel = rawURL.relativeString.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            if let manual = URL(string: "\(basePath)/\(rel)")?.absoluteURL {
+                resolved = manual
             }
-            let str = resolved.absoluteString
+        }
+
+        guard let finalResolved = resolved else {
+            throw DASHVODTransferPlanError.invalidResourceURL
+        }
+
+        guard finalResolved.absoluteString.utf8.count <= limits.maxExpandedURLLength,
+              let scheme = finalResolved.scheme?.lowercased(),
+              (scheme == "http" || scheme == "https"),
+              let host = extractHost(from: finalResolved), !host.isEmpty else {
+            throw DASHVODTransferPlanError.invalidResourceURL
+        }
+
+        if finalResolved.fragment != nil {
+            let str = finalResolved.absoluteString
             if let hashIndex = str.firstIndex(of: "#") {
                 let stripped = String(str[..<hashIndex])
                 if let sanitized = URL(string: stripped) {
@@ -1093,7 +1113,7 @@ public enum DASHTransferPlanner {
             }
         }
 
-        return resolved
+        return finalResolved
     }
 
     private static func adding(_ lhs: Int64, _ rhs: Int64) throws -> Int64 {

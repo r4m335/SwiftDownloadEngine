@@ -1559,10 +1559,9 @@ public actor StreamingDownloadOrchestrator {
             PipelineLogger.shared.log("[HLS Pipeline] Direct audio rendition match found: \(audioURI.absoluteString)")
             let effectiveAudioURI: URL
             if (audioURI.query == nil || audioURI.query?.isEmpty == true),
-               let parentQuery = baseURL.query ?? candidate.url.query, !parentQuery.isEmpty,
-               var components = URLComponents(url: audioURI, resolvingAgainstBaseURL: false) {
-                components.query = parentQuery
-                effectiveAudioURI = components.url ?? audioURI
+               let parentQuery = baseURL.query ?? candidate.url.query, !parentQuery.isEmpty {
+                let sep = audioURI.absoluteString.contains("?") ? "&" : "?"
+                effectiveAudioURI = URL(string: "\(audioURI.absoluteString)\(sep)\(parentQuery)") ?? audioURI
             } else {
                 effectiveAudioURI = audioURI
             }
@@ -1795,7 +1794,7 @@ public actor StreamingDownloadOrchestrator {
                     continue
                 }
                 lastPlanningError = error
-                PipelineLogger.shared.log("[HLS Pipeline] \(variantDesc) planning failed: \(error.localizedDescription). Trying next variant...")
+                PipelineLogger.shared.log("[HLS Pipeline] \(variantDesc) planning failed: \(error.localizedDescription) (\(error)). Trying next variant...")
                 continue
             }
 
@@ -1807,14 +1806,8 @@ public actor StreamingDownloadOrchestrator {
                 let audioFinalURI: URL
                 if (audioURI.query == nil || audioURI.query?.isEmpty == true),
                    let parentQuery = subResponse.finalURL.query ?? candidate.url.query, !parentQuery.isEmpty {
-                    if var components = URLComponents(url: audioURI, resolvingAgainstBaseURL: false) {
-                        components.query = parentQuery
-                        audioFinalURI = components.url ?? URL(string: "\(audioURI.absoluteString)?\(parentQuery)") ?? audioURI
-                    } else if let fallback = URL(string: "\(audioURI.absoluteString)?\(parentQuery)") {
-                        audioFinalURI = fallback
-                    } else {
-                        audioFinalURI = audioURI
-                    }
+                    let sep = audioURI.absoluteString.contains("?") ? "&" : "?"
+                    audioFinalURI = URL(string: "\(audioURI.absoluteString)\(sep)\(parentQuery)") ?? audioURI
                 } else {
                     audioFinalURI = audioURI
                 }

@@ -242,4 +242,33 @@ final class HLSTransferPlannerTests: XCTestCase {
         XCTAssertEqual(plan.resources[0].url.absoluteString, "https://valipl10.cp31.ott.cibntv.net/video_00001.mp4?ccode=0597&vid=XNjU3OTAxNjgxMg%3D%3D&vkey=B4b8b53c6193734983852d2ae09b53ec2")
         XCTAssertTrue(plan.resources[1].url.absoluteString.hasPrefix("https://goplay.su/stream/video_00002.mp4"))
     }
+
+    func testVODPlanWithUnderscoreHostUserinfoAndEncryptedKeyPreservation() throws {
+        let complexBaseURL = URL(string: "https://stream_yk.goplay.su/stream/playlist.m3u8?token=xyz//123==&sig=abc/def")!
+
+        let playlist = """
+        #EXTM3U
+        #EXT-X-PLAYLIST-TYPE:VOD
+        #EXT-X-KEY:METHOD=AES-128,URI="key.bin"
+        #EXTINF:4.0,
+        https://token_auth@cdn_node1.goplay.su/segment_001.ts
+        #EXTINF:4.0,
+        segment_002.ts
+        #EXT-X-ENDLIST
+        """
+
+        let manifest = try HLSManifestParser.parse(playlist, baseURL: complexBaseURL)
+        let plan = try HLSTransferPlanner.makeVODPlan(from: manifest)
+
+        XCTAssertEqual(plan.resources.count, 3)
+        // Key resource
+        XCTAssertEqual(plan.resources[0].kind, .encryptionKey)
+        XCTAssertTrue(plan.resources[0].url.absoluteString.contains("token=xyz//123=="))
+        // Segment 1 with underscore host and userinfo
+        XCTAssertEqual(plan.resources[1].kind, .mediaSegment)
+        XCTAssertEqual(plan.resources[1].url.absoluteString, "https://token_auth@cdn_node1.goplay.su/segment_001.ts")
+        // Segment 2 relative resolution
+        XCTAssertEqual(plan.resources[2].kind, .mediaSegment)
+        XCTAssertTrue(plan.resources[2].url.absoluteString.hasPrefix("https://stream_yk.goplay.su/stream/segment_002.ts"))
+    }
 }
