@@ -440,6 +440,7 @@ final class StreamQualityPickerTests: XCTestCase {
         XCTAssertEqual(ranked.first?.resolution?.height, 720)
     }
 
+    @MainActor
     func testPlayerBackendSelectionForNetworkStream() {
         let engine = LIDPlaybackEngine()
         let mp4URL = URL(string: "https://cdn.example.com/video.mp4")!
