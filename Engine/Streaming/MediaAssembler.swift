@@ -648,7 +648,8 @@ public enum MediaAssembler {
                 }
                 reader.add(output)
 
-                let input = AVAssetWriterInput(mediaType: mediaType, outputSettings: nil)
+                let formatDesc = (chosenTrack.formatDescriptions as? [CMFormatDescription])?.first
+                let input = AVAssetWriterInput(mediaType: mediaType, outputSettings: nil, sourceFormatHint: formatDesc)
                 input.expectsMediaDataInRealTime = false
                 guard writer.canAdd(input) else {
                     let msg = "Cannot add writer input for \(track.kind.rawValue)"
