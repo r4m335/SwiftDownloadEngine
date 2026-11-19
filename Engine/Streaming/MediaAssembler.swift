@@ -781,7 +781,7 @@ public enum MediaAssembler {
 
                     completionSemaphore.wait()
 
-                    if hasFailed || writer.status != .completed {
+                    if hasFailed || (writer.status != .writing && writer.status != .completed) {
                         for ctx in contexts { ctx.reader.cancelReading() }
                         writer.cancelWriting()
                         let reason = failureReason ?? writer.error?.localizedDescription ?? "Muxing failed"

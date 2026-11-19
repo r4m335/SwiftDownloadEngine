@@ -244,7 +244,7 @@ final class StreamingDownloadOrchestratorTests: XCTestCase {
         )
 
         XCTAssertEqual(result.container, .mpegTS)
-        XCTAssertEqual(result.byteCount, 376)
+        XCTAssertEqual(result.byteCount, Int64(RealMediaFixtures.mpegTSData.count))
         XCTAssertTrue(FileManager.default.fileExists(atPath: output.path))
     }
 
