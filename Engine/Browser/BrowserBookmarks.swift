@@ -89,9 +89,32 @@ public final class BrowserBookmarkStore: @unchecked Sendable {
         load()
     }
 
-    private struct BookmarkStoragePayload: Codable {
-        var folders: [BrowserBookmarkFolder]
-        var bookmarks: [BrowserBookmarkItem]
+    public struct BookmarkStoragePayload: Codable, SchemaVersioned {
+        public static let currentSchemaVersion: Int = 1
+        public var schemaVersion: Int
+        public var folders: [BrowserBookmarkFolder]
+        public var bookmarks: [BrowserBookmarkItem]
+
+        public init(
+            schemaVersion: Int = Self.currentSchemaVersion,
+            folders: [BrowserBookmarkFolder],
+            bookmarks: [BrowserBookmarkItem]
+        ) {
+            self.schemaVersion = schemaVersion
+            self.folders = folders
+            self.bookmarks = bookmarks
+        }
+
+        private enum CodingKeys: String, CodingKey {
+            case schemaVersion, folders, bookmarks
+        }
+
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            self.schemaVersion = try container.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 0
+            self.folders = try container.decode([BrowserBookmarkFolder].self, forKey: .folders)
+            self.bookmarks = try container.decode([BrowserBookmarkItem].self, forKey: .bookmarks)
+        }
     }
 
     public func load() {
@@ -109,19 +132,28 @@ public final class BrowserBookmarkStore: @unchecked Sendable {
         }
 
         do {
-            let data = try Data(contentsOf: storageURL)
-            let payload = try JSONDecoder().decode(BookmarkStoragePayload.self, from: data)
-            self.folders = payload.folders
-            self.bookmarks = payload.bookmarks
-        } catch {
-            let timestamp = Int(Date().timeIntervalSince1970)
-            let corruptURL = storageURL.deletingPathExtension()
-                .appendingPathExtension("corrupt.\(timestamp).json")
-            do {
-                try FileManager.default.moveItem(at: storageURL, to: corruptURL)
-            } catch {
-                PipelineLogger.shared.log(stage: .browser, message: "Failed to quarantine corrupt bookmarks: \(error)")
+            if let payload = try DurableStorage.load(
+                from: storageURL,
+                legacyFallback: { data in
+                    struct LegacyBookmarkPayload: Codable {
+                        var folders: [BrowserBookmarkFolder]
+                        var bookmarks: [BrowserBookmarkItem]
+                    }
+                    let legacy = try JSONDecoder().decode(LegacyBookmarkPayload.self, from: data)
+                    return BookmarkStoragePayload(
+                        schemaVersion: 0,
+                        folders: legacy.folders,
+                        bookmarks: legacy.bookmarks
+                    )
+                }
+            ) as BookmarkStoragePayload? {
+                self.folders = payload.folders
+                self.bookmarks = payload.bookmarks
+            } else {
+                setDefaultBookmarksIfNeeded()
             }
+        } catch {
+            PipelineLogger.shared.log(stage: .browser, message: "Failed to load bookmarks at \(storageURL.path): \(error)")
             self.folders = []
             self.bookmarks = []
             setDefaultBookmarksIfNeeded()
@@ -146,7 +178,7 @@ public final class BrowserBookmarkStore: @unchecked Sendable {
         let payload = BookmarkStoragePayload(folders: folders, bookmarks: bookmarks)
         do {
             let data = try JSONEncoder().encode(payload)
-            try data.write(to: storageURL, options: .atomic)
+            try DurableStorage.writeAtomically(data, to: storageURL)
         } catch {
             PipelineLogger.shared.log(stage: .browser, message: "Failed to persist bookmarks: \(error)")
         }

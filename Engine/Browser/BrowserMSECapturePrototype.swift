@@ -235,7 +235,10 @@ public enum BrowserMSECaptureLifecycle: String, Codable, Sendable, Equatable {
 }
 
 /// Durable recovery metadata for an in-flight or interrupted MSE capture session.
-public struct BrowserMSECaptureRecoveryRecord: Codable, Sendable, Equatable, Identifiable {
+public struct BrowserMSECaptureRecoveryRecord: Codable, Sendable, Equatable, Identifiable, SchemaVersioned {
+    public static let currentSchemaVersion: Int = 1
+
+    public var schemaVersion: Int
     public var id: String { captureID }
     public let captureID: String
     public let mediaSourceURL: String
@@ -250,6 +253,7 @@ public struct BrowserMSECaptureRecoveryRecord: Codable, Sendable, Equatable, Ide
     public var failureReason: String?
 
     public init(
+        schemaVersion: Int = Self.currentSchemaVersion,
         captureID: String,
         mediaSourceURL: String,
         documentID: String? = nil,
@@ -262,6 +266,7 @@ public struct BrowserMSECaptureRecoveryRecord: Codable, Sendable, Equatable, Ide
         updatedAt: Date = Date(),
         failureReason: String? = nil
     ) {
+        self.schemaVersion = schemaVersion
         self.captureID = captureID
         self.mediaSourceURL = mediaSourceURL
         self.documentID = documentID
@@ -274,6 +279,29 @@ public struct BrowserMSECaptureRecoveryRecord: Codable, Sendable, Equatable, Ide
         self.updatedAt = updatedAt
         self.failureReason = failureReason
     }
+
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion, captureID, mediaSourceURL, documentID, mimeTypes
+        case bytesCaptured, segmentCount, lifecycle, stagingDirectoryURL
+        case createdAt, updatedAt, failureReason
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.schemaVersion = try container.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 0
+        self.captureID = try container.decode(String.self, forKey: .captureID)
+        self.mediaSourceURL = try container.decode(String.self, forKey: .mediaSourceURL)
+        self.documentID = try container.decodeIfPresent(String.self, forKey: .documentID)
+        self.mimeTypes = try container.decode([String].self, forKey: .mimeTypes)
+        self.bytesCaptured = try container.decode(Int64.self, forKey: .bytesCaptured)
+        self.segmentCount = try container.decode(Int.self, forKey: .segmentCount)
+        self.lifecycle = try container.decode(BrowserMSECaptureLifecycle.self, forKey: .lifecycle)
+        self.stagingDirectoryURL = try container.decode(URL.self, forKey: .stagingDirectoryURL)
+        self.createdAt = try container.decode(Date.self, forKey: .createdAt)
+        self.updatedAt = try container.decode(Date.self, forKey: .updatedAt)
+        self.failureReason = try container.decodeIfPresent(String.self, forKey: .failureReason)
+    }
+}
 }
 
 public struct BrowserMSECaptureSnapshot: Sendable, Equatable {
@@ -885,18 +913,13 @@ public actor BrowserMSECapturePrototypeWriter {
 
     private func persistRecoveryRecord(_ record: BrowserMSECaptureRecoveryRecord) {
         let captureDir = stagingDirectoryURL(for: record.captureID)
-        do {
-            try FileManager.default.createDirectory(at: captureDir, withIntermediateDirectories: true)
-        } catch {
-            PipelineLogger.shared.log(stage: .browser, message: "Failed to create captureDir \(captureDir.path): \(error)")
-        }
         let fileURL = captureDir.appendingPathComponent("mse_recovery.json")
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         do {
             let data = try encoder.encode(record)
-            try data.write(to: fileURL, options: .atomic)
+            try DurableStorage.writeAtomically(data, to: fileURL)
         } catch {
             PipelineLogger.shared.log(stage: .browser, message: "Failed to write mse_recovery.json: \(error)")
         }
@@ -958,19 +981,22 @@ public actor BrowserMSECapturePrototypeWriter {
 
         for dir in subdirs {
             let recoveryURL = dir.appendingPathComponent("mse_recovery.json")
-            guard FileManager.default.fileExists(atPath: recoveryURL.path),
-                  let data = try? Data(contentsOf: recoveryURL),
-                  var record = try? decoder.decode(BrowserMSECaptureRecoveryRecord.self, from: data) else {
+            guard FileManager.default.fileExists(atPath: recoveryURL.path) else { continue }
+            do {
+                if var record = try DurableStorage.load(from: recoveryURL, decoder: decoder) as BrowserMSECaptureRecoveryRecord? {
+                    if record.lifecycle == .capturing {
+                        record.lifecycle = .interrupted
+                        record.failureReason = "Incomplete capture recovered at launch (captured \(record.bytesCaptured) bytes)."
+                        record.updatedAt = Date()
+                        persistRecoveryRecord(record)
+                    }
+                    if record.lifecycle == .interrupted {
+                        results.append(record)
+                    }
+                }
+            } catch {
+                PipelineLogger.shared.log(stage: .browser, message: "[BrowserMSECapturePrototype] Corrupt recovery record at \(recoveryURL.path) was quarantined: \(error)")
                 continue
-            }
-            if record.lifecycle == .capturing {
-                record.lifecycle = .interrupted
-                record.failureReason = "Incomplete capture recovered at launch (captured \(record.bytesCaptured) bytes)."
-                record.updatedAt = Date()
-                persistRecoveryRecord(record)
-            }
-            if record.lifecycle == .interrupted {
-                results.append(record)
             }
         }
         return results
@@ -980,13 +1006,17 @@ public actor BrowserMSECapturePrototypeWriter {
     public func loadRecoveryRecord(for captureID: String) -> BrowserMSECaptureRecoveryRecord? {
         let captureDir = stagingDirectoryURL(for: captureID)
         let recoveryURL = captureDir.appendingPathComponent("mse_recovery.json")
-        guard FileManager.default.fileExists(atPath: recoveryURL.path),
-              let data = try? Data(contentsOf: recoveryURL) else {
+        guard FileManager.default.fileExists(atPath: recoveryURL.path) else {
             return nil
         }
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
-        return try? decoder.decode(BrowserMSECaptureRecoveryRecord.self, from: data)
+        do {
+            return try DurableStorage.load(from: recoveryURL, decoder: decoder)
+        } catch {
+            PipelineLogger.shared.log(stage: .browser, message: "[BrowserMSECapturePrototype] Corrupt recovery record at \(recoveryURL.path) was quarantined: \(error)")
+            return nil
+        }
     }
 
     private func abort(captureID: String) {

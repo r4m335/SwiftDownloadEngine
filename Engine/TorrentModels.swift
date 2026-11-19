@@ -454,7 +454,7 @@ public struct TorrentTask: Identifiable, Codable, Equatable, Sendable {
 }
 
 /// Durable persisted metadata for a torrent download in the manifest.
-public struct TorrentRecord: Identifiable, Codable, Equatable, Sendable {
+public struct TorrentRecord: Identifiable, Codable, Equatable, Sendable, SchemaVersioned {
     public static let currentSchemaVersion: Int = 1
 
     public let id: UUID
@@ -552,7 +552,7 @@ public struct TorrentRecord: Identifiable, Codable, Equatable, Sendable {
 }
 
 /// Durable root manifest storing the persistent queue state of all tracked torrents.
-public struct TorrentQueueManifest: Codable, Sendable, Equatable {
+public struct TorrentQueueManifest: Codable, Sendable, Equatable, SchemaVersioned {
     public static let currentSchemaVersion: Int = 1
 
     public var schemaVersion: Int

@@ -1153,7 +1153,7 @@ public enum MediaAssembler {
                 do {
                     let jsonData = try JSONEncoder().encode(record)
                     let infoURL = quarantineDir.appendingPathComponent("quarantine-info.json")
-                    try jsonData.write(to: infoURL)
+                    try DurableStorage.writeAtomically(jsonData, to: infoURL)
                 } catch {
                     PipelineLogger.shared.log("[MediaAssembler] Failed to write quarantine info: \(error)")
                 }
@@ -1823,7 +1823,7 @@ public enum MediaAssembler {
             )
             do {
                 let data = try JSONEncoder().encode(record)
-                try data.write(to: quarantineDir.appendingPathComponent("quarantine-info.json"))
+                try DurableStorage.writeAtomically(data, to: quarantineDir.appendingPathComponent("quarantine-info.json"))
             } catch {
                 PipelineLogger.shared.log("[MediaAssembler] Failed to write quarantine info: \(error)")
             }

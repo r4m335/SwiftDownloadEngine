@@ -123,7 +123,10 @@ public struct BlobCaptureAuthorization: Sendable, Equatable {
 
 /// Written to disk before I/O begins; updated at checkpoints.
 /// On next launch the recovery coordinator reconciles these with staging files.
-public struct BlobExportTransferRecord: Codable, Sendable, Equatable {
+public struct BlobExportTransferRecord: Codable, Sendable, Equatable, SchemaVersioned {
+    public static let currentSchemaVersion: Int = 1
+
+    public var schemaVersion: Int
     public let transferID: String
     public let tabID: String
     public let documentID: String?
@@ -139,6 +142,7 @@ public struct BlobExportTransferRecord: Codable, Sendable, Equatable {
     public var lastCheckpointOffset: Int64
 
     public init(
+        schemaVersion: Int = Self.currentSchemaVersion,
         transferID: String,
         tabID: String,
         documentID: String?,
@@ -153,6 +157,7 @@ public struct BlobExportTransferRecord: Codable, Sendable, Equatable {
         lastCheckpoint: Date = Date(),
         lastCheckpointOffset: Int64 = 0
     ) {
+        self.schemaVersion = schemaVersion
         self.transferID = transferID
         self.tabID = tabID
         self.documentID = documentID
@@ -167,13 +172,40 @@ public struct BlobExportTransferRecord: Codable, Sendable, Equatable {
         self.lastCheckpoint = lastCheckpoint
         self.lastCheckpointOffset = lastCheckpointOffset
     }
+
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion, transferID, tabID, documentID, stagingURL, finalURL
+        case expectedSize, state, bytesWritten, chunksReceived, failureReason
+        case sha256, lastCheckpoint, lastCheckpointOffset
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.schemaVersion = try container.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 0
+        self.transferID = try container.decode(String.self, forKey: .transferID)
+        self.tabID = try container.decode(String.self, forKey: .tabID)
+        self.documentID = try container.decodeIfPresent(String.self, forKey: .documentID)
+        self.stagingURL = try container.decode(URL.self, forKey: .stagingURL)
+        self.finalURL = try container.decode(URL.self, forKey: .finalURL)
+        self.expectedSize = try container.decodeIfPresent(Int64.self, forKey: .expectedSize)
+        self.state = try container.decode(BlobTransferState.self, forKey: .state)
+        self.bytesWritten = try container.decode(Int64.self, forKey: .bytesWritten)
+        self.chunksReceived = try container.decode(Int.self, forKey: .chunksReceived)
+        self.failureReason = try container.decodeIfPresent(String.self, forKey: .failureReason)
+        self.sha256 = try container.decodeIfPresent(String.self, forKey: .sha256)
+        self.lastCheckpoint = try container.decode(Date.self, forKey: .lastCheckpoint)
+        self.lastCheckpointOffset = try container.decode(Int64.self, forKey: .lastCheckpointOffset)
+    }
 }
 
 // MARK: - Crash Diagnostics Record
 
 /// Detailed telemetry recorded natively on disk to diagnose WebKit WebContent process
 /// terminations, memory pressure events, and transmission bottlenecks.
-public struct BlobCaptureCrashDiagnostics: Codable, Sendable, Equatable {
+public struct BlobCaptureCrashDiagnostics: Codable, Sendable, Equatable, SchemaVersioned {
+    public static let currentSchemaVersion: Int = 1
+
+    public var schemaVersion: Int
     public let transferID: String
     public let tabID: String
     public let documentID: String?
@@ -196,7 +228,30 @@ public struct BlobCaptureCrashDiagnostics: Codable, Sendable, Equatable {
     public var updatedAt: Date
 
     public init(
+        schemaVersion: Int = Self.currentSchemaVersion,
         transferID: String,
+        tabID: String,
+        documentID: String? = nil,
+        candidateID: String? = nil,
+        chunkSequenceNumber: Int = 0,
+        byteOffset: Int64 = 0,
+        expectedBytes: Int64? = nil,
+        receivedBytes: Int64 = 0,
+        inFlightMessageCount: Int = 0,
+        lastAcknowledgementLatencyMs: Double = 0,
+        averageAcknowledgementLatencyMs: Double = 0,
+        stagingFileSize: Int64 = 0,
+        lastSuccessfulCheckpointOffset: Int64 = 0,
+        lastSuccessfulCheckpointTimestamp: Date? = nil,
+        transferState: BlobTransferState = .requested,
+        failureReason: String? = nil,
+        processTerminationTimestamp: Date? = nil,
+        isInterruptedByProcessTermination: Bool = false,
+        createdAt: Date = Date(),
+        updatedAt: Date = Date()
+    ) {
+        self.schemaVersion = schemaVersion
+        self.transferID = transferID
         tabID: String,
         documentID: String? = nil,
         candidateID: String? = nil,
@@ -237,6 +292,40 @@ public struct BlobCaptureCrashDiagnostics: Codable, Sendable, Equatable {
         self.isInterruptedByProcessTermination = isInterruptedByProcessTermination
         self.createdAt = createdAt
         self.updatedAt = updatedAt
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion, transferID, tabID, documentID, candidateID
+        case chunkSequenceNumber, byteOffset, expectedBytes, receivedBytes
+        case inFlightMessageCount, lastAcknowledgementLatencyMs, averageAcknowledgementLatencyMs
+        case stagingFileSize, lastSuccessfulCheckpointOffset, lastSuccessfulCheckpointTimestamp
+        case transferState, failureReason, processTerminationTimestamp
+        case isInterruptedByProcessTermination, createdAt, updatedAt
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.schemaVersion = try container.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 0
+        self.transferID = try container.decode(String.self, forKey: .transferID)
+        self.tabID = try container.decode(String.self, forKey: .tabID)
+        self.documentID = try container.decodeIfPresent(String.self, forKey: .documentID)
+        self.candidateID = try container.decodeIfPresent(String.self, forKey: .candidateID)
+        self.chunkSequenceNumber = try container.decode(Int.self, forKey: .chunkSequenceNumber)
+        self.byteOffset = try container.decode(Int64.self, forKey: .byteOffset)
+        self.expectedBytes = try container.decodeIfPresent(Int64.self, forKey: .expectedBytes)
+        self.receivedBytes = try container.decode(Int64.self, forKey: .receivedBytes)
+        self.inFlightMessageCount = try container.decode(Int.self, forKey: .inFlightMessageCount)
+        self.lastAcknowledgementLatencyMs = try container.decode(Double.self, forKey: .lastAcknowledgementLatencyMs)
+        self.averageAcknowledgementLatencyMs = try container.decode(Double.self, forKey: .averageAcknowledgementLatencyMs)
+        self.stagingFileSize = try container.decode(Int64.self, forKey: .stagingFileSize)
+        self.lastSuccessfulCheckpointOffset = try container.decode(Int64.self, forKey: .lastSuccessfulCheckpointOffset)
+        self.lastSuccessfulCheckpointTimestamp = try container.decodeIfPresent(Date.self, forKey: .lastSuccessfulCheckpointTimestamp)
+        self.transferState = try container.decode(BlobTransferState.self, forKey: .transferState)
+        self.failureReason = try container.decodeIfPresent(String.self, forKey: .failureReason)
+        self.processTerminationTimestamp = try container.decodeIfPresent(Date.self, forKey: .processTerminationTimestamp)
+        self.isInterruptedByProcessTermination = try container.decode(Bool.self, forKey: .isInterruptedByProcessTermination)
+        self.createdAt = try container.decode(Date.self, forKey: .createdAt)
+        self.updatedAt = try container.decode(Date.self, forKey: .updatedAt)
     }
 }
 
@@ -1087,9 +1176,14 @@ public actor BlobExportWriter {
         ) else { return [] }
         var recovered: [BlobExportTransferRecord] = []
         for item in items where item.pathExtension == "json" {
-            guard let data = try? Data(contentsOf: item),
-                  var record = try? JSONDecoder().decode(BlobExportTransferRecord.self, from: data)
-            else { continue }
+            let recordOpt: BlobExportTransferRecord?
+            do {
+                recordOpt = try DurableStorage.load(from: item)
+            } catch {
+                PipelineLogger.shared.log(stage: .browser, message: "[BrowserBlobCaptureService] Corrupt transfer record at \(item.path) was quarantined: \(error)")
+                continue
+            }
+            guard var record = recordOpt else { continue }
             if record.state == .interrupted {
                 // Interrupted transfers preserve staging data and records for diagnostics and recovery
                 recovered.append(record)
@@ -1125,11 +1219,12 @@ public actor BlobExportWriter {
             return session.record
         }
         let url = recordDirectoryURL.appendingPathComponent("\(transferID).json")
-        guard let data = try? Data(contentsOf: url),
-              let record = try? JSONDecoder().decode(BlobExportTransferRecord.self, from: data) else {
+        do {
+            return try DurableStorage.load(from: url)
+        } catch {
+            PipelineLogger.shared.log(stage: .browser, message: "[BrowserBlobCaptureService] Corrupt record at \(url.path) was quarantined: \(error)")
             return nil
         }
-        return record
     }
 
     public func loadDiagnostics(for transferID: String) -> BlobCaptureCrashDiagnostics? {
@@ -1137,11 +1232,12 @@ public actor BlobExportWriter {
             return session.diagnostics
         }
         let url = diagnosticsDirectoryURL.appendingPathComponent("\(transferID).json")
-        guard let data = try? Data(contentsOf: url),
-              let diag = try? JSONDecoder().decode(BlobCaptureCrashDiagnostics.self, from: data) else {
+        do {
+            return try DurableStorage.load(from: url)
+        } catch {
+            PipelineLogger.shared.log(stage: .browser, message: "[BrowserBlobCaptureService] Corrupt diagnostics at \(url.path) was quarantined: \(error)")
             return nil
         }
-        return diag
     }
 
     public func allDiagnostics() -> [BlobCaptureCrashDiagnostics] {
@@ -1152,10 +1248,14 @@ public actor BlobExportWriter {
         if let items = try? FileManager.default.contentsOfDirectory(at: diagnosticsDirectoryURL, includingPropertiesForKeys: nil) {
             for item in items where item.pathExtension == "json" {
                 let id = item.deletingPathExtension().lastPathComponent
-                if results[id] == nil,
-                   let data = try? Data(contentsOf: item),
-                   let diag = try? JSONDecoder().decode(BlobCaptureCrashDiagnostics.self, from: data) {
-                    results[id] = diag
+                if results[id] == nil {
+                    do {
+                        if let diag = try DurableStorage.load(from: item) as BlobCaptureCrashDiagnostics? {
+                            results[id] = diag
+                        }
+                    } catch {
+                        PipelineLogger.shared.log(stage: .browser, message: "[BrowserBlobCaptureService] Corrupt diagnostics at \(item.path) was quarantined: \(error)")
+                    }
                 }
             }
         }
@@ -1192,7 +1292,7 @@ public actor BlobExportWriter {
         do {
             let data = try JSONEncoder().encode(record)
             let url = recordDirectoryURL.appendingPathComponent("\(record.transferID).json")
-            try data.write(to: url, options: .atomic)
+            try DurableStorage.writeAtomically(data, to: url)
         } catch {
             PipelineLogger.shared.log(stage: .browser, message: "Failed to persist blob record for \(record.transferID): \(error)")
         }
@@ -1202,7 +1302,7 @@ public actor BlobExportWriter {
         do {
             let data = try JSONEncoder().encode(diagnostics)
             let url = diagnosticsDirectoryURL.appendingPathComponent("\(diagnostics.transferID).json")
-            try data.write(to: url, options: .atomic)
+            try DurableStorage.writeAtomically(data, to: url)
         } catch {
             PipelineLogger.shared.log(stage: .browser, message: "Failed to persist blob diagnostics for \(diagnostics.transferID): \(error)")
         }

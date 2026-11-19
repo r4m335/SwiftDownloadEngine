@@ -168,15 +168,46 @@ public final class QuickAccessStore: @unchecked Sendable {
         )
     ]
 
+    public struct QuickAccessPayload: Codable, SchemaVersioned {
+        public static let currentSchemaVersion: Int = 1
+        public var schemaVersion: Int
+        public var shortcuts: [QuickAccessShortcut]
+
+        public init(schemaVersion: Int = Self.currentSchemaVersion, shortcuts: [QuickAccessShortcut]) {
+            self.schemaVersion = schemaVersion
+            self.shortcuts = shortcuts
+        }
+
+        private enum CodingKeys: String, CodingKey {
+            case schemaVersion, shortcuts
+        }
+
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            self.schemaVersion = try container.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 0
+            self.shortcuts = try container.decode([QuickAccessShortcut].self, forKey: .shortcuts)
+        }
+    }
+
     /// Loads shortcuts sorted by their display order. If none exist, returns default shortcuts.
     public func load() -> [QuickAccessShortcut] {
         lock.lock()
         defer { lock.unlock() }
 
-        if let storageURL,
-           let data = try? Data(contentsOf: storageURL),
-           let decoded = try? JSONDecoder().decode([QuickAccessShortcut].self, from: data) {
-            return decoded.sorted { $0.displayOrder < $1.displayOrder }
+        if let storageURL {
+            do {
+                if let payload = try DurableStorage.load(
+                    from: storageURL,
+                    legacyFallback: { data in
+                        let list = try JSONDecoder().decode([QuickAccessShortcut].self, from: data)
+                        return QuickAccessPayload(schemaVersion: 0, shortcuts: list)
+                    }
+                ) as QuickAccessPayload? {
+                    return payload.shortcuts.sorted { $0.displayOrder < $1.displayOrder }
+                }
+            } catch {
+                PipelineLogger.shared.log(stage: .browser, message: "[QuickAccessStore] Corrupted shortcuts at \(storageURL.path) was quarantined: \(error)")
+            }
         }
 
         if let data = defaults.data(forKey: Self.userDefaultsKey),
@@ -201,10 +232,11 @@ public final class QuickAccessStore: @unchecked Sendable {
         }
 
         do {
-            let data = try JSONEncoder().encode(normalized)
+            let payload = QuickAccessPayload(shortcuts: normalized)
+            let data = try JSONEncoder().encode(payload)
             defaults.set(data, forKey: Self.userDefaultsKey)
             if let storageURL {
-                try data.write(to: storageURL, options: .atomic)
+                try DurableStorage.writeAtomically(data, to: storageURL)
             }
         } catch {
             PipelineLogger.shared.log(stage: .browser, message: "Failed to persist quick access shortcuts: \(error)")

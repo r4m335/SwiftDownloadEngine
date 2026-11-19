@@ -55,19 +55,38 @@ public struct QueueItem: Identifiable, Codable, Sendable, Equatable {
 }
 
 /// Durable serializable manifest representing the persistent state of the queue on disk.
-public struct QueueManifest: Codable, Sendable {
+public struct QueueManifest: Codable, Sendable, SchemaVersioned {
+    public static let currentSchemaVersion: Int = 1
+    public var schemaVersion: Int
     public var maxConcurrentDownloads: Int
     public var sequenceCounter: Int64
     public var items: [QueueItem]
 
     public init(
+        schemaVersion: Int = Self.currentSchemaVersion,
         maxConcurrentDownloads: Int,
         sequenceCounter: Int64,
         items: [QueueItem]
     ) {
+        self.schemaVersion = schemaVersion
         self.maxConcurrentDownloads = maxConcurrentDownloads
         self.sequenceCounter = sequenceCounter
         self.items = items
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion
+        case maxConcurrentDownloads
+        case sequenceCounter
+        case items
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.schemaVersion = try container.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 0
+        self.maxConcurrentDownloads = try container.decode(Int.self, forKey: .maxConcurrentDownloads)
+        self.sequenceCounter = try container.decode(Int64.self, forKey: .sequenceCounter)
+        self.items = try container.decode([QueueItem].self, forKey: .items)
     }
 }
 
@@ -871,22 +890,42 @@ public actor DownloadQueueManager {
     ///
     /// - Parameter autoStart: If true, dispatches eligible queued downloads up to the concurrency limit.
     public func restoreQueue(autoStart: Bool = true) async throws {
-        // 1. Attempt to load manifest if present, but do not wipe queue if corrupted
+        // 1. Attempt to load manifest if present with schema validation & corruption quarantine
         if FileManager.default.fileExists(atPath: queueStoreURL.path) {
             do {
-                let data = try Data(contentsOf: queueStoreURL)
-                let manifest = try decoder.decode(QueueManifest.self, from: data)
-                if manifest.maxConcurrentDownloads > 0 {
-                    self.maxConcurrentDownloads = manifest.maxConcurrentDownloads
-                }
-                self.sequenceCounter = max(self.sequenceCounter, manifest.sequenceCounter)
-                for item in manifest.items where !Self.isInternalStreamingSegmentID(item.id) {
-                    if activeTasks[item.id] == nil {
-                        self.items[item.id] = item
+                if let manifest = try DurableStorage.load(
+                    from: queueStoreURL,
+                    decoder: decoder,
+                    legacyFallback: { data in
+                        struct LegacyQueueManifest: Codable {
+                            var maxConcurrentDownloads: Int
+                            var sequenceCounter: Int64
+                            var items: [QueueItem]
+                        }
+                        let legacy = try JSONDecoder().decode(LegacyQueueManifest.self, from: data)
+                        return QueueManifest(
+                            schemaVersion: 0,
+                            maxConcurrentDownloads: legacy.maxConcurrentDownloads,
+                            sequenceCounter: legacy.sequenceCounter,
+                            items: legacy.items
+                        )
+                    }
+                ) {
+                    if manifest.maxConcurrentDownloads > 0 {
+                        self.maxConcurrentDownloads = manifest.maxConcurrentDownloads
+                    }
+                    self.sequenceCounter = max(self.sequenceCounter, manifest.sequenceCounter)
+                    for item in manifest.items where !Self.isInternalStreamingSegmentID(item.id) {
+                        if activeTasks[item.id] == nil {
+                            self.items[item.id] = item
+                        }
                     }
                 }
             } catch {
-                // If manifest is corrupted, recover from persistence store
+                PipelineLogger.shared.log(
+                    stage: .queue,
+                    message: "[DownloadQueueManager] Manifest at \(queueStoreURL.path) corrupted or unreadable: \(error.localizedDescription). Quarantined and recovering from persistence store."
+                )
             }
         }
 
@@ -1132,23 +1171,15 @@ public actor DownloadQueueManager {
     }
 
     private func persistQueue() {
-        let parentDir = queueStoreURL.deletingLastPathComponent()
-        do {
-            try DownloadManagerViewModel.ensureDirectoryExistsAndWritable(parentDir)
-        } catch {
-            let nsErr = error as NSError
-            PipelineLogger.shared.log("[DownloadQueueManager] Failed to create queue directory \(parentDir.path): \(nsErr.domain) code \(nsErr.code) - \(nsErr.localizedDescription)")
-            return
-        }
-
         let manifest = QueueManifest(
+            schemaVersion: QueueManifest.currentSchemaVersion,
             maxConcurrentDownloads: maxConcurrentDownloads,
             sequenceCounter: sequenceCounter,
             items: Array(items.values)
         )
         do {
             let data = try encoder.encode(manifest)
-            try data.write(to: queueStoreURL, options: .atomic)
+            try DurableStorage.writeAtomically(data, to: queueStoreURL)
         } catch {
             let nsErr = error as NSError
             PipelineLogger.shared.log("[DownloadQueueManager] Failed to write queue manifest to \(queueStoreURL.path): \(nsErr.domain) code \(nsErr.code) - \(nsErr.localizedDescription)")

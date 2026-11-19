@@ -139,8 +139,11 @@ public enum HLSSegmentDecryptor {
         key: Data,
         iv: Data
     ) throws {
-        guard let ciphertext = try? Data(contentsOf: sourceURL) else {
-            throw HLSSegmentDecryptionError.fileReadError(sourceURL.path)
+        let ciphertext: Data
+        do {
+            ciphertext = try Data(contentsOf: sourceURL)
+        } catch {
+            throw HLSSegmentDecryptionError.fileReadError("\(sourceURL.path): \(error.localizedDescription)")
         }
         let cleartext = try decrypt(data: ciphertext, key: key, iv: iv)
         let parentDir = destinationURL.deletingLastPathComponent()

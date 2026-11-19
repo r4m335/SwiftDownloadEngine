@@ -69,7 +69,7 @@ public actor TorrentPersistenceStore {
             throw TorrentEngineError.unsupportedSchemaVersion(manifest.schemaVersion)
         }
         self.cachedManifest = manifest
-        try writeDataAtomically(try encoder.encode(manifest), to: manifestFileURL)
+        try DurableStorage.writeAtomically(try encoder.encode(manifest), to: manifestFileURL, fileManager: fileManager)
     }
 
     // MARK: - Record Operations
@@ -86,7 +86,7 @@ public actor TorrentPersistenceStore {
         } else {
             updated.records.append(record)
         }
-        try writeDataAtomically(try encoder.encode(updated), to: manifestFileURL)
+        try DurableStorage.writeAtomically(try encoder.encode(updated), to: manifestFileURL, fileManager: fileManager)
         cachedManifest = updated
     }
 
@@ -104,7 +104,7 @@ public actor TorrentPersistenceStore {
                 updated.records.append(record)
             }
         }
-        try writeDataAtomically(try encoder.encode(updated), to: manifestFileURL)
+        try DurableStorage.writeAtomically(try encoder.encode(updated), to: manifestFileURL, fileManager: fileManager)
         cachedManifest = updated
     }
 
@@ -124,7 +124,7 @@ public actor TorrentPersistenceStore {
         let key = infoHash.lowercased()
         var updated = cachedManifest
         updated.records.removeAll(where: { $0.infoHash.lowercased() == key })
-        try writeDataAtomically(try encoder.encode(updated), to: manifestFileURL)
+        try DurableStorage.writeAtomically(try encoder.encode(updated), to: manifestFileURL, fileManager: fileManager)
         cachedManifest = updated
         do {
             try deleteResumeData(for: key)
@@ -139,7 +139,7 @@ public actor TorrentPersistenceStore {
     public func saveResumeData(_ data: Data, for infoHash: String) throws {
         let key = infoHash.lowercased()
         let fileURL = resumeDataURL(for: key)
-        try writeDataAtomically(data, to: fileURL)
+        try DurableStorage.writeAtomically(data, to: fileURL, fileManager: fileManager)
 
         // Update record fastResumeFileName reference if record exists
         if var record = loadRecord(infoHash: key) {
@@ -155,7 +155,12 @@ public actor TorrentPersistenceStore {
         guard fileManager.fileExists(atPath: fileURL.path) else {
             return nil
         }
-        return try? Data(contentsOf: fileURL)
+        do {
+            return try Data(contentsOf: fileURL)
+        } catch {
+            PipelineLogger.shared.log(stage: .persistence, message: "[TorrentPersistenceStore] Failed to read resume data at \(fileURL.path): \(error.localizedDescription)")
+            return nil
+        }
     }
 
     /// Deletes the fast-resume file for a given info-hash.
@@ -198,7 +203,7 @@ public actor TorrentPersistenceStore {
     ) throws -> TorrentQueueManifest {
         guard fileManager.fileExists(atPath: manifestFileURL.path) else {
             let initial = TorrentQueueManifest()
-            try writeDataAtomically(try encoder.encode(initial), to: manifestFileURL, fileManager: fileManager)
+            try DurableStorage.writeAtomically(try encoder.encode(initial), to: manifestFileURL, fileManager: fileManager)
             return initial
         }
 
@@ -212,72 +217,10 @@ public actor TorrentPersistenceStore {
         } catch let engineErr as TorrentEngineError {
             throw engineErr
         } catch {
-            let timestamp = Int(Date().timeIntervalSince1970)
-            let corruptBackupURL = storageDirectoryURL.appendingPathComponent("torrent_manifest.corrupt.\(timestamp).json")
-            do {
-                try fileManager.moveItem(at: manifestFileURL, to: corruptBackupURL)
-            } catch {
-                PipelineLogger.shared.log(stage: .persistence, message: "Failed to backup corrupt manifest \(manifestFileURL.path): \(error)")
-            }
-
+            DurableStorage.quarantineCorruptFile(at: manifestFileURL, error: error, fileManager: fileManager)
             let fresh = TorrentQueueManifest()
-            try writeDataAtomically(try encoder.encode(fresh), to: manifestFileURL, fileManager: fileManager)
+            try DurableStorage.writeAtomically(try encoder.encode(fresh), to: manifestFileURL, fileManager: fileManager)
             return fresh
-        }
-    }
-
-    private static func writeDataAtomically(_ data: Data, to destinationURL: URL, fileManager: FileManager) throws {
-        let tempURL = destinationURL.deletingLastPathComponent()
-            .appendingPathComponent(".tmp.\(UUID().uuidString)", isDirectory: false)
-        try data.write(to: tempURL, options: .atomic)
-
-        if fileManager.fileExists(atPath: destinationURL.path) {
-            #if canImport(Darwin)
-            do {
-                _ = try fileManager.replaceItemAt(destinationURL, withItemAt: tempURL, backupItemName: nil, options: .withoutDeletingBackupItem)
-            } catch {
-                // Non-destructive fallback: preserve existing destination if move fails
-                let backupURL = destinationURL.deletingLastPathComponent()
-                    .appendingPathComponent(".backup-\(UUID().uuidString)-\(destinationURL.lastPathComponent)")
-                try fileManager.moveItem(at: destinationURL, to: backupURL)
-                do {
-                    try fileManager.moveItem(at: tempURL, to: destinationURL)
-                    do {
-                        try fileManager.removeItem(at: backupURL)
-                    } catch {
-                        PipelineLogger.shared.log(stage: .persistence, message: "Failed to remove backupURL \(backupURL.path): \(error)")
-                    }
-                } catch {
-                    do {
-                        try fileManager.moveItem(at: backupURL, to: destinationURL)
-                    } catch {
-                        PipelineLogger.shared.log(stage: .persistence, message: "Failed to restore backupURL \(backupURL.path): \(error)")
-                    }
-                    throw error
-                }
-            }
-            #else
-            let backupURL = destinationURL.deletingLastPathComponent()
-                .appendingPathComponent(".backup-\(UUID().uuidString)-\(destinationURL.lastPathComponent)")
-            try fileManager.moveItem(at: destinationURL, to: backupURL)
-            do {
-                try fileManager.moveItem(at: tempURL, to: destinationURL)
-                do {
-                    try fileManager.removeItem(at: backupURL)
-                } catch {
-                    PipelineLogger.shared.log(stage: .persistence, message: "Failed to remove backupURL \(backupURL.path): \(error)")
-                }
-            } catch {
-                do {
-                    try fileManager.moveItem(at: backupURL, to: destinationURL)
-                } catch {
-                    PipelineLogger.shared.log(stage: .persistence, message: "Failed to restore backupURL \(backupURL.path): \(error)")
-                }
-                throw error
-            }
-            #endif
-        } else {
-            try fileManager.moveItem(at: tempURL, to: destinationURL)
         }
     }
 }

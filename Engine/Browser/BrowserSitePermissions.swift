@@ -134,24 +134,57 @@ public final class BrowserSitePermissionsStore: @unchecked Sendable {
 
     // MARK: - Persistence
 
+    public struct BrowserSitePermissionsPayload: Codable, SchemaVersioned {
+        public static let currentSchemaVersion: Int = 1
+        public var schemaVersion: Int
+        public var entries: [BrowserSitePermissionEntry]
+
+        public init(
+            schemaVersion: Int = Self.currentSchemaVersion,
+            entries: [BrowserSitePermissionEntry]
+        ) {
+            self.schemaVersion = schemaVersion
+            self.entries = entries
+        }
+
+        private enum CodingKeys: String, CodingKey {
+            case schemaVersion, entries
+        }
+
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            self.schemaVersion = try container.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 0
+            self.entries = try container.decode([BrowserSitePermissionEntry].self, forKey: .entries)
+        }
+    }
+
     private func loadFromDisk() {
         lock.lock()
         defer { lock.unlock() }
 
-        guard FileManager.default.fileExists(atPath: persistenceURL.path),
-              let data = try? Data(contentsOf: persistenceURL),
-              let decoded = try? JSONDecoder().decode([BrowserSitePermissionEntry].self, from: data) else {
-            return
-        }
+        guard FileManager.default.fileExists(atPath: persistenceURL.path) else { return }
 
-        entries = Dictionary(uniqueKeysWithValues: decoded.map { ($0.id, $0) })
+        do {
+            if let payload = try DurableStorage.load(
+                from: persistenceURL,
+                legacyFallback: { data in
+                    let legacy = try JSONDecoder().decode([BrowserSitePermissionEntry].self, from: data)
+                    return BrowserSitePermissionsPayload(schemaVersion: 0, entries: legacy)
+                }
+            ) as BrowserSitePermissionsPayload? {
+                entries = Dictionary(uniqueKeysWithValues: payload.entries.map { ($0.id, $0) })
+            }
+        } catch {
+            PipelineLogger.shared.log(stage: .browser, message: "[BrowserSitePermissions] Corrupt site permissions at \(persistenceURL.path) was quarantined: \(error)")
+            entries = [:]
+        }
     }
 
     private func saveToDiskLocked() {
-        let items = Array(entries.values)
+        let payload = BrowserSitePermissionsPayload(entries: Array(entries.values))
         do {
-            let data = try JSONEncoder().encode(items)
-            try data.write(to: persistenceURL, options: .atomic)
+            let data = try JSONEncoder().encode(payload)
+            try DurableStorage.writeAtomically(data, to: persistenceURL)
         } catch {
             PipelineLogger.shared.log(stage: .browser, message: "Failed to persist site permissions: \(error)")
         }

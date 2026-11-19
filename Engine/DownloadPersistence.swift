@@ -135,7 +135,10 @@ public enum InternalStreamingConstants {
 }
 
 /// Comprehensive persistent download record reproducing 1DM+'s `DownloadInfo`.
-public struct DownloadRecord: Codable, Equatable, Identifiable, Sendable {
+public struct DownloadRecord: Codable, Equatable, Identifiable, Sendable, SchemaVersioned {
+    public static let currentSchemaVersion: Int = 1
+
+    public var schemaVersion: Int
     public let id: String
     public var tag: String { id }
     public var originalURL: URL
@@ -180,6 +183,7 @@ public struct DownloadRecord: Codable, Equatable, Identifiable, Sendable {
     }
 
     public init(
+        schemaVersion: Int = Self.currentSchemaVersion,
         id: String = UUID().uuidString,
         originalURL: URL,
         resolvedURL: URL? = nil,
@@ -199,6 +203,7 @@ public struct DownloadRecord: Codable, Equatable, Identifiable, Sendable {
         segments: [SegmentRecord] = [],
         isInternalStreamingSegment: Bool = false
     ) {
+        self.schemaVersion = schemaVersion
         self.id = id
         self.originalURL = originalURL
         self.resolvedURL = resolvedURL
@@ -250,12 +255,13 @@ public struct DownloadRecord: Codable, Equatable, Identifiable, Sendable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case id, originalURL, resolvedURL, destinationURL, totalSize, state, storageMode, transportPolicy, networkPolicy
+        case schemaVersion, id, originalURL, resolvedURL, destinationURL, totalSize, state, storageMode, transportPolicy, networkPolicy
         case eTag, lastModified, suggestedFilename, mimeType, headers, createdAt, updatedAt, segments, isInternalStreamingSegment
     }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.schemaVersion = try container.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 0
         self.id = try container.decode(String.self, forKey: .id)
         self.originalURL = try container.decode(URL.self, forKey: .originalURL)
         self.resolvedURL = try container.decodeIfPresent(URL.self, forKey: .resolvedURL)
@@ -536,10 +542,11 @@ public actor DownloadPersistenceStore {
         }
 
         do {
-            let data = try Data(contentsOf: fileURL)
-            let record = try decoder.decode(DownloadRecord.self, from: data)
-            cache[record.id] = record
-            return record
+            if let record = try DurableStorage.load(from: fileURL, decoder: decoder) as DownloadRecord? {
+                cache[record.id] = record
+                return record
+            }
+            return nil
         } catch {
             throw DownloadPersistenceError.corruptedRecord(
                 tag: tag,
@@ -565,12 +572,15 @@ public actor DownloadPersistenceStore {
             }
 
             do {
-                let data = try Data(contentsOf: fileURL)
-                let record = try decoder.decode(DownloadRecord.self, from: data)
-                cache[record.id] = record
-                results.append(record)
+                if let record = try DurableStorage.load(from: fileURL, decoder: decoder) as DownloadRecord? {
+                    cache[record.id] = record
+                    results.append(record)
+                }
             } catch {
-                // Keep resilient against single corrupt file
+                PipelineLogger.shared.log(
+                    stage: .persistence,
+                    message: "[DownloadPersistenceStore] Corrupted download record at \(fileURL.path) was quarantined: \(error.localizedDescription)"
+                )
                 continue
             }
         }
@@ -639,10 +649,6 @@ public actor DownloadPersistenceStore {
 
     private func writeRecordToDisk(_ record: DownloadRecord) throws {
         let fileURL = recordFileURL(tag: record.id)
-        let parentDir = fileURL.deletingLastPathComponent()
-        if !FileManager.default.fileExists(atPath: parentDir.path) {
-            try? FileManager.default.createDirectory(at: parentDir, withIntermediateDirectories: true)
-        }
         let data: Data
         do {
             data = try encoder.encode(record)
@@ -650,8 +656,11 @@ public actor DownloadPersistenceStore {
             throw DownloadPersistenceError.serializationFailed(underlyingError: error.localizedDescription)
         }
 
-        // Atomic write to prevent partial/corrupt files on unexpected crash
-        try data.write(to: fileURL, options: .atomic)
+        do {
+            try DurableStorage.writeAtomically(data, to: fileURL)
+        } catch {
+            throw DownloadPersistenceError.serializationFailed(underlyingError: error.localizedDescription)
+        }
     }
 
     // MARK: - Schedule Rules Persistence
@@ -669,13 +678,9 @@ public actor DownloadPersistenceStore {
     /// Persists a schedule rule to memory cache and atomic disk JSON.
     public func saveScheduleRule(_ rule: ScheduleRule) throws {
         scheduleRulesCache[rule.id] = rule
-        let dir = scheduleDirectoryURL
-        if !FileManager.default.fileExists(atPath: dir.path) {
-            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        }
         let fileURL = scheduleRuleFileURL(id: rule.id)
         let data = try encoder.encode(rule)
-        try data.write(to: fileURL, options: .atomic)
+        try DurableStorage.writeAtomically(data, to: fileURL)
     }
 
     /// Fetches a schedule rule by ID.
@@ -687,10 +692,11 @@ public actor DownloadPersistenceStore {
         guard FileManager.default.fileExists(atPath: fileURL.path) else {
             return nil
         }
-        let data = try Data(contentsOf: fileURL)
-        let rule = try decoder.decode(ScheduleRule.self, from: data)
-        scheduleRulesCache[rule.id] = rule
-        return rule
+        if let rule = try DurableStorage.load(from: fileURL, decoder: decoder) as ScheduleRule? {
+            scheduleRulesCache[rule.id] = rule
+            return rule
+        }
+        return nil
     }
 
     /// Fetches all persisted schedule rules.
@@ -712,10 +718,17 @@ public actor DownloadPersistenceStore {
                 results.append(cached)
                 continue
             }
-            if let data = try? Data(contentsOf: fileURL),
-               let rule = try? decoder.decode(ScheduleRule.self, from: data) {
-                scheduleRulesCache[rule.id] = rule
-                results.append(rule)
+            do {
+                if let rule = try DurableStorage.load(from: fileURL, decoder: decoder) as ScheduleRule? {
+                    scheduleRulesCache[rule.id] = rule
+                    results.append(rule)
+                }
+            } catch {
+                PipelineLogger.shared.log(
+                    stage: .persistence,
+                    message: "[DownloadPersistenceStore] Corrupt schedule rule at \(fileURL.path) was quarantined: \(error.localizedDescription)"
+                )
+                continue
             }
         }
         return results.sorted { $0.createdAt < $1.createdAt }

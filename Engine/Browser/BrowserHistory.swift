@@ -44,6 +44,30 @@ public final class BrowserHistoryStore: @unchecked Sendable {
         load()
     }
 
+    public struct BrowserHistoryPayload: Codable, SchemaVersioned {
+        public static let currentSchemaVersion: Int = 1
+        public var schemaVersion: Int
+        public var entries: [BrowserHistoryEntry]
+
+        public init(
+            schemaVersion: Int = Self.currentSchemaVersion,
+            entries: [BrowserHistoryEntry]
+        ) {
+            self.schemaVersion = schemaVersion
+            self.entries = entries
+        }
+
+        private enum CodingKeys: String, CodingKey {
+            case schemaVersion, entries
+        }
+
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            self.schemaVersion = try container.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 0
+            self.entries = try container.decode([BrowserHistoryEntry].self, forKey: .entries)
+        }
+    }
+
     public func load() {
         lock.lock()
         defer { lock.unlock() }
@@ -52,18 +76,17 @@ public final class BrowserHistoryStore: @unchecked Sendable {
         guard FileManager.default.fileExists(atPath: storageURL.path) else { return }
 
         do {
-            let data = try Data(contentsOf: storageURL)
-            let loaded = try JSONDecoder().decode([BrowserHistoryEntry].self, from: data)
-            self.entries = loaded
-        } catch {
-            let timestamp = Int(Date().timeIntervalSince1970)
-            let corruptURL = storageURL.deletingPathExtension()
-                .appendingPathExtension("corrupt.\(timestamp).json")
-            do {
-                try FileManager.default.moveItem(at: storageURL, to: corruptURL)
-            } catch {
-                PipelineLogger.shared.log(stage: .browser, message: "Failed to quarantine corrupt history: \(error)")
+            if let payload = try DurableStorage.load(
+                from: storageURL,
+                legacyFallback: { data in
+                    let legacyEntries = try JSONDecoder().decode([BrowserHistoryEntry].self, from: data)
+                    return BrowserHistoryPayload(schemaVersion: 0, entries: legacyEntries)
+                }
+            ) as BrowserHistoryPayload? {
+                self.entries = payload.entries
             }
+        } catch {
+            PipelineLogger.shared.log(stage: .browser, message: "Failed to load history at \(storageURL.path): \(error)")
             self.entries = []
         }
     }
@@ -74,9 +97,10 @@ public final class BrowserHistoryStore: @unchecked Sendable {
             lock.unlock()
             return
         }
+        let payload = BrowserHistoryPayload(entries: entries)
         do {
-            let data = try JSONEncoder().encode(entries)
-            try data.write(to: storageURL, options: .atomic)
+            let data = try JSONEncoder().encode(payload)
+            try DurableStorage.writeAtomically(data, to: storageURL)
         } catch {
             PipelineLogger.shared.log(stage: .browser, message: "Failed to persist history: \(error)")
         }

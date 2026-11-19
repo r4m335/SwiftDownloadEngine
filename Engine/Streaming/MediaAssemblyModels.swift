@@ -161,7 +161,10 @@ public enum MediaAssemblyState: String, Codable, Sendable, Equatable {
 }
 
 /// Metadata recorded when failed assembly or muxing inputs are quarantined.
-public struct MediaQuarantineRecord: Codable, Sendable, Equatable {
+public struct MediaQuarantineRecord: Codable, Sendable, Equatable, SchemaVersioned {
+    public static let currentSchemaVersion: Int = 1
+
+    public var schemaVersion: Int
     public let timestamp: String
     public let reason: String
     public let destinationURL: String
@@ -171,6 +174,7 @@ public struct MediaQuarantineRecord: Codable, Sendable, Equatable {
     public let validationDetails: String?
 
     public init(
+        schemaVersion: Int = Self.currentSchemaVersion,
         timestamp: String,
         reason: String,
         destinationURL: String,
@@ -179,6 +183,7 @@ public struct MediaQuarantineRecord: Codable, Sendable, Equatable {
         quarantinedFiles: [String],
         validationDetails: String? = nil
     ) {
+        self.schemaVersion = schemaVersion
         self.timestamp = timestamp
         self.reason = reason
         self.destinationURL = destinationURL
@@ -186,6 +191,23 @@ public struct MediaQuarantineRecord: Codable, Sendable, Equatable {
         self.expectedTrackKinds = expectedTrackKinds
         self.quarantinedFiles = quarantinedFiles
         self.validationDetails = validationDetails
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion, timestamp, reason, destinationURL
+        case container, expectedTrackKinds, quarantinedFiles, validationDetails
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.schemaVersion = try container.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 0
+        self.timestamp = try container.decode(String.self, forKey: .timestamp)
+        self.reason = try container.decode(String.self, forKey: .reason)
+        self.destinationURL = try container.decode(String.self, forKey: .destinationURL)
+        self.container = try container.decode(String.self, forKey: .container)
+        self.expectedTrackKinds = try container.decode([String].self, forKey: .expectedTrackKinds)
+        self.quarantinedFiles = try container.decode([String].self, forKey: .quarantinedFiles)
+        self.validationDetails = try container.decodeIfPresent(String.self, forKey: .validationDetails)
     }
 }
 

@@ -7,7 +7,10 @@ import Foundation
 /// 1. App lifecycle reconciliation on launch and foregrounding.
 /// 2. Background URLSession `earliestBeginDate` properties on in-flight tasks.
 /// 3. Native `UNCalendarNotificationTrigger` local reminders.
-public struct ScheduleRule: Codable, Sendable, Equatable, Identifiable {
+public struct ScheduleRule: Codable, Sendable, Equatable, Identifiable, SchemaVersioned {
+    public static let currentSchemaVersion: Int = 1
+
+    public var schemaVersion: Int
     public var id: String
     public var name: String
     public var isEnabled: Bool
@@ -21,6 +24,7 @@ public struct ScheduleRule: Codable, Sendable, Equatable, Identifiable {
     public var updatedAt: Date
 
     public init(
+        schemaVersion: Int = Self.currentSchemaVersion,
         id: String = UUID().uuidString,
         name: String = "Download Schedule",
         isEnabled: Bool = true,
@@ -32,6 +36,7 @@ public struct ScheduleRule: Codable, Sendable, Equatable, Identifiable {
         createdAt: Date = Date(),
         updatedAt: Date = Date()
     ) {
+        self.schemaVersion = schemaVersion
         self.id = id
         self.name = name
         self.isEnabled = isEnabled
@@ -42,6 +47,35 @@ public struct ScheduleRule: Codable, Sendable, Equatable, Identifiable {
         self.targetDownloadIDs = targetDownloadIDs
         self.createdAt = createdAt
         self.updatedAt = updatedAt
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion
+        case id
+        case name
+        case isEnabled
+        case startTime
+        case stopTime
+        case weekdays
+        case wifiOnly
+        case targetDownloadIDs
+        case createdAt
+        case updatedAt
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.schemaVersion = try container.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 0
+        self.id = try container.decode(String.self, forKey: .id)
+        self.name = try container.decode(String.self, forKey: .name)
+        self.isEnabled = try container.decode(Bool.self, forKey: .isEnabled)
+        self.startTime = try container.decode(DateComponents.self, forKey: .startTime)
+        self.stopTime = try container.decodeIfPresent(DateComponents.self, forKey: .stopTime)
+        self.weekdays = try container.decode(Set<Int>.self, forKey: .weekdays)
+        self.wifiOnly = try container.decode(Bool.self, forKey: .wifiOnly)
+        self.targetDownloadIDs = try container.decode([String].self, forKey: .targetDownloadIDs)
+        self.createdAt = try container.decode(Date.self, forKey: .createdAt)
+        self.updatedAt = try container.decode(Date.self, forKey: .updatedAt)
     }
 
     public func contains(downloadID: String) -> Bool {

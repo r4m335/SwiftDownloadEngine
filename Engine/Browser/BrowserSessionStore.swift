@@ -1,16 +1,37 @@
 import Foundation
 
 /// Encapsulates persistent browser tab state saved across app lifecycles.
-public struct BrowserSavedSession: Codable, Sendable, Equatable {
+public struct BrowserSavedSession: Codable, Sendable, Equatable, SchemaVersioned {
+    public static let currentSchemaVersion: Int = 1
+    public var schemaVersion: Int
     public var activeTabID: UUID?
     public var tabs: [BrowserTabState]
     public var savedAt: Date
 
-    public init(activeTabID: UUID? = nil, tabs: [BrowserTabState] = [], savedAt: Date = Date()) {
+    public init(
+        schemaVersion: Int = Self.currentSchemaVersion,
+        activeTabID: UUID? = nil,
+        tabs: [BrowserTabState] = [],
+        savedAt: Date = Date()
+    ) {
+        self.schemaVersion = schemaVersion
         self.activeTabID = activeTabID
         // Invariant: Incognito tabs are strictly never persisted in saved sessions.
         self.tabs = tabs.filter { !$0.isIncognito }
         self.savedAt = savedAt
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion, activeTabID, tabs, savedAt
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.schemaVersion = try container.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 0
+        self.activeTabID = try container.decodeIfPresent(UUID.self, forKey: .activeTabID)
+        let rawTabs = try container.decode([BrowserTabState].self, forKey: .tabs)
+        self.tabs = rawTabs.filter { !$0.isIncognito }
+        self.savedAt = try container.decode(Date.self, forKey: .savedAt)
     }
 }
 
@@ -52,9 +73,9 @@ public final class BrowserSessionStore: @unchecked Sendable {
             let encoder = JSONEncoder()
             encoder.outputFormatting = .prettyPrinted
             let data = try encoder.encode(session)
-            try data.write(to: fileURL, options: .atomic)
+            try DurableStorage.writeAtomically(data, to: fileURL)
         } catch {
-            // Failures to save state should not crash the app
+            PipelineLogger.shared.log(stage: .browser, message: "Failed to persist browser session: \(error)")
         }
     }
 
@@ -68,8 +89,25 @@ public final class BrowserSessionStore: @unchecked Sendable {
         }
 
         do {
-            let data = try Data(contentsOf: fileURL)
-            let session = try JSONDecoder().decode(BrowserSavedSession.self, from: data)
+            guard let session = try DurableStorage.load(
+                from: fileURL,
+                legacyFallback: { data in
+                    struct LegacySavedSession: Codable {
+                        var activeTabID: UUID?
+                        var tabs: [BrowserTabState]
+                        var savedAt: Date
+                    }
+                    let legacy = try JSONDecoder().decode(LegacySavedSession.self, from: data)
+                    return BrowserSavedSession(
+                        schemaVersion: 0,
+                        activeTabID: legacy.activeTabID,
+                        tabs: legacy.tabs,
+                        savedAt: legacy.savedAt
+                    )
+                }
+            ) as BrowserSavedSession? else {
+                return nil
+            }
             // Double-check privacy invariant upon load
             let safeTabs = session.tabs.filter { !$0.isIncognito }
             let safeActiveID = (session.activeTabID != nil && safeTabs.contains(where: { $0.id == session.activeTabID }))
@@ -77,11 +115,13 @@ public final class BrowserSessionStore: @unchecked Sendable {
                 : safeTabs.first?.id
 
             return BrowserSavedSession(
+                schemaVersion: session.schemaVersion,
                 activeTabID: safeActiveID,
                 tabs: safeTabs,
                 savedAt: session.savedAt
             )
         } catch {
+            PipelineLogger.shared.log(stage: .browser, message: "[BrowserSessionStore] Corrupt browser session at \(fileURL.path) was quarantined: \(error)")
             return nil
         }
     }

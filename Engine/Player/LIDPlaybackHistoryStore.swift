@@ -113,31 +113,55 @@ public actor LIDPlaybackHistoryStore {
 
     // MARK: - Internal Storage Management
 
+    public struct LIDPlaybackHistoryPayload: Codable, SchemaVersioned {
+        public static let currentSchemaVersion: Int = 1
+        public var schemaVersion: Int
+        public var records: [String: LIDPlaybackRecord]
+
+        public init(schemaVersion: Int = Self.currentSchemaVersion, records: [String: LIDPlaybackRecord]) {
+            self.schemaVersion = schemaVersion
+            self.records = records
+        }
+
+        private enum CodingKeys: String, CodingKey {
+            case schemaVersion, records
+        }
+
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            self.schemaVersion = try container.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 0
+            self.records = try container.decode([String: LIDPlaybackRecord].self, forKey: .records)
+        }
+    }
+
     private func ensureLoaded() {
         guard !isLoaded else { return }
         isLoaded = true
 
         guard FileManager.default.fileExists(atPath: storageURL.path) else { return }
         do {
-            let data = try Data(contentsOf: storageURL)
-            let loaded = try JSONDecoder().decode([String: LIDPlaybackRecord].self, from: data)
-            self.records = loaded
+            if let payload = try DurableStorage.load(
+                from: storageURL,
+                legacyFallback: { data in
+                    let legacy = try JSONDecoder().decode([String: LIDPlaybackRecord].self, from: data)
+                    return LIDPlaybackHistoryPayload(schemaVersion: 0, records: legacy)
+                }
+            ) as LIDPlaybackHistoryPayload? {
+                self.records = payload.records
+            }
         } catch {
-            // Non-critical; start with fresh dictionary if corrupted
+            PipelineLogger.shared.log(stage: .persistence, message: "[LIDPlaybackHistoryStore] Corrupt playback history at \(storageURL.path) was quarantined: \(error)")
             self.records = [:]
         }
     }
 
     private func persistToDisk() {
+        let payload = LIDPlaybackHistoryPayload(records: records)
         do {
-            let dir = storageURL.deletingLastPathComponent()
-            if !FileManager.default.fileExists(atPath: dir.path) {
-                try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-            }
-            let data = try JSONEncoder().encode(records)
-            try data.write(to: storageURL, options: .atomic)
+            let data = try JSONEncoder().encode(payload)
+            try DurableStorage.writeAtomically(data, to: storageURL)
         } catch {
-            // Log silently or ignore
+            PipelineLogger.shared.log(stage: .persistence, message: "[LIDPlaybackHistoryStore] Failed to persist playback history: \(error)")
         }
     }
 }

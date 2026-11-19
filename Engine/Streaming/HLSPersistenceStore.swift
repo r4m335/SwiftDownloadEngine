@@ -113,10 +113,11 @@ public actor HLSPersistenceStore {
         let fileURL = recordFileURL(id: id)
         guard FileManager.default.fileExists(atPath: fileURL.path) else { return nil }
         do {
-            let data = try Data(contentsOf: fileURL)
-            let record = try decoder.decode(HLSTransferRecord.self, from: data)
-            cache[record.id] = record
-            return record
+            if let record = try DurableStorage.load(from: fileURL, decoder: decoder) as HLSTransferRecord? {
+                cache[record.id] = record
+                return record
+            }
+            return nil
         } catch {
             throw HLSPersistenceError.corruptedRecord(
                 id: id,
@@ -158,12 +159,15 @@ public actor HLSPersistenceStore {
                 continue
             }
             do {
-                let data = try Data(contentsOf: fileURL)
-                let record = try decoder.decode(HLSTransferRecord.self, from: data)
-                cache[record.id] = record
-                results.append(record)
+                if let record = try DurableStorage.load(from: fileURL, decoder: decoder) as HLSTransferRecord? {
+                    cache[record.id] = record
+                    results.append(record)
+                }
             } catch {
-                // Keep resilient against a single corrupted file
+                PipelineLogger.shared.log(
+                    stage: .persistence,
+                    message: "[HLSPersistenceStore] Quarantined corrupted record at \(fileURL.path): \(error.localizedDescription)"
+                )
                 continue
             }
         }
@@ -268,7 +272,10 @@ public actor HLSPersistenceStore {
         } catch {
             throw HLSPersistenceError.serializationFailed(underlyingError: error.localizedDescription)
         }
-        // Atomic write prevents partial/corrupt files on crash or power-cut
-        try data.write(to: fileURL, options: .atomic)
+        do {
+            try DurableStorage.writeAtomically(data, to: fileURL)
+        } catch {
+            throw HLSPersistenceError.serializationFailed(underlyingError: error.localizedDescription)
+        }
     }
 }

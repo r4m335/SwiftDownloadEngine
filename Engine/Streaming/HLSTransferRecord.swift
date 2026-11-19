@@ -37,8 +37,13 @@ public enum HLSAssemblyState: String, Codable, Sendable, Equatable {
 /// application's persistent download store. Browser authentication headers and
 /// cookies are intentionally excluded; those are runtime-only secrets managed
 /// separately by `BrowserHeaderFilter` and `KeychainManager`.
-public struct HLSTransferRecord: Codable, Sendable, Equatable, Identifiable {
+public struct HLSTransferRecord: Codable, Sendable, Equatable, Identifiable, SchemaVersioned {
+    public static let currentSchemaVersion: Int = 1
+
     // MARK: Identity
+
+    /// Schema version for persistent storage migrations.
+    public var schemaVersion: Int
 
     /// Stable parent transfer identifier (also matches the DownloadEngine parent download ID).
     public let id: String
@@ -85,6 +90,7 @@ public struct HLSTransferRecord: Codable, Sendable, Equatable, Identifiable {
     // MARK: - Initializer
 
     public init(
+        schemaVersion: Int = Self.currentSchemaVersion,
         id: String,
         manifestURL: URL,
         outputFilename: String,
@@ -97,6 +103,7 @@ public struct HLSTransferRecord: Codable, Sendable, Equatable, Identifiable {
         createdAt: Date = Date(),
         updatedAt: Date = Date()
     ) {
+        self.schemaVersion = schemaVersion
         self.id = id
         self.manifestURL = manifestURL
         self.outputFilename = outputFilename
@@ -108,6 +115,37 @@ public struct HLSTransferRecord: Codable, Sendable, Equatable, Identifiable {
         self.assemblyState = assemblyState
         self.createdAt = createdAt
         self.updatedAt = updatedAt
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion
+        case id
+        case manifestURL
+        case outputFilename
+        case outputDestinationURL
+        case segmentDirectoryURL
+        case totalSegments
+        case completedSegmentOrders
+        case state
+        case assemblyState
+        case createdAt
+        case updatedAt
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.schemaVersion = try container.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 0
+        self.id = try container.decode(String.self, forKey: .id)
+        self.manifestURL = try container.decode(URL.self, forKey: .manifestURL)
+        self.outputFilename = try container.decode(String.self, forKey: .outputFilename)
+        self.outputDestinationURL = try container.decode(URL.self, forKey: .outputDestinationURL)
+        self.segmentDirectoryURL = try container.decode(URL.self, forKey: .segmentDirectoryURL)
+        self.totalSegments = try container.decode(Int.self, forKey: .totalSegments)
+        self.completedSegmentOrders = try container.decode(Set<Int>.self, forKey: .completedSegmentOrders)
+        self.state = try container.decode(HLSTransferState.self, forKey: .state)
+        self.assemblyState = try container.decode(HLSAssemblyState.self, forKey: .assemblyState)
+        self.createdAt = try container.decode(Date.self, forKey: .createdAt)
+        self.updatedAt = try container.decode(Date.self, forKey: .updatedAt)
     }
 
     // MARK: - Computed Helpers

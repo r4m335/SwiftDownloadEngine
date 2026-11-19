@@ -353,41 +353,102 @@ public final class LIDLibraryStore: ObservableObject {
 
     // MARK: - Persistence Internals
 
+    public struct LIDFavoritesPayload: Codable, SchemaVersioned {
+        public static let currentSchemaVersion: Int = 1
+        public var schemaVersion: Int
+        public var favorites: [String]
+
+        public init(schemaVersion: Int = Self.currentSchemaVersion, favorites: [String]) {
+            self.schemaVersion = schemaVersion
+            self.favorites = favorites
+        }
+
+        private enum CodingKeys: String, CodingKey {
+            case schemaVersion, favorites
+        }
+
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            self.schemaVersion = try container.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 0
+            self.favorites = try container.decode([String].self, forKey: .favorites)
+        }
+    }
+
+    public struct LIDPlaylistsPayload: Codable, SchemaVersioned {
+        public static let currentSchemaVersion: Int = 1
+        public var schemaVersion: Int
+        public var playlists: [LIDPlaylist]
+
+        public init(schemaVersion: Int = Self.currentSchemaVersion, playlists: [LIDPlaylist]) {
+            self.schemaVersion = schemaVersion
+            self.playlists = playlists
+        }
+
+        private enum CodingKeys: String, CodingKey {
+            case schemaVersion, playlists
+        }
+
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            self.schemaVersion = try container.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 0
+            self.playlists = try container.decode([LIDPlaylist].self, forKey: .playlists)
+        }
+    }
+
     private func loadState() {
         guard !isLoaded else { return }
         isLoaded = true
 
         // Load Favorites
         if FileManager.default.fileExists(atPath: favoritesStorageURL.path) {
-            if let data = try? Data(contentsOf: favoritesStorageURL),
-               let loaded = try? JSONDecoder().decode([String].self, from: data) {
-                self.favorites = Set(loaded)
+            do {
+                if let payload = try DurableStorage.load(
+                    from: favoritesStorageURL,
+                    legacyFallback: { data in
+                        let list = try JSONDecoder().decode([String].self, from: data)
+                        return LIDFavoritesPayload(schemaVersion: 0, favorites: list)
+                    }
+                ) as LIDFavoritesPayload? {
+                    self.favorites = Set(payload.favorites)
+                }
+            } catch {
+                PipelineLogger.shared.log(stage: .persistence, message: "[LIDLibraryStore] Corrupt favorites file at \(favoritesStorageURL.path) was quarantined: \(error)")
             }
         }
 
         // Load Playlists
         if FileManager.default.fileExists(atPath: playlistsStorageURL.path) {
-            if let data = try? Data(contentsOf: playlistsStorageURL),
-               let loaded = try? JSONDecoder().decode([LIDPlaylist].self, from: data) {
-                self.playlists = loaded
+            do {
+                if let payload = try DurableStorage.load(
+                    from: playlistsStorageURL,
+                    legacyFallback: { data in
+                        let list = try JSONDecoder().decode([LIDPlaylist].self, from: data)
+                        return LIDPlaylistsPayload(schemaVersion: 0, playlists: list)
+                    }
+                ) as LIDPlaylistsPayload? {
+                    self.playlists = payload.playlists
+                }
+            } catch {
+                PipelineLogger.shared.log(stage: .persistence, message: "[LIDLibraryStore] Corrupt playlists file at \(playlistsStorageURL.path) was quarantined: \(error)")
             }
         }
     }
 
     private func persistFavorites() {
-        let list = Array(favorites)
+        let payload = LIDFavoritesPayload(favorites: Array(favorites))
         do {
-            let data = try JSONEncoder().encode(list)
-            try data.write(to: favoritesStorageURL, options: .atomic)
+            let data = try JSONEncoder().encode(payload)
+            try DurableStorage.writeAtomically(data, to: favoritesStorageURL)
         } catch {
             PipelineLogger.shared.log(stage: .persistence, message: "Failed to persist favorites: \(error)")
         }
     }
 
     private func persistPlaylists() {
+        let payload = LIDPlaylistsPayload(playlists: playlists)
         do {
-            let data = try JSONEncoder().encode(playlists)
-            try data.write(to: playlistsStorageURL, options: .atomic)
+            let data = try JSONEncoder().encode(payload)
+            try DurableStorage.writeAtomically(data, to: playlistsStorageURL)
         } catch {
             PipelineLogger.shared.log(stage: .persistence, message: "Failed to persist playlists: \(error)")
         }
