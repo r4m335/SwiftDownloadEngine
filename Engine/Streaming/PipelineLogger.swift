@@ -277,7 +277,7 @@ public struct DiagnosticLogView: View {
     @State private var isConfigExpanded: Bool = true
 
     public init(configuration: EngineConfiguration? = nil) {
-        self.configuration = configuration ?? AppSettings.load().makeEngineConfiguration()
+        self.configuration = configuration ?? .default
     }
 
     private var filteredEntries: [String] {
