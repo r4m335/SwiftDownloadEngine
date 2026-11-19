@@ -69,7 +69,7 @@ public actor TorrentPersistenceStore {
             throw TorrentEngineError.unsupportedSchemaVersion(manifest.schemaVersion)
         }
         self.cachedManifest = manifest
-        try DurableStorage.writeAtomically(try encoder.encode(manifest), to: manifestFileURL, fileManager: fileManager)
+        try writeDataAtomically(try encoder.encode(manifest), to: manifestFileURL)
     }
 
     // MARK: - Record Operations
@@ -86,7 +86,7 @@ public actor TorrentPersistenceStore {
         } else {
             updated.records.append(record)
         }
-        try DurableStorage.writeAtomically(try encoder.encode(updated), to: manifestFileURL, fileManager: fileManager)
+        try writeDataAtomically(try encoder.encode(updated), to: manifestFileURL)
         cachedManifest = updated
     }
 
@@ -104,7 +104,7 @@ public actor TorrentPersistenceStore {
                 updated.records.append(record)
             }
         }
-        try DurableStorage.writeAtomically(try encoder.encode(updated), to: manifestFileURL, fileManager: fileManager)
+        try writeDataAtomically(try encoder.encode(updated), to: manifestFileURL)
         cachedManifest = updated
     }
 
@@ -124,7 +124,7 @@ public actor TorrentPersistenceStore {
         let key = infoHash.lowercased()
         var updated = cachedManifest
         updated.records.removeAll(where: { $0.infoHash.lowercased() == key })
-        try DurableStorage.writeAtomically(try encoder.encode(updated), to: manifestFileURL, fileManager: fileManager)
+        try writeDataAtomically(try encoder.encode(updated), to: manifestFileURL)
         cachedManifest = updated
         do {
             try deleteResumeData(for: key)
@@ -139,7 +139,7 @@ public actor TorrentPersistenceStore {
     public func saveResumeData(_ data: Data, for infoHash: String) throws {
         let key = infoHash.lowercased()
         let fileURL = resumeDataURL(for: key)
-        try DurableStorage.writeAtomically(data, to: fileURL, fileManager: fileManager)
+        try writeDataAtomically(data, to: fileURL)
 
         // Update record fastResumeFileName reference if record exists
         if var record = loadRecord(infoHash: key) {
@@ -191,7 +191,7 @@ public actor TorrentPersistenceStore {
             throw error
         }
         #endif
-        try Self.writeDataAtomically(data, to: destinationURL, fileManager: fileManager)
+        try DurableStorage.writeAtomically(data, to: destinationURL, fileManager: fileManager)
     }
 
     private static func loadOrRecoverManifest(
