@@ -34,12 +34,47 @@ final class HLSVODReconstructionTests: XCTestCase {
         let result = try HLSVODReconstructor.assemble(
             transferPlan: transferPlan,
             completedResources: completed,
-            destinationURL: output
+            destinationURL: output,
+            remuxTSToMP4: false
         )
 
         XCTAssertEqual(result.container, .mpegTS)
         XCTAssertEqual(try Data(contentsOf: output), firstData + secondData)
         XCTAssertTrue(HLSVODReconstructionPlanner.suggestedFilename(for: transferPlan).hasSuffix(".mp4"))
+    }
+
+    func testHLSVODReconstructorAssemblesMPEGTSToMP4WhenRemuxEnabled() throws {
+        let playlist = """
+        #EXTM3U
+        #EXT-X-VERSION:3
+        #EXT-X-PLAYLIST-TYPE:VOD
+        #EXTINF:2,
+        segment.ts
+        #EXT-X-ENDLIST
+        """
+        let manifest = try HLSManifestParser.parse(playlist, baseURL: manifestURL)
+        let transferPlan = try HLSTransferPlanner.makeVODPlan(from: manifest)
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let segmentFile = directory.appendingPathComponent("segment.ts")
+        let tsData = RealMediaFixtures.mpegTSData
+        try tsData.write(to: segmentFile)
+
+        let completed = [
+            HLSCompletedResource(resource: transferPlan.resources[0], fileURL: segmentFile)
+        ]
+        let output = directory.appendingPathComponent("vod.ts")
+        let result = try HLSVODReconstructor.assemble(
+            transferPlan: transferPlan,
+            completedResources: completed,
+            destinationURL: output,
+            remuxTSToMP4: true
+        )
+
+        let finalPath = result.destinationURL.path
+        XCTAssertTrue(FileManager.default.fileExists(atPath: finalPath))
+        XCTAssertGreaterThan(result.byteCount, 0)
     }
 
     func testFragmentedMP4VODPreservesInitializationMapAndSegmentOrder() throws {

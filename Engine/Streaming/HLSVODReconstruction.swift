@@ -210,7 +210,8 @@ public enum HLSVODReconstructor {
         transferPlan: HLSVODTransferPlan,
         completedResources: [HLSCompletedResource],
         destinationURL: URL,
-        temporaryDirectoryURL: URL? = nil
+        temporaryDirectoryURL: URL? = nil,
+        remuxTSToMP4: Bool = true
     ) throws -> MediaAssemblyOutput {
         let allPlanned = transferPlan.allResources
         let hasEncryption = allPlanned.contains {
@@ -219,7 +220,7 @@ public enum HLSVODReconstructor {
 
         let effectiveDestination: URL
         #if canImport(AVFoundation)
-        if destinationURL.pathExtension.lowercased() == "ts" && NSClassFromString("XCTestCase") == nil {
+        if destinationURL.pathExtension.lowercased() == "ts" && remuxTSToMP4 {
             effectiveDestination = destinationURL.deletingPathExtension().appendingPathExtension("mp4")
         } else {
             effectiveDestination = destinationURL

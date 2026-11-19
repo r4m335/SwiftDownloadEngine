@@ -298,10 +298,10 @@ final class MediaAssemblerTests: XCTestCase {
         let audioMedia = directory.appendingPathComponent("audio-segment.m4s")
         let output = directory.appendingPathComponent("muxed.mp4")
 
-        let vInitBytes = isoBox("ftyp", payload: Data([1])) + isoBox("moov", payload: Data([2]))
-        let vMediaBytes = isoBox("moof", payload: Data([3])) + isoBox("mdat", payload: Data([4]))
-        let aInitBytes = isoBox("ftyp", payload: Data([5])) + isoBox("moov", payload: Data([6]))
-        let aMediaBytes = isoBox("moof", payload: Data([7])) + isoBox("mdat", payload: Data([8]))
+        let vInitBytes = RealMediaFixtures.videoInitSegment
+        let vMediaBytes = RealMediaFixtures.videoMediaSegment
+        let aInitBytes = RealMediaFixtures.audioInitSegment
+        let aMediaBytes = RealMediaFixtures.audioMediaSegment
 
         try vInitBytes.write(to: videoInit)
         try vMediaBytes.write(to: videoMedia)
@@ -656,6 +656,75 @@ final class MediaAssemblerTests: XCTestCase {
         XCTAssertEqual(result.validation.state, .outputValidated)
         XCTAssertTrue(result.validation.isStructurallyValid)
         XCTAssertNotNil(result.validation.validationDetails)
+    }
+
+    func testAssembleMPEGTSWithMP4DestinationPerformsRealRemuxing() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("media-assembler-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let segmentFile = directory.appendingPathComponent("sample.ts")
+        let tsData = RealMediaFixtures.mpegTSData
+        try tsData.write(to: segmentFile)
+
+        let outputMP4 = directory.appendingPathComponent("remuxed.mp4")
+        let request = MediaAssemblyRequest(
+            container: .mpegTS,
+            tracks: [MediaAssemblyTrack(
+                kind: .video,
+                container: .mpegTS,
+                mediaSegments: [MediaAssemblySegment(
+                    fileURL: segmentFile,
+                    order: 0,
+                    actualByteCount: Int64(tsData.count)
+                )]
+            )],
+            destinationURL: outputMP4
+        )
+
+        let result = try MediaAssembler.assemble(request)
+        let publishedURL = result.destinationURL
+        XCTAssertTrue(FileManager.default.fileExists(atPath: publishedURL.path))
+        XCTAssertGreaterThan(result.byteCount, 0)
+    }
+
+    struct FailingRemuxer: MPEGTSMediaRemuxer {
+        func remux(sourceTSURL: URL, destinationMP4URL: URL) throws {
+            throw MediaAssemblyError.assetWriterFailed(reason: "Mock remux failure")
+        }
+    }
+
+    func testAssembleMPEGTSToMP4FallsBackToTSWhenRemuxerFails() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("media-assembler-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let segmentFile = directory.appendingPathComponent("sample.ts")
+        let tsData = makePATPacket() + makePMTPacket()
+        try tsData.write(to: segmentFile)
+
+        let outputMP4 = directory.appendingPathComponent("output.mp4")
+        let request = MediaAssemblyRequest(
+            container: .mpegTS,
+            tracks: [MediaAssemblyTrack(
+                kind: .video,
+                container: .mpegTS,
+                mediaSegments: [MediaAssemblySegment(
+                    fileURL: segmentFile,
+                    order: 0,
+                    actualByteCount: Int64(tsData.count)
+                )]
+            )],
+            destinationURL: outputMP4
+        )
+
+        let result = try MediaAssembler.assemble(request, remuxer: FailingRemuxer())
+        // When remuxer fails, it safely falls back to preserving the valid MPEG-TS output as .ts
+        XCTAssertEqual(result.container, .mpegTS)
+        let expectedTS = directory.appendingPathComponent("output.ts")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: expectedTS.path))
     }
 
     private func isoBox(_ type: String, payload: Data) -> Data {

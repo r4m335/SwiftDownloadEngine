@@ -239,7 +239,8 @@ final class StreamingDownloadOrchestratorTests: XCTestCase {
         let result = try HLSVODReconstructor.assemble(
             transferPlan: transferPlan,
             completedResources: completed,
-            destinationURL: output
+            destinationURL: output,
+            remuxTSToMP4: false
         )
 
         XCTAssertEqual(result.container, .mpegTS)

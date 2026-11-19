@@ -221,6 +221,7 @@ public actor DownloadEngine {
     public let queueManager: DownloadQueueManager
     public let coordinator: DownloadCoordinator
     public let persistenceStore: DownloadPersistenceStore
+    public let readabilityVerifier: MediaReadabilityVerifier
     public private(set) var configuration: EngineConfiguration
 
     private var subscribers: [UUID: AsyncStream<DownloadEvent>.Continuation] = [:]
@@ -234,9 +235,11 @@ public actor DownloadEngine {
         configuration: EngineConfiguration,
         storageDirectoryURL: URL? = nil,
         session: URLSession? = nil,
-        backgroundSessionManager: BackgroundDownloadSessionManager? = nil
+        backgroundSessionManager: BackgroundDownloadSessionManager? = nil,
+        readabilityVerifier: MediaReadabilityVerifier = DefaultMediaReadabilityVerifier()
     ) throws {
         self.configuration = configuration
+        self.readabilityVerifier = readabilityVerifier
         let effectiveSession = session ?? ForegroundURLSession.make()
         let persistence = try DownloadPersistenceStore(storageDirectoryURL: storageDirectoryURL)
         let budget = SharedRequestBudget(maxGlobalRequests: configuration.maxGlobalRequests)
@@ -273,7 +276,8 @@ public actor DownloadEngine {
         maxGlobalRequests: Int = 12,
         globalBandwidthLimit: Int64? = nil,
         session: URLSession? = nil,
-        backgroundSessionManager: BackgroundDownloadSessionManager? = nil
+        backgroundSessionManager: BackgroundDownloadSessionManager? = nil,
+        readabilityVerifier: MediaReadabilityVerifier = DefaultMediaReadabilityVerifier()
     ) throws {
         let config = EngineConfiguration(
             maxConcurrentDownloads: maxConcurrentDownloads,
@@ -285,7 +289,8 @@ public actor DownloadEngine {
             configuration: config,
             storageDirectoryURL: storageDirectoryURL,
             session: effectiveSession,
-            backgroundSessionManager: backgroundSessionManager
+            backgroundSessionManager: backgroundSessionManager,
+            readabilityVerifier: readabilityVerifier
         )
     }
 
@@ -294,12 +299,14 @@ public actor DownloadEngine {
         configuration: EngineConfiguration = .default,
         queueManager: DownloadQueueManager,
         coordinator: DownloadCoordinator,
-        persistenceStore: DownloadPersistenceStore
+        persistenceStore: DownloadPersistenceStore,
+        readabilityVerifier: MediaReadabilityVerifier = DefaultMediaReadabilityVerifier()
     ) {
         self.configuration = configuration
         self.queueManager = queueManager
         self.coordinator = coordinator
         self.persistenceStore = persistenceStore
+        self.readabilityVerifier = readabilityVerifier
 
         Task { [weak self] in
             await self?.attachListeners()
@@ -310,13 +317,15 @@ public actor DownloadEngine {
     public init(
         queueManager: DownloadQueueManager,
         coordinator: DownloadCoordinator,
-        persistenceStore: DownloadPersistenceStore
+        persistenceStore: DownloadPersistenceStore,
+        readabilityVerifier: MediaReadabilityVerifier = DefaultMediaReadabilityVerifier()
     ) {
         self.init(
             configuration: .default,
             queueManager: queueManager,
             coordinator: coordinator,
-            persistenceStore: persistenceStore
+            persistenceStore: persistenceStore,
+            readabilityVerifier: readabilityVerifier
         )
     }
 
@@ -566,34 +575,14 @@ public actor DownloadEngine {
         let actualSize = FileManager.default.fileSize(atPath: localFileURL.path) ?? totalBytes
         PipelineLogger.shared.log("[DownloadEngine] Validated localFileURL: \(localFileURL.path), size: \(actualSize) bytes, extension: .\(localFileURL.pathExtension)")
 
-        // Handle AVAsset Loading Errors Gracefully
-        #if canImport(AVFoundation)
-        if NSClassFromString("XCTestCase") == nil {
-            let asset = AVURLAsset(url: localFileURL)
-            let sema = DispatchSemaphore(value: 0)
-            asset.loadValuesAsynchronously(forKeys: ["tracks", "playable"]) {
-                sema.signal()
-            }
-            _ = sema.wait(timeout: .now() + 3.0)
-            var isReadable = false
-            if #available(macOS 12.0, iOS 15.0, *) {
-                isReadable = asset.isPlayable || !asset.tracks.isEmpty
-            } else {
-                isReadable = !asset.tracks.isEmpty
-            }
-            if !isReadable && localFileURL.pathExtension.lowercased() == "ts" {
-                if let size = FileManager.default.fileSize(atPath: localFileURL.path), size > 0, size % 188 == 0 {
-                    isReadable = true
-                }
-            }
-            if !isReadable {
-                let reason = "Failed to read final media file (format: \(localFileURL.pathExtension))"
-                PipelineLogger.shared.log("[DownloadEngine] \(reason)")
-                await failStreamingDownload(id: id, reason: reason)
-                throw DownloadError.invalidMediaFile(reason)
-            }
+        // Verify media readability via injected verifier
+        let isReadable = await readabilityVerifier.isMediaReadable(at: localFileURL)
+        if !isReadable {
+            let reason = "Failed to read final media file (format: \(localFileURL.pathExtension))"
+            PipelineLogger.shared.log("[DownloadEngine] \(reason)")
+            await failStreamingDownload(id: id, reason: reason)
+            throw DownloadError.invalidMediaFile(reason)
         }
-        #endif
 
         await queueManager.completeStreaming(id: id, finalDestinationURL: localFileURL, totalBytes: actualSize)
         if let existing = try? await persistenceStore.fetch(tag: id) {

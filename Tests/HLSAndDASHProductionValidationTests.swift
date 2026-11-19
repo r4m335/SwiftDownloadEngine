@@ -462,7 +462,8 @@ final class HLSAndDASHProductionValidationTests: XCTestCase {
         let assemblyOutput = try HLSVODReconstructor.assemble(
             transferPlan: transferPlan,
             completedResources: completed,
-            destinationURL: outputURL
+            destinationURL: outputURL,
+            remuxTSToMP4: false
         )
 
         XCTAssertEqual(assemblyOutput.container, .mpegTS)

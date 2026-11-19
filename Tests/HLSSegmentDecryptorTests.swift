@@ -166,7 +166,8 @@ final class HLSSegmentDecryptorTests: XCTestCase {
             transferPlan: transferPlan,
             completedResources: completed,
             destinationURL: outputURL,
-            temporaryDirectoryURL: tempDir.appendingPathComponent("assembly_temp")
+            temporaryDirectoryURL: tempDir.appendingPathComponent("assembly_temp"),
+            remuxTSToMP4: false
         )
 
         XCTAssertEqual(result.container, .mpegTS)

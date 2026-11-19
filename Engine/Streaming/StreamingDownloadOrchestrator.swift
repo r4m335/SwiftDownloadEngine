@@ -904,6 +904,7 @@ public actor StreamingDownloadOrchestrator {
     }
 
     public private(set) var configuration: EngineConfiguration
+    public let remuxTSToMP4: Bool
 
     public init(
         configuration: EngineConfiguration = .default,
@@ -912,7 +913,8 @@ public actor StreamingDownloadOrchestrator {
         parsingLimits: ManifestParsingLimits = .default,
         urlResolver: (any BrowserMediaURLResolver)? = nil,
         downloadEngine: DownloadEngine? = nil,
-        hlsPersistenceStore: HLSPersistenceStore? = nil
+        hlsPersistenceStore: HLSPersistenceStore? = nil,
+        remuxTSToMP4: Bool = true
     ) {
         self.configuration = configuration
         self.manifestLoader = manifestLoader
@@ -921,6 +923,7 @@ public actor StreamingDownloadOrchestrator {
         self.urlResolver = urlResolver
         self.downloadEngine = downloadEngine
         self.hlsPersistenceStore = hlsPersistenceStore
+        self.remuxTSToMP4 = remuxTSToMP4
     }
 
     public init(
@@ -931,7 +934,8 @@ public actor StreamingDownloadOrchestrator {
         parsingLimits: ManifestParsingLimits = .default,
         retryCount: Int? = nil,
         urlResolver: (any BrowserMediaURLResolver)? = nil,
-        hlsPersistenceStore: HLSPersistenceStore? = nil
+        hlsPersistenceStore: HLSPersistenceStore? = nil,
+        remuxTSToMP4: Bool = true
     ) {
         self.init(
             configuration: configuration,
@@ -943,7 +947,8 @@ public actor StreamingDownloadOrchestrator {
             parsingLimits: parsingLimits,
             urlResolver: urlResolver,
             downloadEngine: downloadEngine,
-            hlsPersistenceStore: hlsPersistenceStore
+            hlsPersistenceStore: hlsPersistenceStore,
+            remuxTSToMP4: remuxTSToMP4
         )
     }
 
@@ -2561,7 +2566,7 @@ public actor StreamingDownloadOrchestrator {
         }
         let finalOutputURL: URL
         #if canImport(AVFoundation)
-        finalOutputURL = (outputURL.pathExtension.lowercased() == "ts" && NSClassFromString("XCTestCase") == nil)
+        finalOutputURL = (outputURL.pathExtension.lowercased() == "ts" && remuxTSToMP4)
             ? outputURL.deletingPathExtension().appendingPathExtension("mp4")
             : outputURL
         #else
@@ -2769,7 +2774,8 @@ public actor StreamingDownloadOrchestrator {
                 temporaryDirectoryURL: destinationDirectory.appendingPathComponent(
                     ".media-assembly",
                     isDirectory: true
-                )
+                ),
+                remuxTSToMP4: remuxTSToMP4
             )
             try Task.checkCancellation()
             if isCancelled(transferID: parentID) {

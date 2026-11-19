@@ -935,10 +935,34 @@ final class DownloadEngineTests: XCTestCase {
     func testCompleteStreamingDownloadValidFileSucceeds() async throws {
         let sourceURL = URL(string: "https://example.com/playlist.m3u8")!
         let mp4URL = tempDirectory.appendingPathComponent("stream-\(UUID().uuidString).mp4")
-        try Data(repeating: 0x00, count: 500).write(to: mp4URL)
+        let mp4Bytes = RealMediaFixtures.realMP4Data
+        try mp4Bytes.write(to: mp4URL)
 
         _ = try await engine.registerStreamingDownload(
             id: "stream-test-valid",
+            manifestURL: sourceURL,
+            destinationURL: mp4URL,
+            filename: mp4URL.lastPathComponent,
+            totalBytes: Int64(mp4Bytes.count),
+            mimeType: "video/mp4"
+        )
+
+        let snapshot = try await engine.completeStreamingDownload(
+            id: "stream-test-valid",
+            finalFileURL: mp4URL,
+            totalBytes: Int64(mp4Bytes.count)
+        )
+        XCTAssertEqual(snapshot.state, .completed)
+        XCTAssertEqual(snapshot.destinationURL, mp4URL)
+    }
+
+    func testCompleteStreamingDownloadCorruptFileFailsVerification() async throws {
+        let sourceURL = URL(string: "https://example.com/playlist.m3u8")!
+        let mp4URL = tempDirectory.appendingPathComponent("stream-corrupt-\(UUID().uuidString).mp4")
+        try Data(repeating: 0x00, count: 500).write(to: mp4URL)
+
+        _ = try await engine.registerStreamingDownload(
+            id: "stream-test-corrupt",
             manifestURL: sourceURL,
             destinationURL: mp4URL,
             filename: mp4URL.lastPathComponent,
@@ -946,13 +970,46 @@ final class DownloadEngineTests: XCTestCase {
             mimeType: "video/mp4"
         )
 
-        let snapshot = try await engine.completeStreamingDownload(
-            id: "stream-test-valid",
-            finalFileURL: mp4URL,
-            totalBytes: 500
+        do {
+            _ = try await engine.completeStreamingDownload(
+                id: "stream-test-corrupt",
+                finalFileURL: mp4URL,
+                totalBytes: 500
+            )
+            XCTFail("Expected completeStreamingDownload to reject invalid/corrupt media file")
+        } catch let error as DownloadError {
+            if case .invalidMediaFile = error {
+                // Expected: corrupt file rejected by readability verifier
+            } else {
+                XCTFail("Expected invalidMediaFile error, got \(error)")
+            }
+        }
+    }
+
+    func testCompleteStreamingDownloadAcceptsInjectedMockVerifier() async throws {
+        let customEngine = try DownloadEngine(
+            storageDirectoryURL: tempDirectory.appendingPathComponent("custom-engine"),
+            readabilityVerifier: MockMediaReadabilityVerifier(result: true)
+        )
+        let sourceURL = URL(string: "https://example.com/playlist.m3u8")!
+        let dummyURL = tempDirectory.appendingPathComponent("custom.bin")
+        try Data([1, 2, 3]).write(to: dummyURL)
+
+        _ = try await customEngine.registerStreamingDownload(
+            id: "stream-custom-mock",
+            manifestURL: sourceURL,
+            destinationURL: dummyURL,
+            filename: dummyURL.lastPathComponent,
+            totalBytes: 3,
+            mimeType: "application/octet-stream"
+        )
+
+        let snapshot = try await customEngine.completeStreamingDownload(
+            id: "stream-custom-mock",
+            finalFileURL: dummyURL,
+            totalBytes: 3
         )
         XCTAssertEqual(snapshot.state, .completed)
-        XCTAssertEqual(snapshot.destinationURL, mp4URL)
     }
 }
 

@@ -11,6 +11,22 @@ public protocol MediaAssemblyExecutor: Sendable {
     func assemble(_ request: MediaAssemblyRequest) async throws -> MediaAssemblyOutput
 }
 
+/// Remuxing contract for converting MPEG-TS containers to MP4.
+public protocol MPEGTSMediaRemuxer: Sendable {
+    func remux(sourceTSURL: URL, destinationMP4URL: URL) throws
+}
+
+public struct AVFoundationMPEGTSMediaRemuxer: MPEGTSMediaRemuxer {
+    public init() {}
+    public func remux(sourceTSURL: URL, destinationMP4URL: URL) throws {
+        #if canImport(AVFoundation)
+        try MediaAssembler.remuxMPEGTSFileToMP4(sourceTSURL: sourceTSURL, destinationMP4URL: destinationMP4URL)
+        #else
+        throw MediaAssemblyError.muxingUnavailable
+        #endif
+    }
+}
+
 /// Validates and assembles supported clear VOD segment sets.
 ///
 /// The first implementation intentionally supports one compatible track. MPEG-TS
@@ -127,7 +143,8 @@ public enum MediaAssembler {
     /// Copies validated segments to a temporary output and publishes it only after
     /// the resulting container structure has been checked.
     public static func assemble(
-        _ request: MediaAssemblyRequest
+        _ request: MediaAssemblyRequest,
+        remuxer: MPEGTSMediaRemuxer = AVFoundationMPEGTSMediaRemuxer()
     ) throws -> MediaAssemblyOutput {
         let validation = try validateInput(request)
         if request.tracks.count > 1 {
@@ -204,7 +221,7 @@ public enum MediaAssembler {
                 #if canImport(AVFoundation)
                 let remuxStaging = parentDir.appendingPathComponent(".remux-\(UUID().uuidString).mp4")
                 do {
-                    try remuxMPEGTSFileToMP4(sourceTSURL: temporaryOutput, destinationMP4URL: remuxStaging)
+                    try remuxer.remux(sourceTSURL: temporaryOutput, destinationMP4URL: remuxStaging)
                     stagingPublishedURL = remuxStaging
                     needsRemuxCleanup = true
                     finalContainer = .fragmentedMP4
@@ -599,7 +616,6 @@ public enum MediaAssembler {
             writer.movieFragmentInterval = CMTime(seconds: 2, preferredTimescale: 600)
 
             var contexts: [MuxTrackContext] = []
-            var testFallbackNeeded = false
             var canUseWriter = true
 
             for (track, loaded) in zip(request.tracks, loadedTracks) {
@@ -608,10 +624,6 @@ public enum MediaAssembler {
                                   loaded.asset.tracks(withMediaType: mediaType).first
 
                 guard let chosenTrack = sourceTrack else {
-                    if NSClassFromString("XCTestCase") != nil && request.container == .fragmentedMP4 && loaded.asset.tracks.isEmpty {
-                        testFallbackNeeded = true
-                        break
-                    }
                     let available = loaded.asset.tracks.map { $0.mediaType.rawValue }.joined(separator: ", ")
                     let msg = "No \(mediaType.rawValue) track found in source \(loaded.sourceURL.lastPathComponent). Available: [\(available)]"
                     PipelineLogger.shared.log("[MediaAssembler] \(msg)")
@@ -651,11 +663,7 @@ public enum MediaAssembler {
 
             var muxSucceeded = false
 
-            if testFallbackNeeded {
-                try? fileManager.removeItem(at: temporaryOutput)
-                try fileManager.copyItem(at: sourceURLs[0], to: temporaryOutput)
-                muxSucceeded = true
-            } else if canUseWriter && contexts.count == request.tracks.count {
+            if canUseWriter && contexts.count == request.tracks.count {
                 for ctx in contexts {
                     guard ctx.reader.startReading() else {
                         let err = ctx.reader.error?.localizedDescription ?? "unknown reader error"
@@ -824,7 +832,7 @@ public enum MediaAssembler {
 
             // Validate final published multi-track output on disk
             let publishedReport = MediaAssemblyValidationReport(
-                container: testFallbackNeeded ? request.container : .fragmentedMP4,
+                container: .fragmentedMP4,
                 trackCount: request.tracks.count,
                 mediaSegmentCount: validation.mediaSegmentCount,
                 totalInputBytes: validation.totalInputBytes,
@@ -837,7 +845,7 @@ public enum MediaAssembler {
             PipelineLogger.shared.log("[MediaAssembler] assembleMultipleTracks completed: outputURL=\(request.destinationURL.path), byteCount=\(byteCount), pathExtension=\(request.destinationURL.pathExtension)")
             return MediaAssemblyOutput(
                 destinationURL: request.destinationURL,
-                container: testFallbackNeeded ? request.container : .fragmentedMP4,
+                container: .fragmentedMP4,
                 trackCount: request.tracks.count,
                 byteCount: byteCount,
                 validation: publishedReport
@@ -1294,22 +1302,6 @@ public enum MediaAssembler {
                 lastErrorReason = "No tracks exposed on assetToRead"
                 PipelineLogger.shared.log("[MediaAssembler] Remux Attempt 3: assetToRead has no tracks")
             }
-        }
-
-        // Test fallback for synthetic packets in unit tests (where dummy bytes have no audio/video tracks)
-        if !didSucceed && NSClassFromString("XCTestCase") != nil {
-            try? fileManager.removeItem(at: destinationMP4URL)
-            let fmp4Bytes: [UInt8] = [
-                0x00, 0x00, 0x00, 0x14, 0x66, 0x74, 0x79, 0x70, // ftyp
-                0x69, 0x73, 0x6F, 0x6D, 0x00, 0x00, 0x00, 0x00,
-                0x69, 0x73, 0x6F, 0x6D,
-                0x00, 0x00, 0x00, 0x08, 0x6D, 0x6F, 0x6F, 0x76, // moov
-                0x00, 0x00, 0x00, 0x08, 0x6D, 0x6F, 0x6F, 0x66, // moof
-                0x00, 0x00, 0x00, 0x0C, 0x6D, 0x64, 0x61, 0x74, // mdat (payload > 0)
-                0x01, 0x02, 0x03, 0x04
-            ]
-            try Data(fmp4Bytes).write(to: destinationMP4URL)
-            return
         }
 
         guard didSucceed else {
