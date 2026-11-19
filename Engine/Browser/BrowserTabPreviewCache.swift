@@ -45,7 +45,11 @@ public final class BrowserTabPreviewCache: @unchecked Sendable {
 
         guard !isIncognito, let dir = cacheDirectoryURL else { return }
         let fileURL = dir.appendingPathComponent("\(tabID.uuidString).jpg")
-        try? data.write(to: fileURL, options: .atomic)
+        do {
+            try data.write(to: fileURL, options: .atomic)
+        } catch {
+            PipelineLogger.shared.log(stage: .browser, message: "Failed to write tab preview: \(error)")
+        }
     }
 
     /// Retrieves thumbnail preview data for a tab.
@@ -75,7 +79,13 @@ public final class BrowserTabPreviewCache: @unchecked Sendable {
 
         if let dir = cacheDirectoryURL {
             let fileURL = dir.appendingPathComponent("\(tabID.uuidString).jpg")
-            try? fileManager.removeItem(at: fileURL)
+            do {
+                if fileManager.fileExists(atPath: fileURL.path) {
+                    try fileManager.removeItem(at: fileURL)
+                }
+            } catch {
+                PipelineLogger.shared.log(stage: .browser, message: "Failed to remove tab preview: \(error)")
+            }
         }
     }
 
@@ -87,8 +97,14 @@ public final class BrowserTabPreviewCache: @unchecked Sendable {
         memoryCache.removeAll()
 
         if let dir = cacheDirectoryURL {
-            try? fileManager.removeItem(at: dir)
-            try? fileManager.createDirectory(at: dir, withIntermediateDirectories: true)
+            do {
+                if fileManager.fileExists(atPath: dir.path) {
+                    try fileManager.removeItem(at: dir)
+                }
+                try fileManager.createDirectory(at: dir, withIntermediateDirectories: true)
+            } catch {
+                PipelineLogger.shared.log(stage: .browser, message: "Failed to reset preview cache dir: \(error)")
+            }
         }
     }
 

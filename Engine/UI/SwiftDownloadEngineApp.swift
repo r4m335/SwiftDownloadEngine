@@ -119,7 +119,11 @@ public final class ContinuedProcessingTaskCoordinator {
 
     private func handoffAfterExpiration(ids: [String]) async {
         for id in ids {
-            try? await engine.handoffScheduledDownloadToBackground(id: id, earliestBeginDate: Date())
+            do {
+                try await engine.handoffScheduledDownloadToBackground(id: id, earliestBeginDate: Date())
+            } catch {
+                PipelineLogger.shared.log(stage: .coordinator, message: "Failed to handoff download \(id) to background after expiration: \(error)")
+            }
         }
         UserDefaults.standard.removeObject(forKey: Self.pendingIDsKey)
         Self.didSubmit = false
@@ -262,13 +266,22 @@ public struct SwiftDownloadEngineApp: App {
         } catch {
             print("Notice: DownloadEngine primary storage initialization failed: \(error.localizedDescription). Initializing fallback storage.")
             let fallbackStore = FileManager.default.temporaryDirectory.appendingPathComponent("1DMDownloads_Fallback", isDirectory: true)
-            try? FileManager.default.createDirectory(at: fallbackStore, withIntermediateDirectories: true)
-            engineInstance = try? DownloadEngine(
-                configuration: engineConfig,
-                storageDirectoryURL: fallbackStore,
-                session: foregroundSession,
-                backgroundSessionManager: nil
-            )
+            do {
+                try FileManager.default.createDirectory(at: fallbackStore, withIntermediateDirectories: true)
+            } catch {
+                PipelineLogger.shared.log(stage: .coordinator, message: "Failed to create fallbackStore: \(error)")
+            }
+            do {
+                engineInstance = try DownloadEngine(
+                    configuration: engineConfig,
+                    storageDirectoryURL: fallbackStore,
+                    session: foregroundSession,
+                    backgroundSessionManager: nil
+                )
+            } catch {
+                PipelineLogger.shared.log(stage: .coordinator, message: "Failed to create fallback DownloadEngine: \(error)")
+                engineInstance = nil
+            }
         }
 
         let engine: DownloadEngine
@@ -276,16 +289,29 @@ public struct SwiftDownloadEngineApp: App {
             engine = initialized
         } else {
             let emergencyStore = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
-            try? FileManager.default.createDirectory(at: emergencyStore, withIntermediateDirectories: true)
-            let persistence = (try? DownloadPersistenceStore(storageDirectoryURL: emergencyStore)) ?? DownloadPersistenceStore(inMemory: true)
+            do {
+                try FileManager.default.createDirectory(at: emergencyStore, withIntermediateDirectories: true)
+            } catch {
+                PipelineLogger.shared.log(stage: .coordinator, message: "Failed to create emergencyStore: \(error)")
+            }
+            let persistence: DownloadPersistenceStore
+            do {
+                persistence = try DownloadPersistenceStore(storageDirectoryURL: emergencyStore)
+            } catch {
+                PipelineLogger.shared.log(stage: .persistence, message: "Failed to create emergency DownloadPersistenceStore: \(error)")
+                persistence = DownloadPersistenceStore(inMemory: true)
+            }
             let fallbackStore = DownloadPersistenceStore(inMemory: true)
             let coordinator: DownloadCoordinator
-            if let primary = try? DownloadCoordinator(session: foregroundSession, persistenceStore: persistence) {
-                coordinator = primary
-            } else if let fallback = try? DownloadCoordinator(session: foregroundSession, persistenceStore: fallbackStore) {
-                coordinator = fallback
-            } else {
-                fatalError("Critical: Failed to initialize emergency DownloadCoordinator")
+            do {
+                coordinator = try DownloadCoordinator(session: foregroundSession, persistenceStore: persistence)
+            } catch {
+                PipelineLogger.shared.log(stage: .coordinator, message: "Primary coordinator init failed, falling back to inMemory store: \(error)")
+                do {
+                    coordinator = try DownloadCoordinator(session: foregroundSession, persistenceStore: fallbackStore)
+                } catch {
+                    fatalError("Critical: Failed to initialize emergency DownloadCoordinator: \(error)")
+                }
             }
             let qm = DownloadQueueManager(coordinator: coordinator, persistenceStore: persistence)
             engine = DownloadEngine(configuration: engineConfig, queueManager: qm, coordinator: coordinator, persistenceStore: persistence)
@@ -365,9 +391,15 @@ public struct SwiftDownloadEngineApp: App {
             downloadsDirectory: downloadsDirectory,
             userDefaults: .standard
         )
-        let hlsPersistenceStore = try? HLSPersistenceStore(
-            storageDirectoryURL: engine.persistenceStore.storageDirectoryURL
-        )
+        let hlsPersistenceStore: HLSPersistenceStore?
+        do {
+            hlsPersistenceStore = try HLSPersistenceStore(
+                storageDirectoryURL: engine.persistenceStore.storageDirectoryURL
+            )
+        } catch {
+            PipelineLogger.shared.log(stage: .persistence, message: "Failed to create HLSPersistenceStore in app: \(error)")
+            hlsPersistenceStore = nil
+        }
         let orchestrator = StreamingDownloadOrchestrator(
             downloadCoordinator: engine.coordinator,
             downloadEngine: engine,
@@ -387,13 +419,29 @@ public struct SwiftDownloadEngineApp: App {
             case .active:
                 Task { @MainActor in
                     await viewModel.startObserving()
-                    try? await viewModel.startTorrentEngine()
+                    do {
+                        try await viewModel.startTorrentEngine()
+                    } catch {
+                        PipelineLogger.shared.log(stage: .ui, message: "Failed to start torrent engine on active: \(error)")
+                    }
                     if !hasRestoredQueue {
                         hasRestoredQueue = true
-                        try? await viewModel.restoreQueue(autoStart: false)
-                        _ = try? await viewModel.engine.reconcileBackgroundTransfers()
+                        do {
+                            try await viewModel.restoreQueue(autoStart: false)
+                        } catch {
+                            PipelineLogger.shared.log(stage: .ui, message: "Failed to restore queue on active: \(error)")
+                        }
+                        do {
+                            _ = try await viewModel.engine.reconcileBackgroundTransfers()
+                        } catch {
+                            PipelineLogger.shared.log(stage: .ui, message: "Failed to reconcile background transfers on active: \(error)")
+                        }
                     } else {
-                        _ = try? await viewModel.engine.reconcileBackgroundTransfers()
+                        do {
+                            _ = try await viewModel.engine.reconcileBackgroundTransfers()
+                        } catch {
+                            PipelineLogger.shared.log(stage: .ui, message: "Failed to reconcile background transfers: \(error)")
+                        }
                         await viewModel.refreshSnapshots()
                         await viewModel.refreshTorrentSnapshots()
                     }

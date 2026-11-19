@@ -10,9 +10,15 @@ public struct DownloadManagerAppView: View {
             engine: engine,
             downloadsDirectory: downloadsDirectory
         )
-        let hlsPersistenceStore = try? HLSPersistenceStore(
-            storageDirectoryURL: engine.persistenceStore.storageDirectoryURL
-        )
+        let hlsPersistenceStore: HLSPersistenceStore?
+        do {
+            hlsPersistenceStore = try HLSPersistenceStore(
+                storageDirectoryURL: engine.persistenceStore.storageDirectoryURL
+            )
+        } catch {
+            PipelineLogger.shared.log(stage: .persistence, message: "Failed to create HLSPersistenceStore in DownloadManagerAppView: \(error)")
+            hlsPersistenceStore = nil
+        }
         let orchestrator = StreamingDownloadOrchestrator(
             downloadCoordinator: engine.coordinator,
             downloadEngine: engine,

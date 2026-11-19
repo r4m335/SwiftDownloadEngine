@@ -59,7 +59,11 @@ public final class BrowserHistoryStore: @unchecked Sendable {
             let timestamp = Int(Date().timeIntervalSince1970)
             let corruptURL = storageURL.deletingPathExtension()
                 .appendingPathExtension("corrupt.\(timestamp).json")
-            try? FileManager.default.moveItem(at: storageURL, to: corruptURL)
+            do {
+                try FileManager.default.moveItem(at: storageURL, to: corruptURL)
+            } catch {
+                PipelineLogger.shared.log(stage: .browser, message: "Failed to quarantine corrupt history: \(error)")
+            }
             self.entries = []
         }
     }
@@ -70,8 +74,11 @@ public final class BrowserHistoryStore: @unchecked Sendable {
             lock.unlock()
             return
         }
-        if let data = try? JSONEncoder().encode(entries) {
-            try? data.write(to: storageURL, options: .atomic)
+        do {
+            let data = try JSONEncoder().encode(entries)
+            try data.write(to: storageURL, options: .atomic)
+        } catch {
+            PipelineLogger.shared.log(stage: .browser, message: "Failed to persist history: \(error)")
         }
         lock.unlock()
 

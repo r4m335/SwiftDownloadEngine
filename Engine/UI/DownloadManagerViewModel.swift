@@ -481,10 +481,17 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
             engine: engine,
             persistenceStore: engine.persistenceStore
         )
+        let hlsStore: HLSPersistenceStore?
+        do {
+            hlsStore = try HLSPersistenceStore(storageDirectoryURL: engine.persistenceStore.storageDirectoryURL)
+        } catch {
+            PipelineLogger.shared.log(stage: .persistence, message: "Failed to initialize HLSPersistenceStore: \(error)")
+            hlsStore = nil
+        }
         self.recoveryManager = DownloadRecoveryManager(
             engine: engine,
             persistenceStore: engine.persistenceStore,
-            hlsPersistenceStore: try? HLSPersistenceStore(storageDirectoryURL: engine.persistenceStore.storageDirectoryURL),
+            hlsPersistenceStore: hlsStore,
             streamingOrchestrator: StreamingDownloadOrchestrator.shared
         )
 #if canImport(BackgroundTasks) && os(iOS) && SDE_ENABLE_BG_CONTINUED_PROCESSING
@@ -582,15 +589,27 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
         isObserving = true
 
         // Apply persisted settings to the underlying engine
-        try? await applyPersistedSettings()
+        do {
+            try await applyPersistedSettings()
+        } catch {
+            PipelineLogger.shared.log(stage: .viewmodel, message: "Failed to apply persisted settings: \(error)")
+        }
 
         // Automatically restore persistent queue on boot
-        try? await engine.restoreQueue(autoStart: false)
+        do {
+            try await engine.restoreQueue(autoStart: false)
+        } catch {
+            PipelineLogger.shared.log(stage: .viewmodel, message: "Failed to restore queue on boot: \(error)")
+        }
 
         // Initialize and start torrent engine if available
         if let te = torrentEngine {
-            try? await te.start()
-            try? await te.setMaxConcurrentTorrents(maxConcurrentTorrents)
+            do {
+                try await te.start()
+                try await te.setMaxConcurrentTorrents(maxConcurrentTorrents)
+            } catch {
+                PipelineLogger.shared.log(stage: .torrent, message: "Failed to start torrent engine in startObserving: \(error)")
+            }
             startTorrentPolling()
         }
 
@@ -882,7 +901,11 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
             }
             rebuildUnifiedTransfers()
         }
-        _ = try? await engine.coordinator.persistenceStore.updateNetworkPolicy(tag: id, policy: policy)
+        do {
+            _ = try await engine.coordinator.persistenceStore.updateNetworkPolicy(tag: id, policy: policy)
+        } catch {
+            PipelineLogger.shared.log(stage: .persistence, message: "Failed to update network policy for \(id): \(error)")
+        }
     }
 
     private func upsertSnapshot(_ snap: DownloadSnapshot) {
@@ -1761,7 +1784,11 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
         await engine.pauseAllDownloads()
         if let te = torrentEngine {
             for task in torrentTasks {
-                try? await te.pause(infoHash: task.infoHash)
+                do {
+                    try await te.pause(infoHash: task.infoHash)
+                } catch {
+                    PipelineLogger.shared.log(stage: .viewmodel, message: "Failed to pause torrent \(task.infoHash): \(error)")
+                }
             }
             await refreshTorrentSnapshots()
         }
@@ -1771,7 +1798,11 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
         await engine.resumeAllDownloads()
         if let te = torrentEngine {
             for task in torrentTasks where !task.isExplicitlyPaused {
-                try? await te.resume(infoHash: task.infoHash)
+                do {
+                    try await te.resume(infoHash: task.infoHash)
+                } catch {
+                    PipelineLogger.shared.log(stage: .viewmodel, message: "Failed to resume torrent \(task.infoHash): \(error)")
+                }
             }
             await refreshTorrentSnapshots()
         }
@@ -1781,7 +1812,11 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
         await engine.cancelAllDownloads(deleteFiles: deleteFiles)
         if let te = torrentEngine {
             for task in torrentTasks {
-                try? await te.remove(infoHash: task.infoHash, deleteFiles: deleteFiles)
+                do {
+                    try await te.remove(infoHash: task.infoHash, deleteFiles: deleteFiles)
+                } catch {
+                    PipelineLogger.shared.log(stage: .viewmodel, message: "Failed to remove torrent \(task.infoHash): \(error)")
+                }
             }
             await refreshTorrentSnapshots()
         }
@@ -1963,7 +1998,11 @@ extension DownloadManagerViewModel: BrowserDownloadDelegate {
             try FileManager.default.copyItem(at: fileURL, to: temporaryDestination)
             try FileManager.default.moveItem(at: temporaryDestination, to: destination)
         } catch {
-            try? FileManager.default.removeItem(at: temporaryDestination)
+            do {
+                try FileManager.default.removeItem(at: temporaryDestination)
+            } catch {
+                PipelineLogger.shared.log(stage: .viewmodel, message: "Failed to remove temporaryDestination \(temporaryDestination.path): \(error)")
+            }
             throw error
         }
         do {
@@ -1974,10 +2013,18 @@ extension DownloadManagerViewModel: BrowserDownloadDelegate {
                 mimeType: mimeType
             )
         } catch {
-            try? FileManager.default.removeItem(at: destination)
+            do {
+                try FileManager.default.removeItem(at: destination)
+            } catch {
+                PipelineLogger.shared.log(stage: .viewmodel, message: "Failed to remove destination \(destination.path): \(error)")
+            }
             throw error
         }
-        try? FileManager.default.removeItem(at: fileURL)
+        do {
+            try FileManager.default.removeItem(at: fileURL)
+        } catch {
+            PipelineLogger.shared.log(stage: .viewmodel, message: "Failed to remove source fileURL \(fileURL.path): \(error)")
+        }
         await refreshSnapshots()
     }
 

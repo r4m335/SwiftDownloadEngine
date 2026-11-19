@@ -209,7 +209,13 @@ public actor BrowserBlobCapturePrototypeWriter {
                 filename: safeFilename
             )
             let temporaryURL = destinationDirectoryURL.appendingPathComponent(".\(metadata.captureID).blob.part")
-            try? FileManager.default.removeItem(at: temporaryURL)
+            do {
+                if FileManager.default.fileExists(atPath: temporaryURL.path) {
+                    try FileManager.default.removeItem(at: temporaryURL)
+                }
+            } catch {
+                PipelineLogger.shared.log(stage: .browser, message: "Failed to remove pre-existing temporaryURL \(temporaryURL.path): \(error)")
+            }
             guard FileManager.default.createFile(atPath: temporaryURL.path, contents: nil) else {
                 throw BrowserBlobCapturePrototypeError.fileOperationFailed
             }
@@ -337,8 +343,18 @@ public actor BrowserBlobCapturePrototypeWriter {
     }
 
     private func abort(captureID: String, session: Session) {
-        try? session.handle.close()
-        try? FileManager.default.removeItem(at: session.temporaryURL)
+        do {
+            try session.handle.close()
+        } catch {
+            PipelineLogger.shared.log(stage: .browser, message: "Failed to close handle on abort: \(error)")
+        }
+        do {
+            if FileManager.default.fileExists(atPath: session.temporaryURL.path) {
+                try FileManager.default.removeItem(at: session.temporaryURL)
+            }
+        } catch {
+            PipelineLogger.shared.log(stage: .browser, message: "Failed to remove temporaryURL on abort: \(error)")
+        }
         sessions.removeValue(forKey: captureID)
     }
 

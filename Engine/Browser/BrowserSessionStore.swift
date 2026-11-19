@@ -91,6 +91,12 @@ public final class BrowserSessionStore: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
 
-        try? FileManager.default.removeItem(at: fileURL)
+        do {
+            if FileManager.default.fileExists(atPath: fileURL.path) {
+                try FileManager.default.removeItem(at: fileURL)
+            }
+        } catch {
+            PipelineLogger.shared.log(stage: .browser, message: "Failed to remove session file \(fileURL.path): \(error)")
+        }
     }
 }

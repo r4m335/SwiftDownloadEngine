@@ -173,7 +173,11 @@ public struct LIDPlayerLibraryView: View {
                 Button("Cancel", role: .cancel) { itemToDelete = nil }
                 Button("Delete", role: .destructive) {
                     if let item = itemToDelete {
-                        try? libraryStore.deleteMediaFile(url: item.url)
+                        do {
+                            try libraryStore.deleteMediaFile(url: item.url)
+                        } catch {
+                            PipelineLogger.shared.log(stage: .ui, message: "Failed to delete media file \(item.url.path): \(error)")
+                        }
                         itemToDelete = nil
                     }
                 }

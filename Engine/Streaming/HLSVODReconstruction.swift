@@ -246,14 +246,24 @@ public enum HLSVODReconstructor {
         var decryptedFilesToCleanUp: [URL] = []
         defer {
             for fileURL in decryptedFilesToCleanUp {
-                try? FileManager.default.removeItem(at: fileURL)
+                do {
+                    try FileManager.default.removeItem(at: fileURL)
+                } catch {
+                    PipelineLogger.shared.log("[HLSVODReconstruction] Failed to remove clean up file \(fileURL.path): \(error)")
+                }
             }
         }
 
         if hasEncryption {
             var keyMap: [URL: Data] = [:]
             for completed in completedResources where completed.resource.kind == .encryptionKey {
-                guard let keyData = try? Data(contentsOf: completed.fileURL), keyData.count == 16 else {
+                let keyData: Data
+                do {
+                    keyData = try Data(contentsOf: completed.fileURL)
+                } catch {
+                    throw HLSVODReconstructionError.decryptionFailed(.missingKeyData(completed.resource.url))
+                }
+                guard keyData.count == 16 else {
                     throw HLSVODReconstructionError.decryptionFailed(.missingKeyData(completed.resource.url))
                 }
                 keyMap[completed.resource.url] = keyData
@@ -356,9 +366,17 @@ public enum HLSVODReconstructor {
 
             if let keyData = sampleAESKeyData {
                 let tempKeyURL = effectiveTempDir.appendingPathComponent("key.bin")
-                try? keyData.write(to: tempKeyURL)
+                do {
+                    try keyData.write(to: tempKeyURL)
+                } catch {
+                    PipelineLogger.shared.log("[HLSVODReconstruction] Failed to write tempKeyURL: \(error)")
+                }
                 let destParentKeyURL = effectiveDestination.deletingLastPathComponent().appendingPathComponent("key.bin")
-                try? keyData.write(to: destParentKeyURL)
+                do {
+                    try keyData.write(to: destParentKeyURL)
+                } catch {
+                    PipelineLogger.shared.log("[HLSVODReconstruction] Failed to write destParentKeyURL: \(error)")
+                }
                 decryptedFilesToCleanUp.append(tempKeyURL)
             }
         } else {

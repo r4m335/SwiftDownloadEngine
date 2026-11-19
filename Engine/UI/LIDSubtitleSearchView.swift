@@ -276,7 +276,11 @@ public struct LIDSubtitleSearchView: View {
 
     private func deleteSubtitle(url: URL) {
         Task {
-            try? await engine.deleteDownloadedSubtitle(url: url)
+            do {
+                try await engine.deleteDownloadedSubtitle(url: url)
+            } catch {
+                PipelineLogger.shared.log(stage: .ui, message: "Failed to delete subtitle \(url.path): \(error)")
+            }
             await refreshDownloadedSubtitles()
         }
     }

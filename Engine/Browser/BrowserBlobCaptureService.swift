@@ -752,7 +752,11 @@ public actor BlobExportWriter {
         let finalURL = Self.uniqueURL(directory: destinationDirectoryURL, filename: safeFilename)
         let stagingURL = destinationDirectoryURL
             .appendingPathComponent(".\(authorization.transferID).blob.part")
-        try? FileManager.default.removeItem(at: stagingURL)
+        do {
+            try FileManager.default.removeItem(at: stagingURL)
+        } catch {
+            PipelineLogger.shared.log(stage: .browser, message: "Failed to remove pre-existing stagingURL \(stagingURL.path): \(error)")
+        }
         guard FileManager.default.createFile(atPath: stagingURL.path, contents: nil) else {
             throw BlobExportError.stagingCreationFailed
         }
@@ -760,7 +764,11 @@ public actor BlobExportWriter {
         do {
             handle = try FileHandle(forWritingTo: stagingURL)
         } catch {
-            try? FileManager.default.removeItem(at: stagingURL)
+            do {
+                try FileManager.default.removeItem(at: stagingURL)
+            } catch {
+                PipelineLogger.shared.log(stage: .browser, message: "Failed to remove stagingURL \(stagingURL.path): \(error)")
+            }
             throw BlobExportError.stagingCreationFailed
         }
 
@@ -1004,8 +1012,16 @@ public actor BlobExportWriter {
 
     public func cancel(transferID: String, reason: String = "cancelled by native side") {
         if var session = sessions.removeValue(forKey: transferID) {
-            try? session.stagingHandle.close()
-            try? FileManager.default.removeItem(at: session.record.stagingURL)
+            do {
+                try session.stagingHandle.close()
+            } catch {
+                PipelineLogger.shared.log(stage: .browser, message: "Failed to close stagingHandle on cancel: \(error)")
+            }
+            do {
+                try FileManager.default.removeItem(at: session.record.stagingURL)
+            } catch {
+                PipelineLogger.shared.log(stage: .browser, message: "Failed to remove stagingURL on cancel: \(error)")
+            }
             totalStagingBytes -= session.reservedStagingBytes
             session.record.state = .cancelled
             session.record.failureReason = reason
@@ -1087,7 +1103,11 @@ public actor BlobExportWriter {
                 record.state = .failed
                 record.failureReason = "Incomplete transfer recovered at launch (staging \(actualSize) bytes)."
                 persistRecord(record)
-                try? FileManager.default.removeItem(at: record.stagingURL)
+                do {
+                    try FileManager.default.removeItem(at: record.stagingURL)
+                } catch {
+                    PipelineLogger.shared.log(stage: .browser, message: "Failed to remove recovered staging file \(record.stagingURL.path): \(error)")
+                }
             } else {
                 record.state = .failed
                 record.failureReason = "Staging file missing at recovery."
@@ -1146,8 +1166,16 @@ public actor BlobExportWriter {
 
     private func abort(transferID: String, reason: String) {
         if var session = sessions.removeValue(forKey: transferID) {
-            try? session.stagingHandle.close()
-            try? FileManager.default.removeItem(at: session.record.stagingURL)
+            do {
+                try session.stagingHandle.close()
+            } catch {
+                PipelineLogger.shared.log(stage: .browser, message: "Failed to close stagingHandle on abort: \(error)")
+            }
+            do {
+                try FileManager.default.removeItem(at: session.record.stagingURL)
+            } catch {
+                PipelineLogger.shared.log(stage: .browser, message: "Failed to remove stagingURL on abort: \(error)")
+            }
             totalStagingBytes -= session.reservedStagingBytes
             session.record.state = .failed
             session.record.failureReason = reason
@@ -1161,21 +1189,32 @@ public actor BlobExportWriter {
     }
 
     private func persistRecord(_ record: BlobExportTransferRecord) {
-        guard let data = try? JSONEncoder().encode(record) else { return }
-        let url = recordDirectoryURL.appendingPathComponent("\(record.transferID).json")
-        try? data.write(to: url, options: .atomic)
+        do {
+            let data = try JSONEncoder().encode(record)
+            let url = recordDirectoryURL.appendingPathComponent("\(record.transferID).json")
+            try data.write(to: url, options: .atomic)
+        } catch {
+            PipelineLogger.shared.log(stage: .browser, message: "Failed to persist blob record for \(record.transferID): \(error)")
+        }
     }
 
     private func persistDiagnostics(_ diagnostics: BlobCaptureCrashDiagnostics) {
-        guard let data = try? JSONEncoder().encode(diagnostics) else { return }
-        let url = diagnosticsDirectoryURL.appendingPathComponent("\(diagnostics.transferID).json")
-        try? data.write(to: url, options: .atomic)
+        do {
+            let data = try JSONEncoder().encode(diagnostics)
+            let url = diagnosticsDirectoryURL.appendingPathComponent("\(diagnostics.transferID).json")
+            try data.write(to: url, options: .atomic)
+        } catch {
+            PipelineLogger.shared.log(stage: .browser, message: "Failed to persist blob diagnostics for \(diagnostics.transferID): \(error)")
+        }
     }
 
     private func removeRecord(for transferID: String) {
-        try? FileManager.default.removeItem(
-            at: recordDirectoryURL.appendingPathComponent("\(transferID).json")
-        )
+        let url = recordDirectoryURL.appendingPathComponent("\(transferID).json")
+        do {
+            try FileManager.default.removeItem(at: url)
+        } catch {
+            PipelineLogger.shared.log(stage: .browser, message: "Failed to remove blob record at \(url.path): \(error)")
+        }
     }
 
     private func snapshot(for record: BlobExportTransferRecord, state: BlobTransferState) -> BlobExportSnapshot {

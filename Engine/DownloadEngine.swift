@@ -244,10 +244,20 @@ public actor DownloadEngine {
         let persistence = try DownloadPersistenceStore(storageDirectoryURL: storageDirectoryURL)
         let budget = SharedRequestBudget(maxGlobalRequests: configuration.maxGlobalRequests)
         let limiter = BandwidthLimiter(bytesPerSecond: configuration.globalBandwidthLimitBytesPerSecond)
-        let bgManager = backgroundSessionManager ?? (try? BackgroundDownloadSessionManager(
-            storageDirectoryURL: persistence.storageDirectoryURL,
-            persistenceStore: persistence
-        ))
+        let bgManager: BackgroundDownloadSessionManager?
+        if let backgroundSessionManager {
+            bgManager = backgroundSessionManager
+        } else {
+            do {
+                bgManager = try BackgroundDownloadSessionManager(
+                    storageDirectoryURL: persistence.storageDirectoryURL,
+                    persistenceStore: persistence
+                )
+            } catch {
+                PipelineLogger.shared.log("[DownloadEngine] BackgroundDownloadSessionManager initialization failed: \(error.localizedDescription)")
+                bgManager = nil
+            }
+        }
         let coord = try DownloadCoordinator(
             session: effectiveSession,
             persistenceStore: persistence,
@@ -487,7 +497,11 @@ public actor DownloadEngine {
             broadcast(.completed(snapshot))
             return snapshot
         } catch {
-            try? await persistenceStore.delete(tag: record.id)
+            do {
+                try await persistenceStore.delete(tag: record.id)
+            } catch let delErr {
+                PipelineLogger.shared.log("[DownloadEngine] Warning: Rollback delete failed for \(record.id): \(delErr.localizedDescription)")
+            }
             if let persistenceError = error as? DownloadQueueError {
                 throw persistenceError
             }
@@ -585,34 +599,39 @@ public actor DownloadEngine {
         }
 
         await queueManager.completeStreaming(id: id, finalDestinationURL: localFileURL, totalBytes: actualSize)
-        if let existing = try? await persistenceStore.fetch(tag: id) {
-            let updated = DownloadRecord(
-                id: existing.id,
-                originalURL: existing.originalURL,
-                resolvedURL: existing.resolvedURL,
-                destinationURL: finalFileURL,
-                totalSize: totalBytes,
-                state: .completed,
-                storageMode: existing.storageMode,
-                transportPolicy: existing.transportPolicy,
-                eTag: existing.eTag,
-                lastModified: existing.lastModified,
-                suggestedFilename: existing.suggestedFilename,
-                mimeType: existing.mimeType,
-                headers: existing.headers,
-                createdAt: existing.createdAt,
-                updatedAt: Date(),
-                segments: [
-                    SegmentRecord(
-                        id: 0,
-                        startOffset: 0,
-                        endOffset: max(0, totalBytes - 1),
-                        length: totalBytes,
-                        completedBytes: totalBytes
-                    )
-                ]
-            )
-            try? await persistenceStore.save(updated)
+        do {
+            if let existing = try await persistenceStore.fetch(tag: id) {
+                let updated = DownloadRecord(
+                    id: existing.id,
+                    originalURL: existing.originalURL,
+                    resolvedURL: existing.resolvedURL,
+                    destinationURL: finalFileURL,
+                    totalSize: totalBytes,
+                    state: .completed,
+                    storageMode: existing.storageMode,
+                    transportPolicy: existing.transportPolicy,
+                    eTag: existing.eTag,
+                    lastModified: existing.lastModified,
+                    suggestedFilename: existing.suggestedFilename,
+                    mimeType: existing.mimeType,
+                    headers: existing.headers,
+                    createdAt: existing.createdAt,
+                    updatedAt: Date(),
+                    segments: [
+                        SegmentRecord(
+                            id: 0,
+                            startOffset: 0,
+                            endOffset: max(0, totalBytes - 1),
+                            length: totalBytes,
+                            completedBytes: totalBytes
+                        )
+                    ]
+                )
+                try await persistenceStore.save(updated)
+            }
+        } catch {
+            PipelineLogger.shared.log("[DownloadEngine] Error saving completed record for \(id): \(error.localizedDescription)")
+            throw error
         }
         streamingSpeeds.removeValue(forKey: id)
         if let item = await queueManager.item(for: id) {
@@ -631,10 +650,14 @@ public actor DownloadEngine {
         reason: String
     ) async {
         await queueManager.failStreaming(id: id, reason: reason)
-        if var record = try? await persistenceStore.fetch(tag: id) {
-            record.state = .failed(reason: reason)
-            record.updatedAt = Date()
-            try? await persistenceStore.save(record)
+        do {
+            if var record = try await persistenceStore.fetch(tag: id) {
+                record.state = .failed(reason: reason)
+                record.updatedAt = Date()
+                try await persistenceStore.save(record)
+            }
+        } catch {
+            PipelineLogger.shared.log("[DownloadEngine] Error saving failed record for \(id): \(error.localizedDescription)")
         }
         streamingSpeeds.removeValue(forKey: id)
         if let item = await queueManager.item(for: id) {
@@ -669,10 +692,15 @@ public actor DownloadEngine {
         if let orchestrator = streamingOrchestrator, await orchestrator.isManaging(id: id) {
             try await orchestrator.pause(transferID: id)
             await queueManager.pauseStreaming(id: id)
-            if var record = try? await persistenceStore.fetch(tag: id) {
-                record.state = .paused
-                record.updatedAt = Date()
-                try? await persistenceStore.save(record)
+            do {
+                if var record = try await persistenceStore.fetch(tag: id) {
+                    record.state = .paused
+                    record.updatedAt = Date()
+                    try await persistenceStore.save(record)
+                }
+            } catch {
+                PipelineLogger.shared.log("[DownloadEngine] Error saving paused record for \(id): \(error.localizedDescription)")
+                throw error
             }
             if let item = await queueManager.item(for: id) {
                 let snap = await makeSnapshot(from: item)
@@ -691,10 +719,15 @@ public actor DownloadEngine {
         if let orchestrator = streamingOrchestrator, await orchestrator.isManaging(id: id) {
             try await orchestrator.resume(transferID: id)
             await queueManager.resumeStreaming(id: id)
-            if var record = try? await persistenceStore.fetch(tag: id) {
-                record.state = .downloading
-                record.updatedAt = Date()
-                try? await persistenceStore.save(record)
+            do {
+                if var record = try await persistenceStore.fetch(tag: id) {
+                    record.state = .downloading
+                    record.updatedAt = Date()
+                    try await persistenceStore.save(record)
+                }
+            } catch {
+                PipelineLogger.shared.log("[DownloadEngine] Error saving downloading record for \(id): \(error.localizedDescription)")
+                throw error
             }
             if let item = await queueManager.item(for: id) {
                 let snap = await makeSnapshot(from: item)
@@ -980,9 +1013,14 @@ public actor DownloadEngine {
     ) async throws {
         if let networkPolicy {
             try await queueManager.setNetworkPolicy(networkPolicy, for: id)
-            if var record = try? await persistenceStore.fetch(tag: id) {
-                record.networkPolicy = networkPolicy
-                try? await persistenceStore.save(record)
+            do {
+                if var record = try await persistenceStore.fetch(tag: id) {
+                    record.networkPolicy = networkPolicy
+                    try await persistenceStore.save(record)
+                }
+            } catch {
+                PipelineLogger.shared.log("[DownloadEngine] Error updating network policy for \(id): \(error.localizedDescription)")
+                throw error
             }
         }
         try await queueManager.handoffToBackground(id: id, earliestBeginDate: earliestBeginDate)
@@ -991,9 +1029,14 @@ public actor DownloadEngine {
     /// Updates the durable queue and download record network policy.
     public func setDownloadNetworkPolicy(_ policy: DownloadNetworkPolicy, for id: DownloadID) async throws {
         try await queueManager.setNetworkPolicy(policy, for: id)
-        if var record = try? await persistenceStore.fetch(tag: id) {
-            record.networkPolicy = policy
-            try? await persistenceStore.save(record)
+        do {
+            if var record = try await persistenceStore.fetch(tag: id) {
+                record.networkPolicy = policy
+                try await persistenceStore.save(record)
+            }
+        } catch {
+            PipelineLogger.shared.log("[DownloadEngine] Error persisting network policy for \(id): \(error.localizedDescription)")
+            throw error
         }
     }
 

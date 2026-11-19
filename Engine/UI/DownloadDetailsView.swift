@@ -636,13 +636,21 @@ public struct DownloadDetailsView: View {
         .alert("Remove Torrent", isPresented: $showingDeleteAlert) {
             Button("Remove Task Only", role: .none) {
                 Task { @MainActor in
-                    try? await viewModel.removeTransfer(id: transfer.id, deleteFiles: false)
+                    do {
+                        try await viewModel.removeTransfer(id: transfer.id, deleteFiles: false)
+                    } catch {
+                        PipelineLogger.shared.log(stage: .ui, message: "Failed to remove transfer \(transfer.id): \(error)")
+                    }
                     presentationMode.wrappedValue.dismiss()
                 }
             }
             Button("Delete Files from Disk", role: .destructive) {
                 Task { @MainActor in
-                    try? await viewModel.removeTransfer(id: transfer.id, deleteFiles: true)
+                    do {
+                        try await viewModel.removeTransfer(id: transfer.id, deleteFiles: true)
+                    } catch {
+                        PipelineLogger.shared.log(stage: .ui, message: "Failed to remove transfer \(transfer.id): \(error)")
+                    }
                     presentationMode.wrappedValue.dismiss()
                 }
             }
@@ -883,14 +891,26 @@ public struct DownloadDetailsView: View {
         .alert("Remove Download", isPresented: $showingDeleteAlert) {
             Button("Remove Entry Only", role: .none) {
                 Task { @MainActor in
-                    try? await viewModel.removeTransfer(id: transfer.id, deleteFiles: false)
+                    do {
+                        try await viewModel.removeTransfer(id: transfer.id, deleteFiles: false)
+                    } catch {
+                        PipelineLogger.shared.log(stage: .ui, message: "Failed to remove transfer \(transfer.id): \(error)")
+                    }
                     presentationMode.wrappedValue.dismiss()
                 }
             }
             Button("Delete File from Disk", role: .destructive) {
                 Task { @MainActor in
-                    try? await viewModel.removeTransfer(id: transfer.id, deleteFiles: true)
-                    try? LIDLibraryStore.shared.deleteMediaFile(url: transfer.destinationURL)
+                    do {
+                        try await viewModel.removeTransfer(id: transfer.id, deleteFiles: true)
+                    } catch {
+                        PipelineLogger.shared.log(stage: .ui, message: "Failed to remove transfer \(transfer.id): \(error)")
+                    }
+                    do {
+                        try LIDLibraryStore.shared.deleteMediaFile(url: transfer.destinationURL)
+                    } catch {
+                        PipelineLogger.shared.log(stage: .ui, message: "Failed to delete media file from library: \(error)")
+                    }
                     presentationMode.wrappedValue.dismiss()
                 }
             }

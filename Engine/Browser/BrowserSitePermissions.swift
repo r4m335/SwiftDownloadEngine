@@ -149,7 +149,11 @@ public final class BrowserSitePermissionsStore: @unchecked Sendable {
 
     private func saveToDiskLocked() {
         let items = Array(entries.values)
-        guard let data = try? JSONEncoder().encode(items) else { return }
-        try? data.write(to: persistenceURL, options: .atomic)
+        do {
+            let data = try JSONEncoder().encode(items)
+            try data.write(to: persistenceURL, options: .atomic)
+        } catch {
+            PipelineLogger.shared.log(stage: .browser, message: "Failed to persist site permissions: \(error)")
+        }
     }
 }

@@ -533,9 +533,13 @@ public struct BrowserBookmarksAndHistoryView: View {
         let store = BrowserBookmarkStore.shared
         let html = BrowserBookmarkExporter.exportToHTML(store: store)
         let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent("bookmarks.html")
-        try? html.write(to: tempURL, atomically: true, encoding: .utf8)
-        shareItems = [tempURL]
-        isShowingShareSheet = true
+        do {
+            try html.write(to: tempURL, atomically: true, encoding: .utf8)
+            shareItems = [tempURL]
+            isShowingShareSheet = true
+        } catch {
+            PipelineLogger.shared.log(stage: .browser, message: "Failed to export bookmarks to HTML: \(error)")
+        }
     }
 
     // MARK: - History View

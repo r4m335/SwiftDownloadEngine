@@ -148,7 +148,11 @@ public final class ScheduleCoordinator: ObservableObject {
         guard let idx = rules.firstIndex(where: { $0.id == targetRuleID }) else { return }
         var rule = rules[idx]
         rule.toggle(downloadID: downloadID)
-        try? await saveRule(rule)
+        do {
+            try await saveRule(rule)
+        } catch {
+            PipelineLogger.shared.log(stage: .persistence, message: "Failed to save schedule rule \(rule.id): \(error)")
+        }
     }
 
     public func addDownloadToSchedule(downloadID: String, ruleID: String? = nil) async {
@@ -157,7 +161,11 @@ public final class ScheduleCoordinator: ObservableObject {
         guard let idx = rules.firstIndex(where: { $0.id == targetRuleID }) else { return }
         var rule = rules[idx]
         rule.add(downloadID: downloadID)
-        try? await saveRule(rule)
+        do {
+            try await saveRule(rule)
+        } catch {
+            PipelineLogger.shared.log(stage: .persistence, message: "Failed to save schedule rule \(rule.id): \(error)")
+        }
     }
 
     public func removeDownloadFromSchedule(downloadID: String, ruleID: String? = nil) async {
@@ -166,7 +174,11 @@ public final class ScheduleCoordinator: ObservableObject {
         guard let idx = rules.firstIndex(where: { $0.id == targetRuleID }) else { return }
         var rule = rules[idx]
         rule.remove(downloadID: downloadID)
-        try? await saveRule(rule)
+        do {
+            try await saveRule(rule)
+        } catch {
+            PipelineLogger.shared.log(stage: .persistence, message: "Failed to save schedule rule \(rule.id): \(error)")
+        }
     }
 
     // MARK: - Occurrence & Window Calculations
@@ -338,7 +350,11 @@ public final class ScheduleCoordinator: ObservableObject {
         }
 
         for updatedRule in rulesToUpdate {
-            try? await persistenceStore.saveScheduleRule(updatedRule)
+            do {
+                try await persistenceStore.saveScheduleRule(updatedRule)
+            } catch {
+                PipelineLogger.shared.log(stage: .persistence, message: "Failed to save updated schedule rule \(updatedRule.id): \(error)")
+            }
             if let idx = rules.firstIndex(where: { $0.id == updatedRule.id }) {
                 rules[idx] = updatedRule
             }

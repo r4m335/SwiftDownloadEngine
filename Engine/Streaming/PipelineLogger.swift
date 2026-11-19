@@ -63,11 +63,25 @@ public final class PipelineLogger: @unchecked Sendable, ObservableObject {
         rotateLogFileIfNeeded(url: url)
 
         if let handle = try? FileHandle(forWritingTo: url) {
-            defer { try? handle.close() }
-            _ = try? handle.seekToEnd()
-            try? handle.write(contentsOf: data)
+            defer {
+                do {
+                    try handle.close()
+                } catch {
+                    print("[PipelineLogger] Failed to close log handle: \(error)")
+                }
+            }
+            do {
+                try handle.seekToEnd()
+                try handle.write(contentsOf: data)
+            } catch {
+                print("[PipelineLogger] Failed to append log line: \(error)")
+            }
         } else {
-            try? data.write(to: url, options: .atomic)
+            do {
+                try data.write(to: url, options: .atomic)
+            } catch {
+                print("[PipelineLogger] Failed to write log data: \(error)")
+            }
         }
     }
 
@@ -77,8 +91,14 @@ public final class PipelineLogger: @unchecked Sendable, ObservableObject {
               size > maxFileSizeBytes else { return }
 
         let oldURL = url.deletingPathExtension().appendingPathExtension("old.log")
-        try? FileManager.default.removeItem(at: oldURL)
-        try? FileManager.default.moveItem(at: url, to: oldURL)
+        do {
+            if FileManager.default.fileExists(atPath: oldURL.path) {
+                try FileManager.default.removeItem(at: oldURL)
+            }
+            try FileManager.default.moveItem(at: url, to: oldURL)
+        } catch {
+            print("[PipelineLogger] Failed to rotate log file: \(error)")
+        }
     }
 
     /// Structured logger for player diagnostics with session tracking and category filtering.
@@ -127,9 +147,17 @@ public final class PipelineLogger: @unchecked Sendable, ObservableObject {
         lock.lock()
         logs.removeAll()
         if let url = logFileURL {
-            try? FileManager.default.removeItem(at: url)
+            do {
+                try FileManager.default.removeItem(at: url)
+            } catch {
+                print("[PipelineLogger] Failed to remove logFileURL: \(error)")
+            }
             let oldURL = url.deletingPathExtension().appendingPathExtension("old.log")
-            try? FileManager.default.removeItem(at: oldURL)
+            do {
+                try FileManager.default.removeItem(at: oldURL)
+            } catch {
+                print("[PipelineLogger] Failed to remove old log file: \(error)")
+            }
         }
         lock.unlock()
 

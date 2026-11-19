@@ -171,14 +171,26 @@ public enum MediaAssembler {
 
         let temporaryOutput = request.temporaryDirectoryURL
             .appendingPathComponent("assembly-\(UUID().uuidString).part", isDirectory: false)
-        defer { try? fileManager.removeItem(at: temporaryOutput) }
+        defer {
+            do {
+                try fileManager.removeItem(at: temporaryOutput)
+            } catch {
+                PipelineLogger.shared.log("[MediaAssembler] Failed to remove temporaryOutput \(temporaryOutput.path): \(error)")
+            }
+        }
 
         do {
             guard fileManager.createFile(atPath: temporaryOutput.path, contents: nil) else {
                 throw MediaAssemblyError.fileOperationFailed
             }
             let output = try FileHandle(forWritingTo: temporaryOutput)
-            defer { try? output.close() }
+            defer {
+                do {
+                    try output.close()
+                } catch {
+                    PipelineLogger.shared.log("[MediaAssembler] Failed to close output handle: \(error)")
+                }
+            }
 
             let track = request.tracks[0]
             if let initialization = track.initializationSegment {
@@ -239,7 +251,11 @@ public enum MediaAssembler {
             }
             defer {
                 if needsRemuxCleanup {
-                    try? fileManager.removeItem(at: stagingPublishedURL)
+                    do {
+                        try fileManager.removeItem(at: stagingPublishedURL)
+                    } catch {
+                        PipelineLogger.shared.log("[MediaAssembler] Failed to remove stagingPublishedURL \(stagingPublishedURL.path): \(error)")
+                    }
                 }
             }
 
@@ -252,7 +268,13 @@ public enum MediaAssembler {
                 do {
                     _ = try fileManager.replaceItemAt(publishedDestinationURL, withItemAt: stagingPublishedURL, backupItemName: nil, options: [])
                     let destHandle = try FileHandle(forWritingTo: publishedDestinationURL)
-                    defer { try? destHandle.close() }
+                    defer {
+                        do {
+                            try destHandle.close()
+                        } catch {
+                            PipelineLogger.shared.log("[MediaAssembler] Failed to close destHandle: \(error)")
+                        }
+                    }
                     try destHandle.synchronize()
                 } catch {
                     // Non-destructive fallback: preserve existing destination if move fails
@@ -262,12 +284,30 @@ public enum MediaAssembler {
                     do {
                         try fileManager.moveItem(at: stagingPublishedURL, to: publishedDestinationURL)
                         let destHandle = try FileHandle(forWritingTo: publishedDestinationURL)
-                        defer { try? destHandle.close() }
+                        defer {
+                            do {
+                                try destHandle.close()
+                            } catch {
+                                PipelineLogger.shared.log("[MediaAssembler] Failed to close destHandle: \(error)")
+                            }
+                        }
                         try destHandle.synchronize()
-                        _ = try? fileManager.removeItem(at: backupURL)
+                        do {
+                            try fileManager.removeItem(at: backupURL)
+                        } catch {
+                            PipelineLogger.shared.log("[MediaAssembler] Failed to remove backupURL \(backupURL.path): \(error)")
+                        }
                     } catch {
-                        _ = try? fileManager.removeItem(at: publishedDestinationURL)
-                        _ = try? fileManager.moveItem(at: backupURL, to: publishedDestinationURL)
+                        do {
+                            try fileManager.removeItem(at: publishedDestinationURL)
+                        } catch {
+                            PipelineLogger.shared.log("[MediaAssembler] Failed to remove publishedDestinationURL: \(error)")
+                        }
+                        do {
+                            try fileManager.moveItem(at: backupURL, to: publishedDestinationURL)
+                        } catch {
+                            PipelineLogger.shared.log("[MediaAssembler] Failed to restore backupURL \(backupURL.path): \(error)")
+                        }
                         throw error
                     }
                 }
@@ -278,12 +318,30 @@ public enum MediaAssembler {
                 do {
                     try fileManager.moveItem(at: stagingPublishedURL, to: publishedDestinationURL)
                     let destHandle = try FileHandle(forWritingTo: publishedDestinationURL)
-                    defer { try? destHandle.close() }
+                    defer {
+                        do {
+                            try destHandle.close()
+                        } catch {
+                            PipelineLogger.shared.log("[MediaAssembler] Failed to close destHandle: \(error)")
+                        }
+                    }
                     try destHandle.synchronize()
-                    _ = try? fileManager.removeItem(at: backupURL)
+                    do {
+                        try fileManager.removeItem(at: backupURL)
+                    } catch {
+                        PipelineLogger.shared.log("[MediaAssembler] Failed to remove backupURL \(backupURL.path): \(error)")
+                    }
                 } catch {
-                    _ = try? fileManager.removeItem(at: publishedDestinationURL)
-                    _ = try? fileManager.moveItem(at: backupURL, to: publishedDestinationURL)
+                    do {
+                        try fileManager.removeItem(at: publishedDestinationURL)
+                    } catch {
+                        PipelineLogger.shared.log("[MediaAssembler] Failed to remove publishedDestinationURL: \(error)")
+                    }
+                    do {
+                        try fileManager.moveItem(at: backupURL, to: publishedDestinationURL)
+                    } catch {
+                        PipelineLogger.shared.log("[MediaAssembler] Failed to restore backupURL \(backupURL.path): \(error)")
+                    }
                     throw error
                 }
                 #endif
@@ -291,10 +349,20 @@ public enum MediaAssembler {
                 try fileManager.moveItem(at: stagingPublishedURL, to: publishedDestinationURL)
                 do {
                     let destHandle = try FileHandle(forWritingTo: publishedDestinationURL)
-                    defer { try? destHandle.close() }
+                    defer {
+                        do {
+                            try destHandle.close()
+                        } catch {
+                            PipelineLogger.shared.log("[MediaAssembler] Failed to close destHandle: \(error)")
+                        }
+                    }
                     try destHandle.synchronize()
                 } catch {
-                    _ = try? fileManager.removeItem(at: publishedDestinationURL)
+                    do {
+                        try fileManager.removeItem(at: publishedDestinationURL)
+                    } catch {
+                        PipelineLogger.shared.log("[MediaAssembler] Failed to remove publishedDestinationURL: \(error)")
+                    }
                     throw error
                 }
             }
@@ -414,7 +482,11 @@ public enum MediaAssembler {
             let tempKeyURL = temporaryDirectoryURL.appendingPathComponent("key.bin")
             let sourceKeyURL = sourceURL.deletingLastPathComponent().appendingPathComponent("key.bin")
             if !fileManager.fileExists(atPath: tempKeyURL.path) && fileManager.fileExists(atPath: sourceKeyURL.path) {
-                try? fileManager.copyItem(at: sourceKeyURL, to: tempKeyURL)
+                do {
+                    try fileManager.copyItem(at: sourceKeyURL, to: tempKeyURL)
+                } catch {
+                    PipelineLogger.shared.log("[MediaAssembler] Failed to copy sourceKeyURL: \(error)")
+                }
             }
             let keyTag = fileManager.fileExists(atPath: tempKeyURL.path)
                 ? "#EXT-X-KEY:METHOD=SAMPLE-AES,URI=\"key.bin\"\n"
@@ -428,8 +500,11 @@ public enum MediaAssembler {
             \(sourceURL.lastPathComponent)
             #EXT-X-ENDLIST
             """
-            if (try? m3u8Content.write(to: m3u8URL, atomically: true, encoding: .utf8)) != nil {
+            do {
+                try m3u8Content.write(to: m3u8URL, atomically: true, encoding: .utf8)
                 manifestURL = m3u8URL
+            } catch {
+                PipelineLogger.shared.log("[MediaAssembler] Failed to write manifest wrapper: \(error)")
             }
 
             if directAsset.tracks.isEmpty, let mURL = manifestURL {
@@ -474,7 +549,13 @@ public enum MediaAssembler {
             do {
                 _ = try fileManager.replaceItemAt(destinationURL, withItemAt: temporaryURL, backupItemName: nil, options: [])
                 let destHandle = try FileHandle(forWritingTo: destinationURL)
-                defer { try? destHandle.close() }
+                defer {
+                    do {
+                        try destHandle.close()
+                    } catch {
+                        PipelineLogger.shared.log("[MediaAssembler] Failed to close destHandle: \(error)")
+                    }
+                }
                 try destHandle.synchronize()
             } catch {
                 // Non-destructive fallback: preserve existing destination if move fails
@@ -484,12 +565,30 @@ public enum MediaAssembler {
                 do {
                     try fileManager.moveItem(at: temporaryURL, to: destinationURL)
                     let destHandle = try FileHandle(forWritingTo: destinationURL)
-                    defer { try? destHandle.close() }
+                    defer {
+                        do {
+                            try destHandle.close()
+                        } catch {
+                            PipelineLogger.shared.log("[MediaAssembler] Failed to close destHandle: \(error)")
+                        }
+                    }
                     try destHandle.synchronize()
-                    _ = try? fileManager.removeItem(at: backupURL)
+                    do {
+                        try fileManager.removeItem(at: backupURL)
+                    } catch {
+                        PipelineLogger.shared.log("[MediaAssembler] Failed to remove backupURL \(backupURL.path): \(error)")
+                    }
                 } catch {
-                    _ = try? fileManager.removeItem(at: destinationURL)
-                    _ = try? fileManager.moveItem(at: backupURL, to: destinationURL)
+                    do {
+                        try fileManager.removeItem(at: destinationURL)
+                    } catch {
+                        PipelineLogger.shared.log("[MediaAssembler] Failed to remove destinationURL \(destinationURL.path): \(error)")
+                    }
+                    do {
+                        try fileManager.moveItem(at: backupURL, to: destinationURL)
+                    } catch {
+                        PipelineLogger.shared.log("[MediaAssembler] Failed to restore backupURL \(backupURL.path): \(error)")
+                    }
                     throw error
                 }
             }
@@ -500,12 +599,30 @@ public enum MediaAssembler {
             do {
                 try fileManager.moveItem(at: temporaryURL, to: destinationURL)
                 let destHandle = try FileHandle(forWritingTo: destinationURL)
-                defer { try? destHandle.close() }
+                defer {
+                    do {
+                        try destHandle.close()
+                    } catch {
+                        PipelineLogger.shared.log("[MediaAssembler] Failed to close destHandle: \(error)")
+                    }
+                }
                 try destHandle.synchronize()
-                _ = try? fileManager.removeItem(at: backupURL)
+                do {
+                    try fileManager.removeItem(at: backupURL)
+                } catch {
+                    PipelineLogger.shared.log("[MediaAssembler] Failed to remove backupURL \(backupURL.path): \(error)")
+                }
             } catch {
-                _ = try? fileManager.removeItem(at: destinationURL)
-                _ = try? fileManager.moveItem(at: backupURL, to: destinationURL)
+                do {
+                    try fileManager.removeItem(at: destinationURL)
+                } catch {
+                    PipelineLogger.shared.log("[MediaAssembler] Failed to remove destinationURL \(destinationURL.path): \(error)")
+                }
+                do {
+                    try fileManager.moveItem(at: backupURL, to: destinationURL)
+                } catch {
+                    PipelineLogger.shared.log("[MediaAssembler] Failed to restore backupURL \(backupURL.path): \(error)")
+                }
                 throw error
             }
             #endif
@@ -513,10 +630,20 @@ public enum MediaAssembler {
             try fileManager.moveItem(at: temporaryURL, to: destinationURL)
             do {
                 let destHandle = try FileHandle(forWritingTo: destinationURL)
-                defer { try? destHandle.close() }
+                defer {
+                    do {
+                        try destHandle.close()
+                    } catch {
+                        PipelineLogger.shared.log("[MediaAssembler] Failed to close destHandle: \(error)")
+                    }
+                }
                 try destHandle.synchronize()
             } catch {
-                _ = try? fileManager.removeItem(at: destinationURL)
+                do {
+                    try fileManager.removeItem(at: destinationURL)
+                } catch {
+                    PipelineLogger.shared.log("[MediaAssembler] Failed to remove destinationURL: \(error)")
+                }
                 throw error
             }
         }
@@ -554,14 +681,26 @@ public enum MediaAssembler {
 
         defer {
             for manifestURL in manifestURLsToClean {
-                try? fileManager.removeItem(at: manifestURL)
+                do {
+                    try fileManager.removeItem(at: manifestURL)
+                } catch {
+                    PipelineLogger.shared.log("[MediaAssembler] Failed to remove manifestURL \(manifestURL.path): \(error)")
+                }
             }
             for sourceURL in sourceURLs {
                 if !preservedSourceURLs.contains(sourceURL) {
-                    try? fileManager.removeItem(at: sourceURL)
+                    do {
+                        try fileManager.removeItem(at: sourceURL)
+                    } catch {
+                        PipelineLogger.shared.log("[MediaAssembler] Failed to remove sourceURL \(sourceURL.path): \(error)")
+                    }
                 }
             }
-            try? fileManager.removeItem(at: temporaryOutput)
+            do {
+                try fileManager.removeItem(at: temporaryOutput)
+            } catch {
+                PipelineLogger.shared.log("[MediaAssembler] Failed to remove temporaryOutput \(temporaryOutput.path): \(error)")
+            }
         }
 
         do {
@@ -570,7 +709,13 @@ public enum MediaAssembler {
                     throw MediaAssemblyError.fileOperationFailed
                 }
                 let handle = try FileHandle(forWritingTo: sourceURL)
-                defer { try? handle.close() }
+                defer {
+                    do {
+                        try handle.close()
+                    } catch {
+                        PipelineLogger.shared.log("[MediaAssembler] Failed to close handle: \(error)")
+                    }
+                }
                 if let initialization = track.initializationSegment {
                     try copyValidatedSegment(
                         initialization,
@@ -869,14 +1014,22 @@ public enum MediaAssembler {
                     let trackKind = request.tracks.indices.contains(idx) ? request.tracks[idx].kind.rawValue : "track\(idx)"
                     let qDest = quarantineDir.appendingPathComponent("\(trackKind)-\(sourceURL.lastPathComponent)")
                     if fileManager.fileExists(atPath: sourceURL.path) {
-                        try? fileManager.copyItem(at: sourceURL, to: qDest)
-                        quarantinedFiles.append(qDest.lastPathComponent)
+                        do {
+                            try fileManager.copyItem(at: sourceURL, to: qDest)
+                            quarantinedFiles.append(qDest.lastPathComponent)
+                        } catch {
+                            PipelineLogger.shared.log("[MediaAssembler] Failed to copy quarantine item \(sourceURL.path): \(error)")
+                        }
                     }
                 }
                 if fileManager.fileExists(atPath: temporaryOutput.path) {
                     let qPartial = quarantineDir.appendingPathComponent("partial-mux-\(temporaryOutput.lastPathComponent)")
-                    try? fileManager.copyItem(at: temporaryOutput, to: qPartial)
-                    quarantinedFiles.append(qPartial.lastPathComponent)
+                    do {
+                        try fileManager.copyItem(at: temporaryOutput, to: qPartial)
+                        quarantinedFiles.append(qPartial.lastPathComponent)
+                    } catch {
+                        PipelineLogger.shared.log("[MediaAssembler] Failed to copy partial quarantine mux: \(error)")
+                    }
                 }
                 let record = MediaQuarantineRecord(
                     timestamp: ISO8601DateFormatter().string(from: Date()),
@@ -887,9 +1040,12 @@ public enum MediaAssembler {
                     quarantinedFiles: quarantinedFiles,
                     validationDetails: "Multi-track muxing failed: preserved raw track sources for recovery"
                 )
-                if let jsonData = try? JSONEncoder().encode(record) {
+                do {
+                    let jsonData = try JSONEncoder().encode(record)
                     let infoURL = quarantineDir.appendingPathComponent("quarantine-info.json")
-                    try? jsonData.write(to: infoURL)
+                    try jsonData.write(to: infoURL)
+                } catch {
+                    PipelineLogger.shared.log("[MediaAssembler] Failed to write quarantine info: \(error)")
                 }
                 PipelineLogger.shared.log("[MediaAssembler] Preserved \(quarantinedFiles.count) assembly inputs in quarantine: \(quarantineDir.path)")
             } catch let qErr {
@@ -897,7 +1053,11 @@ public enum MediaAssembler {
             }
 
             if fileManager.fileExists(atPath: request.destinationURL.path) {
-                try? fileManager.removeItem(at: request.destinationURL)
+                do {
+                    try fileManager.removeItem(at: request.destinationURL)
+                } catch {
+                    PipelineLogger.shared.log("[MediaAssembler] Failed to remove destinationURL on error: \(error)")
+                }
             }
             throw error
         }
@@ -993,7 +1153,11 @@ public enum MediaAssembler {
             guard let exportSession = AVAssetExportSession(asset: composition, presetName: preset) else {
                 continue
             }
-            try? FileManager.default.removeItem(at: outputURL)
+            do {
+                try FileManager.default.removeItem(at: outputURL)
+            } catch {
+                PipelineLogger.shared.log("[MediaAssembler] Failed to remove outputURL \(outputURL.path): \(error)")
+            }
             exportSession.outputURL = outputURL
             exportSession.outputFileType = .mp4
             exportSession.shouldOptimizeForNetworkUse = true
@@ -1042,17 +1206,37 @@ public enum MediaAssembler {
         let tempDir = destinationMP4URL.deletingLastPathComponent()
         let tempMP4 = tempDir
             .appendingPathComponent("remux-\(UUID().uuidString).mp4", isDirectory: false)
-        defer { try? fileManager.removeItem(at: tempMP4) }
+        defer {
+            do {
+                try fileManager.removeItem(at: tempMP4)
+            } catch {
+                PipelineLogger.shared.log("[MediaAssembler] Failed to remove tempMP4 \(tempMP4.path): \(error)")
+            }
+        }
 
         // AVFoundation requires a .ts extension (or .m3u8 playlist wrapper) to parse MPEG-TS
         let tsFileURL = tempDir.appendingPathComponent("source-\(UUID().uuidString).ts", isDirectory: false)
-        try? fileManager.removeItem(at: tsFileURL)
+        do {
+            try fileManager.removeItem(at: tsFileURL)
+        } catch {
+            PipelineLogger.shared.log("[MediaAssembler] Failed to remove tsFileURL before remux \(tsFileURL.path): \(error)")
+        }
         do {
             try fileManager.copyItem(at: sourceTSURL, to: tsFileURL)
         } catch {
-            try? fileManager.linkItem(at: sourceTSURL, to: tsFileURL)
+            do {
+                try fileManager.linkItem(at: sourceTSURL, to: tsFileURL)
+            } catch {
+                PipelineLogger.shared.log("[MediaAssembler] Failed to linkItem for tsFileURL: \(error)")
+            }
         }
-        defer { try? fileManager.removeItem(at: tsFileURL) }
+        defer {
+            do {
+                try fileManager.removeItem(at: tsFileURL)
+            } catch {
+                PipelineLogger.shared.log("[MediaAssembler] Failed to remove tsFileURL \(tsFileURL.path): \(error)")
+            }
+        }
 
         // Create a local single-segment HLS manifest wrapper so AVFoundation can demux MPEG-TS reliably on iOS & macOS
         let playlistURL = tempDir.appendingPathComponent("manifest-\(UUID().uuidString).m3u8", isDirectory: false)
@@ -1061,9 +1245,17 @@ public enum MediaAssembler {
         let destKeyURL = destinationMP4URL.deletingLastPathComponent().appendingPathComponent("key.bin")
         if !fileManager.fileExists(atPath: tempKeyURL.path) {
             if fileManager.fileExists(atPath: sourceKeyURL.path) {
-                try? fileManager.copyItem(at: sourceKeyURL, to: tempKeyURL)
+                do {
+                    try fileManager.copyItem(at: sourceKeyURL, to: tempKeyURL)
+                } catch {
+                    PipelineLogger.shared.log("[MediaAssembler] Failed to copy sourceKeyURL: \(error)")
+                }
             } else if fileManager.fileExists(atPath: destKeyURL.path) {
-                try? fileManager.copyItem(at: destKeyURL, to: tempKeyURL)
+                do {
+                    try fileManager.copyItem(at: destKeyURL, to: tempKeyURL)
+                } catch {
+                    PipelineLogger.shared.log("[MediaAssembler] Failed to copy destKeyURL: \(error)")
+                }
             }
         }
         let keyTag = fileManager.fileExists(atPath: tempKeyURL.path)
@@ -1078,10 +1270,22 @@ public enum MediaAssembler {
         \(tsFileURL.lastPathComponent)
         #EXT-X-ENDLIST
         """
-        try? m3u8Content.write(to: playlistURL, atomically: true, encoding: .utf8)
+        do {
+            try m3u8Content.write(to: playlistURL, atomically: true, encoding: .utf8)
+        } catch {
+            PipelineLogger.shared.log("[MediaAssembler] Failed to write playlistURL: \(error)")
+        }
         defer {
-            try? fileManager.removeItem(at: playlistURL)
-            try? fileManager.removeItem(at: tempKeyURL)
+            do {
+                try fileManager.removeItem(at: playlistURL)
+            } catch {
+                PipelineLogger.shared.log("[MediaAssembler] Failed to remove playlistURL \(playlistURL.path): \(error)")
+            }
+            do {
+                try fileManager.removeItem(at: tempKeyURL)
+            } catch {
+                PipelineLogger.shared.log("[MediaAssembler] Failed to remove tempKeyURL \(tempKeyURL.path): \(error)")
+            }
         }
 
         let tsAsset = AVURLAsset(url: tsFileURL)
@@ -1164,7 +1368,11 @@ public enum MediaAssembler {
 
         // Attempt 2: AVAssetExportPresetHighestQuality
         if !didSucceed {
-            try? fileManager.removeItem(at: tempMP4)
+            do {
+                try fileManager.removeItem(at: tempMP4)
+            } catch {
+                PipelineLogger.shared.log("[MediaAssembler] Failed to remove tempMP4: \(error)")
+            }
             PipelineLogger.shared.log("[MediaAssembler] Remux Attempt 2: AVAssetExportSession with AVAssetExportPresetHighestQuality...")
             if let exportSession = AVAssetExportSession(asset: targetAsset, presetName: AVAssetExportPresetHighestQuality) {
                 exportSession.outputURL = tempMP4
@@ -1197,7 +1405,11 @@ public enum MediaAssembler {
 
         // Attempt 3: AVAssetReader + AVAssetWriter if tracks are exposed
         if !didSucceed {
-            try? fileManager.removeItem(at: tempMP4)
+            do {
+                try fileManager.removeItem(at: tempMP4)
+            } catch {
+                PipelineLogger.shared.log("[MediaAssembler] Failed to remove tempMP4: \(error)")
+            }
             PipelineLogger.shared.log("[MediaAssembler] Remux Attempt 3: AVAssetReader + AVAssetWriter...")
             let assetToRead = targetAsset.tracks.isEmpty ? tsAsset : targetAsset
             if !assetToRead.tracks.isEmpty {
@@ -1322,7 +1534,11 @@ public enum MediaAssembler {
         }
 
         if fileManager.fileExists(atPath: destinationMP4URL.path) {
-            try? fileManager.removeItem(at: destinationMP4URL)
+            do {
+                try fileManager.removeItem(at: destinationMP4URL)
+            } catch {
+                PipelineLogger.shared.log("[MediaAssembler] Failed to remove destinationMP4URL: \(error)")
+            }
         }
         try fileManager.moveItem(at: tempMP4, to: destinationMP4URL)
     }
@@ -1433,7 +1649,13 @@ public enum MediaAssembler {
         guard let input = try? FileHandle(forReadingFrom: segment.fileURL) else {
             throw MediaAssemblyError.fileOperationFailed
         }
-        defer { try? input.close() }
+        defer {
+            do {
+                try input.close()
+            } catch {
+                PipelineLogger.shared.log("[MediaAssembler] Failed to close segment input handle: \(error)")
+            }
+        }
         while true {
             let chunk = try input.read(upToCount: 1_048_576) ?? Data()
             if chunk.isEmpty { break }
@@ -1464,12 +1686,19 @@ public enum MediaAssembler {
                 quarantinedFiles: [dest.lastPathComponent],
                 validationDetails: reason
             )
-            if let data = try? JSONEncoder().encode(record) {
-                try? data.write(to: quarantineDir.appendingPathComponent("quarantine-info.json"))
+            do {
+                let data = try JSONEncoder().encode(record)
+                try data.write(to: quarantineDir.appendingPathComponent("quarantine-info.json"))
+            } catch {
+                PipelineLogger.shared.log("[MediaAssembler] Failed to write quarantine info: \(error)")
             }
             PipelineLogger.shared.log("[MediaAssembler] Quarantined invalid published output to \(quarantineDir.path)")
         } catch {
-            _ = try? fileManager.removeItem(at: fileURL)
+            do {
+                try fileManager.removeItem(at: fileURL)
+            } catch {
+                PipelineLogger.shared.log("[MediaAssembler] Failed to remove fileURL \(fileURL.path): \(error)")
+            }
         }
     }
 
@@ -1484,7 +1713,13 @@ public enum MediaAssembler {
               let handle = try? FileHandle(forReadingFrom: url) else {
             return false
         }
-        defer { try? handle.close() }
+        defer {
+            do {
+                try handle.close()
+            } catch {
+                PipelineLogger.shared.log("[MediaAssembler] Failed to close handle: \(error)")
+            }
+        }
         let packetsPerBuffer = 256
         let bufferSize = 188 * packetsPerBuffer
         do {
@@ -1512,7 +1747,13 @@ public enum MediaAssembler {
               let handle = try? FileHandle(forReadingFrom: url) else {
             return false
         }
-        defer { try? handle.close() }
+        defer {
+            do {
+                try handle.close()
+            } catch {
+                PipelineLogger.shared.log("[MediaAssembler] Failed to close handle: \(error)")
+            }
+        }
 
         let fileSize = UInt64(fileSizeInt)
 

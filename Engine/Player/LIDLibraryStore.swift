@@ -376,14 +376,20 @@ public final class LIDLibraryStore: ObservableObject {
 
     private func persistFavorites() {
         let list = Array(favorites)
-        if let data = try? JSONEncoder().encode(list) {
-            try? data.write(to: favoritesStorageURL, options: .atomic)
+        do {
+            let data = try JSONEncoder().encode(list)
+            try data.write(to: favoritesStorageURL, options: .atomic)
+        } catch {
+            PipelineLogger.shared.log(stage: .persistence, message: "Failed to persist favorites: \(error)")
         }
     }
 
     private func persistPlaylists() {
-        if let data = try? JSONEncoder().encode(playlists) {
-            try? data.write(to: playlistsStorageURL, options: .atomic)
+        do {
+            let data = try JSONEncoder().encode(playlists)
+            try data.write(to: playlistsStorageURL, options: .atomic)
+        } catch {
+            PipelineLogger.shared.log(stage: .persistence, message: "Failed to persist playlists: \(error)")
         }
     }
 

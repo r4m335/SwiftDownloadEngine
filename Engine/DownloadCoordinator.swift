@@ -494,7 +494,11 @@ public actor DownloadCoordinator {
         guard let task = activeTasks[id] else {
             // If task is not actively running, update persisted state only if not already completed
             if let record = try await persistenceStore.fetch(tag: id), record.state != .completed {
-                _ = try? await persistenceStore.updateState(tag: id, state: .paused)
+                do {
+                    _ = try await persistenceStore.updateState(tag: id, state: .paused)
+                } catch {
+                    PipelineLogger.shared.log("[DownloadCoordinator] Failed to update persistence state to .paused for \(id): \(error.localizedDescription)")
+                }
                 if var current = progressByID[id] {
                     current = CoordinatorProgress(
                         downloadID: id,
@@ -522,7 +526,11 @@ public actor DownloadCoordinator {
         pauseRequested.remove(id)
 
         if let record = try await persistenceStore.fetch(tag: id), record.state != .completed {
-            _ = try? await persistenceStore.updateState(tag: id, state: .paused)
+            do {
+                _ = try await persistenceStore.updateState(tag: id, state: .paused)
+            } catch {
+                PipelineLogger.shared.log("[DownloadCoordinator] Failed to update persistence state to .paused for \(id): \(error.localizedDescription)")
+            }
             if var current = progressByID[id] {
                 current = CoordinatorProgress(
                     downloadID: id,
@@ -570,25 +578,49 @@ public actor DownloadCoordinator {
             progressByID[id] = current
         }
 
-        _ = try? await persistenceStore.updateState(tag: id, state: .cancelled)
+        do {
+            _ = try await persistenceStore.updateState(tag: id, state: .cancelled)
+        } catch {
+            PipelineLogger.shared.log("[DownloadCoordinator] Failed to update persistence state to .cancelled for \(id): \(error.localizedDescription)")
+        }
 
         if deleteDestinationFile {
-            if let record = try? await persistenceStore.fetch(tag: id) {
-                _ = try? FileManager.default.removeItem(at: record.destinationURL)
-                let parentDir = record.destinationURL.deletingLastPathComponent()
-                let tempDir = parentDir.appendingPathComponent(".tmp", isDirectory: true)
-                for seg in record.segments {
-                    let part = tempDir.appendingPathComponent("segment-\(seg.id).part")
-                    _ = try? FileManager.default.removeItem(at: part)
-                }
-                if let bgManager = backgroundSessionManager {
+            do {
+                if let record = try await persistenceStore.fetch(tag: id) {
+                    do {
+                        try FileManager.default.removeItem(at: record.destinationURL)
+                    } catch {
+                        PipelineLogger.shared.log("[DownloadCoordinator] Warning: Failed to remove destination \(record.destinationURL.path): \(error.localizedDescription)")
+                    }
+                    let parentDir = record.destinationURL.deletingLastPathComponent()
+                    let tempDir = parentDir.appendingPathComponent(".tmp", isDirectory: true)
                     for seg in record.segments {
-                        let part = bgManager.partFileURL(downloadID: id, segmentID: seg.id)
-                        _ = try? FileManager.default.removeItem(at: part)
+                        let part = tempDir.appendingPathComponent("segment-\(seg.id).part")
+                        do {
+                            try FileManager.default.removeItem(at: part)
+                        } catch {
+                            PipelineLogger.shared.log("[DownloadCoordinator] Warning: Failed to remove part file \(part.path): \(error.localizedDescription)")
+                        }
+                    }
+                    if let bgManager = backgroundSessionManager {
+                        for seg in record.segments {
+                            let part = bgManager.partFileURL(downloadID: id, segmentID: seg.id)
+                            do {
+                                try FileManager.default.removeItem(at: part)
+                            } catch {
+                                PipelineLogger.shared.log("[DownloadCoordinator] Warning: Failed to remove background part file \(part.path): \(error.localizedDescription)")
+                            }
+                        }
                     }
                 }
+            } catch {
+                PipelineLogger.shared.log("[DownloadCoordinator] Warning: Failed to fetch record for deletion \(id): \(error.localizedDescription)")
             }
-            _ = try? await persistenceStore.delete(tag: id)
+            do {
+                _ = try await persistenceStore.delete(tag: id)
+            } catch {
+                PipelineLogger.shared.log("[DownloadCoordinator] Warning: Failed to delete persistence store record for \(id): \(error.localizedDescription)")
+            }
         }
     }
 
@@ -824,7 +856,11 @@ public actor DownloadCoordinator {
                     print("[DownloadCoordinator] Server does not support byte ranges on resume for \(request.id); restarting download from byte 0.")
                     isResume = false
                     if FileManager.default.fileExists(atPath: request.destinationURL.path) {
-                        try? FileManager.default.removeItem(at: request.destinationURL)
+                        do {
+                            try FileManager.default.removeItem(at: request.destinationURL)
+                        } catch {
+                            PipelineLogger.shared.log("[DownloadCoordinator] Warning: Failed to remove destination on non-range resume: \(error.localizedDescription)")
+                        }
                     }
                     record = nil
                 } else {
@@ -849,7 +885,11 @@ public actor DownloadCoordinator {
                     case .sizeMismatch, .validatorMismatch:
                         isResume = false
                         if FileManager.default.fileExists(atPath: request.destinationURL.path) {
-                            try? FileManager.default.removeItem(at: request.destinationURL)
+                            do {
+                                try FileManager.default.removeItem(at: request.destinationURL)
+                            } catch {
+                                PipelineLogger.shared.log("[DownloadCoordinator] Warning: Failed to remove destination on validator mismatch: \(error.localizedDescription)")
+                            }
                         }
                         // Clean up any existing part files and cancel background tasks to prevent mixing versions
                         if let bgManager = self.backgroundSessionManager {
@@ -857,7 +897,11 @@ public actor DownloadCoordinator {
                             for seg in existing.segments {
                                 let part = bgManager.partFileURL(downloadID: request.id, segmentID: seg.id)
                                 if FileManager.default.fileExists(atPath: part.path) {
-                                    try? FileManager.default.removeItem(at: part)
+                                    do {
+                                        try FileManager.default.removeItem(at: part)
+                                    } catch {
+                                        PipelineLogger.shared.log("[DownloadCoordinator] Warning: Failed to remove part file \(part.path): \(error.localizedDescription)")
+                                    }
                                 }
                             }
                         }
@@ -872,7 +916,11 @@ public actor DownloadCoordinator {
                         print("[DownloadCoordinator] Server non-resumable on resume for \(request.id); restarting download cleanly from byte 0.")
                         isResume = false
                         if FileManager.default.fileExists(atPath: request.destinationURL.path) {
-                            try? FileManager.default.removeItem(at: request.destinationURL)
+                            do {
+                                try FileManager.default.removeItem(at: request.destinationURL)
+                            } catch {
+                                PipelineLogger.shared.log("[DownloadCoordinator] Warning: Failed to remove destination on non-resumable restart: \(error.localizedDescription)")
+                            }
                         }
                         record = nil
                     }
@@ -950,7 +998,11 @@ public actor DownloadCoordinator {
                             if isResume {
                                 print("[DownloadCoordinator] Server ignored byte range on resume for \(request.id); restarting download cleanly from byte 0.")
                                 if FileManager.default.fileExists(atPath: executionRequest.destinationURL.path) {
-                                    try? FileManager.default.removeItem(at: executionRequest.destinationURL)
+                                    do {
+                                        try FileManager.default.removeItem(at: executionRequest.destinationURL)
+                                    } catch {
+                                        PipelineLogger.shared.log("[DownloadCoordinator] Warning: Failed to remove destination on restart: \(error.localizedDescription)")
+                                    }
                                 }
                             }
                             // Safe fallback for fresh or restarted downloads: Server returned 200 after ranged request
@@ -977,8 +1029,19 @@ public actor DownloadCoordinator {
         } catch is CancellationError {
             throw CancellationError()
         } catch {
-            _ = try? await persistenceStore.updateState(tag: request.id, state: .failed(reason: error.localizedDescription))
-            if let current = try? await persistenceStore.fetch(tag: request.id) {
+            do {
+                _ = try await persistenceStore.updateState(tag: request.id, state: .failed(reason: error.localizedDescription))
+            } catch let stateErr {
+                PipelineLogger.shared.log("[DownloadCoordinator] Failed updating persistence state to .failed for \(request.id): \(stateErr.localizedDescription)")
+            }
+            let currentRecord: DownloadRecord?
+            do {
+                currentRecord = try await persistenceStore.fetch(tag: request.id)
+            } catch {
+                PipelineLogger.shared.log("[DownloadCoordinator] Failed fetching record for \(request.id) on error: \(error.localizedDescription)")
+                currentRecord = nil
+            }
+            if let current = currentRecord {
                 updateProgress(
                     downloadID: request.id,
                     state: .failed(reason: error.localizedDescription),
@@ -1068,7 +1131,15 @@ public actor DownloadCoordinator {
         let temporaryURL = request.destinationURL
             .deletingLastPathComponent()
             .appendingPathComponent(".range-\(request.id)-\(UUID().uuidString).tmp")
-        defer { try? FileManager.default.removeItem(at: temporaryURL) }
+        defer {
+            if FileManager.default.fileExists(atPath: temporaryURL.path) {
+                do {
+                    try FileManager.default.removeItem(at: temporaryURL)
+                } catch {
+                    PipelineLogger.shared.log("[DownloadCoordinator] Warning: Failed to clean up temporaryURL \(temporaryURL.path): \(error.localizedDescription)")
+                }
+            }
+        }
 
         do {
             let (data, response) = try await session.data(for: rangedRequest, delegate: redirectDelegate)
@@ -1123,7 +1194,11 @@ public actor DownloadCoordinator {
         } catch is CancellationError {
             throw CancellationError()
         } catch {
-            _ = try? await persistenceStore.updateState(tag: request.id, state: .failed(reason: error.localizedDescription))
+            do {
+                _ = try await persistenceStore.updateState(tag: request.id, state: .failed(reason: error.localizedDescription))
+            } catch let stateErr {
+                PipelineLogger.shared.log("[DownloadCoordinator] Failed updating persistence state to .failed for \(request.id): \(stateErr.localizedDescription)")
+            }
             throw error
         }
     }
@@ -1249,7 +1324,15 @@ public actor DownloadCoordinator {
 
                 // Stream directly to disk using URLSession.download(for:delegate:) instead of loading into RAM
                 let (tempDownloadedURL, response) = try await session.download(for: segmentRequest, delegate: redirectDelegate)
-                defer { try? FileManager.default.removeItem(at: tempDownloadedURL) }
+                defer {
+                    if FileManager.default.fileExists(atPath: tempDownloadedURL.path) {
+                        do {
+                            try FileManager.default.removeItem(at: tempDownloadedURL)
+                        } catch {
+                            PipelineLogger.shared.log("[DownloadCoordinator] Warning: Failed cleaning up tempDownloadedURL \(tempDownloadedURL.path): \(error.localizedDescription)")
+                        }
+                    }
+                }
                 try Task.checkCancellation()
 
                 if acquiredPermit {
@@ -1301,14 +1384,26 @@ public actor DownloadCoordinator {
                 // Safe atomic publication: Stage inside destination directory, then atomically replace without deleting target first
                 let stagingURL = parentDir.appendingPathComponent(".stage-\(request.id)-\(UUID().uuidString).tmp")
                 try FileManager.default.moveItem(at: tempDownloadedURL, to: stagingURL)
-                defer { try? FileManager.default.removeItem(at: stagingURL) }
+                defer {
+                    if FileManager.default.fileExists(atPath: stagingURL.path) {
+                        do {
+                            try FileManager.default.removeItem(at: stagingURL)
+                        } catch {
+                            PipelineLogger.shared.log("[DownloadCoordinator] Warning: Failed cleaning up stagingURL \(stagingURL.path): \(error.localizedDescription)")
+                        }
+                    }
+                }
 
                 #if canImport(Darwin)
                 if FileManager.default.fileExists(atPath: request.destinationURL.path) {
                     do {
                         _ = try FileManager.default.replaceItemAt(request.destinationURL, withItemAt: stagingURL, backupItemName: nil, options: [])
                     } catch {
-                        _ = try? FileManager.default.removeItem(at: request.destinationURL)
+                        do {
+                            try FileManager.default.removeItem(at: request.destinationURL)
+                        } catch {
+                            PipelineLogger.shared.log("[DownloadCoordinator] Warning: Failed removing destination before move: \(error.localizedDescription)")
+                        }
                         try FileManager.default.moveItem(at: stagingURL, to: request.destinationURL)
                     }
                 } else {
@@ -1316,7 +1411,11 @@ public actor DownloadCoordinator {
                 }
                 #else
                 if FileManager.default.fileExists(atPath: request.destinationURL.path) {
-                    _ = try? FileManager.default.removeItem(at: request.destinationURL)
+                    do {
+                        try FileManager.default.removeItem(at: request.destinationURL)
+                    } catch {
+                        PipelineLogger.shared.log("[DownloadCoordinator] Warning: Failed removing destination before move: \(error.localizedDescription)")
+                    }
                 }
                 try FileManager.default.moveItem(at: stagingURL, to: request.destinationURL)
                 #endif
@@ -1443,7 +1542,13 @@ public actor DownloadCoordinator {
             mode: request.storageMode
         )
         defer {
-            Task { try? await writer.close() }
+            Task {
+                do {
+                    try await writer.close()
+                } catch {
+                    PipelineLogger.shared.log(stage: .coordinator, message: "Error closing writer: \(error)")
+                }
+            }
         }
 
         // 4. Adaptive work queue, progress tracker & limiters
@@ -1786,20 +1891,32 @@ public actor DownloadCoordinator {
                 expected: totalSize,
                 actual: actualDiskSize ?? -1
             )
-            _ = try? await persistenceStore.updateState(tag: request.id, state: .failed(reason: error.localizedDescription))
+            do {
+                _ = try await persistenceStore.updateState(tag: request.id, state: .failed(reason: error.localizedDescription))
+            } catch let stateErr {
+                PipelineLogger.shared.log("[DownloadCoordinator] Failed updating persistence state to .failed for \(request.id): \(stateErr.localizedDescription)")
+            }
             throw error
         }
 
         // 9. MANDATORY INVARIANT: Verify all segments completed in persistence store
         let finalCompletedMap = await progressAccumulator.getCompletedBytes()
         for (segID, bytes) in finalCompletedMap {
-            _ = try? await persistenceStore.updateSegmentProgress(tag: request.id, segmentID: segID, completedBytes: bytes)
+            do {
+                _ = try await persistenceStore.updateSegmentProgress(tag: request.id, segmentID: segID, completedBytes: bytes)
+            } catch let progErr {
+                PipelineLogger.shared.log("[DownloadCoordinator] Warning: Failed to persist segment \(segID) progress for \(request.id): \(progErr.localizedDescription)")
+            }
         }
 
         guard let finalRecord = try await persistenceStore.fetch(tag: request.id),
               finalRecord.isAllSegmentsCompleted else {
             let error = DownloadCoordinatorError.segmentLayoutInvalid(reason: "Not all segments reported completed")
-            _ = try? await persistenceStore.updateState(tag: request.id, state: .failed(reason: error.localizedDescription))
+            do {
+                _ = try await persistenceStore.updateState(tag: request.id, state: .failed(reason: error.localizedDescription))
+            } catch let stateErr {
+                PipelineLogger.shared.log("[DownloadCoordinator] Failed updating persistence state to .failed for \(request.id): \(stateErr.localizedDescription)")
+            }
             throw error
         }
 
@@ -1809,7 +1926,11 @@ public actor DownloadCoordinator {
             guard actualSHA.caseInsensitiveCompare(expectedSHA) == .orderedSame else {
                 checksumOutcomes[request.id] = .mismatch(expected: expectedSHA, actual: actualSHA)
                 let error = DownloadCoordinatorError.checksumMismatch(expected: expectedSHA, actual: actualSHA)
-                _ = try? await persistenceStore.updateState(tag: request.id, state: .failed(reason: error.localizedDescription))
+                do {
+                    _ = try await persistenceStore.updateState(tag: request.id, state: .failed(reason: error.localizedDescription))
+                } catch let stateErr {
+                    PipelineLogger.shared.log("[DownloadCoordinator] Failed updating persistence state to .failed for \(request.id): \(stateErr.localizedDescription)")
+                }
                 throw error
             }
             checksumOutcomes[request.id] = .verified(sha256: actualSHA)
@@ -1874,7 +1995,11 @@ public actor DownloadCoordinator {
 
         let stagingURL = parentDir.appendingPathComponent(".stage-\(request.id)-\(UUID().uuidString).tmp")
         if FileManager.default.fileExists(atPath: stagingURL.path) {
-            try? FileManager.default.removeItem(at: stagingURL)
+            do {
+                try FileManager.default.removeItem(at: stagingURL)
+            } catch {
+                PipelineLogger.shared.log("[DownloadCoordinator] Warning: Failed to clean up existing staging file \(stagingURL.path): \(error.localizedDescription)")
+            }
         }
         guard FileManager.default.createFile(atPath: stagingURL.path, contents: nil) else {
             throw CocoaError(.fileWriteUnknown)
@@ -1883,14 +2008,28 @@ public actor DownloadCoordinator {
         var publicationSucceeded = false
         defer {
             if !publicationSucceeded {
-                try? FileManager.default.removeItem(at: stagingURL)
+                if FileManager.default.fileExists(atPath: stagingURL.path) {
+                    do {
+                        try FileManager.default.removeItem(at: stagingURL)
+                    } catch {
+                        PipelineLogger.shared.log("[DownloadCoordinator] Warning: Failed to clean up uncommitted staging file \(stagingURL.path): \(error.localizedDescription)")
+                    }
+                }
             }
         }
 
         let fileHandle = try FileHandle(forWritingTo: stagingURL)
         defer {
-            try? fileHandle.synchronize()
-            try? fileHandle.close()
+            do {
+                try fileHandle.synchronize()
+            } catch {
+                PipelineLogger.shared.log("[DownloadCoordinator] Warning: Failed to synchronize fileHandle on close: \(error.localizedDescription)")
+            }
+            do {
+                try fileHandle.close()
+            } catch {
+                PipelineLogger.shared.log("[DownloadCoordinator] Warning: Failed to close fileHandle: \(error.localizedDescription)")
+            }
         }
 
         // File Preallocation: Preallocate disk space to catch disk-full / quota errors at byte 0
@@ -2153,7 +2292,11 @@ public actor DownloadCoordinator {
                         expected: expected,
                         actual: actualDiskSize ?? -1
                     )
-                    _ = try? await persistenceStore.updateState(tag: request.id, state: .failed(reason: error.localizedDescription))
+                    do {
+                        _ = try await persistenceStore.updateState(tag: request.id, state: .failed(reason: error.localizedDescription))
+                    } catch {
+                        PipelineLogger.shared.log(stage: .coordinator, message: "Failed to persist failed state for \(request.id): \(error)")
+                    }
                     throw error
                 }
             }
@@ -2164,7 +2307,11 @@ public actor DownloadCoordinator {
                 guard actualSHA.caseInsensitiveCompare(expectedSHA) == .orderedSame else {
                     checksumOutcomes[request.id] = .mismatch(expected: expectedSHA, actual: actualSHA)
                     let error = DownloadCoordinatorError.checksumMismatch(expected: expectedSHA, actual: actualSHA)
-                    _ = try? await persistenceStore.updateState(tag: request.id, state: .failed(reason: error.localizedDescription))
+                    do {
+                        _ = try await persistenceStore.updateState(tag: request.id, state: .failed(reason: error.localizedDescription))
+                    } catch {
+                        PipelineLogger.shared.log(stage: .coordinator, message: "Failed to persist failed state for \(request.id): \(error)")
+                    }
                     throw error
                 }
                 checksumOutcomes[request.id] = .verified(sha256: actualSHA)
@@ -2184,9 +2331,17 @@ public actor DownloadCoordinator {
                     try FileManager.default.moveItem(at: destinationURL, to: backupURL)
                     do {
                         try FileManager.default.moveItem(at: stagingURL, to: destinationURL)
-                        _ = try? FileManager.default.removeItem(at: backupURL)
+                        do {
+                            try FileManager.default.removeItem(at: backupURL)
+                        } catch {
+                            PipelineLogger.shared.log("[DownloadCoordinator] Warning: Failed to clean up backup file \(backupURL.path): \(error.localizedDescription)")
+                        }
                     } catch {
-                        _ = try? FileManager.default.moveItem(at: backupURL, to: destinationURL)
+                        do {
+                            try FileManager.default.moveItem(at: backupURL, to: destinationURL)
+                        } catch let restoreErr {
+                            PipelineLogger.shared.log("[DownloadCoordinator] CRITICAL: Failed to restore backup to \(destinationURL.path): \(restoreErr.localizedDescription)")
+                        }
                         throw error
                     }
                 }
@@ -2196,9 +2351,17 @@ public actor DownloadCoordinator {
                 try FileManager.default.moveItem(at: destinationURL, to: backupURL)
                 do {
                     try FileManager.default.moveItem(at: stagingURL, to: destinationURL)
-                    _ = try? FileManager.default.removeItem(at: backupURL)
+                    do {
+                        try FileManager.default.removeItem(at: backupURL)
+                    } catch {
+                        PipelineLogger.shared.log("[DownloadCoordinator] Warning: Failed to clean up backup file \(backupURL.path): \(error.localizedDescription)")
+                    }
                 } catch {
-                    _ = try? FileManager.default.moveItem(at: backupURL, to: destinationURL)
+                    do {
+                        try FileManager.default.moveItem(at: backupURL, to: destinationURL)
+                    } catch let restoreErr {
+                        PipelineLogger.shared.log("[DownloadCoordinator] CRITICAL: Failed to restore backup to \(destinationURL.path): \(restoreErr.localizedDescription)")
+                    }
                     throw error
                 }
                 #endif
@@ -2322,7 +2485,13 @@ public actor DownloadCoordinator {
         for segment in record.segments {
             let completed = min(max(segment.completedBytes, 0), segment.length)
             let partURL = backgroundManager.partFileURL(downloadID: record.id, segmentID: segment.id)
-            try? FileManager.default.removeItem(at: partURL)
+            if FileManager.default.fileExists(atPath: partURL.path) {
+                do {
+                    try FileManager.default.removeItem(at: partURL)
+                } catch {
+                    PipelineLogger.shared.log("[DownloadCoordinator] Warning: Failed to remove old part file \(partURL.path): \(error.localizedDescription)")
+                }
+            }
 
             var updated = segment
             updated.completedBytes = 0
@@ -2335,8 +2504,16 @@ public actor DownloadCoordinator {
                 let input = try FileHandle(forReadingFrom: record.destinationURL)
                 let output = try FileHandle(forWritingTo: partURL)
                 defer {
-                    try? input.close()
-                    try? output.close()
+                    do {
+                        try input.close()
+                    } catch {
+                        PipelineLogger.shared.log("[DownloadCoordinator] Warning: Failed to close input handle: \(error.localizedDescription)")
+                    }
+                    do {
+                        try output.close()
+                    } catch {
+                        PipelineLogger.shared.log("[DownloadCoordinator] Warning: Failed to close output handle: \(error.localizedDescription)")
+                    }
                 }
 
                 try input.seek(toOffset: UInt64(segment.startOffset))
@@ -2427,7 +2604,13 @@ public actor DownloadCoordinator {
                 } else {
                     // Corrupted/oversized part file: remove and reset
                     initialCompletedMap[seg.id] = 0
-                    try? FileManager.default.removeItem(at: partURL)
+                    if FileManager.default.fileExists(atPath: partURL.path) {
+                        do {
+                            try FileManager.default.removeItem(at: partURL)
+                        } catch {
+                            PipelineLogger.shared.log("[DownloadCoordinator] Warning: Failed to remove oversized part file \(partURL.path): \(error.localizedDescription)")
+                        }
+                    }
                 }
             } else {
                 initialCompletedMap[seg.id] = 0
@@ -2627,16 +2810,20 @@ public actor DownloadCoordinator {
                         try await Task.sleep(nanoseconds: UInt64(delaySeconds * 1_000_000_000))
                         if let seg = segments.first(where: { $0.id == segID }) {
                             let segRec = SegmentRecord(segment: seg, completedBytes: 0)
-                            _ = try? await bgManager.scheduleSegmentDownload(
-                                download: currentRecord,
-                                segment: segRec,
-                                customHeaders: self.mergeValidatorHeaders(
-                                    original: request.headers,
-                                    eTag: probeResult.eTag,
-                                    lastModified: probeResult.lastModified
-                                ),
-                                earliestBeginDate: earliestBeginDate
-                            )
+                            do {
+                                _ = try await bgManager.scheduleSegmentDownload(
+                                    download: currentRecord,
+                                    segment: segRec,
+                                    customHeaders: self.mergeValidatorHeaders(
+                                        original: request.headers,
+                                        eTag: probeResult.eTag,
+                                        lastModified: probeResult.lastModified
+                                    ),
+                                    earliestBeginDate: earliestBeginDate
+                                )
+                            } catch {
+                                PipelineLogger.shared.log(stage: .coordinator, message: "Failed to reschedule segment \(segID) for \(request.id): \(error)")
+                            }
                         }
                     } else {
                         throw DownloadCoordinatorError.retryLimitExceeded(
@@ -2787,7 +2974,11 @@ public actor DownloadCoordinator {
 
         // 3. Remove part files after successful merge
         for partURL in partURLs {
-            try? FileManager.default.removeItem(at: partURL)
+            do {
+                try FileManager.default.removeItem(at: partURL)
+            } catch {
+                PipelineLogger.shared.log(stage: .coordinator, message: "Failed to remove part file \(partURL.path): \(error)")
+            }
         }
 
         // 4. Validate physical disk file attributes
@@ -2798,19 +2989,31 @@ public actor DownloadCoordinator {
                 expected: totalSize,
                 actual: actualDiskSize ?? -1
             )
-            _ = try? await persistenceStore.updateState(tag: request.id, state: .failed(reason: error.localizedDescription))
+            do {
+                _ = try await persistenceStore.updateState(tag: request.id, state: .failed(reason: error.localizedDescription))
+            } catch {
+                PipelineLogger.shared.log(stage: .coordinator, message: "Failed to persist failed state for \(request.id): \(error)")
+            }
             throw error
         }
 
         // 5. Update persistence store segment records
         for seg in sortedSegments {
-            _ = try? await persistenceStore.updateSegmentProgress(tag: request.id, segmentID: seg.id, completedBytes: seg.length)
+            do {
+                _ = try await persistenceStore.updateSegmentProgress(tag: request.id, segmentID: seg.id, completedBytes: seg.length)
+            } catch {
+                PipelineLogger.shared.log(stage: .coordinator, message: "Failed to update segment progress for \(request.id) segment \(seg.id): \(error)")
+            }
         }
 
         guard let finalRecord = try await persistenceStore.fetch(tag: request.id),
               finalRecord.isAllSegmentsCompleted else {
             let error = DownloadCoordinatorError.segmentLayoutInvalid(reason: "Not all segments reported completed")
-            _ = try? await persistenceStore.updateState(tag: request.id, state: .failed(reason: error.localizedDescription))
+            do {
+                _ = try await persistenceStore.updateState(tag: request.id, state: .failed(reason: error.localizedDescription))
+            } catch {
+                PipelineLogger.shared.log(stage: .coordinator, message: "Failed to persist failed state for \(request.id): \(error)")
+            }
             throw error
         }
 
@@ -2820,7 +3023,11 @@ public actor DownloadCoordinator {
             guard actualSHA.caseInsensitiveCompare(expectedSHA) == .orderedSame else {
                 checksumOutcomes[request.id] = .mismatch(expected: expectedSHA, actual: actualSHA)
                 let error = DownloadCoordinatorError.checksumMismatch(expected: expectedSHA, actual: actualSHA)
-                _ = try? await persistenceStore.updateState(tag: request.id, state: .failed(reason: error.localizedDescription))
+                do {
+                    _ = try await persistenceStore.updateState(tag: request.id, state: .failed(reason: error.localizedDescription))
+                } catch {
+                    PipelineLogger.shared.log(stage: .coordinator, message: "Failed to persist failed state for \(request.id): \(error)")
+                }
                 throw error
             }
             checksumOutcomes[request.id] = .verified(sha256: actualSHA)
@@ -2885,10 +3092,18 @@ public actor DownloadCoordinator {
                         expectedMergedSize: record.totalSize
                     )
                     for partURL in partURLs {
-                        try? FileManager.default.removeItem(at: partURL)
+                        do {
+                            try FileManager.default.removeItem(at: partURL)
+                        } catch {
+                            PipelineLogger.shared.log(stage: .coordinator, message: "Recovery failed to remove part file \(partURL.path): \(error)")
+                        }
                     }
                     for seg in sortedSegments {
-                        _ = try? await persistenceStore.updateSegmentProgress(tag: record.id, segmentID: seg.id, completedBytes: seg.length)
+                        do {
+                            _ = try await persistenceStore.updateSegmentProgress(tag: record.id, segmentID: seg.id, completedBytes: seg.length)
+                        } catch {
+                            PipelineLogger.shared.log(stage: .coordinator, message: "Recovery failed to update segment progress for \(record.id) seg \(seg.id): \(error)")
+                        }
                     }
                     try await persistenceStore.updateState(tag: record.id, state: .completed)
                 } catch {
@@ -3002,10 +3217,20 @@ public actor DownloadCoordinator {
                 if total > 0 {
                     if fileSize < total {
                         // File on disk is smaller than expected totalSize: re-truncate or reset
-                        if let handle = try? FileHandle(forWritingTo: destinationURL) {
-                            try? handle.truncate(atOffset: UInt64(total))
-                            try? handle.close()
-                        } else {
+                        do {
+                            let handle = try FileHandle(forWritingTo: destinationURL)
+                            do {
+                                try handle.truncate(atOffset: UInt64(total))
+                            } catch {
+                                PipelineLogger.shared.log(stage: .coordinator, message: "Failed to truncate destinationURL \(destinationURL.path) to \(total): \(error)")
+                            }
+                            do {
+                                try handle.close()
+                            } catch {
+                                PipelineLogger.shared.log(stage: .coordinator, message: "Failed to close handle for \(destinationURL.path): \(error)")
+                            }
+                        } catch {
+                            PipelineLogger.shared.log(stage: .coordinator, message: "Failed to open FileHandle for truncation: \(error)")
                             reconciled.segments = record.segments.map { seg in
                                 var s = seg
                                 s.completedBytes = 0
@@ -3020,9 +3245,20 @@ public actor DownloadCoordinator {
                 if fileSize > savedCompleted {
                     // File contains more data than saved checkpoint (e.g. 90 MB on disk vs 25 MB checkpointed)
                     // Truncate to saved checkpoint so subsequent HTTP Range request and disk file align perfectly
-                    if let handle = try? FileHandle(forWritingTo: destinationURL) {
-                        try? handle.truncate(atOffset: UInt64(savedCompleted))
-                        try? handle.close()
+                    do {
+                        let handle = try FileHandle(forWritingTo: destinationURL)
+                        do {
+                            try handle.truncate(atOffset: UInt64(savedCompleted))
+                        } catch {
+                            PipelineLogger.shared.log(stage: .coordinator, message: "Failed to truncate destinationURL \(destinationURL.path) to \(savedCompleted): \(error)")
+                        }
+                        do {
+                            try handle.close()
+                        } catch {
+                            PipelineLogger.shared.log(stage: .coordinator, message: "Failed to close handle for \(destinationURL.path): \(error)")
+                        }
+                    } catch {
+                        PipelineLogger.shared.log(stage: .coordinator, message: "Failed to open FileHandle for truncation: \(error)")
                     }
                 } else if fileSize < savedCompleted {
                     // Disk file has fewer bytes than checkpoint: clamp completedBytes to actual disk size
@@ -3060,7 +3296,11 @@ public actor DownloadCoordinator {
                     s.completedBytes = fileSize
                 } else {
                     // Invalid or corrupted size (e.g. exceeds segment length): purge corrupted file
-                    try? fileManager.removeItem(at: partURL)
+                    do {
+                        try fileManager.removeItem(at: partURL)
+                    } catch {
+                        PipelineLogger.shared.log(stage: .coordinator, message: "Failed to remove corrupted part file \(partURL.path): \(error)")
+                    }
                     s.completedBytes = 0
                 }
                 return s
@@ -3226,7 +3466,13 @@ public enum EngineSHA256 {
 public enum FileHasher {
     public static func sha256(for url: URL, progress: (@Sendable (Double) -> Void)? = nil) throws -> String {
         let fileHandle = try FileHandle(forReadingFrom: url)
-        defer { try? fileHandle.close() }
+        defer {
+            do {
+                try fileHandle.close()
+            } catch {
+                PipelineLogger.shared.log(stage: .coordinator, message: "Failed to close fileHandle in sha256: \(error)")
+            }
+        }
         let totalSize: Int64 = FileManager.default.fileSize(atPath: url.path) ?? 0
         var hasher = SHA256()
         let bufferSize = 256 * 1024

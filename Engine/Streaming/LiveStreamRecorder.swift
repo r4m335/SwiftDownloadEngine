@@ -205,7 +205,11 @@ public final class LiveStreamRecorder: ObservableObject {
         self.recordingTask = nil
 
         if let scratchDir = sessionDirectory {
-            try? FileManager.default.removeItem(at: scratchDir)
+            do {
+                try FileManager.default.removeItem(at: scratchDir)
+            } catch {
+                PipelineLogger.shared.log("[LiveStreamRecorder] Failed to remove scratchDir: \(error)")
+            }
         }
 
         if let kind = activeRequest?.manifestKind {
@@ -506,7 +510,11 @@ public final class LiveStreamRecorder: ObservableObject {
         // 2. Publish to final destination safely
         let finalOutputURL = request.destinationURL
         if FileManager.default.fileExists(atPath: finalOutputURL.path) {
-            try? FileManager.default.removeItem(at: finalOutputURL)
+            do {
+                try FileManager.default.removeItem(at: finalOutputURL)
+            } catch {
+                PipelineLogger.shared.log("[LiveStreamRecorder] Failed to remove existing output file: \(error)")
+            }
         }
 
         do {
@@ -524,7 +532,11 @@ public final class LiveStreamRecorder: ObservableObject {
         _ = await LIDLibraryStore.shared.scanLibrary(in: destDir)
 
         // 4. Clean up scratch directory
-        try? FileManager.default.removeItem(at: scratchDir)
+        do {
+            try FileManager.default.removeItem(at: scratchDir)
+        } catch {
+            PipelineLogger.shared.log("[LiveStreamRecorder] Failed to remove scratchDir: \(error)")
+        }
         self.sessionDirectory = nil
         self.activeRequest = nil
 
@@ -574,7 +586,11 @@ public final class LiveStreamRecorder: ObservableObject {
         }
 
         if FileManager.default.fileExists(atPath: destination.path) {
-            try? FileManager.default.removeItem(at: destination)
+            do {
+                try FileManager.default.removeItem(at: destination)
+            } catch {
+                PipelineLogger.shared.log("[LiveStreamRecorder] Failed to remove destination segment: \(error)")
+            }
         }
         try FileManager.default.moveItem(at: tempURL, to: destination)
 

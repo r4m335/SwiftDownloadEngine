@@ -563,7 +563,11 @@ public actor BrowserMSECapturePrototypeWriter {
                 }
                 let segmentURL = session.stagingDirectoryURL
                     .appendingPathComponent("track-\(trackIndex)-seg-\(segmentIndex).part", isDirectory: false)
-                try? FileManager.default.removeItem(at: segmentURL)
+                do {
+                    try FileManager.default.removeItem(at: segmentURL)
+                } catch {
+                    PipelineLogger.shared.log(stage: .browser, message: "Failed to remove pre-existing segmentURL \(segmentURL.path): \(error)")
+                }
                 guard FileManager.default.createFile(atPath: segmentURL.path, contents: nil) else {
                     throw BrowserMSECapturePrototypeError.fileOperationFailed
                 }
@@ -683,7 +687,11 @@ public actor BrowserMSECapturePrototypeWriter {
 
         let bytes = track.openBytes
         guard bytes > 0 else {
-            try? FileManager.default.removeItem(at: url)
+            do {
+                try FileManager.default.removeItem(at: url)
+            } catch {
+                PipelineLogger.shared.log(stage: .browser, message: "Failed to remove empty segment url \(url.path): \(error)")
+            }
             track.openURL = nil
             track.openSegmentIndex = nil
             track.openBytes = 0
@@ -877,13 +885,20 @@ public actor BrowserMSECapturePrototypeWriter {
 
     private func persistRecoveryRecord(_ record: BrowserMSECaptureRecoveryRecord) {
         let captureDir = stagingDirectoryURL(for: record.captureID)
-        try? FileManager.default.createDirectory(at: captureDir, withIntermediateDirectories: true)
+        do {
+            try FileManager.default.createDirectory(at: captureDir, withIntermediateDirectories: true)
+        } catch {
+            PipelineLogger.shared.log(stage: .browser, message: "Failed to create captureDir \(captureDir.path): \(error)")
+        }
         let fileURL = captureDir.appendingPathComponent("mse_recovery.json")
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        if let data = try? encoder.encode(record) {
-            try? data.write(to: fileURL, options: .atomic)
+        do {
+            let data = try encoder.encode(record)
+            try data.write(to: fileURL, options: .atomic)
+        } catch {
+            PipelineLogger.shared.log(stage: .browser, message: "Failed to write mse_recovery.json: \(error)")
         }
     }
 
@@ -983,7 +998,11 @@ public actor BrowserMSECapturePrototypeWriter {
     }
 
     private func cleanupStaging(session: Session, keepOutput: URL?) {
-        try? FileManager.default.removeItem(at: session.stagingDirectoryURL)
+        do {
+            try FileManager.default.removeItem(at: session.stagingDirectoryURL)
+        } catch {
+            PipelineLogger.shared.log(stage: .browser, message: "Failed to remove stagingDirectoryURL \(session.stagingDirectoryURL.path): \(error)")
+        }
         _ = keepOutput
     }
 

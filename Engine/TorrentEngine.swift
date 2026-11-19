@@ -89,15 +89,27 @@ public actor TorrentEngine {
 
             // 1. Try fast-resume restoration if resume data exists
             if let resumeData = await persistenceStore.loadResumeData(for: hash) {
-                restoredHash = try? bridge.addTorrent(withResumeData: resumeData, savePath: record.savePath.path)
+                do {
+                    restoredHash = try bridge.addTorrent(withResumeData: resumeData, savePath: record.savePath.path)
+                } catch {
+                    PipelineLogger.shared.log(stage: .persistence, message: "Failed to restore torrent with resumeData for \(hash): \(error)")
+                }
             }
 
             // 2. Safe fallback if fast-resume missing or corrupt: re-add using original source
             if restoredHash == nil {
                 if record.source.hasPrefix("magnet:") {
-                    restoredHash = try? bridge.addTorrent(withMagnetURI: record.source, savePath: record.savePath.path)
+                    do {
+                        restoredHash = try bridge.addTorrent(withMagnetURI: record.source, savePath: record.savePath.path)
+                    } catch {
+                        PipelineLogger.shared.log(stage: .persistence, message: "Failed to restore magnet torrent for \(hash): \(error)")
+                    }
                 } else if record.source.hasSuffix(".torrent") || FileManager.default.fileExists(atPath: record.source) {
-                    restoredHash = try? bridge.addTorrent(withFilePath: record.source, savePath: record.savePath.path)
+                    do {
+                        restoredHash = try bridge.addTorrent(withFilePath: record.source, savePath: record.savePath.path)
+                    } catch {
+                        PipelineLogger.shared.log(stage: .persistence, message: "Failed to restore file torrent for \(hash): \(error)")
+                    }
                 }
             }
 
@@ -150,7 +162,11 @@ public actor TorrentEngine {
             for h in Array(pendingHashes) {
                 if bridge.isResumeDataReady(forTorrentWithHash: h) {
                     if let data = bridge.resumeData(forTorrentWithHash: h) {
-                        try? await persistenceStore.saveResumeData(data, for: h)
+                        do {
+                            try await persistenceStore.saveResumeData(data, for: h)
+                        } catch {
+                            PipelineLogger.shared.log(stage: .persistence, message: "Failed to save resume data for \(h): \(error)")
+                        }
                     }
                     pendingHashes.remove(h)
                 } else if bridge.resumeDataError(forTorrentWithHash: h) != nil {
@@ -181,7 +197,11 @@ public actor TorrentEngine {
                     progressFraction: Double(s.progress)
                 )
                 rec.updatedAt = Date()
-                try? await persistenceStore.saveRecord(rec)
+                do {
+                    try await persistenceStore.saveRecord(rec)
+                } catch {
+                    PipelineLogger.shared.log(stage: .persistence, message: "Failed to save record for \(rec.infoHash): \(error)")
+                }
             }
         }
 
@@ -458,8 +478,16 @@ public actor TorrentEngine {
         }
 
         tasks.removeValue(forKey: key)
-        try? await persistenceStore.deleteRecord(infoHash: key)
-        try? await persistenceStore.deleteResumeData(for: key)
+        do {
+            try await persistenceStore.deleteRecord(infoHash: key)
+        } catch {
+            PipelineLogger.shared.log(stage: .persistence, message: "Failed to delete record for \(key): \(error)")
+        }
+        do {
+            try await persistenceStore.deleteResumeData(for: key)
+        } catch {
+            PipelineLogger.shared.log(stage: .persistence, message: "Failed to delete resume data for \(key): \(error)")
+        }
     }
 
     // MARK: - Queue & Concurrency Management
@@ -555,7 +583,11 @@ public actor TorrentEngine {
         }
         if var record = await persistenceStore.loadRecord(infoHash: key) {
             record.isSequentialDownload = sequential
-            try? await persistenceStore.saveRecord(record)
+            do {
+                try await persistenceStore.saveRecord(record)
+            } catch {
+                PipelineLogger.shared.log(stage: .persistence, message: "Failed to save sequential download mode for \(key): \(error)")
+            }
         }
     }
 
@@ -621,7 +653,11 @@ public actor TorrentEngine {
             if !list.contains(validated.absoluteString) {
                 list.append(validated.absoluteString)
                 record.customTrackers = list
-                try? await persistenceStore.saveRecord(record)
+                do {
+                    try await persistenceStore.saveRecord(record)
+                } catch {
+                    PipelineLogger.shared.log(stage: .persistence, message: "Failed to save added tracker for \(key): \(error)")
+                }
             }
         }
     }
@@ -631,7 +667,11 @@ public actor TorrentEngine {
         try bridge.removeTracker(url: url, fromTorrentWithHash: key)
         if var record = await persistenceStore.loadRecord(infoHash: key) {
             record.customTrackers?.removeAll(where: { $0 == url })
-            try? await persistenceStore.saveRecord(record)
+            do {
+                try await persistenceStore.saveRecord(record)
+            } catch {
+                PipelineLogger.shared.log(stage: .persistence, message: "Failed to save removed tracker for \(key): \(error)")
+            }
         }
     }
 
@@ -641,7 +681,11 @@ public actor TorrentEngine {
         try bridge.replaceTrackers(validatedURLs, inTorrentWithHash: key)
         if var record = await persistenceStore.loadRecord(infoHash: key) {
             record.customTrackers = validatedURLs
-            try? await persistenceStore.saveRecord(record)
+            do {
+                try await persistenceStore.saveRecord(record)
+            } catch {
+                PipelineLogger.shared.log(stage: .persistence, message: "Failed to save replaced trackers for \(key): \(error)")
+            }
         }
     }
 
@@ -1087,10 +1131,22 @@ public actor TorrentEngine {
         guard let task = tasks[hash] else { throw TorrentEngineError.torrentNotFound }
         tasks.removeValue(forKey: hash)
         _ = try await scheduler?.remove(infoHash: hash)
-        try? await persistenceStore.deleteRecord(infoHash: hash)
-        try? await persistenceStore.deleteResumeData(for: hash)
+        do {
+            try await persistenceStore.deleteRecord(infoHash: hash)
+        } catch {
+            PipelineLogger.shared.log(stage: .persistence, message: "Failed to delete record for \(hash): \(error)")
+        }
+        do {
+            try await persistenceStore.deleteResumeData(for: hash)
+        } catch {
+            PipelineLogger.shared.log(stage: .persistence, message: "Failed to delete resume data for \(hash): \(error)")
+        }
         if deleteFiles {
-            try? FileManager.default.removeItem(at: task.savePath)
+            do {
+                try FileManager.default.removeItem(at: task.savePath)
+            } catch {
+                PipelineLogger.shared.log(stage: .persistence, message: "Failed to remove torrent files at \(task.savePath.path): \(error)")
+            }
         }
     }
 
@@ -1171,7 +1227,11 @@ public actor TorrentEngine {
         tasks[key] = task
         if var record = await persistenceStore.loadRecord(infoHash: key) {
             record.isSequentialDownload = sequential
-            try? await persistenceStore.saveRecord(record)
+            do {
+                try await persistenceStore.saveRecord(record)
+            } catch {
+                PipelineLogger.shared.log(stage: .persistence, message: "Failed to save sequential download mode for \(key): \(error)")
+            }
         }
     }
 
@@ -1240,7 +1300,11 @@ public actor TorrentEngine {
             if !list.contains(validated.absoluteString) {
                 list.append(validated.absoluteString)
                 record.customTrackers = list
-                try? await persistenceStore.saveRecord(record)
+                do {
+                    try await persistenceStore.saveRecord(record)
+                } catch {
+                    PipelineLogger.shared.log(stage: .persistence, message: "Failed to save added tracker for \(key): \(error)")
+                }
             }
         }
     }
@@ -1252,7 +1316,11 @@ public actor TorrentEngine {
         tasks[key] = task
         if var record = await persistenceStore.loadRecord(infoHash: key) {
             record.customTrackers?.removeAll(where: { $0 == url })
-            try? await persistenceStore.saveRecord(record)
+            do {
+                try await persistenceStore.saveRecord(record)
+            } catch {
+                PipelineLogger.shared.log(stage: .persistence, message: "Failed to save removed tracker for \(key): \(error)")
+            }
         }
     }
 
@@ -1264,7 +1332,11 @@ public actor TorrentEngine {
         tasks[key] = task
         if var record = await persistenceStore.loadRecord(infoHash: key) {
             record.customTrackers = validatedURLs
-            try? await persistenceStore.saveRecord(record)
+            do {
+                try await persistenceStore.saveRecord(record)
+            } catch {
+                PipelineLogger.shared.log(stage: .persistence, message: "Failed to save replaced trackers for \(key): \(error)")
+            }
         }
     }
 

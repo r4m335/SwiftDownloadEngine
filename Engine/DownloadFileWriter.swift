@@ -100,15 +100,27 @@ public actor DownloadFileWriter {
                     try handle.truncate(atOffset: UInt64(totalSize))
                     self.destinationHandle = handle
                 } catch {
-                    try? handle.close()
+                    do {
+                        try handle.close()
+                    } catch {
+                        PipelineLogger.shared.log(stage: .writer, message: "Failed to close handle on truncation error: \(error)")
+                    }
                     if !fileExisted {
-                        try? FileManager.default.removeItem(at: destinationURL)
+                        do {
+                            try FileManager.default.removeItem(at: destinationURL)
+                        } catch {
+                            PipelineLogger.shared.log(stage: .writer, message: "Failed to remove destination file \(destinationURL.path): \(error)")
+                        }
                     }
                     throw error
                 }
             } catch {
                 if !fileExisted {
-                    try? FileManager.default.removeItem(at: destinationURL)
+                    do {
+                        try FileManager.default.removeItem(at: destinationURL)
+                    } catch {
+                        PipelineLogger.shared.log(stage: .writer, message: "Failed to remove destination file \(destinationURL.path): \(error)")
+                    }
                 }
                 throw error
             }
@@ -295,14 +307,26 @@ public actor DownloadFileWriter {
 
         // Stage into a temporary file in the destination directory to protect existing files from partial write failures
         let stagingURL = parentDir.appendingPathComponent(".merge-\(UUID().uuidString).tmp")
-        defer { try? fileManager.removeItem(at: stagingURL) }
+        defer {
+            do {
+                try fileManager.removeItem(at: stagingURL)
+            } catch {
+                PipelineLogger.shared.log(stage: .writer, message: "Failed to remove staging merge file \(stagingURL.path): \(error)")
+            }
+        }
 
         guard fileManager.createFile(atPath: stagingURL.path, contents: nil) else {
             throw CocoaError(.fileWriteUnknown)
         }
 
         let output = try FileHandle(forWritingTo: stagingURL)
-        defer { try? output.close() }
+        defer {
+            do {
+                try output.close()
+            } catch {
+                PipelineLogger.shared.log(stage: .writer, message: "Failed to close output handle: \(error)")
+            }
+        }
 
         var mergedBytes: Int64 = 0
         for partURL in partURLs {
@@ -311,7 +335,13 @@ public actor DownloadFileWriter {
             }
 
             let input = try FileHandle(forReadingFrom: partURL)
-            defer { try? input.close() }
+            defer {
+                do {
+                    try input.close()
+                } catch {
+                    PipelineLogger.shared.log(stage: .writer, message: "Failed to close input handle: \(error)")
+                }
+            }
 
             while true {
                 let data = try input.read(upToCount: bufferSize) ?? Data()
@@ -343,9 +373,17 @@ public actor DownloadFileWriter {
                 try fileManager.moveItem(at: destinationURL, to: backupURL)
                 do {
                     try fileManager.moveItem(at: stagingURL, to: destinationURL)
-                    _ = try? fileManager.removeItem(at: backupURL)
+                    do {
+                        try fileManager.removeItem(at: backupURL)
+                    } catch {
+                        PipelineLogger.shared.log(stage: .writer, message: "Failed to remove backupURL \(backupURL.path): \(error)")
+                    }
                 } catch {
-                    _ = try? fileManager.moveItem(at: backupURL, to: destinationURL)
+                    do {
+                        try fileManager.moveItem(at: backupURL, to: destinationURL)
+                    } catch {
+                        PipelineLogger.shared.log(stage: .writer, message: "Failed to restore backupURL \(backupURL.path): \(error)")
+                    }
                     throw error
                 }
             }
@@ -355,9 +393,17 @@ public actor DownloadFileWriter {
             try fileManager.moveItem(at: destinationURL, to: backupURL)
             do {
                 try fileManager.moveItem(at: stagingURL, to: destinationURL)
-                _ = try? fileManager.removeItem(at: backupURL)
+                do {
+                    try fileManager.removeItem(at: backupURL)
+                } catch {
+                    PipelineLogger.shared.log(stage: .writer, message: "Failed to remove backupURL \(backupURL.path): \(error)")
+                }
             } catch {
-                _ = try? fileManager.moveItem(at: backupURL, to: destinationURL)
+                do {
+                    try fileManager.moveItem(at: backupURL, to: destinationURL)
+                } catch {
+                    PipelineLogger.shared.log(stage: .writer, message: "Failed to restore backupURL \(backupURL.path): \(error)")
+                }
                 throw error
             }
             #endif
@@ -368,7 +414,13 @@ public actor DownloadFileWriter {
         // Ensure merged destination file is physically flushed to disk
         do {
             let destHandle = try FileHandle(forWritingTo: destinationURL)
-            defer { try? destHandle.close() }
+            defer {
+                do {
+                    try destHandle.close()
+                } catch {
+                    PipelineLogger.shared.log(stage: .writer, message: "Failed to close destHandle: \(error)")
+                }
+            }
             try destHandle.synchronize()
         } catch {
             throw error

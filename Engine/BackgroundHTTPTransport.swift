@@ -166,7 +166,11 @@ public actor BackgroundDownloadTaskMappingStore {
                 // Quarantine corrupted manifest instead of silently wiping it out
                 let timestamp = Int(Date().timeIntervalSince1970)
                 let quarantineURL = storageDirectoryURL.appendingPathComponent("background_tasks_v1.json.corrupt-\(timestamp)")
-                try? FileManager.default.moveItem(at: self.storeFileURL, to: quarantineURL)
+                do {
+                    try FileManager.default.moveItem(at: self.storeFileURL, to: quarantineURL)
+                } catch {
+                    PipelineLogger.shared.log(stage: .transport, message: "Failed to quarantine corrupted mapping store: \(error)")
+                }
                 throw BackgroundTransportError.corruptedMappingStore(
                     path: quarantineURL.path,
                     underlyingError: error.localizedDescription
@@ -266,9 +270,17 @@ public actor BackgroundDownloadTaskMappingStore {
                 try fileManager.moveItem(at: storeFileURL, to: backupURL)
                 do {
                     try fileManager.moveItem(at: tempURL, to: storeFileURL)
-                    _ = try? fileManager.removeItem(at: backupURL)
+                    do {
+                        try fileManager.removeItem(at: backupURL)
+                    } catch {
+                        PipelineLogger.shared.log(stage: .transport, message: "Failed to remove mapping store backup at \(backupURL.path): \(error)")
+                    }
                 } catch {
-                    _ = try? fileManager.moveItem(at: backupURL, to: storeFileURL)
+                    do {
+                        try fileManager.moveItem(at: backupURL, to: storeFileURL)
+                    } catch {
+                        PipelineLogger.shared.log(stage: .transport, message: "Failed to restore mapping store backup from \(backupURL.path): \(error)")
+                    }
                     throw error
                 }
             }
@@ -278,9 +290,17 @@ public actor BackgroundDownloadTaskMappingStore {
             try fileManager.moveItem(at: storeFileURL, to: backupURL)
             do {
                 try fileManager.moveItem(at: tempURL, to: storeFileURL)
-                _ = try? fileManager.removeItem(at: backupURL)
+                do {
+                    try fileManager.removeItem(at: backupURL)
+                } catch {
+                    PipelineLogger.shared.log(stage: .transport, message: "Failed to remove mapping store backup at \(backupURL.path): \(error)")
+                }
             } catch {
-                _ = try? fileManager.moveItem(at: backupURL, to: storeFileURL)
+                do {
+                    try fileManager.moveItem(at: backupURL, to: storeFileURL)
+                } catch {
+                    PipelineLogger.shared.log(stage: .transport, message: "Failed to restore mapping store backup from \(backupURL.path): \(error)")
+                }
                 throw error
             }
             #endif
@@ -444,7 +464,11 @@ public enum BackgroundDownloadFileHandler {
                 throw BackgroundTransportError.fileRelocationFailed(underlyingError: "Cannot determine source file size")
             }
             if sourceSize != expectedNew {
-                _ = try? fileManager.removeItem(at: sourceURL)
+                do {
+                    try fileManager.removeItem(at: sourceURL)
+                } catch {
+                    PipelineLogger.shared.log(stage: .transport, message: "Failed to remove mismatched sourceURL \(sourceURL.path): \(error)")
+                }
                 throw BackgroundTransportError.bodyLengthMismatch(expected: expectedNew, actual: sourceSize)
             }
         }
@@ -471,12 +495,22 @@ public enum BackgroundDownloadFileHandler {
             do {
                 let writeHandle = try FileHandle(forWritingTo: stagingURL)
                 defer {
-                    try? writeHandle.close()
+                    do {
+                        try writeHandle.close()
+                    } catch {
+                        PipelineLogger.shared.log(stage: .transport, message: "Failed to close writeHandle: \(error)")
+                    }
                 }
                 try writeHandle.seekToEnd()
 
                 let readHandle = try FileHandle(forReadingFrom: sourceURL)
-                defer { try? readHandle.close() }
+                defer {
+                    do {
+                        try readHandle.close()
+                    } catch {
+                        PipelineLogger.shared.log(stage: .transport, message: "Failed to close readHandle: \(error)")
+                    }
+                }
 
                 let bufferSize = 256 * 1024
                 while true {
@@ -486,9 +520,17 @@ public enum BackgroundDownloadFileHandler {
                 }
                 // Bug #20: Explicitly synchronize appended staging data and propagate errors
                 try writeHandle.synchronize()
-                _ = try? fileManager.removeItem(at: sourceURL)
+                do {
+                    try fileManager.removeItem(at: sourceURL)
+                } catch {
+                    PipelineLogger.shared.log(stage: .transport, message: "Failed to remove sourceURL \(sourceURL.path): \(error)")
+                }
             } catch {
-                try? fileManager.removeItem(at: stagingURL)
+                do {
+                    try fileManager.removeItem(at: stagingURL)
+                } catch {
+                    PipelineLogger.shared.log(stage: .transport, message: "Failed to remove stagingURL \(stagingURL.path): \(error)")
+                }
                 throw BackgroundTransportError.fileRelocationFailed(underlyingError: "Failed to append downloaded bytes: \(error.localizedDescription)")
             }
         } else {
@@ -502,13 +544,21 @@ public enum BackgroundDownloadFileHandler {
         // Verify size of staged file before touching destination
         let attrs = try fileManager.attributesOfItem(atPath: stagingURL.path)
         guard let fileSize = attrs[.size] as? Int64 else {
-            try? fileManager.removeItem(at: stagingURL)
+            do {
+                try fileManager.removeItem(at: stagingURL)
+            } catch {
+                PipelineLogger.shared.log(stage: .transport, message: "Failed to remove stagingURL \(stagingURL.path): \(error)")
+            }
             throw BackgroundTransportError.fileRelocationFailed(underlyingError: "Cannot determine staged file size")
         }
 
         if let expected = expectedFinalTotalBytes, fileSize != expected {
             // Corrupt or truncated file: remove staging and throw. Existing destination is preserved!
-            try? fileManager.removeItem(at: stagingURL)
+            do {
+                try fileManager.removeItem(at: stagingURL)
+            } catch {
+                PipelineLogger.shared.log(stage: .transport, message: "Failed to remove stagingURL \(stagingURL.path): \(error)")
+            }
             throw BackgroundTransportError.bodyLengthMismatch(expected: expected, actual: fileSize)
         }
 
@@ -522,15 +572,31 @@ public enum BackgroundDownloadFileHandler {
                 do {
                     try fileManager.moveItem(at: destinationURL, to: backupURL)
                 } catch {
-                    try? fileManager.removeItem(at: stagingURL)
+                    do {
+                        try fileManager.removeItem(at: stagingURL)
+                    } catch {
+                        PipelineLogger.shared.log(stage: .transport, message: "Failed to remove stagingURL \(stagingURL.path): \(error)")
+                    }
                     throw BackgroundTransportError.fileRelocationFailed(underlyingError: "Failed to backup existing destination: \(error.localizedDescription)")
                 }
                 do {
                     try fileManager.moveItem(at: stagingURL, to: destinationURL)
-                    _ = try? fileManager.removeItem(at: backupURL)
+                    do {
+                        try fileManager.removeItem(at: backupURL)
+                    } catch {
+                        PipelineLogger.shared.log(stage: .transport, message: "Failed to remove backupURL \(backupURL.path): \(error)")
+                    }
                 } catch {
-                    _ = try? fileManager.moveItem(at: backupURL, to: destinationURL)
-                    try? fileManager.removeItem(at: stagingURL)
+                    do {
+                        try fileManager.moveItem(at: backupURL, to: destinationURL)
+                    } catch {
+                        PipelineLogger.shared.log(stage: .transport, message: "Failed to restore backupURL \(backupURL.path): \(error)")
+                    }
+                    do {
+                        try fileManager.removeItem(at: stagingURL)
+                    } catch {
+                        PipelineLogger.shared.log(stage: .transport, message: "Failed to remove stagingURL \(stagingURL.path): \(error)")
+                    }
                     throw BackgroundTransportError.fileRelocationFailed(underlyingError: error.localizedDescription)
                 }
             }
@@ -539,15 +605,31 @@ public enum BackgroundDownloadFileHandler {
             do {
                 try fileManager.moveItem(at: destinationURL, to: backupURL)
             } catch {
-                try? fileManager.removeItem(at: stagingURL)
+                do {
+                    try fileManager.removeItem(at: stagingURL)
+                } catch {
+                    PipelineLogger.shared.log(stage: .transport, message: "Failed to remove stagingURL \(stagingURL.path): \(error)")
+                }
                 throw BackgroundTransportError.fileRelocationFailed(underlyingError: "Failed to backup existing destination: \(error.localizedDescription)")
             }
             do {
                 try fileManager.moveItem(at: stagingURL, to: destinationURL)
-                _ = try? fileManager.removeItem(at: backupURL)
+                do {
+                    try fileManager.removeItem(at: backupURL)
+                } catch {
+                    PipelineLogger.shared.log(stage: .transport, message: "Failed to remove backupURL \(backupURL.path): \(error)")
+                }
             } catch {
-                _ = try? fileManager.moveItem(at: backupURL, to: destinationURL)
-                try? fileManager.removeItem(at: stagingURL)
+                do {
+                    try fileManager.moveItem(at: backupURL, to: destinationURL)
+                } catch {
+                    PipelineLogger.shared.log(stage: .transport, message: "Failed to restore backupURL \(backupURL.path): \(error)")
+                }
+                do {
+                    try fileManager.removeItem(at: stagingURL)
+                } catch {
+                    PipelineLogger.shared.log(stage: .transport, message: "Failed to remove stagingURL \(stagingURL.path): \(error)")
+                }
                 throw BackgroundTransportError.fileRelocationFailed(underlyingError: error.localizedDescription)
             }
             #endif
@@ -555,7 +637,11 @@ public enum BackgroundDownloadFileHandler {
             do {
                 try fileManager.moveItem(at: stagingURL, to: destinationURL)
             } catch {
-                try? fileManager.removeItem(at: stagingURL)
+                do {
+                    try fileManager.removeItem(at: stagingURL)
+                } catch {
+                    PipelineLogger.shared.log(stage: .transport, message: "Failed to remove stagingURL \(stagingURL.path): \(error)")
+                }
                 throw BackgroundTransportError.fileRelocationFailed(underlyingError: error.localizedDescription)
             }
         }
@@ -563,12 +649,19 @@ public enum BackgroundDownloadFileHandler {
         // Bug #20: Explicitly synchronize committed destination file before declaring success
         do {
             let destHandle = try FileHandle(forWritingTo: destinationURL)
-            defer { try? destHandle.close() }
+            defer {
+                do {
+                    try destHandle.close()
+                } catch {
+                    PipelineLogger.shared.log(stage: .transport, message: "Failed to close destHandle: \(error)")
+                }
+            }
             try destHandle.synchronize()
         } catch {
             throw BackgroundTransportError.fileRelocationFailed(
                 underlyingError: "Failed to synchronize committed destination file: \(error.localizedDescription)"
             )
+        }
         }
 
         return fileSize
@@ -883,7 +976,11 @@ public final class BackgroundDownloadSessionManager: NSObject, @unchecked Sendab
         if let rec = await mappingStore.record(sessionIdentifier: sessionIdentifier, taskIdentifier: taskIdentifier) {
             await reconcileSegmentWithDisk(downloadID: rec.downloadID, segmentID: rec.segmentID, partURL: rec.destinationPartURL)
         }
-        try? await mappingStore.remove(sessionIdentifier: sessionIdentifier, taskIdentifier: taskIdentifier)
+        do {
+            try await mappingStore.remove(sessionIdentifier: sessionIdentifier, taskIdentifier: taskIdentifier)
+        } catch {
+            PipelineLogger.shared.log(stage: .transport, message: "Failed to remove mapping task \(taskIdentifier): \(error)")
+        }
     }
 
     /// Cancels all background tasks associated with a given download.
@@ -893,7 +990,11 @@ public final class BackgroundDownloadSessionManager: NSObject, @unchecked Sendab
             let task = await findTask(withIdentifier: r.taskIdentifier)
             task?.cancel()
             await reconcileSegmentWithDisk(downloadID: r.downloadID, segmentID: r.segmentID, partURL: r.destinationPartURL)
-            try? await mappingStore.remove(sessionIdentifier: r.sessionIdentifier, taskIdentifier: r.taskIdentifier)
+            do {
+                try await mappingStore.remove(sessionIdentifier: r.sessionIdentifier, taskIdentifier: r.taskIdentifier)
+            } catch {
+                PipelineLogger.shared.log(stage: .transport, message: "Failed to remove mapping task \(r.taskIdentifier): \(error)")
+            }
         }
     }
 
@@ -994,7 +1095,11 @@ public final class BackgroundDownloadSessionManager: NSObject, @unchecked Sendab
                         continue
                     } else if size > r.segmentLength {
                         // Corrupted or oversized part file: purge corrupted file safely
-                        try? FileManager.default.removeItem(at: r.destinationPartURL)
+                        do {
+                            try FileManager.default.removeItem(at: r.destinationPartURL)
+                        } catch {
+                            PipelineLogger.shared.log(stage: .transport, message: "Failed to remove oversized part file \(r.destinationPartURL.path): \(error)")
+                        }
                         if let persistence = self.persistenceStore {
                             do {
                                 _ = try await persistence.updateSegmentProgress(
@@ -1119,7 +1224,11 @@ extension BackgroundDownloadSessionManager: URLSessionDownloadDelegate {
             defer { self.trackDelegateTaskFinished() }
             guard let record = await self.mappingStore.record(sessionIdentifier: sessID, taskIdentifier: taskID) else { return }
 
-            try? await self.mappingStore.updateProgress(sessionIdentifier: sessID, taskIdentifier: taskID, taskBytesWritten: totalBytesWritten)
+            do {
+                try await self.mappingStore.updateProgress(sessionIdentifier: sessID, taskIdentifier: taskID, taskBytesWritten: totalBytesWritten)
+            } catch {
+                PipelineLogger.shared.log(stage: .transport, message: "Failed to update mappingStore progress for task \(taskID): \(error)")
+            }
 
             // Segment-relative progress accounting:
             // segmentTotalCompleted = initialSegmentCompletedBytes + totalBytesWritten (clamped to segmentLength)
@@ -1164,7 +1273,11 @@ extension BackgroundDownloadSessionManager: URLSessionDownloadDelegate {
 
         // 1. Relocate to an intermediate staging file synchronously before iOS deletes `location`
         let parentDir = destination.deletingLastPathComponent()
-        try? FileManager.default.createDirectory(at: parentDir, withIntermediateDirectories: true)
+        do {
+            try FileManager.default.createDirectory(at: parentDir, withIntermediateDirectories: true)
+        } catch {
+            PipelineLogger.shared.log(stage: .transport, message: "Failed to create directory \(parentDir.path): \(error)")
+        }
         let stagingURL = parentDir.appendingPathComponent("incoming_\(taskID)_\(UUID().uuidString).tmp")
 
         do {
@@ -1173,7 +1286,11 @@ extension BackgroundDownloadSessionManager: URLSessionDownloadDelegate {
             print("[BackgroundDownloadSessionManager] Error staging downloaded file: \(error)")
             Task { [self] in
                 defer { self.trackDelegateTaskFinished() }
-                try? await self.mappingStore.markFailed(sessionIdentifier: sessID, taskIdentifier: taskID, error: error.localizedDescription)
+                do {
+                    try await self.mappingStore.markFailed(sessionIdentifier: sessID, taskIdentifier: taskID, error: error.localizedDescription)
+                } catch {
+                    PipelineLogger.shared.log(stage: .transport, message: "Failed to markFailed in mappingStore for task \(taskID): \(error)")
+                }
                 self.notifyFailed(downloadID: downloadID, segmentID: segmentID, error: error)
             }
             return
@@ -1184,15 +1301,23 @@ extension BackgroundDownloadSessionManager: URLSessionDownloadDelegate {
             defer { self.trackDelegateTaskFinished() }
             guard let record = await self.mappingStore.record(sessionIdentifier: sessID, taskIdentifier: taskID) else {
                 print("[BackgroundDownloadSessionManager] Warning: missing task record for task \(taskID)")
-                try? FileManager.default.removeItem(at: stagingURL)
+                do {
+                    try FileManager.default.removeItem(at: stagingURL)
+                } catch {
+                    PipelineLogger.shared.log(stage: .transport, message: "Failed to remove stagingURL \(stagingURL.path): \(error)")
+                }
                 return
             }
 
             // Fetch download record to obtain known total size for response validation
             var knownTotalSize: Int64? = nil
             if let persistence = self.persistenceStore {
-                let dlRec = try? await persistence.fetch(tag: downloadID)
-                knownTotalSize = dlRec?.totalSize
+                do {
+                    let dlRec = try await persistence.fetch(tag: downloadID)
+                    knownTotalSize = dlRec?.totalSize
+                } catch {
+                    PipelineLogger.shared.log(stage: .transport, message: "Failed to fetch download record for \(downloadID): \(error)")
+                }
             }
 
             if let resp = response {
@@ -1204,9 +1329,21 @@ extension BackgroundDownloadSessionManager: URLSessionDownloadDelegate {
                         expectedTotalSize: knownTotalSize
                     )
                 } catch {
-                    try? FileManager.default.removeItem(at: stagingURL)
-                    try? FileManager.default.removeItem(at: destination)
-                    try? await self.mappingStore.markFailed(sessionIdentifier: sessID, taskIdentifier: taskID, error: error.localizedDescription)
+                    do {
+                        try FileManager.default.removeItem(at: stagingURL)
+                    } catch {
+                        PipelineLogger.shared.log(stage: .transport, message: "Failed to remove stagingURL \(stagingURL.path): \(error)")
+                    }
+                    do {
+                        try FileManager.default.removeItem(at: destination)
+                    } catch {
+                        PipelineLogger.shared.log(stage: .transport, message: "Failed to remove destination \(destination.path): \(error)")
+                    }
+                    do {
+                        try await self.mappingStore.markFailed(sessionIdentifier: sessID, taskIdentifier: taskID, error: error.localizedDescription)
+                    } catch {
+                        PipelineLogger.shared.log(stage: .transport, message: "Failed to markFailed in mappingStore for task \(taskID): \(error)")
+                    }
                     if let persistence = self.persistenceStore {
                         do {
                             _ = try await persistence.updateSegmentProgress(tag: downloadID, segmentID: segmentID, completedBytes: 0, allowDecrease: true)
@@ -1232,8 +1369,16 @@ extension BackgroundDownloadSessionManager: URLSessionDownloadDelegate {
                 )
             } catch {
                 print("[BackgroundDownloadSessionManager] Error committing downloaded file: \(error)")
-                try? FileManager.default.removeItem(at: stagingURL)
-                try? await self.mappingStore.markFailed(sessionIdentifier: sessID, taskIdentifier: taskID, error: error.localizedDescription)
+                do {
+                    try FileManager.default.removeItem(at: stagingURL)
+                } catch {
+                    PipelineLogger.shared.log(stage: .transport, message: "Failed to remove stagingURL \(stagingURL.path): \(error)")
+                }
+                do {
+                    try await self.mappingStore.markFailed(sessionIdentifier: sessID, taskIdentifier: taskID, error: error.localizedDescription)
+                } catch {
+                    PipelineLogger.shared.log(stage: .transport, message: "Failed to markFailed in mappingStore for task \(taskID): \(error)")
+                }
                 if let persistence = self.persistenceStore {
                     let currentSize = FileManager.default.fileSize(atPath: destination.path) ?? 0
                     do {
@@ -1249,7 +1394,11 @@ extension BackgroundDownloadSessionManager: URLSessionDownloadDelegate {
             guard finalSize == record.segmentLength else {
                 let errorMsg = "Final file size mismatch: expected \(record.segmentLength), got \(finalSize)"
                 print("[BackgroundDownloadSessionManager] Error: \(errorMsg)")
-                try? await self.mappingStore.markFailed(sessionIdentifier: sessID, taskIdentifier: taskID, error: errorMsg)
+                do {
+                    try await self.mappingStore.markFailed(sessionIdentifier: sessID, taskIdentifier: taskID, error: errorMsg)
+                } catch {
+                    PipelineLogger.shared.log(stage: .transport, message: "Failed to markFailed in mappingStore for task \(taskID): \(error)")
+                }
                 if let persistence = self.persistenceStore {
                     do {
                         _ = try await persistence.updateSegmentProgress(tag: downloadID, segmentID: segmentID, completedBytes: finalSize, allowDecrease: true)
@@ -1265,7 +1414,11 @@ extension BackgroundDownloadSessionManager: URLSessionDownloadDelegate {
                 return
             }
 
-            try? await self.mappingStore.markCompleted(sessionIdentifier: sessID, taskIdentifier: taskID, finalBytes: finalSize)
+            do {
+                try await self.mappingStore.markCompleted(sessionIdentifier: sessID, taskIdentifier: taskID, finalBytes: finalSize)
+            } catch {
+                PipelineLogger.shared.log(stage: .transport, message: "Failed to markCompleted in mappingStore for task \(taskID): \(error)")
+            }
 
             // Segment completion: mark segment completed with full segmentLength
             if let persistence = self.persistenceStore {
@@ -1277,7 +1430,11 @@ extension BackgroundDownloadSessionManager: URLSessionDownloadDelegate {
                     )
                 } catch {
                     print("[BackgroundDownloadSessionManager] Warning: failed to mark segment completed in persistence: \(error)")
-                    try? await self.mappingStore.markFailed(sessionIdentifier: sessID, taskIdentifier: taskID, error: error.localizedDescription)
+                    do {
+                        try await self.mappingStore.markFailed(sessionIdentifier: sessID, taskIdentifier: taskID, error: error.localizedDescription)
+                    } catch {
+                        PipelineLogger.shared.log(stage: .transport, message: "Failed to markFailed in mappingStore for task \(taskID): \(error)")
+                    }
                     self.notifyFailed(downloadID: downloadID, segmentID: segmentID, error: error)
                     return
                 }
@@ -1307,7 +1464,11 @@ extension BackgroundDownloadSessionManager: URLSessionDownloadDelegate {
         Task { [self] in
             defer { self.trackDelegateTaskFinished() }
             if let rec = await self.mappingStore.record(sessionIdentifier: sessID, taskIdentifier: taskID) {
-                try? await self.mappingStore.markFailed(sessionIdentifier: sessID, taskIdentifier: taskID, error: finalError.localizedDescription)
+                do {
+                    try await self.mappingStore.markFailed(sessionIdentifier: sessID, taskIdentifier: taskID, error: finalError.localizedDescription)
+                } catch {
+                    PipelineLogger.shared.log(stage: .transport, message: "Failed to markFailed in mappingStore for task \(taskID): \(error)")
+                }
                 // Bug #20: Reconcile persisted progress against actual committed file on disk when a task fails
                 await reconcileSegmentWithDisk(downloadID: rec.downloadID, segmentID: rec.segmentID, partURL: rec.destinationPartURL)
                 self.notifyFailed(downloadID: rec.downloadID, segmentID: rec.segmentID, error: finalError)

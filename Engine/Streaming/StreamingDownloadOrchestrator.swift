@@ -488,7 +488,11 @@ public final class DownloadCoordinatorSegmentExecutor: StreamingSegmentExecutor,
     public func cancel(transferID: String) async {
         let ids = getActiveRequestIDs(for: transferID)
         for id in ids {
-            try? await coordinator.cancel(id: id, deleteDestinationFile: false)
+            do {
+                try await coordinator.cancel(id: id, deleteDestinationFile: false)
+            } catch {
+                PipelineLogger.shared.log(stage: .coordinator, message: "Failed to cancel segment \(id): \(error)")
+            }
         }
     }
 }
@@ -547,14 +551,26 @@ public final class URLSessionStreamingSegmentExecutor: StreamingSegmentExecutor,
 
         let fileManager = FileManager.default
         if let mime = httpResponse.mimeType?.lowercased(), mime.contains("text/html") {
-            try? fileManager.removeItem(at: tempURL)
+            do {
+                try fileManager.removeItem(at: tempURL)
+            } catch {
+                PipelineLogger.shared.log("[StreamingDownloadOrchestrator] Failed to remove HTML tempURL: \(error)")
+            }
             throw StreamingDownloadOrchestratorError.segmentTransferFailed(order: request.identity.order)
         }
         if let handle = try? FileHandle(forReadingFrom: tempURL) {
             let headerBytes = (try? handle.read(upToCount: 512)) ?? Data()
-            try? handle.close()
+            do {
+                try handle.close()
+            } catch {
+                PipelineLogger.shared.log("[StreamingDownloadOrchestrator] Failed to close handle: \(error)")
+            }
             if StreamingDownloadOrchestrator.isHTMLResponse(headerBytes) {
-                try? fileManager.removeItem(at: tempURL)
+                do {
+                    try fileManager.removeItem(at: tempURL)
+                } catch {
+                    PipelineLogger.shared.log("[StreamingDownloadOrchestrator] Failed to remove HTML tempURL: \(error)")
+                }
                 throw StreamingDownloadOrchestratorError.segmentTransferFailed(order: request.identity.order)
             }
         }
@@ -571,9 +587,17 @@ public final class URLSessionStreamingSegmentExecutor: StreamingSegmentExecutor,
                 try fileManager.moveItem(at: request.destinationURL, to: backupURL)
                 do {
                     try fileManager.moveItem(at: tempURL, to: request.destinationURL)
-                    _ = try? fileManager.removeItem(at: backupURL)
+                    do {
+                        try fileManager.removeItem(at: backupURL)
+                    } catch {
+                        PipelineLogger.shared.log("[StreamingDownloadOrchestrator] Failed to remove backupURL \(backupURL.path): \(error)")
+                    }
                 } catch {
-                    _ = try? fileManager.moveItem(at: backupURL, to: request.destinationURL)
+                    do {
+                        try fileManager.moveItem(at: backupURL, to: request.destinationURL)
+                    } catch {
+                        PipelineLogger.shared.log("[StreamingDownloadOrchestrator] Failed to restore backupURL \(backupURL.path): \(error)")
+                    }
                     throw error
                 }
             }
@@ -582,9 +606,17 @@ public final class URLSessionStreamingSegmentExecutor: StreamingSegmentExecutor,
             try fileManager.moveItem(at: request.destinationURL, to: backupURL)
             do {
                 try fileManager.moveItem(at: tempURL, to: request.destinationURL)
-                _ = try? fileManager.removeItem(at: backupURL)
+                do {
+                    try fileManager.removeItem(at: backupURL)
+                } catch {
+                    PipelineLogger.shared.log("[StreamingDownloadOrchestrator] Failed to remove backupURL \(backupURL.path): \(error)")
+                }
             } catch {
-                _ = try? fileManager.moveItem(at: backupURL, to: request.destinationURL)
+                do {
+                    try fileManager.moveItem(at: backupURL, to: request.destinationURL)
+                } catch {
+                    PipelineLogger.shared.log("[StreamingDownloadOrchestrator] Failed to restore backupURL \(backupURL.path): \(error)")
+                }
                 throw error
             }
             #endif
@@ -969,15 +1001,25 @@ public actor StreamingDownloadOrchestrator {
     }
 
     private func purgeInternalStreamingSegmentRecords(in directory: URL? = nil) async {
-        guard let engine = downloadEngine,
-              let records = try? await engine.persistenceStore.fetchAll() else { return }
+        guard let engine = downloadEngine else { return }
+        let records: [DownloadPersistenceRecord]
+        do {
+            records = try await engine.persistenceStore.fetchAll()
+        } catch {
+            PipelineLogger.shared.log("[StreamingDownloadOrchestrator] Failed to fetch records for purging: \(error)")
+            return
+        }
         let directoryPath = directory?.standardizedFileURL.path
         for record in records where record.isStreamingSegment {
             if let directoryPath,
                !record.destinationURL.standardizedFileURL.path.hasPrefix(directoryPath + "/") {
                 continue
             }
-            try? await engine.persistenceStore.delete(tag: record.id)
+            do {
+                try await engine.persistenceStore.delete(tag: record.id)
+            } catch {
+                PipelineLogger.shared.log("[StreamingDownloadOrchestrator] Failed to delete internal segment record \(record.id): \(error)")
+            }
         }
     }
 
@@ -2933,7 +2975,11 @@ public actor StreamingDownloadOrchestrator {
             PipelineLogger.shared.log("[HLS Cleanup] Incomplete deletion for \(record.id): Files remain on disk. Retaining record for future cleanup.")
             var updated = record
             updated.state = .failed
-            try? await persistence.save(updated)
+            do {
+                try await persistence.save(updated)
+            } catch {
+                PipelineLogger.shared.log("[HLS Cleanup] Failed to save updated failed state for \(record.id): \(error)")
+            }
         }
 
         registeredTransferIDs = registeredTransferIDs.filter {
@@ -2989,9 +3035,19 @@ public actor StreamingDownloadOrchestrator {
             let segmentURL = record.segmentDirectoryURL
                 .appendingPathComponent("\(resource.identity.value).part", isDirectory: false)
             if fileManager.fileExists(atPath: segmentURL.path) {
-                try? fileManager.removeItem(at: segmentURL)
+                do {
+                    try fileManager.removeItem(at: segmentURL)
+                } catch {
+                    PipelineLogger.shared.log("[StreamingDownloadOrchestrator] Failed to remove segment file \(segmentURL.path): \(error)")
+                }
             }
-            try? await downloadEngine?.persistenceStore.delete(tag: resource.identity.value)
+            if let engine = downloadEngine {
+                do {
+                    try await engine.persistenceStore.delete(tag: resource.identity.value)
+                } catch {
+                    PipelineLogger.shared.log("[StreamingDownloadOrchestrator] Failed to delete segment record \(resource.identity.value): \(error)")
+                }
+            }
         }
 
         _ = try await persistence.removeSegments(id: parentID, orders: completedOrders)
@@ -3028,7 +3084,11 @@ public actor StreamingDownloadOrchestrator {
     private func cleanupHLSChildRecords(proposal: StreamingTransferProposal) async {
         guard let engine = downloadEngine else { return }
         for resource in proposal.resources {
-            try? await engine.persistenceStore.delete(tag: resource.identity.value)
+            do {
+                try await engine.persistenceStore.delete(tag: resource.identity.value)
+            } catch {
+                PipelineLogger.shared.log("[StreamingDownloadOrchestrator] Failed to delete child segment record \(resource.identity.value): \(error)")
+            }
         }
     }
 
@@ -3041,7 +3101,11 @@ public actor StreamingDownloadOrchestrator {
 
         let fileManager = FileManager.default
         let mediaAssemblyDir = segmentDirectory.appendingPathComponent(".media-assembly", isDirectory: true)
-        try? fileManager.removeItem(at: mediaAssemblyDir)
+        do {
+            try fileManager.removeItem(at: mediaAssemblyDir)
+        } catch {
+            PipelineLogger.shared.log("[StreamingDownloadOrchestrator] Failed to remove mediaAssemblyDir: \(error)")
+        }
 
         guard let children = try? fileManager.contentsOfDirectory(
             at: segmentDirectory,
@@ -3051,7 +3115,11 @@ public actor StreamingDownloadOrchestrator {
 
         for child in children {
             if child.pathExtension == "part" || child.lastPathComponent == ".media-assembly" {
-                try? fileManager.removeItem(at: child)
+                do {
+                    try fileManager.removeItem(at: child)
+                } catch {
+                    PipelineLogger.shared.log("[StreamingDownloadOrchestrator] Failed to remove child \(child.path): \(error)")
+                }
             }
         }
 
@@ -3059,9 +3127,20 @@ public actor StreamingDownloadOrchestrator {
         // remove the directory only when doing so cannot remove the final file.
         let directoryPath = segmentDirectory.standardizedFileURL.path
         let outputPath = outputURL.standardizedFileURL.path
-        if !outputPath.hasPrefix(directoryPath + "/"),
-           (try? fileManager.contentsOfDirectory(atPath: segmentDirectory.path).isEmpty) == true {
-            try? fileManager.removeItem(at: segmentDirectory)
+        if !outputPath.hasPrefix(directoryPath + "/") {
+            let isEmpty: Bool
+            do {
+                isEmpty = try fileManager.contentsOfDirectory(atPath: segmentDirectory.path).isEmpty
+            } catch {
+                isEmpty = false
+            }
+            if isEmpty {
+                do {
+                    try fileManager.removeItem(at: segmentDirectory)
+                } catch {
+                    PipelineLogger.shared.log("[StreamingDownloadOrchestrator] Failed to remove segmentDirectory: \(error)")
+                }
+            }
         }
     }
 
@@ -3126,7 +3205,11 @@ public actor StreamingDownloadOrchestrator {
                 await segmentExecutor.cancel(transferID: parentID)
                 await cleanupHLSChildRecords(proposal: proposal)
                 if let engine = self.downloadEngine {
-                    try? await engine.cancelDownload(id: parentID)
+                    do {
+                        try await engine.cancelDownload(id: parentID)
+                    } catch {
+                        PipelineLogger.shared.log("[DASH Pipeline] Failed to cancel download \(parentID): \(error)")
+                    }
                 }
                 throw StreamingDownloadOrchestratorError.cancelled
             }
@@ -3153,7 +3236,11 @@ public actor StreamingDownloadOrchestrator {
             try Task.checkCancellation()
             if isCancelled(transferID: parentID) {
                 if let engine = self.downloadEngine {
-                    try? await engine.cancelDownload(id: parentID)
+                    do {
+                        try await engine.cancelDownload(id: parentID)
+                    } catch {
+                        PipelineLogger.shared.log("[DASH Pipeline] Failed to cancel download \(parentID): \(error)")
+                    }
                 }
                 throw StreamingDownloadOrchestratorError.cancelled
             }
@@ -3181,7 +3268,11 @@ public actor StreamingDownloadOrchestrator {
             try Task.checkCancellation()
             if isCancelled(transferID: parentID) {
                 if let engine = self.downloadEngine {
-                    try? await engine.cancelDownload(id: parentID)
+                    do {
+                        try await engine.cancelDownload(id: parentID)
+                    } catch {
+                        PipelineLogger.shared.log("[DASH Pipeline] Failed to cancel download \(parentID): \(error)")
+                    }
                 }
                 throw StreamingDownloadOrchestratorError.cancelled
             }
@@ -3211,7 +3302,11 @@ public actor StreamingDownloadOrchestrator {
                 await segmentExecutor.cancel(transferID: parentID)
                 await cleanupHLSChildRecords(proposal: proposal)
                 if let engine = self.downloadEngine {
-                    try? await engine.cancelDownload(id: parentID)
+                    do {
+                        try await engine.cancelDownload(id: parentID)
+                    } catch {
+                        PipelineLogger.shared.log("[DASH Pipeline] Failed to cancel download \(parentID): \(error)")
+                    }
                 }
                 throw StreamingDownloadOrchestratorError.cancelled
             }

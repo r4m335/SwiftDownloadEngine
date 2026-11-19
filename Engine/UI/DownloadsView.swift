@@ -424,10 +424,22 @@ public struct DownloadsView: View {
                             Task { @MainActor in
                                 let name = snap.destinationURL.lastPathComponent
                                 if !snap.isTerminal {
-                                    try? await viewModel.cancelDownload(id: snap.id, deleteFile: false)
+                                    do {
+                                        try await viewModel.cancelDownload(id: snap.id, deleteFile: false)
+                                    } catch {
+                                        PipelineLogger.shared.log(stage: .ui, message: "Failed to cancel download \(snap.id): \(error)")
+                                    }
                                 }
-                                try? await viewModel.removeDownload(id: snap.id, deleteFile: true)
-                                try? FileManager.default.removeItem(at: snap.destinationURL)
+                                do {
+                                    try await viewModel.removeDownload(id: snap.id, deleteFile: true)
+                                } catch {
+                                    PipelineLogger.shared.log(stage: .ui, message: "Failed to remove download \(snap.id): \(error)")
+                                }
+                                do {
+                                    try FileManager.default.removeItem(at: snap.destinationURL)
+                                } catch {
+                                    PipelineLogger.shared.log(stage: .ui, message: "Failed to remove destination file \(snap.destinationURL.path): \(error)")
+                                }
                                 viewModel.showNotification("Permanently deleted '\(name)' from disk")
                             }
                         },
@@ -439,14 +451,26 @@ public struct DownloadsView: View {
                         message: Text("Do you want to delete the downloaded file from disk as well?"),
                         primaryButton: .destructive(Text("Delete File & Remove")) {
                             Task { @MainActor in
-                                try? await viewModel.removeTransfer(id: transfer.id, deleteFiles: true)
-                                try? LIDLibraryStore.shared.deleteMediaFile(url: transfer.destinationURL)
+                                do {
+                                    try await viewModel.removeTransfer(id: transfer.id, deleteFiles: true)
+                                } catch {
+                                    PipelineLogger.shared.log(stage: .ui, message: "Failed to remove transfer \(transfer.id): \(error)")
+                                }
+                                do {
+                                    try LIDLibraryStore.shared.deleteMediaFile(url: transfer.destinationURL)
+                                } catch {
+                                    PipelineLogger.shared.log(stage: .ui, message: "Failed to delete media file from library: \(error)")
+                                }
                                 viewModel.showNotification("Removed '\(transfer.name)' and deleted file")
                             }
                         },
                         secondaryButton: .default(Text("Keep File & Remove")) {
                             Task { @MainActor in
-                                try? await viewModel.removeTransfer(id: transfer.id, deleteFiles: false)
+                                do {
+                                    try await viewModel.removeTransfer(id: transfer.id, deleteFiles: false)
+                                } catch {
+                                    PipelineLogger.shared.log(stage: .ui, message: "Failed to remove transfer \(transfer.id): \(error)")
+                                }
                                 viewModel.showNotification("Removed '\(transfer.name)' (file kept)")
                             }
                         }
@@ -928,7 +952,11 @@ public struct DownloadsView: View {
 
     private func cancelDownload(_ download: DownloadSnapshot) {
         Task { @MainActor in
-            try? await viewModel.cancelDownload(id: download.id, deleteFile: false)
+            do {
+                try await viewModel.cancelDownload(id: download.id, deleteFile: false)
+            } catch {
+                PipelineLogger.shared.log(stage: .ui, message: "Failed to cancel download \(download.id): \(error)")
+            }
         }
     }
 
@@ -936,9 +964,17 @@ public struct DownloadsView: View {
         Task { @MainActor in
             let name = download.destinationURL.lastPathComponent
             if !download.isTerminal {
-                try? await viewModel.cancelDownload(id: download.id, deleteFile: false)
+                do {
+                    try await viewModel.cancelDownload(id: download.id, deleteFile: false)
+                } catch {
+                    PipelineLogger.shared.log(stage: .ui, message: "Failed to cancel download \(download.id): \(error)")
+                }
             }
-            try? await viewModel.removeDownload(id: download.id, deleteFile: false)
+            do {
+                try await viewModel.removeDownload(id: download.id, deleteFile: false)
+            } catch {
+                PipelineLogger.shared.log(stage: .ui, message: "Failed to remove download \(download.id): \(error)")
+            }
             viewModel.showNotification("Removed '\(name)' from queue (file preserved)")
         }
     }
@@ -1011,7 +1047,11 @@ public struct DownloadsView: View {
 
     private func removeTransferFromQueue(_ transfer: UnifiedTransfer) {
         Task { @MainActor in
-            try? await viewModel.removeTransfer(id: transfer.id, deleteFiles: false)
+            do {
+                try await viewModel.removeTransfer(id: transfer.id, deleteFiles: false)
+            } catch {
+                PipelineLogger.shared.log(stage: .ui, message: "Failed to remove transfer \(transfer.id): \(error)")
+            }
             viewModel.showNotification("Removed '\(transfer.name)' from queue (file preserved)")
         }
     }

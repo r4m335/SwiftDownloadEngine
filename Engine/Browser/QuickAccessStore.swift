@@ -200,11 +200,14 @@ public final class QuickAccessStore: @unchecked Sendable {
             normalized.append(updated)
         }
 
-        if let data = try? JSONEncoder().encode(normalized) {
+        do {
+            let data = try JSONEncoder().encode(normalized)
             defaults.set(data, forKey: Self.userDefaultsKey)
             if let storageURL {
-                try? data.write(to: storageURL, options: .atomic)
+                try data.write(to: storageURL, options: .atomic)
             }
+        } catch {
+            PipelineLogger.shared.log(stage: .browser, message: "Failed to persist quick access shortcuts: \(error)")
         }
     }
 

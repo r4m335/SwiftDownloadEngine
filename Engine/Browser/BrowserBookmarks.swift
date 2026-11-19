@@ -117,7 +117,11 @@ public final class BrowserBookmarkStore: @unchecked Sendable {
             let timestamp = Int(Date().timeIntervalSince1970)
             let corruptURL = storageURL.deletingPathExtension()
                 .appendingPathExtension("corrupt.\(timestamp).json")
-            try? FileManager.default.moveItem(at: storageURL, to: corruptURL)
+            do {
+                try FileManager.default.moveItem(at: storageURL, to: corruptURL)
+            } catch {
+                PipelineLogger.shared.log(stage: .browser, message: "Failed to quarantine corrupt bookmarks: \(error)")
+            }
             self.folders = []
             self.bookmarks = []
             setDefaultBookmarksIfNeeded()
@@ -140,8 +144,11 @@ public final class BrowserBookmarkStore: @unchecked Sendable {
             return
         }
         let payload = BookmarkStoragePayload(folders: folders, bookmarks: bookmarks)
-        if let data = try? JSONEncoder().encode(payload) {
-            try? data.write(to: storageURL, options: .atomic)
+        do {
+            let data = try JSONEncoder().encode(payload)
+            try data.write(to: storageURL, options: .atomic)
+        } catch {
+            PipelineLogger.shared.log(stage: .browser, message: "Failed to persist bookmarks: \(error)")
         }
         lock.unlock()
 

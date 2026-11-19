@@ -512,7 +512,13 @@ public final class LIDVLCKitBackend: NSObject, LIDMediaEngineProtocol, VLCMediaP
         #if canImport(UIKit)
         let tempDir = NSTemporaryDirectory()
         let snapPath = (tempDir as NSString).appendingPathComponent("lid_vlc_test_snap.png")
-        try? FileManager.default.removeItem(atPath: snapPath)
+        do {
+            if FileManager.default.fileExists(atPath: snapPath) {
+                try FileManager.default.removeItem(atPath: snapPath)
+            }
+        } catch {
+            PipelineLogger.shared.logPlayer(session: self.activeSessionId, category: "VideoRenderer", message: "Failed to remove test snapshot at \(snapPath): \(error)")
+        }
         player.saveVideoSnapshot(at: snapPath, withWidth: 0, andHeight: 0)
         Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: 1_200_000_000)

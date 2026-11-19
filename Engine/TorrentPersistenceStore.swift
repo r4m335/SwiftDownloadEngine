@@ -126,7 +126,11 @@ public actor TorrentPersistenceStore {
         updated.records.removeAll(where: { $0.infoHash.lowercased() == key })
         try writeDataAtomically(try encoder.encode(updated), to: manifestFileURL)
         cachedManifest = updated
-        try? deleteResumeData(for: key)
+        do {
+            try deleteResumeData(for: key)
+        } catch {
+            PipelineLogger.shared.log(stage: .persistence, message: "Failed to delete resume data for \(key): \(error)")
+        }
     }
 
     // MARK: - Fast-Resume Data Operations
@@ -210,7 +214,11 @@ public actor TorrentPersistenceStore {
         } catch {
             let timestamp = Int(Date().timeIntervalSince1970)
             let corruptBackupURL = storageDirectoryURL.appendingPathComponent("torrent_manifest.corrupt.\(timestamp).json")
-            try? fileManager.moveItem(at: manifestFileURL, to: corruptBackupURL)
+            do {
+                try fileManager.moveItem(at: manifestFileURL, to: corruptBackupURL)
+            } catch {
+                PipelineLogger.shared.log(stage: .persistence, message: "Failed to backup corrupt manifest \(manifestFileURL.path): \(error)")
+            }
 
             let fresh = TorrentQueueManifest()
             try writeDataAtomically(try encoder.encode(fresh), to: manifestFileURL, fileManager: fileManager)
@@ -234,9 +242,17 @@ public actor TorrentPersistenceStore {
                 try fileManager.moveItem(at: destinationURL, to: backupURL)
                 do {
                     try fileManager.moveItem(at: tempURL, to: destinationURL)
-                    _ = try? fileManager.removeItem(at: backupURL)
+                    do {
+                        try fileManager.removeItem(at: backupURL)
+                    } catch {
+                        PipelineLogger.shared.log(stage: .persistence, message: "Failed to remove backupURL \(backupURL.path): \(error)")
+                    }
                 } catch {
-                    _ = try? fileManager.moveItem(at: backupURL, to: destinationURL)
+                    do {
+                        try fileManager.moveItem(at: backupURL, to: destinationURL)
+                    } catch {
+                        PipelineLogger.shared.log(stage: .persistence, message: "Failed to restore backupURL \(backupURL.path): \(error)")
+                    }
                     throw error
                 }
             }
@@ -246,9 +262,17 @@ public actor TorrentPersistenceStore {
             try fileManager.moveItem(at: destinationURL, to: backupURL)
             do {
                 try fileManager.moveItem(at: tempURL, to: destinationURL)
-                _ = try? fileManager.removeItem(at: backupURL)
+                do {
+                    try fileManager.removeItem(at: backupURL)
+                } catch {
+                    PipelineLogger.shared.log(stage: .persistence, message: "Failed to remove backupURL \(backupURL.path): \(error)")
+                }
             } catch {
-                _ = try? fileManager.moveItem(at: backupURL, to: destinationURL)
+                do {
+                    try fileManager.moveItem(at: backupURL, to: destinationURL)
+                } catch {
+                    PipelineLogger.shared.log(stage: .persistence, message: "Failed to restore backupURL \(backupURL.path): \(error)")
+                }
                 throw error
             }
             #endif

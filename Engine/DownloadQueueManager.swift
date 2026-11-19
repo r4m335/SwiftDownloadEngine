@@ -455,7 +455,11 @@ public actor DownloadQueueManager {
         items[id] = item
 
         if let task = activeTasks.removeValue(forKey: id) {
-            try? await coordinator.pause(id: id)
+            do {
+                try await coordinator.pause(id: id)
+            } catch {
+                PipelineLogger.shared.log("[DownloadQueueManager] Warning: Coordinator pause failed for \(id): \(error.localizedDescription)")
+            }
             task.cancel()
             _ = await task.value
         }
@@ -526,14 +530,26 @@ public actor DownloadQueueManager {
         }
 
         if let task = activeTasks.removeValue(forKey: id) {
-            try? await coordinator.cancel(id: id, deleteDestinationFile: true)
+            do {
+                try await coordinator.cancel(id: id, deleteDestinationFile: true)
+            } catch {
+                PipelineLogger.shared.log("[DownloadQueueManager] Warning: Coordinator cancel failed for \(id): \(error.localizedDescription)")
+            }
             task.cancel()
             _ = await task.value
         } else {
             if FileManager.default.fileExists(atPath: item.request.destinationURL.path) {
-                try? FileManager.default.removeItem(at: item.request.destinationURL)
+                do {
+                    try FileManager.default.removeItem(at: item.request.destinationURL)
+                } catch {
+                    PipelineLogger.shared.log("[DownloadQueueManager] Warning: Failed to remove destination file \(item.request.destinationURL.path): \(error.localizedDescription)")
+                }
             }
-            try? await persistenceStore.delete(tag: id)
+            do {
+                try await persistenceStore.delete(tag: id)
+            } catch {
+                PipelineLogger.shared.log("[DownloadQueueManager] Warning: Failed to delete persistence record for \(id): \(error.localizedDescription)")
+            }
         }
 
         item.completedBytes = 0
@@ -557,25 +573,53 @@ public actor DownloadQueueManager {
         items[id] = item
 
         if let task = activeTasks.removeValue(forKey: id) {
-            try? await coordinator.cancel(id: id, deleteDestinationFile: deleteDestinationFile)
+            do {
+                try await coordinator.cancel(id: id, deleteDestinationFile: deleteDestinationFile)
+            } catch {
+                PipelineLogger.shared.log("[DownloadQueueManager] Warning: Coordinator cancel failed for \(id): \(error.localizedDescription)")
+            }
             task.cancel()
             _ = await task.value
         } else {
             if deleteDestinationFile {
-                if let record = try? await persistenceStore.fetch(tag: id) {
-                    try? FileManager.default.removeItem(at: record.destinationURL)
-                    let parentDir = record.destinationURL.deletingLastPathComponent()
-                    let tempDir = parentDir.appendingPathComponent(".tmp", isDirectory: true)
-                    for seg in record.segments {
-                        let part = tempDir.appendingPathComponent("segment-\(seg.id).part")
-                        try? FileManager.default.removeItem(at: part)
+                do {
+                    if let record = try await persistenceStore.fetch(tag: id) {
+                        do {
+                            try FileManager.default.removeItem(at: record.destinationURL)
+                        } catch {
+                            PipelineLogger.shared.log("[DownloadQueueManager] Warning: Failed removing destination \(record.destinationURL.path): \(error.localizedDescription)")
+                        }
+                        let parentDir = record.destinationURL.deletingLastPathComponent()
+                        let tempDir = parentDir.appendingPathComponent(".tmp", isDirectory: true)
+                        for seg in record.segments {
+                            let part = tempDir.appendingPathComponent("segment-\(seg.id).part")
+                            do {
+                                try FileManager.default.removeItem(at: part)
+                            } catch {
+                                PipelineLogger.shared.log("[DownloadQueueManager] Warning: Failed removing part file \(part.path): \(error.localizedDescription)")
+                            }
+                        }
+                    } else if FileManager.default.fileExists(atPath: item.request.destinationURL.path) {
+                        do {
+                            try FileManager.default.removeItem(at: item.request.destinationURL)
+                        } catch {
+                            PipelineLogger.shared.log("[DownloadQueueManager] Warning: Failed removing destination file \(item.request.destinationURL.path): \(error.localizedDescription)")
+                        }
                     }
-                } else if FileManager.default.fileExists(atPath: item.request.destinationURL.path) {
-                    try? FileManager.default.removeItem(at: item.request.destinationURL)
+                } catch {
+                    PipelineLogger.shared.log("[DownloadQueueManager] Warning: Failed fetching persistence record for \(id): \(error.localizedDescription)")
                 }
-                try? await persistenceStore.delete(tag: id)
+                do {
+                    try await persistenceStore.delete(tag: id)
+                } catch {
+                    PipelineLogger.shared.log("[DownloadQueueManager] Warning: Failed deleting persistence record for \(id): \(error.localizedDescription)")
+                }
             } else {
-                _ = try? await persistenceStore.updateState(tag: id, state: .cancelled)
+                do {
+                    _ = try await persistenceStore.updateState(tag: id, state: .cancelled)
+                } catch {
+                    PipelineLogger.shared.log("[DownloadQueueManager] Warning: Failed updating state to .cancelled for \(id): \(error.localizedDescription)")
+                }
             }
         }
 
@@ -622,7 +666,11 @@ public actor DownloadQueueManager {
         for id in activeIDs {
             items[id]?.state = .paused
             if let task = activeTasks.removeValue(forKey: id) {
-                try? await coordinator.pause(id: id)
+                do {
+                    try await coordinator.pause(id: id)
+                } catch {
+                    PipelineLogger.shared.log("[DownloadQueueManager] Warning: Coordinator pause failed for \(id): \(error.localizedDescription)")
+                }
                 task.cancel()
                 _ = await task.value
             }
@@ -648,9 +696,17 @@ public actor DownloadQueueManager {
         for (id, item) in items where item.state == .pending {
             items[id]?.state = .cancelled
             if deleteDestinationFiles {
-                try? await persistenceStore.delete(tag: id)
+                do {
+                    try await persistenceStore.delete(tag: id)
+                } catch {
+                    PipelineLogger.shared.log("[DownloadQueueManager] Warning: Failed to delete persistence record for \(id): \(error.localizedDescription)")
+                }
             } else {
-                _ = try? await persistenceStore.updateState(tag: id, state: .cancelled)
+                do {
+                    _ = try await persistenceStore.updateState(tag: id, state: .cancelled)
+                } catch {
+                    PipelineLogger.shared.log("[DownloadQueueManager] Warning: Failed to update state to .cancelled for \(id): \(error.localizedDescription)")
+                }
             }
         }
 
@@ -659,7 +715,11 @@ public actor DownloadQueueManager {
         for id in activeIDs {
             items[id]?.state = .cancelled
             if let task = activeTasks.removeValue(forKey: id) {
-                try? await coordinator.cancel(id: id, deleteDestinationFile: deleteDestinationFiles)
+                do {
+                    try await coordinator.cancel(id: id, deleteDestinationFile: deleteDestinationFiles)
+                } catch {
+                    PipelineLogger.shared.log("[DownloadQueueManager] Warning: Coordinator cancel failed for \(id): \(error.localizedDescription)")
+                }
                 task.cancel()
                 _ = await task.value
             }
@@ -673,7 +733,11 @@ public actor DownloadQueueManager {
     public func removeCompleted(deleteDestinationFiles: Bool = false) async {
         let completedIDs = items.values.filter { $0.state == .completed }.map { $0.id }
         for id in completedIDs {
-            try? await removeFromQueue(id: id, deleteDestinationFile: deleteDestinationFiles)
+            do {
+                try await removeFromQueue(id: id, deleteDestinationFile: deleteDestinationFiles)
+            } catch {
+                PipelineLogger.shared.log("[DownloadQueueManager] Warning: Failed to remove completed item \(id): \(error.localizedDescription)")
+            }
         }
     }
 
@@ -686,14 +750,30 @@ public actor DownloadQueueManager {
         }
 
         if let task = activeTasks.removeValue(forKey: id) {
-            try? await coordinator.cancel(id: id, deleteDestinationFile: deleteDestinationFile)
+            do {
+                try await coordinator.cancel(id: id, deleteDestinationFile: deleteDestinationFile)
+            } catch {
+                PipelineLogger.shared.log("[DownloadQueueManager] Warning: Coordinator cancel failed for \(id): \(error.localizedDescription)")
+            }
             task.cancel()
             _ = await task.value
         } else if deleteDestinationFile {
-            if let record = try? await persistenceStore.fetch(tag: id) {
-                try? FileManager.default.removeItem(at: record.destinationURL)
-            } else if FileManager.default.fileExists(atPath: item.request.destinationURL.path) {
-                try? FileManager.default.removeItem(at: item.request.destinationURL)
+            do {
+                if let record = try await persistenceStore.fetch(tag: id) {
+                    do {
+                        try FileManager.default.removeItem(at: record.destinationURL)
+                    } catch {
+                        PipelineLogger.shared.log("[DownloadQueueManager] Warning: Failed to remove destination \(record.destinationURL.path): \(error.localizedDescription)")
+                    }
+                } else if FileManager.default.fileExists(atPath: item.request.destinationURL.path) {
+                    do {
+                        try FileManager.default.removeItem(at: item.request.destinationURL)
+                    } catch {
+                        PipelineLogger.shared.log("[DownloadQueueManager] Warning: Failed to remove destination file \(item.request.destinationURL.path): \(error.localizedDescription)")
+                    }
+                }
+            } catch {
+                PipelineLogger.shared.log("[DownloadQueueManager] Warning: Failed fetching persistence record for \(id): \(error.localizedDescription)")
             }
         }
         do {
@@ -722,16 +802,26 @@ public actor DownloadQueueManager {
         }
         let fileURL = item.request.destinationURL
         if FileManager.default.fileExists(atPath: fileURL.path) {
-            try? FileManager.default.removeItem(at: fileURL)
+            do {
+                try FileManager.default.removeItem(at: fileURL)
+            } catch {
+                PipelineLogger.shared.log("[DownloadQueueManager] Warning: Failed deleting downloaded file \(fileURL.path): \(error.localizedDescription)")
+                throw error
+            }
         }
         if keepRecord {
             var updated = item
             updated.state = .failed(reason: "Downloaded file missing from disk")
             items[id] = updated
-            if var record = try? await persistenceStore.fetch(tag: id) {
-                record.state = .failed(reason: "Downloaded file missing from disk")
-                record.updatedAt = Date()
-                try? await persistenceStore.save(record)
+            do {
+                if var record = try await persistenceStore.fetch(tag: id) {
+                    record.state = .failed(reason: "Downloaded file missing from disk")
+                    record.updatedAt = Date()
+                    try await persistenceStore.save(record)
+                }
+            } catch {
+                PipelineLogger.shared.log("[DownloadQueueManager] Warning: Failed persisting failed state for \(id): \(error.localizedDescription)")
+                throw error
             }
             persistQueue()
             notifyQueueChanged()
@@ -801,7 +891,8 @@ public actor DownloadQueueManager {
         }
 
         // 2. Reconcile with persistence store records (source of truth for disk data & segments)
-        if let storedRecords = try? await persistenceStore.fetchAll() {
+        do {
+            let storedRecords = try await persistenceStore.fetchAll()
             for rawRecord in storedRecords {
                 // Streaming segment requests have their own durable parent
                 // record. They must never become user-visible queue items.
@@ -814,7 +905,11 @@ public actor DownloadQueueManager {
                     record: rawRecord
                 )
                 if record != rawRecord {
-                    _ = try? await persistenceStore.save(record)
+                    do {
+                        _ = try await persistenceStore.save(record)
+                    } catch {
+                        PipelineLogger.shared.log("[DownloadQueueManager] Warning: Failed to reconcile persistence record for \(record.id): \(error.localizedDescription)")
+                    }
                 }
 
                 if var existing = self.items[record.id] {
@@ -877,6 +972,8 @@ public actor DownloadQueueManager {
                     self.items[record.id] = item
                 }
             }
+        } catch {
+            PipelineLogger.shared.log("[DownloadQueueManager] Warning: Failed to fetch stored records during restoreQueue: \(error.localizedDescription)")
         }
 
         // 3. Ensure any items left in .downloading or .probing without an active task become .paused
@@ -903,10 +1000,14 @@ public actor DownloadQueueManager {
                     var updated = self.items[id] ?? item
                     updated.state = .failed(reason: "Downloaded file missing from disk")
                     self.items[id] = updated
-                    if var record = try? await persistenceStore.fetch(tag: id) {
-                        record.state = .failed(reason: "Downloaded file missing from disk")
-                        record.updatedAt = Date()
-                        try? await persistenceStore.save(record)
+                    do {
+                        if var record = try await persistenceStore.fetch(tag: id) {
+                            record.state = .failed(reason: "Downloaded file missing from disk")
+                            record.updatedAt = Date()
+                            try await persistenceStore.save(record)
+                        }
+                    } catch {
+                        PipelineLogger.shared.log("[DownloadQueueManager] Warning: Failed persisting missing-file state for \(id): \(error.localizedDescription)")
                     }
                 }
             }
