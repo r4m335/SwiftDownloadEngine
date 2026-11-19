@@ -49,24 +49,12 @@ public enum StreamQualityInspector {
             return try inspectDASH(manifestText: cleanText, baseURL: url, durationSeconds: nil)
         } else {
             var durationSeconds: Double? = nil
-            do {
-                let manifest = try HLSManifestParser.parse(cleanText, baseURL: url)
+            if let manifest = try? HLSManifestParser.parse(cleanText, baseURL: url) {
                 if manifest.playlistType == .media {
                     let totalSec = manifest.segments.reduce(0.0) { $0 + $1.duration }
                     if totalSec > 0 { durationSeconds = totalSec }
-                } else if manifest.playlistType == .master, let firstVariant = manifest.variants.first {
-                    // Fetch child media playlist to calculate stream duration and variant size estimates
-                    if let childText = try? await loadManifestText(from: firstVariant.uri, requestContext: requestContext, session: session) {
-                        if let childManifest = try? HLSManifestParser.parse(childText, baseURL: firstVariant.uri) {
-                            let totalSec = childManifest.segments.reduce(0.0) { $0 + $1.duration }
-                            if totalSec > 0 { durationSeconds = totalSec }
-                        }
-                    }
                 }
-            } catch {
-                // In case of parsing issues, inspectHLS will handle or re-throw
             }
-
             return try inspectHLS(manifestText: cleanText, baseURL: url, durationSeconds: durationSeconds)
         }
     }

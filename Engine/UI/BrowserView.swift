@@ -1738,7 +1738,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         syncMediaCandidatesToDiscoveredResources()
         isShowingResourceInspector = true
         if discoveredResources.isEmpty {
-            inspectCurrentPageResources()
+            inspectCurrentPageResources(includeNonVideo: false)
         } else {
             expandStreamingManifests()
         }
@@ -3072,54 +3072,56 @@ public final class BrowserViewModel: NSObject, ObservableObject {
 
         // Always preserve request context (Referer, Origin, User-Agent) for discovered media
         let effectivePageURL = currentURL ?? observation.pageOrigin ?? URL(string: "about:blank")!
-        if let wv = webView {
-            captureRequestContexts(
-                for: [resource],
-                pageURL: effectivePageURL,
-                webView: wv
-            ) { [weak self] contextualResources in
-                guard let self,
-                      let contextualResource = contextualResources.first,
-                      !self.discoveredResources.contains(where: {
-                          $0.url.absoluteString.lowercased() == contextualResource.url.absoluteString.lowercased()
-                      }) else {
-                    return
-                }
-                self.discoveredResources.insert(contextualResource, at: 0)
-                if self.selectedResourceIDs.isEmpty,
-                   let manifest = self.discoveredResources.first(where: { $0.isStreamingManifest }) {
-                    self.selectedResourceIDs.insert(manifest.id)
-                }
-                self.ingestMediaResource(contextualResource, tabID: tabID ?? self.activeTabID)
-            }
-        } else {
-            let fallbackContext = BrowserRequestContext(
-                url: resource.url,
-                pageURL: effectivePageURL,
-                userAgent: BrowserViewModel.defaultDesktopUserAgent,
-                cookies: [],
-                source: .webpageResource
-            )
-            let contextualResource = WebpageResource(
-                id: resource.id,
-                url: resource.url,
-                title: resource.title,
-                suggestedFilename: resource.suggestedFilename,
-                resourceType: resource.resourceType,
-                mimeType: resource.mimeType,
-                estimatedSize: resource.estimatedSize,
-                isSupported: resource.isSupported,
-                unsupportedReason: resource.unsupportedReason,
-                requestContext: resource.requestContext ?? fallbackContext,
-                manifestText: resource.manifestText
-            )
-            discoveredResources.insert(contextualResource, at: 0)
+        let fallbackContext = BrowserRequestContext(
+            url: resource.url,
+            pageURL: effectivePageURL,
+            userAgent: BrowserViewModel.defaultDesktopUserAgent,
+            cookies: [],
+            source: .webpageResource
+        )
+        let immediateResource = WebpageResource(
+            id: resource.id,
+            url: resource.url,
+            title: resource.title,
+            suggestedFilename: resource.suggestedFilename,
+            resourceType: resource.resourceType,
+            mimeType: resource.mimeType,
+            estimatedSize: resource.estimatedSize,
+            isSupported: resource.isSupported,
+            unsupportedReason: resource.unsupportedReason,
+            requestContext: resource.requestContext ?? fallbackContext,
+            manifestText: resource.manifestText
+        )
+
+        // 1. Immediately insert at top with 0 delay so user sees grabbed link instantly
+        if !discoveredResources.contains(where: {
+            $0.url.absoluteString.lowercased() == immediateResource.url.absoluteString.lowercased()
+        }) {
+            discoveredResources.insert(immediateResource, at: 0)
             if selectedResourceIDs.isEmpty,
                let manifest = discoveredResources.first(where: { $0.isStreamingManifest }) {
                 selectedResourceIDs.insert(manifest.id)
             }
-            ingestMediaResource(contextualResource, tabID: tabID ?? activeTabID)
+            ingestMediaResource(immediateResource, tabID: tabID ?? activeTabID)
         }
+
+        // 2. In background, asynchronously capture cookies & exact User-Agent to enrich headers
+        #if canImport(WebKit)
+        if let wv = webView {
+            captureRequestContexts(
+                for: [immediateResource],
+                pageURL: effectivePageURL,
+                webView: wv
+            ) { [weak self] contextualResources in
+                guard let self, let enriched = contextualResources.first else { return }
+                if let idx = self.discoveredResources.firstIndex(where: {
+                    $0.url.absoluteString.lowercased() == enriched.url.absoluteString.lowercased()
+                }) {
+                    self.discoveredResources[idx] = enriched
+                }
+            }
+        }
+        #endif
     }
 
     private func publishMediaCandidates() {

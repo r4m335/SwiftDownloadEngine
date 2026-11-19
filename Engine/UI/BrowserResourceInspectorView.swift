@@ -101,47 +101,30 @@ public struct BrowserResourceInspectorSheet: View {
     }
 
     public var filteredResources: [WebpageResource] {
-        let resources = eligibleResources.filter { res in
+        let base = eligibleResources
+        let hasStreamingManifest = base.contains(where: { $0.isStreamingManifest })
+        let cleanSearch = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let resources = base.filter { res in
             let matchesCategory = selectedCategory == nil || res.resourceType == selectedCategory
-            let hasStreamingManifest = eligibleResources.contains(where: { $0.isStreamingManifest })
             let matchesDefaultMedia = showsAllResources ||
                 selectedCategory != nil ||
                 (res.resourceType == .video && (!res.isMediaSourceBlob || !hasStreamingManifest)) ||
                 res.resourceType == .audio
-            let matchesSearch = searchText.isEmpty ||
-                res.title.localizedCaseInsensitiveContains(searchText) ||
-                res.suggestedFilename.localizedCaseInsensitiveContains(searchText) ||
-                res.url.absoluteString.localizedCaseInsensitiveContains(searchText)
+            let matchesSearch = cleanSearch.isEmpty ||
+                res.title.localizedCaseInsensitiveContains(cleanSearch) ||
+                res.suggestedFilename.localizedCaseInsensitiveContains(cleanSearch) ||
+                res.url.absoluteString.localizedCaseInsensitiveContains(cleanSearch)
             return matchesCategory && matchesDefaultMedia && matchesSearch
         }
         return resources.sorted {
-            let lhsPriority: Int
-            if $0.isStreamingManifest {
-                lhsPriority = 0
-            } else if $0.resourceType == .video || $0.resourceType == .audio {
-                lhsPriority = 1
-            } else {
-                lhsPriority = 2
-            }
-
-            let rhsPriority: Int
-            if $1.isStreamingManifest {
-                rhsPriority = 0
-            } else if $1.resourceType == .video || $1.resourceType == .audio {
-                rhsPriority = 1
-            } else {
-                rhsPriority = 2
-            }
-
-            if lhsPriority != rhsPriority {
-                return lhsPriority < rhsPriority
-            }
-
             // Always put newest capture on top
             if $0.discoveredAt != $1.discoveredAt {
                 return $0.discoveredAt > $1.discoveredAt
             }
-
+            // Prioritize streaming manifests over single segment / generic files
+            if $0.isStreamingManifest != $1.isStreamingManifest {
+                return $0.isStreamingManifest && !$1.isStreamingManifest
+            }
             return $0.suggestedFilename.localizedCaseInsensitiveCompare($1.suggestedFilename) == .orderedAscending
         }
     }
@@ -401,6 +384,11 @@ public struct BrowserResourceInspectorSheet: View {
                 .foregroundColor(.secondary)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 32)
+            Button("Cancel Scan") {
+                viewModel.isScanningResources = false
+            }
+            .font(.subheadline)
+            .padding(.top, 4)
             Spacer()
         }
     }

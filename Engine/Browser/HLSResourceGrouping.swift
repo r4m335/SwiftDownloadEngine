@@ -59,13 +59,25 @@ public struct HLSVariantStreamItem: Identifiable, Sendable, Hashable {
 /// Associates observed HLS media playlists with a parsed master playlist so
 /// the resource inspector presents one video and its available qualities.
 public enum HLSResourceGrouping {
+    private static let manifestCache = NSCache<NSString, HLSManifest>()
+
+    private static func cachedParse(text: String, baseURL: URL) -> HLSManifest? {
+        let key = "\(baseURL.absoluteString)|\(text.hashValue)" as NSString
+        if let cached = manifestCache.object(forKey: key) {
+            return cached
+        }
+        guard let manifest = try? HLSManifestParser.parse(text, baseURL: baseURL) else { return nil }
+        manifestCache.setObject(manifest, forKey: key)
+        return manifest
+    }
+
     public static func variantURLs(in resources: [WebpageResource]) -> Set<String> {
         Set(masterManifests(in: resources).flatMap { $0.variants.map { $0.uri.absoluteString.lowercased() } })
     }
 
     public static func qualitySummary(for resource: WebpageResource) -> String? {
         guard let text = resource.manifestText,
-              let manifest = try? HLSManifestParser.parse(text, baseURL: resource.url),
+              let manifest = cachedParse(text: text, baseURL: resource.url),
               manifest.playlistType == .master else { return nil }
         let qualities = manifest.variants.compactMap { $0.resolution?.height }
             .sorted()
@@ -76,7 +88,7 @@ public enum HLSResourceGrouping {
     /// Extracts rich metadata for every variant in a master playlist (1DM-style).
     public static func extractVariantStreamItems(for resource: WebpageResource) -> [HLSVariantStreamItem] {
         guard let text = resource.manifestText,
-              let manifest = try? HLSManifestParser.parse(text, baseURL: resource.url),
+              let manifest = cachedParse(text: text, baseURL: resource.url),
               manifest.playlistType == .master,
               !manifest.variants.isEmpty else { return [] }
 
@@ -185,7 +197,7 @@ public enum HLSResourceGrouping {
     private static func masterManifests(in resources: [WebpageResource]) -> [HLSManifest] {
         resources.compactMap { resource in
             guard let text = resource.manifestText,
-                  let manifest = try? HLSManifestParser.parse(text, baseURL: resource.url),
+                  let manifest = cachedParse(text: text, baseURL: resource.url),
                   manifest.playlistType == .master else { return nil }
             return manifest
         }
