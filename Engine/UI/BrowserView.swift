@@ -50,9 +50,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
     public let faviconService: FaviconService
     public let tabPreviewCache: BrowserTabPreviewCache
     public let certificateDecisionStore: BrowserCertificateDecisionStore
-    #if canImport(WebKit)
     public let contentBlocker: BrowserContentBlocker
-    #endif
     public let permissionCoordinator: BrowserPermissionCoordinator
     public let promptHandler: BrowserPromptHandler
     public let authenticationHandler: BrowserAuthenticationHandler
@@ -276,9 +274,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         faviconService: FaviconService = .shared,
         tabPreviewCache: BrowserTabPreviewCache = .shared,
         certificateDecisionStore: BrowserCertificateDecisionStore = .shared,
-        #if canImport(WebKit)
         contentBlocker: BrowserContentBlocker = .shared,
-        #endif
         permissionCoordinator: BrowserPermissionCoordinator = .shared,
         promptHandler: BrowserPromptHandler = .shared,
         authenticationHandler: BrowserAuthenticationHandler = .shared,
@@ -298,9 +294,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         self.faviconService = faviconService
         self.tabPreviewCache = tabPreviewCache
         self.certificateDecisionStore = certificateDecisionStore
-        #if canImport(WebKit)
         self.contentBlocker = contentBlocker
-        #endif
         self.permissionCoordinator = permissionCoordinator
         self.promptHandler = promptHandler
         self.authenticationHandler = authenticationHandler

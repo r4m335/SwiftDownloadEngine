@@ -157,4 +157,15 @@ public final class LIDOrientationManager: ObservableObject {
         }
     }
 }
+#else
+@MainActor
+public final class LIDOrientationManager: ObservableObject {
+    public static let shared = LIDOrientationManager()
+    public var isPlayerActive: Bool = false
+    public var activeOrientationPreference: LIDPlayerOrientationPreference = .auto
+    public init() {}
+    public func restorePortrait(session: String = "IDLE") {}
+    public func applyOrientationPreference(_ preference: LIDPlayerOrientationPreference, session: String = "IDLE") {}
+    public func toggleOrientation(session: String = "IDLE") {}
+}
 #endif

@@ -51,9 +51,7 @@ public final class AppCompositionRoot: @unchecked Sendable {
     public let liveStreamRecorder: LiveStreamRecorder
 
     // MARK: - Browser Handlers
-    #if canImport(WebKit)
     public let contentBlocker: BrowserContentBlocker
-    #endif
     public let permissionCoordinator: BrowserPermissionCoordinator
     public let authenticationHandler: BrowserAuthenticationHandler
     public let promptHandler: BrowserPromptHandler
@@ -98,9 +96,7 @@ public final class AppCompositionRoot: @unchecked Sendable {
         playbackEngine: LIDPlaybackEngine,
         orientationManager: LIDOrientationManager = .shared,
         liveStreamRecorder: LiveStreamRecorder,
-        #if canImport(WebKit)
         contentBlocker: BrowserContentBlocker = .shared,
-        #endif
         permissionCoordinator: BrowserPermissionCoordinator = .shared,
         authenticationHandler: BrowserAuthenticationHandler = .shared,
         promptHandler: BrowserPromptHandler = .shared,
@@ -140,9 +136,7 @@ public final class AppCompositionRoot: @unchecked Sendable {
         self.playbackEngine = playbackEngine
         self.orientationManager = orientationManager
         self.liveStreamRecorder = liveStreamRecorder
-        #if canImport(WebKit)
         self.contentBlocker = contentBlocker
-        #endif
         self.permissionCoordinator = permissionCoordinator
         self.authenticationHandler = authenticationHandler
         self.promptHandler = promptHandler
@@ -248,9 +242,7 @@ public final class AppCompositionRoot: @unchecked Sendable {
         let liveStreamRecorder = LiveStreamRecorder(libraryStore: libraryStore)
 
         // 6. Browser Coordinators & Handlers
-        #if canImport(WebKit)
         let contentBlocker = BrowserContentBlocker.shared
-        #endif
         let permissionCoordinator = BrowserPermissionCoordinator.shared
         let authenticationHandler = BrowserAuthenticationHandler.shared
         let promptHandler = BrowserPromptHandler.shared
@@ -339,9 +331,7 @@ public final class AppCompositionRoot: @unchecked Sendable {
             playbackEngine: playbackEngine,
             orientationManager: orientationManager,
             liveStreamRecorder: liveStreamRecorder,
-            #if canImport(WebKit)
             contentBlocker: contentBlocker,
-            #endif
             permissionCoordinator: permissionCoordinator,
             authenticationHandler: authenticationHandler,
             promptHandler: promptHandler,
@@ -416,9 +406,7 @@ public final class AppCompositionRoot: @unchecked Sendable {
         let orientationManager = LIDOrientationManager()
         let liveStreamRecorder = LiveStreamRecorder(libraryStore: libraryStore)
 
-        #if canImport(WebKit)
         let contentBlocker = BrowserContentBlocker()
-        #endif
         let permissionCoordinator = BrowserPermissionCoordinator()
         let authenticationHandler = BrowserAuthenticationHandler(keychain: keychain)
         let promptHandler = BrowserPromptHandler()
@@ -503,9 +491,7 @@ public final class AppCompositionRoot: @unchecked Sendable {
             playbackEngine: playbackEngine,
             orientationManager: orientationManager,
             liveStreamRecorder: liveStreamRecorder,
-            #if canImport(WebKit)
             contentBlocker: contentBlocker,
-            #endif
             permissionCoordinator: permissionCoordinator,
             authenticationHandler: authenticationHandler,
             promptHandler: promptHandler,
@@ -558,9 +544,7 @@ public final class AppCompositionRoot: @unchecked Sendable {
             faviconService: faviconService,
             tabPreviewCache: tabPreviewCache,
             certificateDecisionStore: certificateDecisionStore,
-            #if canImport(WebKit)
             contentBlocker: contentBlocker,
-            #endif
             permissionCoordinator: permissionCoordinator,
             promptHandler: promptHandler,
             authenticationHandler: authenticationHandler,
