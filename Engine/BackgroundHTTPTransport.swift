@@ -662,7 +662,6 @@ public enum BackgroundDownloadFileHandler {
                 underlyingError: "Failed to synchronize committed destination file: \(error.localizedDescription)"
             )
         }
-        }
 
         return fileSize
     }

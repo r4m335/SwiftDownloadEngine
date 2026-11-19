@@ -9,6 +9,23 @@ import UIKit
 import AppKit
 #endif
 
+/// System subsystem / pipeline stage for diagnostic telemetry.
+public enum PipelineStage: String, Sendable {
+    case coordinator = "Coordinator"
+    case transport = "Transport"
+    case persistence = "Persistence"
+    case writer = "Writer"
+    case torrent = "Torrent"
+    case browser = "Browser"
+    case viewmodel = "ViewModel"
+    case ui = "UI"
+    case engine = "Engine"
+    case queue = "Queue"
+    case assembler = "Assembler"
+    case reconstruction = "Reconstruction"
+    case general = "General"
+}
+
 /// Thread-safe in-memory diagnostic logger for streaming download pipelines (HLS/DASH).
 /// Keeps a bounded circular buffer (last 200 lines) and automatically redacts
 /// sensitive authentication tokens, session cookies, and credentialed URL parameters.
@@ -105,6 +122,11 @@ public final class PipelineLogger: @unchecked Sendable, ObservableObject {
     public func logPlayer(session: String, category: String, message: String) {
         let msg = "[\(session)] [\(category)] \(message)"
         log(msg)
+    }
+
+    /// Logs a structured message with associated pipeline stage.
+    public func log(stage: PipelineStage, message: String) {
+        log("[\(stage.rawValue)] \(message)")
     }
 
     /// Logs a raw message, applies redaction, appends to the circular buffer,
