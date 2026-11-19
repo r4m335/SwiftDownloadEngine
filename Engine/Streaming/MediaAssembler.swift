@@ -575,7 +575,7 @@ public enum MediaAssembler {
         let fileManager = FileManager.default
         let size = fileManager.fileSize(atPath: sourceURL.path) ?? 0
         let directAsset = AVURLAsset(url: sourceURL)
-        _ = try? await directAsset.load(.tracks, .playable, .duration)
+        _ = try? await directAsset.load(.tracks, .isPlayable, .duration)
 
         var manifestURL: URL? = nil
         var targetAsset: AVAsset = directAsset
@@ -617,7 +617,7 @@ public enum MediaAssembler {
 
             if let mURL = manifestURL {
                 let playlistAsset = AVURLAsset(url: mURL)
-                _ = try? await playlistAsset.load(.tracks, .playable, .duration)
+                _ = try? await playlistAsset.load(.tracks, .isPlayable, .duration)
                 let pTracks = (try? await playlistAsset.load(.tracks)) ?? []
                 if !pTracks.isEmpty {
                     targetAsset = playlistAsset
@@ -1285,7 +1285,8 @@ public enum MediaAssembler {
 
             if exportSession.status == .completed && FileManager.default.fileExists(atPath: outputURL.path) {
                 let size = FileManager.default.fileSize(atPath: outputURL.path) ?? 0
-                if size > 0 && await validateRemuxedMP4(outputURL) {
+                let isValid = await validateRemuxedMP4(outputURL)
+                if size > 0 && isValid {
                     PipelineLogger.shared.log("[MediaAssembler] Passthrough export succeeded with preset \(preset): \(size) bytes")
                     return true
                 }
@@ -1376,7 +1377,7 @@ public enum MediaAssembler {
             : ""
 
         let tsAsset = AVURLAsset(url: tsFileURL)
-        _ = try? await tsAsset.load(.tracks, .playable, .duration)
+        _ = try? await tsAsset.load(.tracks, .isPlayable, .duration)
         let tsTracks = (try? await tsAsset.load(.tracks)) ?? []
 
         var targetAsset: AVAsset = tsAsset
@@ -1416,7 +1417,7 @@ public enum MediaAssembler {
             }
 
             let playlistAsset = AVURLAsset(url: playlistURL)
-            _ = try? await playlistAsset.load(.tracks, .playable, .duration)
+            _ = try? await playlistAsset.load(.tracks, .isPlayable, .duration)
             let pTracks = (try? await playlistAsset.load(.tracks)) ?? []
             if !pTracks.isEmpty {
                 targetAsset = playlistAsset
@@ -1464,7 +1465,8 @@ public enum MediaAssembler {
             }
             if exportSession.status == .completed && fileManager.fileExists(atPath: tempMP4.path) {
                 let size = fileManager.fileSize(atPath: tempMP4.path) ?? 0
-                if size > 0 && await validateRemuxedMP4(tempMP4) {
+                let isValid = await validateRemuxedMP4(tempMP4)
+                if size > 0 && isValid {
                     PipelineLogger.shared.log("[MediaAssembler] Remux Attempt 1 succeeded: \(size) bytes")
                     didSucceed = true
                 } else {
@@ -1500,7 +1502,8 @@ public enum MediaAssembler {
                 }
                 if exportSession.status == .completed && fileManager.fileExists(atPath: tempMP4.path) {
                     let size = fileManager.fileSize(atPath: tempMP4.path) ?? 0
-                    if size > 0 && await validateRemuxedMP4(tempMP4) {
+                    let isValid = await validateRemuxedMP4(tempMP4)
+                    if size > 0 && isValid {
                         PipelineLogger.shared.log("[MediaAssembler] Remux Attempt 2 succeeded: \(size) bytes")
                         didSucceed = true
                     } else {
@@ -1631,7 +1634,8 @@ public enum MediaAssembler {
                             await writer.finishWriting()
                             if writer.status == .completed && fileManager.fileExists(atPath: tempMP4.path) {
                                 let size = fileManager.fileSize(atPath: tempMP4.path) ?? 0
-                                if size > 0 && await validateRemuxedMP4(tempMP4) {
+                                let isValid = await validateRemuxedMP4(tempMP4)
+                                if size > 0 && isValid {
                                     PipelineLogger.shared.log("[MediaAssembler] Remux Attempt 3 succeeded: \(size) bytes, \(samples) samples appended")
                                     didSucceed = true
                                 } else {
