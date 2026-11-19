@@ -613,7 +613,11 @@ public enum MediaAssembler {
 
         do {
             let writer = try AVAssetWriter(outputURL: temporaryOutput, fileType: .mp4)
-            writer.shouldOptimizeForNetworkUse = true
+            if request.container == .fragmentedMP4 {
+                writer.movieFragmentInterval = CMTime(seconds: 0.5, preferredTimescale: 600)
+            } else {
+                writer.shouldOptimizeForNetworkUse = true
+            }
 
             var contexts: [MuxTrackContext] = []
             var canUseWriter = true

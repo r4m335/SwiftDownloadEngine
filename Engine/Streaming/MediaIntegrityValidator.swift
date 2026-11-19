@@ -393,8 +393,11 @@ public enum MediaIntegrityValidator {
                     requiredBoxes = ["ftyp", "moov", "moof", "mdat"]
                 }
             case .dashVOD, .mseCapture:
-                // A complete assembled fMP4 must have ftyp + moov + moof + mdat.
-                requiredBoxes = ["ftyp", "moov", "moof", "mdat"]
+                if detectedType == .isoBaseMediaFile {
+                    requiredBoxes = ["ftyp", "moov"]
+                } else {
+                    requiredBoxes = ["ftyp", "moov", "moof", "mdat"]
+                }
             case .blobCapture, .directHTTP:
                 // A direct download may be plain MP4 (no moof).
                 // We only require ftyp + moov for a well-formed ISO file.
