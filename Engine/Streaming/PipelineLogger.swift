@@ -50,7 +50,11 @@ public final class PipelineLogger: @unchecked Sendable, ObservableObject {
             return nil
         }
         let dir = docDir.appendingPathComponent("LID_Diagnostics", isDirectory: true)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        do {
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        } catch {
+            print("[PipelineLogger] Failed to create log directory: \(error)")
+        }
         return dir.appendingPathComponent("player_diagnostics.log")
     }()
 
@@ -61,8 +65,14 @@ public final class PipelineLogger: @unchecked Sendable, ObservableObject {
     }
 
     private func loadPersistedLogs() {
-        guard let url = logFileURL, FileManager.default.fileExists(atPath: url.path),
-              let content = try? String(contentsOf: url, encoding: .utf8) else { return }
+        guard let url = logFileURL, FileManager.default.fileExists(atPath: url.path) else { return }
+        let content: String
+        do {
+            content = try String(contentsOf: url, encoding: .utf8)
+        } catch {
+            print("[PipelineLogger] Failed to load persisted logs at \(url.path): \(error)")
+            return
+        }
         let lines = content.components(separatedBy: .newlines).filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
         lock.lock()
         let tail = lines.suffix(Self.maxLogCount)
@@ -79,7 +89,14 @@ public final class PipelineLogger: @unchecked Sendable, ObservableObject {
 
         rotateLogFileIfNeeded(url: url)
 
-        if let handle = try? FileHandle(forWritingTo: url) {
+        let handle: FileHandle?
+        do {
+            handle = try FileHandle(forWritingTo: url)
+        } catch {
+            handle = nil
+        }
+
+        if let handle {
             defer {
                 do {
                     try handle.close()
@@ -103,8 +120,13 @@ public final class PipelineLogger: @unchecked Sendable, ObservableObject {
     }
 
     private func rotateLogFileIfNeeded(url: URL) {
-        guard let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
-              let size = attrs[.size] as? Int64,
+        let attrs: [FileAttributeKey: Any]
+        do {
+            attrs = try FileManager.default.attributesOfItem(atPath: url.path)
+        } catch {
+            return
+        }
+        guard let size = attrs[.size] as? Int64,
               size > maxFileSizeBytes else { return }
 
         let oldURL = url.deletingPathExtension().appendingPathExtension("old.log")
