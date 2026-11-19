@@ -302,7 +302,6 @@ public struct BrowserMSECaptureRecoveryRecord: Codable, Sendable, Equatable, Ide
         self.failureReason = try container.decodeIfPresent(String.self, forKey: .failureReason)
     }
 }
-}
 
 public struct BrowserMSECaptureSnapshot: Sendable, Equatable {
     public let captureID: String

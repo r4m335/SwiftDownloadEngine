@@ -252,27 +252,6 @@ public struct BlobCaptureCrashDiagnostics: Codable, Sendable, Equatable, SchemaV
     ) {
         self.schemaVersion = schemaVersion
         self.transferID = transferID
-        tabID: String,
-        documentID: String? = nil,
-        candidateID: String? = nil,
-        chunkSequenceNumber: Int = 0,
-        byteOffset: Int64 = 0,
-        expectedBytes: Int64? = nil,
-        receivedBytes: Int64 = 0,
-        inFlightMessageCount: Int = 0,
-        lastAcknowledgementLatencyMs: Double = 0,
-        averageAcknowledgementLatencyMs: Double = 0,
-        stagingFileSize: Int64 = 0,
-        lastSuccessfulCheckpointOffset: Int64 = 0,
-        lastSuccessfulCheckpointTimestamp: Date? = nil,
-        transferState: BlobTransferState = .requested,
-        failureReason: String? = nil,
-        processTerminationTimestamp: Date? = nil,
-        isInterruptedByProcessTermination: Bool = false,
-        createdAt: Date = Date(),
-        updatedAt: Date = Date()
-    ) {
-        self.transferID = transferID
         self.tabID = tabID
         self.documentID = documentID
         self.candidateID = candidateID
