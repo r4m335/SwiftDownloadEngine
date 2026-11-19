@@ -911,21 +911,22 @@ final class DownloadEngineTests: XCTestCase {
     func testCompleteStreamingDownloadTSFallbackSucceedsAndPreservesFile() async throws {
         let sourceURL = URL(string: "https://example.com/playlist.m3u8")!
         let tsURL = tempDirectory.appendingPathComponent("stream-\(UUID().uuidString).ts")
-        try Data(repeating: 0x47, count: 188).write(to: tsURL)
+        let tsBytes = RealMediaFixtures.mpegTSData
+        try tsBytes.write(to: tsURL)
 
         _ = try await engine.registerStreamingDownload(
             id: "stream-test-ts-fallback",
             manifestURL: sourceURL,
             destinationURL: tsURL,
             filename: tsURL.lastPathComponent,
-            totalBytes: 188,
+            totalBytes: Int64(tsBytes.count),
             mimeType: "video/mp2t"
         )
 
         let snapshot = try await engine.completeStreamingDownload(
             id: "stream-test-ts-fallback",
             finalFileURL: tsURL,
-            totalBytes: 188
+            totalBytes: Int64(tsBytes.count)
         )
         XCTAssertEqual(snapshot.state, .completed)
         XCTAssertEqual(snapshot.destinationURL, tsURL)
