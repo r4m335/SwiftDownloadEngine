@@ -299,10 +299,10 @@ final class PersistenceSchemaAndMigrationTests: XCTestCase {
         XCTAssertEqual(sDecoded.schemaVersion, 1)
 
         // Site permissions
-        let perm = BrowserSitePermissionEntry(domain: "example.com", permission: .camera, state: .allow)
-        let permPayload = BrowserSitePermissions.BrowserSitePermissionsPayload(schemaVersion: 1, entries: [perm])
+        let perm = BrowserSitePermissionEntry(domain: "example.com", permissionType: .camera, decision: .grant)
+        let permPayload = BrowserSitePermissionsStore.BrowserSitePermissionsPayload(schemaVersion: 1, entries: [perm])
         let pData = try JSONEncoder().encode(permPayload)
-        let pDecoded = try JSONDecoder().decode(BrowserSitePermissions.BrowserSitePermissionsPayload.self, from: pData)
+        let pDecoded = try JSONDecoder().decode(BrowserSitePermissionsStore.BrowserSitePermissionsPayload.self, from: pData)
         XCTAssertEqual(pDecoded.schemaVersion, 1)
         XCTAssertEqual(pDecoded.entries.first?.domain, "example.com")
     }
