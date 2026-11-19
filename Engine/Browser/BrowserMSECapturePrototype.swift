@@ -627,7 +627,7 @@ public actor BrowserMSECapturePrototypeWriter {
 
     /// Finalizes open segments, runs MediaAssembler validation, and only then
     /// publishes a reconstructed file. Captured bytes alone are never success.
-    public func complete(captureID: String) throws -> BrowserMSECaptureSnapshot {
+    public func complete(captureID: String) async throws -> BrowserMSECaptureSnapshot {
         guard var session = sessions[captureID] else {
             throw BrowserMSECapturePrototypeError.unknownCapture
         }
@@ -644,7 +644,7 @@ public actor BrowserMSECapturePrototypeWriter {
             session.lifecycle = .reconstructing
             sessions[captureID] = session
 
-            let output = try reconstruct(session: session)
+            let output = try await reconstruct(session: session)
             session.lifecycle = .completed
             let result = BrowserMSECaptureSnapshot(
                 captureID: captureID,
@@ -745,7 +745,7 @@ public actor BrowserMSECapturePrototypeWriter {
         }
     }
 
-    private func reconstruct(session: Session) throws -> URL {
+    private func reconstruct(session: Session) async throws -> URL {
         guard session.bytesCaptured > 0, session.segmentCount > 0 else {
             throw BrowserMSECapturePrototypeError.incompleteCapture
         }
