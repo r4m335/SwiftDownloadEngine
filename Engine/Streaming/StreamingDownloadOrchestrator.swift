@@ -1588,9 +1588,7 @@ public actor StreamingDownloadOrchestrator {
                 )
                 if parsedAudio.playlistType == .media {
                     let audioPlan = try HLSTransferPlanner.makeVODPlan(
-                        manifest: parsedAudio,
-                        baseURL: audioSubResponse.finalURL,
-                        limits: parsingLimits,
+                        from: parsedAudio,
                         browserRequestContext: candidate.browserRequestContext
                     )
                     PipelineLogger.shared.log("[HLS Pipeline] Successfully resolved audio-only HLS plan with \(audioPlan.resources.count) segments.")

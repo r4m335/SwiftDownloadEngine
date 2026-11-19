@@ -279,7 +279,6 @@ public final class LIDPlaybackEngine: NSObject, ObservableObject, LIDMediaEngine
             let err = "Browser blob URLs cannot be opened in external players. Please download the file or use direct stream URL."
             self.playbackState = .failed(error: err)
             PipelineLogger.shared.logPlayer(session: sid, category: "PlayerError", message: err)
-            delegate?.engineDidFail(self, error: err)
             return
         }
 
