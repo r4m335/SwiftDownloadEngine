@@ -545,8 +545,9 @@ public enum MediaAssembler {
             request.temporaryDirectoryURL
                 .appendingPathComponent("track-\(index)-\(track.kind.rawValue)-\(UUID().uuidString).\(sourceExtension)", isDirectory: false)
         }
+        let outputExtension = request.destinationURL.pathExtension.isEmpty ? "mp4" : request.destinationURL.pathExtension
         let temporaryOutput = request.temporaryDirectoryURL
-            .appendingPathComponent("muxed-\(UUID().uuidString).part", isDirectory: false)
+            .appendingPathComponent("muxed-\(UUID().uuidString).\(outputExtension)", isDirectory: false)
 
         var preservedSourceURLs = Set<URL>()
         var manifestURLsToClean = [URL]()
@@ -613,7 +614,6 @@ public enum MediaAssembler {
         do {
             let writer = try AVAssetWriter(outputURL: temporaryOutput, fileType: .mp4)
             writer.shouldOptimizeForNetworkUse = true
-            writer.movieFragmentInterval = CMTime(seconds: 2, preferredTimescale: 600)
 
             var contexts: [MuxTrackContext] = []
             var canUseWriter = true
@@ -912,6 +912,12 @@ public enum MediaAssembler {
         }
 
         let asset = AVURLAsset(url: url)
+        let sema = DispatchSemaphore(value: 0)
+        asset.loadValuesAsynchronously(forKeys: ["tracks", "duration", "playable"]) {
+            sema.signal()
+        }
+        _ = sema.wait(timeout: .now() + 5.0)
+
         guard !asset.tracks.isEmpty else {
             let reason = writerError?.localizedDescription ?? "Muxed output has no media tracks"
             PipelineLogger.shared.log("[MediaAssembler] validateMuxedOutput failed: \(reason)")
