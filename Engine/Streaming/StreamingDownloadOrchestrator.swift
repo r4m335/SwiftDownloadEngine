@@ -1002,7 +1002,7 @@ public actor StreamingDownloadOrchestrator {
 
     private func purgeInternalStreamingSegmentRecords(in directory: URL? = nil) async {
         guard let engine = downloadEngine else { return }
-        let records: [DownloadPersistenceRecord]
+        let records: [DownloadRecord]
         do {
             records = try await engine.persistenceStore.fetchAll()
         } catch {
