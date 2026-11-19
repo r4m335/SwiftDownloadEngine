@@ -14,11 +14,13 @@ import AppKit
 public struct BrowserExternalAppLink: Identifiable, Equatable {
     public let id: String
     public let url: URL
+    public let webURL: URL?
     public let serviceName: String
 
-    public init(url: URL, serviceName: String) {
+    public init(url: URL, webURL: URL? = nil, serviceName: String) {
         self.id = url.absoluteString
         self.url = url
+        self.webURL = webURL
         self.serviceName = serviceName
     }
 }
@@ -364,8 +366,8 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         #if canImport(WebKit)
         if activeTab.url == nil {
             webView = nil
-        } else if let activeTabID,
-           let session = tabSessions[activeTabID] {
+        } else if let activeTabID {
+            let session = webViewSession(for: activeTabID)
             webView = session.webView
             canGoBack = session.webView.canGoBack
             canGoForward = session.webView.canGoForward
@@ -681,66 +683,246 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         }
     }
 
+    private var allowedInBrowserURLs = Set<String>()
+
+    public func isURLAllowedInBrowser(_ url: URL) -> Bool {
+        if allowedInBrowserURLs.contains(url.absoluteString) {
+            return true
+        }
+        if let host = url.host?.lowercased() {
+            let cleanHost = host.hasPrefix("www.") ? String(host.dropFirst(4)) : host
+            if allowedInBrowserURLs.contains(cleanHost) || allowedInBrowserURLs.contains(host) {
+                return true
+            }
+        }
+        return false
+    }
+
+    public func allowURLInBrowser(_ url: URL) {
+        allowedInBrowserURLs.insert(url.absoluteString)
+        if let host = url.host?.lowercased() {
+            allowedInBrowserURLs.insert(host)
+            let cleanHost = host.hasPrefix("www.") ? String(host.dropFirst(4)) : host
+            allowedInBrowserURLs.insert(cleanHost)
+        }
+    }
+
     #if canImport(WebKit)
     nonisolated fileprivate static func externalAppPrompt(
-            for url: URL,
-            navigationAction: WKNavigationAction,
-            currentURL: URL?
-        ) -> BrowserExternalAppLink? {
-            guard navigationAction.navigationType == .linkActivated,
-                  url.scheme?.lowercased() == "https",
-                  let host = url.host?.lowercased(),
-                  let service = externalAppService(for: host),
-                  normalizedHost(host) != normalizedHost(currentURL?.host) else {
+        for url: URL,
+        navigationAction: WKNavigationAction,
+        currentURL: URL?,
+        isExplicitlyAllowed: Bool
+    ) -> BrowserExternalAppLink? {
+        if isExplicitlyAllowed {
+            return nil
+        }
+
+        guard let (serviceName, webURL) = externalAppService(for: url) else {
+            return nil
+        }
+
+        // Check if user is ALREADY navigating inside this same web service in the current tab
+        // (e.g. they are already browsing on m.youtube.com and clicking another video on youtube.com)
+        if let currentURL = currentURL,
+           let (currentService, _) = externalAppService(for: currentURL),
+           currentService == serviceName {
+            let scheme = url.scheme?.lowercased() ?? ""
+            if scheme == "http" || scheme == "https" {
+                // Keep browsing seamlessly inside the web service without prompt interruption
                 return nil
             }
-            return BrowserExternalAppLink(url: url, serviceName: service)
         }
+
+        return BrowserExternalAppLink(url: url, webURL: webURL, serviceName: serviceName)
+    }
     #endif
 
-        public func continueInBrowser(_ link: BrowserExternalAppLink) {
-            externalAppLinkPrompt = nil
-            #if canImport(WebKit)
-            guard let tabID = activeTabID, let webView = webView(for: tabID) else { return }
-            webView.load(URLRequest(url: link.url))
-            #endif
+    public func continueInBrowser(_ link: BrowserExternalAppLink) {
+        externalAppLinkPrompt = nil
+        let targetURL = link.webURL ?? link.url
+        allowURLInBrowser(targetURL)
+        allowURLInBrowser(link.url)
+        #if canImport(WebKit)
+        guard let tabID = activeTabID, let webView = webView(for: tabID) else { return }
+        webView.load(URLRequest(url: targetURL))
+        #endif
+    }
+
+    public func openInAssociatedApp(_ link: BrowserExternalAppLink) {
+        externalAppLinkPrompt = nil
+        #if canImport(UIKit)
+        UIApplication.shared.open(
+            link.url,
+            options: [:]
+        ) { [weak self] opened in
+            guard !opened else { return }
+            self?.continueInBrowser(link)
+        }
+        #elseif canImport(AppKit)
+        NSWorkspace.shared.open(link.url)
+        #else
+        continueInBrowser(link)
+        #endif
+    }
+
+    nonisolated public static func externalAppService(for url: URL) -> (serviceName: String, webURL: URL)? {
+        let scheme = url.scheme?.lowercased() ?? ""
+
+        // 1. Custom app schemes (e.g. youtube://, vnd.youtube:, twitter://, etc.)
+        if scheme == "youtube" || scheme == "vnd.youtube" {
+            let webURL = convertCustomSchemeToWebURL(url, service: "YouTube") ?? URL(string: "https://www.youtube.com")!
+            return ("YouTube", webURL)
+        }
+        if scheme == "twitter" || scheme == "x" {
+            let webURL = convertCustomSchemeToWebURL(url, service: "X") ?? URL(string: "https://x.com")!
+            return ("X", webURL)
+        }
+        if scheme == "instagram" {
+            let webURL = convertCustomSchemeToWebURL(url, service: "Instagram") ?? URL(string: "https://www.instagram.com")!
+            return ("Instagram", webURL)
+        }
+        if scheme == "reddit" {
+            let webURL = convertCustomSchemeToWebURL(url, service: "Reddit") ?? URL(string: "https://www.reddit.com")!
+            return ("Reddit", webURL)
+        }
+        if scheme == "spotify" {
+            let webURL = convertCustomSchemeToWebURL(url, service: "Spotify") ?? URL(string: "https://open.spotify.com")!
+            return ("Spotify", webURL)
+        }
+        if scheme == "whatsapp" {
+            let webURL = convertCustomSchemeToWebURL(url, service: "WhatsApp") ?? URL(string: "https://web.whatsapp.com")!
+            return ("WhatsApp", webURL)
+        }
+        if scheme == "tg" {
+            let webURL = convertCustomSchemeToWebURL(url, service: "Telegram") ?? URL(string: "https://t.me")!
+            return ("Telegram", webURL)
+        }
+        if scheme == "discord" {
+            let webURL = convertCustomSchemeToWebURL(url, service: "Discord") ?? URL(string: "https://discord.com")!
+            return ("Discord", webURL)
+        }
+        if scheme == "itms-apps" || scheme == "itms-appss" || scheme == "itms" {
+            return ("App Store", url)
         }
 
-        public func openInAssociatedApp(_ link: BrowserExternalAppLink) {
-            externalAppLinkPrompt = nil
-            #if canImport(UIKit)
-            UIApplication.shared.open(
-                link.url,
-                options: [.universalLinksOnly: true]
-            ) { [weak self] opened in
-                guard !opened else { return }
-                self?.continueInBrowser(link)
-            }
-            #else
-            continueInBrowser(link)
-            #endif
+        // 2. HTTP/HTTPS Universal Links
+        guard scheme == "http" || scheme == "https", let rawHost = url.host?.lowercased() else {
+            return nil
         }
+        let host = rawHost.hasPrefix("www.") ? String(rawHost.dropFirst(4)) : rawHost
+
+        // YouTube
+        if host == "youtube.com" || host.hasSuffix(".youtube.com") || host == "youtu.be" {
+            var webURL = url
+            if host == "youtu.be" {
+                let videoID = url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+                if !videoID.isEmpty {
+                    webURL = URL(string: "https://www.youtube.com/watch?v=\(videoID)") ?? url
+                }
+            }
+            return ("YouTube", webURL)
+        }
+        // Twitter / X
+        if host == "x.com" || host.hasSuffix(".x.com") || host == "twitter.com" || host.hasSuffix(".twitter.com") || host == "t.co" {
+            return ("X", url)
+        }
+        // Instagram
+        if host == "instagram.com" || host.hasSuffix(".instagram.com") {
+            return ("Instagram", url)
+        }
+        // Reddit
+        if host == "reddit.com" || host.hasSuffix(".reddit.com") || host == "redd.it" {
+            return ("Reddit", url)
+        }
+        // TikTok
+        if host == "tiktok.com" || host.hasSuffix(".tiktok.com") {
+            return ("TikTok", url)
+        }
+        // Spotify
+        if host == "spotify.com" || host.hasSuffix(".spotify.com") {
+            return ("Spotify", url)
+        }
+        // Telegram
+        if host == "t.me" || host == "telegram.me" {
+            return ("Telegram", url)
+        }
+        // WhatsApp
+        if host == "wa.me" || host == "api.whatsapp.com" || host == "chat.whatsapp.com" {
+            return ("WhatsApp", url)
+        }
+        // Discord
+        if host == "discord.com" || host.hasSuffix(".discord.com") || host == "discord.gg" {
+            return ("Discord", url)
+        }
+        // Netflix
+        if host == "netflix.com" || host.hasSuffix(".netflix.com") {
+            return ("Netflix", url)
+        }
+        // Facebook
+        if host == "facebook.com" || host.hasSuffix(".facebook.com") || host == "fb.watch" {
+            return ("Facebook", url)
+        }
+        // App Store
+        if host == "apps.apple.com" || host == "itunes.apple.com" {
+            return ("App Store", url)
+        }
+
+        return nil
+    }
+
+    nonisolated private static func convertCustomSchemeToWebURL(_ url: URL, service: String) -> URL? {
+        let scheme = url.scheme?.lowercased() ?? ""
+        let absolute = url.absoluteString
+
+        if scheme == "youtube" || scheme == "vnd.youtube" {
+            if absolute.contains("watch?") {
+                if let query = url.query {
+                    return URL(string: "https://www.youtube.com/watch?\(query)")
+                }
+            }
+            let raw = absolute.replacingOccurrences(of: "vnd.youtube://", with: "")
+                              .replacingOccurrences(of: "vnd.youtube:", with: "")
+                              .replacingOccurrences(of: "youtube://", with: "")
+            let videoID = raw.components(separatedBy: "?").first?.trimmingCharacters(in: CharacterSet(charactersIn: "/")) ?? ""
+            if !videoID.isEmpty && !videoID.contains(".") {
+                return URL(string: "https://www.youtube.com/watch?v=\(videoID)")
+            }
+            return URL(string: "https://www.youtube.com")
+        }
+
+        if scheme == "twitter" || scheme == "x" {
+            if let host = url.host {
+                return URL(string: "https://x.com/\(host)\(url.path)")
+            }
+            return URL(string: "https://x.com")
+        }
+
+        if scheme == "instagram" {
+            if let host = url.host {
+                return URL(string: "https://www.instagram.com/\(host)\(url.path)")
+            }
+            return URL(string: "https://www.instagram.com")
+        }
+
+        if scheme == "reddit" {
+            return URL(string: "https://www.reddit.com\(url.path)")
+        }
+
+        return URL(string: "https://\(url.host ?? "")\(url.path)")
+    }
 
     nonisolated private static func externalAppService(for host: String) -> String? {
-            let normalizedHost = normalizedHost(host)
-            let services: [(String, String)] = [
-                ("youtube.com", "YouTube"),
-                ("instagram.com", "Instagram"),
-                ("tiktok.com", "TikTok"),
-                ("reddit.com", "Reddit"),
-                ("spotify.com", "Spotify"),
-                ("x.com", "X"),
-                ("twitter.com", "X")
-            ]
-            return services.first {
-                normalizedHost == $0.0 || normalizedHost.hasSuffix("." + $0.0)
-            }?.1
+        if let dummyURL = URL(string: "https://\(host)") {
+            return externalAppService(for: dummyURL)?.serviceName
         }
+        return nil
+    }
 
     nonisolated private static func normalizedHost(_ host: String?) -> String {
-            guard let host else { return "" }
-            return host.hasPrefix("www.") ? String(host.dropFirst(4)) : host
-        }
+        guard let host else { return "" }
+        return host.hasPrefix("www.") ? String(host.dropFirst(4)) : host
+    }
 
     #if canImport(WebKit)
     func webViewSession(for tabID: UUID) -> BrowserWebViewSession {
@@ -837,7 +1019,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
 
     fileprivate func webView(for tabID: UUID?) -> WKWebView? {
         guard let tabID else { return webView }
-        return tabSessions[tabID]?.webView
+        return webViewSession(for: tabID).webView
     }
 
     /// Starts an explicitly requested export for a complete, readable Blob
@@ -3241,6 +3423,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
     }
 
     public func load(url: URL) {
+        allowURLInBrowser(url)
         errorMessage = nil
         let targetTabID: UUID
         if let existingID = tabManager.activeTabID {
@@ -3866,6 +4049,7 @@ public struct BrowserView: View {
                     #if canImport(WebKit)
                     if let activeTabID = viewModel.activeTabID {
                         PlatformWebView(viewModel: viewModel, tabID: activeTabID)
+                            .id(activeTabID)
                     } else {
                         BrowserHomeView(viewModel: viewModel)
                     }
@@ -4012,13 +4196,13 @@ public struct BrowserView: View {
         }
         .alert(item: $viewModel.externalAppLinkPrompt) { link in
             Alert(
-                title: Text("Open in App?"),
-                message: Text("\(link.serviceName) may open an installed app. Choose whether to open the app or continue in the browser."),
-                primaryButton: .default(Text("Open App")) {
-                    viewModel.openInAssociatedApp(link)
-                },
-                secondaryButton: .cancel(Text("Continue in Browser")) {
+                title: Text("Open in \(link.serviceName)?"),
+                message: Text("Would you like to open this in the \(link.serviceName) app or continue browsing here?"),
+                primaryButton: .default(Text("Continue in Browser")) {
                     viewModel.continueInBrowser(link)
+                },
+                secondaryButton: .default(Text("Open in App")) {
+                    viewModel.openInAssociatedApp(link)
                 }
             )
         }
@@ -5634,6 +5818,24 @@ public struct BrowserDownloadSheet: View {
 #if canImport(WebKit)
 
 #if canImport(UIKit)
+public final class BrowserContainerView: UIView {
+    private var currentWebView: WKWebView?
+
+    public func setWebView(_ webView: WKWebView) {
+        if currentWebView === webView { return }
+        currentWebView?.removeFromSuperview()
+        currentWebView = webView
+        webView.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(webView)
+        NSLayoutConstraint.activate([
+            webView.topAnchor.constraint(equalTo: topAnchor),
+            webView.bottomAnchor.constraint(equalTo: bottomAnchor),
+            webView.leadingAnchor.constraint(equalTo: leadingAnchor),
+            webView.trailingAnchor.constraint(equalTo: trailingAnchor)
+        ])
+    }
+}
+
 public struct PlatformWebView: UIViewRepresentable {
     @ObservedObject public var viewModel: BrowserViewModel
     public let tabID: UUID
@@ -5647,19 +5849,39 @@ public struct PlatformWebView: UIViewRepresentable {
         viewModel.webViewSession(for: tabID).coordinator
     }
 
-    public func makeUIView(context: Context) -> WKWebView {
+    public func makeUIView(context: Context) -> BrowserContainerView {
+        let container = BrowserContainerView()
         let webView = viewModel.webViewSession(for: tabID).webView
+        container.setWebView(webView)
         viewModel.attachWebView(webView, for: tabID)
-        return webView
+        return container
     }
 
-    public func updateUIView(_ uiView: WKWebView, context: Context) {
-        // Reattach only to deliver a request that arrived before makeUIView.
-        // attachWebView does not reload when there is no pending request.
-        viewModel.attachWebView(uiView, for: tabID)
+    public func updateUIView(_ uiView: BrowserContainerView, context: Context) {
+        let webView = viewModel.webViewSession(for: tabID).webView
+        uiView.setWebView(webView)
+        viewModel.attachWebView(webView, for: tabID)
     }
 }
 #elseif canImport(AppKit)
+public final class BrowserContainerView: NSView {
+    private var currentWebView: WKWebView?
+
+    public func setWebView(_ webView: WKWebView) {
+        if currentWebView === webView { return }
+        currentWebView?.removeFromSuperview()
+        currentWebView = webView
+        webView.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(webView)
+        NSLayoutConstraint.activate([
+            webView.topAnchor.constraint(equalTo: topAnchor),
+            webView.bottomAnchor.constraint(equalTo: bottomAnchor),
+            webView.leadingAnchor.constraint(equalTo: leadingAnchor),
+            webView.trailingAnchor.constraint(equalTo: trailingAnchor)
+        ])
+    }
+}
+
 public struct PlatformWebView: NSViewRepresentable {
     @ObservedObject public var viewModel: BrowserViewModel
     public let tabID: UUID
@@ -5673,14 +5895,18 @@ public struct PlatformWebView: NSViewRepresentable {
         viewModel.webViewSession(for: tabID).coordinator
     }
 
-    public func makeNSView(context: Context) -> WKWebView {
+    public func makeNSView(context: Context) -> BrowserContainerView {
+        let container = BrowserContainerView()
         let webView = viewModel.webViewSession(for: tabID).webView
+        container.setWebView(webView)
         viewModel.attachWebView(webView, for: tabID)
-        return webView
+        return container
     }
 
-    public func updateNSView(_ nsView: WKWebView, context: Context) {
-        viewModel.attachWebView(nsView, for: tabID)
+    public func updateNSView(_ nsView: BrowserContainerView, context: Context) {
+        let webView = viewModel.webViewSession(for: tabID).webView
+        nsView.setWebView(webView)
+        viewModel.attachWebView(webView, for: tabID)
     }
 }
 #endif
@@ -6383,10 +6609,12 @@ public final class BrowserWebViewCoordinator: NSObject, WKNavigationDelegate, WK
             }
         }
 
+        let isAllowedInBrowser = viewModel?.isURLAllowedInBrowser(url) ?? false
         if let link = BrowserViewModel.externalAppPrompt(
             for: url,
             navigationAction: navigationAction,
-            currentURL: webView.url
+            currentURL: webView.url,
+            isExplicitlyAllowed: isAllowedInBrowser
         ) {
             decisionHandler(.cancel)
             DispatchQueue.main.async { [weak self] in
