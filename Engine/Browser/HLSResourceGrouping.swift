@@ -59,15 +59,19 @@ public struct HLSVariantStreamItem: Identifiable, Sendable, Hashable {
 /// Associates observed HLS media playlists with a parsed master playlist so
 /// the resource inspector presents one video and its available qualities.
 public enum HLSResourceGrouping {
-    private static let manifestCache = NSCache<NSString, HLSManifest>()
+    private final class ManifestBox {
+        let manifest: HLSManifest
+        init(_ manifest: HLSManifest) { self.manifest = manifest }
+    }
+    private static let manifestCache = NSCache<NSString, ManifestBox>()
 
     private static func cachedParse(text: String, baseURL: URL) -> HLSManifest? {
         let key = "\(baseURL.absoluteString)|\(text.hashValue)" as NSString
         if let cached = manifestCache.object(forKey: key) {
-            return cached
+            return cached.manifest
         }
         guard let manifest = try? HLSManifestParser.parse(text, baseURL: baseURL) else { return nil }
-        manifestCache.setObject(manifest, forKey: key)
+        manifestCache.setObject(ManifestBox(manifest), forKey: key)
         return manifest
     }
 
