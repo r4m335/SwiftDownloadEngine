@@ -142,8 +142,8 @@ final class BrowserNavigationTests: XCTestCase {
         XCTAssertEqual(vm.activeTabID, secondTabID)
 
         #if canImport(WebKit)
-        let firstWebView = vm.webView(for: initialTabID)
-        let secondWebView = vm.webView(for: secondTabID)
+        let firstWebView = vm.webViewForTab(initialTabID)
+        let secondWebView = vm.webViewForTab(secondTabID)
         XCTAssertNotNil(firstWebView)
         XCTAssertNotNil(secondWebView)
         XCTAssertTrue(firstWebView !== secondWebView, "Each tab must maintain its own WKWebView instance")

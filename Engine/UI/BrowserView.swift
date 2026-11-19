@@ -1017,10 +1017,16 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         }
     }
 
-    fileprivate func webView(for tabID: UUID?) -> WKWebView? {
+    #if canImport(WebKit)
+    public func webViewForTab(_ tabID: UUID?) -> WKWebView? {
         guard let tabID else { return webView }
         return webViewSession(for: tabID).webView
     }
+
+    fileprivate func webView(for tabID: UUID?) -> WKWebView? {
+        return webViewForTab(tabID)
+    }
+    #endif
 
     /// Starts an explicitly requested export for a complete, readable Blob
     /// candidate. The page reads bounded Blob slices; this method never asks
