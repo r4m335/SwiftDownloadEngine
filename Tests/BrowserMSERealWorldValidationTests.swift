@@ -149,7 +149,7 @@ final class BrowserMSERealWorldValidationTests: XCTestCase {
 
         // Check AVFoundation playability on Apple platforms
         #if canImport(AVFoundation)
-        let playability = MediaIntegrityValidator.checkAVFoundationPlayability(fileURL: publishedURL)
+        let playability = await MediaIntegrityValidator.checkAVFoundationPlayability(fileURL: publishedURL)
         _ = playability // Validates execution without crashing
         #endif
     }
