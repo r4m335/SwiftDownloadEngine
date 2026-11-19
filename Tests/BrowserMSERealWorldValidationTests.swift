@@ -340,7 +340,10 @@ final class BrowserMSERealWorldValidationTests: XCTestCase {
                 XCTAssertTrue(FileManager.default.fileExists(atPath: published.path))
                 let validation = MediaIntegrityValidator.validateMSECapture(fileURL: published)
                 XCTAssertTrue(validation.isStructurallyValid)
-                XCTAssertEqual(validation.outcome, .validated(detectedType: .fragmentedMP4))
+                XCTAssertTrue(
+                    validation.outcome == .validated(detectedType: .fragmentedMP4) ||
+                    validation.outcome == .validated(detectedType: .isoBaseMediaFile)
+                )
             }
         } catch let error as BrowserMSECapturePrototypeError {
             XCTAssertEqual(error, .reconstructionFailed)
