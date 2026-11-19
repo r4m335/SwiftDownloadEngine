@@ -1842,7 +1842,34 @@ public enum MediaAssembler {
     }
 
     private static func validateMPEGTSFile(_ url: URL) -> Bool {
-        MediaIntegrityValidator.validateMPEGTS(fileURL: url).isConfirmedValid
+        guard let size = FileManager.default.fileSize(atPath: url.path),
+              size > 0,
+              size % 188 == 0,
+              let handle = try? FileHandle(forReadingFrom: url) else {
+            return false
+        }
+        defer {
+            do {
+                try handle.close()
+            } catch {
+                PipelineLogger.shared.log("[MediaAssembler] Failed to close handle: \(error)")
+            }
+        }
+        let packetsPerBuffer = 256
+        let bufferSize = 188 * packetsPerBuffer
+        do {
+            while true {
+                guard let chunk = try handle.read(upToCount: bufferSize), !chunk.isEmpty else { break }
+                guard chunk.count % 188 == 0 else { return false }
+                let packetCount = chunk.count / 188
+                for i in 0..<packetCount {
+                    guard chunk[i * 188] == 0x47 else { return false }
+                }
+            }
+            return true
+        } catch {
+            return false
+        }
     }
 
     private static func validateISOBaseMediaFile(
