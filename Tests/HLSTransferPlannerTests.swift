@@ -221,4 +221,25 @@ final class HLSTransferPlannerTests: XCTestCase {
         XCTAssertEqual(plan.resources[2].url.absoluteString, "https://video.example/path/segment2.m4s")
         XCTAssertNil(plan.resources[2].url.fragment)
     }
+
+    func testVODPlanWithComplexSignedQueryParametersAndSlashesInTokens() throws {
+        let complexBaseURL = URL(string: "https://goplay.su/stream/stream_yk.m3u8?k=xXf0U2tNFUz4in+jBUX2jvfxVyWpKN7HAG8C+Arkx34fmHnDQRZ9XGrD//T0g==&d=A32aNbwAHTiYGa6ludk/q7q2bm7Ri6l+hfe7IZcViqH6FvHFaE6qlXvmhno3uXdB2MNwUJCGiutTI8oYfOtofoUtmQ7pz3zp1dCbrBkg/VxwXJjVx9VPaS0Vsj1RM2p1Gi7IdjGSJj61RVCwweiXVZZo2WWIMUQcENDPq0Y1ltnmgJZFSD4JhBXZU2dO43c9zHYW8Lw0Eh4U2fjY64qJj1LBgt34QE2dlzDj22xwKkNQ476O+hiUEPK2IK7UyvUfmmK3uvXCntkGY/j1DZKMuGe+O63fFOae7WGyWSKloG9RP++S1v4z75/Z4Vcae9jYZ48xjAFL1yKEy91u7QlVk01sazwoJhVBkY/jYymqE5w+AJmNQt40WRZozwevpye9msCAnRFdwJ/MsAXtPWebeLctqBvEbMUiPmSxCkVL+a+dE7cmKHSiv2+pRkHLAnrxGdNzqj66I82iEd1l9fjdEYD0ZHw==")!
+
+        let playlist = """
+        #EXTM3U
+        #EXT-X-PLAYLIST-TYPE:VOD
+        #EXTINF:6.0,
+        https://valipl10.cp31.ott.cibntv.net/video_00001.mp4?ccode=0597&vid=XNjU3OTAxNjgxMg%3D%3D&vkey=B4b8b53c6193734983852d2ae09b53ec2
+        #EXTINF:6.0,
+        video_00002.mp4?ccode=0597&vid=XNjU3OTAxNjgxMg%3D%3D
+        #EXT-X-ENDLIST
+        """
+
+        let manifest = try HLSManifestParser.parse(playlist, baseURL: complexBaseURL)
+        let plan = try HLSTransferPlanner.makeVODPlan(from: manifest)
+
+        XCTAssertEqual(plan.resources.count, 2)
+        XCTAssertEqual(plan.resources[0].url.absoluteString, "https://valipl10.cp31.ott.cibntv.net/video_00001.mp4?ccode=0597&vid=XNjU3OTAxNjgxMg%3D%3D&vkey=B4b8b53c6193734983852d2ae09b53ec2")
+        XCTAssertTrue(plan.resources[1].url.absoluteString.hasPrefix("https://goplay.su/stream/video_00002.mp4"))
+    }
 }

@@ -287,20 +287,42 @@ public enum HLSTransferPlanner {
     }
 
     private static func validatedURL(_ rawURL: URL, against baseURL: URL) throws -> URL {
-        guard let resolved = URL(string: rawURL.absoluteString, relativeTo: baseURL)?.absoluteURL,
-              var components = URLComponents(url: resolved, resolvingAgainstBaseURL: false),
-              let scheme = components.scheme?.lowercased(),
+        let resolved: URL
+        if rawURL.scheme != nil {
+            resolved = rawURL
+        } else if let combined = URL(string: rawURL.relativeString, relativeTo: baseURL)?.absoluteURL {
+            resolved = combined
+        } else if let combined = URL(string: rawURL.absoluteString, relativeTo: baseURL)?.absoluteURL {
+            resolved = combined
+        } else {
+            throw HLSVODTransferPlanError.invalidResourceURL
+        }
+
+        guard let scheme = resolved.scheme?.lowercased(),
               (scheme == "http" || scheme == "https"),
-              let host = components.host, !host.isEmpty,
-              components.user == nil,
-              components.password == nil else {
+              let host = resolved.host, !host.isEmpty,
+              resolved.user == nil,
+              resolved.password == nil else {
             throw HLSVODTransferPlanError.invalidResourceURL
         }
-        components.fragment = nil
-        guard let sanitizedURL = components.url else {
-            throw HLSVODTransferPlanError.invalidResourceURL
+
+        if resolved.fragment != nil {
+            if var components = URLComponents(url: resolved, resolvingAgainstBaseURL: false) {
+                components.fragment = nil
+                if let sanitized = components.url {
+                    return sanitized
+                }
+            }
+            let str = resolved.absoluteString
+            if let hashIndex = str.firstIndex(of: "#") {
+                let stripped = String(str[..<hashIndex])
+                if let sanitized = URL(string: stripped) {
+                    return sanitized
+                }
+            }
         }
-        return sanitizedURL
+
+        return resolved
     }
 
     private static func appendIfNeeded(

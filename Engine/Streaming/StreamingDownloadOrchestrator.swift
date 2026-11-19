@@ -1670,10 +1670,15 @@ public actor StreamingDownloadOrchestrator {
 
             let variantURI: URL
             if (variant.uri.query == nil || variant.uri.query?.isEmpty == true),
-               let parentQuery = baseURL.query ?? candidate.url.query, !parentQuery.isEmpty,
-               var components = URLComponents(url: variant.uri, resolvingAgainstBaseURL: false) {
-                components.query = parentQuery
-                variantURI = components.url ?? variant.uri
+               let parentQuery = baseURL.query ?? candidate.url.query, !parentQuery.isEmpty {
+                if var components = URLComponents(url: variant.uri, resolvingAgainstBaseURL: false) {
+                    components.query = parentQuery
+                    variantURI = components.url ?? URL(string: "\(variant.uri.absoluteString)?\(parentQuery)") ?? variant.uri
+                } else if let fallback = URL(string: "\(variant.uri.absoluteString)?\(parentQuery)") {
+                    variantURI = fallback
+                } else {
+                    variantURI = variant.uri
+                }
             } else {
                 variantURI = variant.uri
             }
@@ -1801,10 +1806,15 @@ public actor StreamingDownloadOrchestrator {
                 PipelineLogger.shared.log("[HLS Pipeline] Separate audio rendition detected for \(variantDesc): \(audioURI.absoluteString). Fetching audio manifest...")
                 let audioFinalURI: URL
                 if (audioURI.query == nil || audioURI.query?.isEmpty == true),
-                   let parentQuery = subResponse.finalURL.query ?? candidate.url.query, !parentQuery.isEmpty,
-                   var components = URLComponents(url: audioURI, resolvingAgainstBaseURL: false) {
-                    components.query = parentQuery
-                    audioFinalURI = components.url ?? audioURI
+                   let parentQuery = subResponse.finalURL.query ?? candidate.url.query, !parentQuery.isEmpty {
+                    if var components = URLComponents(url: audioURI, resolvingAgainstBaseURL: false) {
+                        components.query = parentQuery
+                        audioFinalURI = components.url ?? URL(string: "\(audioURI.absoluteString)?\(parentQuery)") ?? audioURI
+                    } else if let fallback = URL(string: "\(audioURI.absoluteString)?\(parentQuery)") {
+                        audioFinalURI = fallback
+                    } else {
+                        audioFinalURI = audioURI
+                    }
                 } else {
                     audioFinalURI = audioURI
                 }

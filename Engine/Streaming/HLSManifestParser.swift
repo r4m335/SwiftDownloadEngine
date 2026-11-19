@@ -360,23 +360,41 @@ public enum HLSManifestParser {
     }
 
     private static func resolveURL(_ value: String, against baseURL: URL) throws -> URL? {
-        guard !value.isEmpty, let resolved = URL(string: value, relativeTo: baseURL)?.absoluteURL, isHTTPURL(resolved) else {
-            throw ManifestParserError.invalidURL
+        guard !value.isEmpty else { throw ManifestParserError.invalidURL }
+        if let resolved = URL(string: value, relativeTo: baseURL)?.absoluteURL, isHTTPURL(resolved) {
+            return resolved
         }
-        return resolved
+        if let encoded = value.addingPercentEncoding(withAllowedCharacters: .urlFragmentAllowed.union(.urlQueryAllowed).union(.urlPathAllowed)),
+           let resolved = URL(string: encoded, relativeTo: baseURL)?.absoluteURL, isHTTPURL(resolved) {
+            return resolved
+        }
+        throw ManifestParserError.invalidURL
     }
 
     private static func resolveVariantURL(_ value: String, against baseURL: URL) throws -> URL? {
-        guard !value.isEmpty, let resolved = URL(string: value, relativeTo: baseURL)?.absoluteURL, isHTTPURL(resolved) else {
+        guard !value.isEmpty else { throw ManifestParserError.invalidURL }
+        let resolved: URL
+        if let direct = URL(string: value, relativeTo: baseURL)?.absoluteURL, isHTTPURL(direct) {
+            resolved = direct
+        } else if let encoded = value.addingPercentEncoding(withAllowedCharacters: .urlFragmentAllowed.union(.urlQueryAllowed).union(.urlPathAllowed)),
+                  let encResolved = URL(string: encoded, relativeTo: baseURL)?.absoluteURL, isHTTPURL(encResolved) {
+            resolved = encResolved
+        } else {
             throw ManifestParserError.invalidURL
         }
+
         // If the child variant URL has no query parameters, but the master manifest URL carried query parameters
         // (such as signed CDN tokens, HMAC, session auth, or expiration timestamps),
         // preserve the master URL's query parameters so child variants do not lose authorization.
         if resolved.query == nil, let baseQuery = baseURL.query, !baseQuery.isEmpty {
-            var components = URLComponents(url: resolved, resolvingAgainstBaseURL: false)
-            components?.query = baseQuery
-            if let withQuery = components?.url {
+            if var components = URLComponents(url: resolved, resolvingAgainstBaseURL: false) {
+                components.query = baseQuery
+                if let withQuery = components.url {
+                    return withQuery
+                }
+            }
+            let sep = resolved.absoluteString.contains("?") ? "&" : "?"
+            if let withQuery = URL(string: "\(resolved.absoluteString)\(sep)\(baseQuery)") {
                 return withQuery
             }
         }
