@@ -283,12 +283,12 @@ final class PersistenceSchemaAndMigrationTests: XCTestCase {
         XCTAssertEqual(playDecoded.playlists.count, 0)
 
         // Playback History
-        let rec = LIDPlaybackRecord(mediaIdentifier: "m-1", lastPlaybackPosition: 42.0, duration: 100.0)
+        let rec = LIDPlaybackRecord(mediaIdentifier: "m-1", title: "Test Video", lastPositionSeconds: 42.0, durationSeconds: 100.0)
         let histPayload = LIDPlaybackHistoryStore.LIDPlaybackHistoryPayload(schemaVersion: 1, records: ["m-1": rec])
         let histData = try JSONEncoder().encode(histPayload)
         let histDecoded = try JSONDecoder().decode(LIDPlaybackHistoryStore.LIDPlaybackHistoryPayload.self, from: histData)
         XCTAssertEqual(histDecoded.schemaVersion, 1)
-        XCTAssertEqual(histDecoded.records["m-1"]?.lastPlaybackPosition, 42.0)
+        XCTAssertEqual(histDecoded.records["m-1"]?.lastPositionSeconds, 42.0)
     }
 
     func testBrowserSessionAndSitePermissionsPayloads() throws {
