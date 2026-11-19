@@ -123,9 +123,11 @@ public final class LiveStreamRecorder: ObservableObject {
     private var isPaused: Bool = false
     private var sessionDirectory: URL? = nil
     private let urlSession: URLSession
+    public let libraryStore: LIDLibraryStore?
 
-    public init(urlSession: URLSession = .shared) {
+    public init(urlSession: URLSession = .shared, libraryStore: LIDLibraryStore? = nil) {
         self.urlSession = urlSession
+        self.libraryStore = libraryStore
     }
 
     // MARK: - Recording Control APIs
@@ -529,7 +531,7 @@ public final class LiveStreamRecorder: ObservableObject {
         self.bytesWritten = finalBytes
 
         // 3. Register with LIDLibraryStore
-        _ = await LIDLibraryStore.shared.scanLibrary(in: destDir)
+        _ = await (libraryStore ?? .shared).scanLibrary(in: destDir)
 
         // 4. Clean up scratch directory
         do {

@@ -35,8 +35,8 @@ public struct LIDPlayerLibraryView: View {
     public var knownTransfers: [UnifiedTransfer] = []
     public var onDismiss: (() -> Void)? = nil
 
-    @StateObject private var libraryStore = LIDLibraryStore.shared
-    private let historyStore = LIDPlaybackHistoryStore.shared
+    @ObservedObject public var libraryStore: LIDLibraryStore
+    public let historyStore: LIDPlaybackHistoryStore
 
     @State private var selectedSection: LIDLibrarySection = .all
     @State private var mediaFilter: LIDMediaType = .all
@@ -62,10 +62,14 @@ public struct LIDPlayerLibraryView: View {
     public init(
         baseDirectory: URL,
         knownTransfers: [UnifiedTransfer] = [],
+        libraryStore: LIDLibraryStore = .shared,
+        historyStore: LIDPlaybackHistoryStore = .shared,
         onDismiss: (() -> Void)? = nil
     ) {
         self.baseDirectory = baseDirectory
         self.knownTransfers = knownTransfers
+        self.libraryStore = libraryStore
+        self.historyStore = historyStore
         self.onDismiss = onDismiss
     }
 

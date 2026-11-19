@@ -187,8 +187,9 @@ public struct LIDPlayerView: View {
         source.title
     }
 
-    @StateObject private var engine = LIDPlaybackEngine.shared
-    @ObservedObject private var playerSettingsStore: LIDPlayerSettingsStore = .shared
+    @StateObject private var engine: LIDPlaybackEngine
+    @ObservedObject private var playerSettingsStore: LIDPlayerSettingsStore
+    public let orientationManager: LIDOrientationManager
     @Environment(\.presentationMode) private var presentationMode
     @Environment(\.scenePhase) private var scenePhase
 
@@ -238,12 +239,28 @@ public struct LIDPlayerView: View {
     @State private var layerViewRef: LIDPlayerLayerView? = nil
     #endif
 
-    public init(source: LIDPlayerSource, onDismiss: (() -> Void)? = nil) {
+    public init(
+        source: LIDPlayerSource,
+        engine: LIDPlaybackEngine = .shared,
+        playerSettingsStore: LIDPlayerSettingsStore = .shared,
+        orientationManager: LIDOrientationManager = .shared,
+        onDismiss: (() -> Void)? = nil
+    ) {
         self.source = source
+        self._engine = StateObject(wrappedValue: engine)
+        self.playerSettingsStore = playerSettingsStore
+        self.orientationManager = orientationManager
         self.onDismiss = onDismiss
     }
 
-    public init(url: URL, title: String? = nil, onDismiss: (() -> Void)? = nil) {
+    public init(
+        url: URL,
+        title: String? = nil,
+        engine: LIDPlaybackEngine = .shared,
+        playerSettingsStore: LIDPlayerSettingsStore = .shared,
+        orientationManager: LIDOrientationManager = .shared,
+        onDismiss: (() -> Void)? = nil
+    ) {
         let rawTitle: String
         if let title = title?.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty {
             rawTitle = title
@@ -267,7 +284,13 @@ public struct LIDPlayerView: View {
         } else {
             s = .networkStream(url: url, headers: [:], title: rawTitle)
         }
-        self.init(source: s, onDismiss: onDismiss)
+        self.init(
+            source: s,
+            engine: engine,
+            playerSettingsStore: playerSettingsStore,
+            orientationManager: orientationManager,
+            onDismiss: onDismiss
+        )
     }
 
     private var videoGravity: AVLayerVideoGravity {
@@ -458,8 +481,8 @@ public struct LIDPlayerView: View {
         .onAppear {
             #if canImport(UIKit)
             brightnessLevel = Double(UIScreen.main.brightness)
-            LIDOrientationManager.shared.isPlayerActive = true
-            LIDOrientationManager.shared.applyOrientationPreference(playerSettings.defaultOrientation, session: sessionId)
+            orientationManager.isPlayerActive = true
+            orientationManager.applyOrientationPreference(playerSettings.defaultOrientation, session: sessionId)
             #endif
             volumeLevel = Double(engine.volume)
             PipelineLogger.shared.logPlayer(
@@ -507,7 +530,7 @@ public struct LIDPlayerView: View {
             voiceHeardTime = nil
             textSeenTime = nil
             #if canImport(UIKit)
-            LIDOrientationManager.shared.restorePortrait(session: sessionId)
+            orientationManager.restorePortrait(session: sessionId)
             #endif
             engine.stop()
             #if canImport(UIKit)
@@ -1601,7 +1624,7 @@ public struct LIDPlayerView: View {
         voiceHeardTime = nil
         textSeenTime = nil
         #if canImport(UIKit)
-        LIDOrientationManager.shared.restorePortrait(session: sessionId)
+        orientationManager.restorePortrait(session: sessionId)
         #endif
         engine.stop()
         controlsTimer?.invalidate()
@@ -1682,7 +1705,7 @@ public struct LIDPlayerView: View {
 
     private func toggleInterfaceOrientation() {
         #if canImport(UIKit)
-        LIDOrientationManager.shared.toggleOrientation(session: sessionId)
+        orientationManager.toggleOrientation(session: sessionId)
         #endif
     }
 

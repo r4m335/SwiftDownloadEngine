@@ -64,6 +64,10 @@ public final class LIDPlaybackEngine: NSObject, ObservableObject, LIDMediaEngine
     }
 
     private let historyStore: LIDPlaybackHistoryStore
+    public let nowPlayingCoordinator: LIDNowPlayingCoordinator
+    public let playerSettingsStore: LIDPlayerSettingsStore
+    public let subtitleSearchManager: LIDSubtitleSearchManager
+    public let subtitleStore: LIDSubtitleStore
     private var lastRecordedSecond: Int = 0
     private var loadingWatchdogTimer: Timer? = nil
     private var renderingWatchdogTimer: Timer? = nil
@@ -72,11 +76,19 @@ public final class LIDPlaybackEngine: NSObject, ObservableObject, LIDMediaEngine
     public init(
         historyStore: LIDPlaybackHistoryStore = .shared,
         trackManager: LIDTrackManager? = nil,
-        torrentEngine: TorrentEngine? = nil
+        torrentEngine: TorrentEngine? = nil,
+        nowPlayingCoordinator: LIDNowPlayingCoordinator = .shared,
+        playerSettingsStore: LIDPlayerSettingsStore = .shared,
+        subtitleSearchManager: LIDSubtitleSearchManager = .shared,
+        subtitleStore: LIDSubtitleStore = .shared
     ) {
         self.historyStore = historyStore
         self.trackManager = trackManager ?? LIDTrackManager()
         self.torrentEngine = torrentEngine
+        self.nowPlayingCoordinator = nowPlayingCoordinator
+        self.playerSettingsStore = playerSettingsStore
+        self.subtitleSearchManager = subtitleSearchManager
+        self.subtitleStore = subtitleStore
 
         let vlc = LIDVLCKitBackend()
         let av = LIDAVFoundationBackend()
@@ -90,7 +102,7 @@ public final class LIDPlaybackEngine: NSObject, ObservableObject, LIDMediaEngine
         vlc.delegate = self
         av.delegate = self
 
-        LIDNowPlayingCoordinator.shared.setupRemoteCommands(
+        nowPlayingCoordinator.setupRemoteCommands(
             onPlay: { [weak self] in self?.play() },
             onPause: { [weak self] in self?.pause() },
             onTogglePlayPause: { [weak self] in self?.togglePlayPause() },
@@ -284,7 +296,7 @@ public final class LIDPlaybackEngine: NSObject, ObservableObject, LIDMediaEngine
 
         #if os(iOS) && canImport(AVFoundation)
         if autoPlay {
-            Self.configureAudioSession(enableBackgroundAudio: LIDPlayerSettingsStore.shared.settings.enableBackgroundAudio)
+            Self.configureAudioSession(enableBackgroundAudio: playerSettingsStore.settings.enableBackgroundAudio)
         }
         #endif
 
@@ -329,7 +341,7 @@ public final class LIDPlaybackEngine: NSObject, ObservableObject, LIDMediaEngine
     public func play() {
         PipelineLogger.shared.logPlayer(session: currentSessionId, category: "PlayerEngine", message: "play() triggered")
         #if os(iOS) && canImport(AVFoundation)
-        Self.configureAudioSession(enableBackgroundAudio: LIDPlayerSettingsStore.shared.settings.enableBackgroundAudio)
+        Self.configureAudioSession(enableBackgroundAudio: playerSettingsStore.settings.enableBackgroundAudio)
         #endif
         if playbackRate == 0.0 {
             let restored = lastNonZeroPlaybackRate > 0 ? lastNonZeroPlaybackRate : 1.0
@@ -537,7 +549,7 @@ public final class LIDPlaybackEngine: NSObject, ObservableObject, LIDMediaEngine
                 guard let self = self else { return }
                 let record = await self.historyStore.playbackRecord(mediaIdentifier: mediaID)
                 self.trackManager.applyPreferences(
-                    settings: LIDPlayerSettingsStore.shared.settings,
+                    settings: self.playerSettingsStore.settings,
                     historyRecord: record
                 )
             }
@@ -548,7 +560,7 @@ public final class LIDPlaybackEngine: NSObject, ObservableObject, LIDMediaEngine
     public func selectAudioTrack(_ track: LIDAudioTrack) {
         trackManager.selectAudioTrack(track)
         activeBackend.selectAudioTrack(id: track.id)
-        if let source = currentSource, LIDPlayerSettingsStore.shared.settings.rememberAudioTrack {
+        if let source = currentSource, playerSettingsStore.settings.rememberAudioTrack {
             let mediaID = source.mediaIdentifier
             Task {
                 await historyStore.recordSelectedTracks(mediaIdentifier: mediaID, audioTrackId: track.id, subtitleTrackId: nil)
@@ -562,7 +574,7 @@ public final class LIDPlaybackEngine: NSObject, ObservableObject, LIDMediaEngine
         if !track.isExternal {
             activeBackend.selectSubtitleTrack(id: track.id)
         }
-        if let source = currentSource, LIDPlayerSettingsStore.shared.settings.rememberSubtitleTrack {
+        if let source = currentSource, playerSettingsStore.settings.rememberSubtitleTrack {
             let mediaID = source.mediaIdentifier
             Task {
                 await historyStore.recordSelectedTracks(mediaIdentifier: mediaID, audioTrackId: nil, subtitleTrackId: track.id)
@@ -598,13 +610,13 @@ public final class LIDPlaybackEngine: NSObject, ObservableObject, LIDMediaEngine
 
     @MainActor
     public func searchSubtitles(query: SubtitleSearchQuery) async -> [SubtitleSearchResult] {
-        return await LIDSubtitleSearchManager.shared.search(query: query)
+        return await subtitleSearchManager.search(query: query)
     }
 
     @MainActor
     public func downloadAndApplySubtitle(result: SubtitleSearchResult, forMediaTitle: String) async throws -> LIDSubtitleTrack {
-        let data = try await LIDSubtitleSearchManager.shared.download(result: result)
-        let localURL = try await LIDSubtitleStore.shared.saveSubtitle(
+        let data = try await subtitleSearchManager.download(result: result)
+        let localURL = try await subtitleStore.saveSubtitle(
             data: data,
             mediaTitle: forMediaTitle,
             languageCode: result.languageCode,
@@ -620,12 +632,12 @@ public final class LIDPlaybackEngine: NSObject, ObservableObject, LIDMediaEngine
 
     @MainActor
     public func listDownloadedSubtitles(for mediaTitle: String) async -> [LIDSubtitleTrack] {
-        return await LIDSubtitleStore.shared.listDownloadedSubtitles(for: mediaTitle)
+        return await subtitleStore.listDownloadedSubtitles(for: mediaTitle)
     }
 
     @MainActor
     public func deleteDownloadedSubtitle(url: URL) async throws {
-        try await LIDSubtitleStore.shared.deleteSubtitle(at: url)
+        try await subtitleStore.deleteSubtitle(at: url)
         trackManager.removeExternalSubtitle(url: url)
     }
 

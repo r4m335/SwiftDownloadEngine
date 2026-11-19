@@ -117,15 +117,15 @@ public struct BrowserClearDataSheet: View {
         let cutoff = timeRange.cutoffDate
 
         if clearHistory {
-            BrowserHistoryStore.shared.clearHistory(since: cutoff)
+            viewModel.historyStore.clearHistory(since: cutoff)
         }
 
         if clearSitePermissions {
-            BrowserSitePermissionsStore.shared.clearAll()
+            viewModel.sitePermissionsStore.clearAll()
         }
 
         if clearTabPreviews {
-            BrowserTabPreviewCache.shared.clearAll()
+            viewModel.tabPreviewCache.clearAll()
         }
 
         #if canImport(WebKit)

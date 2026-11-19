@@ -713,9 +713,9 @@ public actor StreamingDownloadOrchestrator {
         StreamingDownloadOrchestrator(segmentExecutor: URLSessionStreamingSegmentExecutor())
     }
 
-    /// The application composition root must install the configured instance.
-    /// There is intentionally no default here: a standalone orchestrator has
-    /// no DownloadEngine and would make a stream invisible to Downloads.
+    /// Deprecated mutable global. Retained for backwards binary compatibility only;
+    /// all production and test architectures must inject orchestrator via AppCompositionRoot.
+    @available(*, deprecated, message: "Use AppCompositionRoot or dependency injection instead of global mutable shared")
     @MainActor public static var shared: StreamingDownloadOrchestrator?
 
     private let manifestLoader: any StreamingManifestLoader

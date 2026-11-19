@@ -7,8 +7,8 @@ import Network
 /// Waits for a usable network path before a foreground request is attempted
 /// again. URLSession still owns the active transfer and waitsForConnectivity;
 /// this gate prevents retry loops from spending attempts while offline.
-actor NetworkConnectivityGate {
-    static let shared = NetworkConnectivityGate()
+public actor NetworkConnectivityGate {
+    public static let shared = NetworkConnectivityGate()
 
 #if canImport(Network)
     private let monitor: NWPathMonitor
@@ -16,22 +16,23 @@ actor NetworkConnectivityGate {
     private var latestPath: NWPath?
     private var waiters: [UUID: (allowsCellular: Bool, continuation: CheckedContinuation<Void, Error>)] = [:]
 
-    init() {
+    public init() {
         let monitor = NWPathMonitor()
         self.monitor = monitor
-        monitor.pathUpdateHandler = { path in
+        monitor.start(queue: monitorQueue)
+        monitor.pathUpdateHandler = { [weak self] path in
+            guard let self else { return }
             Task {
-                await NetworkConnectivityGate.shared.pathDidChange(path)
+                await self.pathDidChange(path)
             }
         }
-        monitor.start(queue: monitorQueue)
     }
 
     deinit {
         monitor.cancel()
     }
 #else
-    init() {}
+    public init() {}
 #endif
 
     func waitUntilAvailable(allowsCellular: Bool) async throws {

@@ -9,6 +9,14 @@ public struct BrowserBookmarksAndHistoryView: View {
     @ObservedObject public var viewModel: BrowserViewModel
     @Environment(\.dismiss) private var dismiss
 
+    private var bookmarkStore: BrowserBookmarkStore {
+        viewModel.bookmarkStore
+    }
+
+    private var historyStore: BrowserHistoryStore {
+        viewModel.historyStore
+    }
+
     public enum DisplayMode: String, CaseIterable, Identifiable {
         case bookmarks = "Bookmarks"
         case history = "History"
@@ -118,7 +126,7 @@ public struct BrowserBookmarksAndHistoryView: View {
                 Button("Create") {
                     let title = newFolderTitle.trimmingCharacters(in: .whitespacesAndNewlines)
                     guard !title.isEmpty else { return }
-                    BrowserBookmarkStore.shared.createFolder(title: title, parentFolderID: currentFolderID)
+                    bookmarkStore.createFolder(title: title, parentFolderID: currentFolderID)
                 }
             } message: {
                 Text("Enter a name for the new bookmark folder.")
@@ -131,7 +139,7 @@ public struct BrowserBookmarksAndHistoryView: View {
                     guard let folder = folderToRename else { return }
                     let title = renameFolderTitle.trimmingCharacters(in: .whitespacesAndNewlines)
                     guard !title.isEmpty else { return }
-                    BrowserBookmarkStore.shared.renameFolder(id: folder.id, newTitle: title)
+                    bookmarkStore.renameFolder(id: folder.id, newTitle: title)
                     if let index = folderPath.firstIndex(where: { $0.id == folder.id }) {
                         folderPath[index].title = title
                     }
@@ -144,7 +152,7 @@ public struct BrowserBookmarksAndHistoryView: View {
                 Button("Cancel", role: .cancel) { folderToDelete = nil }
                 Button("Delete", role: .destructive) {
                     if let f = folderToDelete {
-                        BrowserBookmarkStore.shared.deleteFolder(id: f.id)
+                        bookmarkStore.deleteFolder(id: f.id)
                         folderToDelete = nil
                     }
                 }
@@ -156,7 +164,7 @@ public struct BrowserBookmarksAndHistoryView: View {
                 Button("Cancel", role: .cancel) { pendingBookmark = nil }
                 Button("Add Anyway") {
                     if let p = pendingBookmark {
-                        BrowserBookmarkStore.shared.addBookmark(
+                        bookmarkStore.addBookmark(
                             title: p.title,
                             url: p.url,
                             folderID: p.folderID
@@ -171,14 +179,14 @@ public struct BrowserBookmarksAndHistoryView: View {
             .confirmationDialog("Clear Browsing History", isPresented: $isShowingClearHistoryDialog, titleVisibility: .visible) {
                 Button("Last Hour", role: .destructive) {
                     let cutoff = Calendar.current.date(byAdding: .hour, value: -1, to: Date())
-                    BrowserHistoryStore.shared.clearHistory(since: cutoff)
+                    historyStore.clearHistory(since: cutoff)
                 }
                 Button("Today", role: .destructive) {
                     let cutoff = Calendar.current.startOfDay(for: Date())
-                    BrowserHistoryStore.shared.clearHistory(since: cutoff)
+                    historyStore.clearHistory(since: cutoff)
                 }
                 Button("All Time", role: .destructive) {
-                    BrowserHistoryStore.shared.clearAllHistory()
+                    historyStore.clearAllHistory()
                 }
                 Button("Cancel", role: .cancel) { }
             } message: {
@@ -276,7 +284,7 @@ public struct BrowserBookmarksAndHistoryView: View {
                 Text("Clear")
                     .foregroundColor(.red)
             }
-            .disabled(BrowserHistoryStore.shared.allEntries.isEmpty)
+            .disabled(historyStore.allEntries.isEmpty)
         }
     }
 
@@ -309,7 +317,7 @@ public struct BrowserBookmarksAndHistoryView: View {
 
     @ViewBuilder
     private var bookmarksView: some View {
-        let store = BrowserBookmarkStore.shared
+        let store = bookmarkStore
         if !searchQuery.isEmpty {
             let results = store.search(query: searchQuery)
             if results.isEmpty {
@@ -388,7 +396,7 @@ public struct BrowserBookmarksAndHistoryView: View {
 
     @ViewBuilder
     private func folderRow(_ folder: BrowserBookmarkFolder) -> some View {
-        let store = BrowserBookmarkStore.shared
+        let store = bookmarkStore
         Button {
             folderPath.append(folder)
             currentFolderID = folder.id
@@ -437,7 +445,7 @@ public struct BrowserBookmarksAndHistoryView: View {
 
     @ViewBuilder
     private func bookmarkRow(_ item: BrowserBookmarkItem) -> some View {
-        let store = BrowserBookmarkStore.shared
+        let store = bookmarkStore
         Button {
             viewModel.load(url: item.url)
             dismiss()
@@ -515,7 +523,7 @@ public struct BrowserBookmarksAndHistoryView: View {
     private func addCurrentPageBookmark() {
         guard let url = viewModel.currentURL else { return }
         let title = viewModel.pageTitle.isEmpty ? (url.host ?? "Bookmark") : viewModel.pageTitle
-        let store = BrowserBookmarkStore.shared
+        let store = bookmarkStore
         if let existing = store.findDuplicate(for: url) {
             duplicateExistingTitle = existing.title
             pendingBookmark = (title: title, url: url, folderID: currentFolderID)
@@ -530,7 +538,7 @@ public struct BrowserBookmarksAndHistoryView: View {
     }
 
     private func exportBookmarks() {
-        let store = BrowserBookmarkStore.shared
+        let store = bookmarkStore
         let html = BrowserBookmarkExporter.exportToHTML(store: store)
         let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent("bookmarks.html")
         do {
@@ -546,7 +554,7 @@ public struct BrowserBookmarksAndHistoryView: View {
 
     @ViewBuilder
     private var historyView: some View {
-        let store = BrowserHistoryStore.shared
+        let store = historyStore
         if !searchQuery.isEmpty {
             let results = store.searchHistory(query: searchQuery)
             if results.isEmpty {
@@ -590,7 +598,7 @@ public struct BrowserBookmarksAndHistoryView: View {
 
     @ViewBuilder
     private func historyRow(_ entry: BrowserHistoryEntry) -> some View {
-        let store = BrowserHistoryStore.shared
+        let store = historyStore
         Button {
             viewModel.load(url: entry.url)
             dismiss()
@@ -708,7 +716,7 @@ public struct BrowserBookmarksAndHistoryView: View {
                 Section("Folder") {
                     Picker("Folder", selection: $editBookmarkFolderID) {
                         Text("Root / Bookmarks").tag(UUID?.none)
-                        ForEach(BrowserBookmarkStore.shared.allFolders) { folder in
+                        ForEach(bookmarkStore.allFolders) { folder in
                             Text(folder.title).tag(UUID?.some(folder.id))
                         }
                     }
@@ -731,7 +739,7 @@ public struct BrowserBookmarksAndHistoryView: View {
                               !editBookmarkTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                             return
                         }
-                        BrowserBookmarkStore.shared.updateBookmark(
+                        bookmarkStore.updateBookmark(
                             id: item.id,
                             title: editBookmarkTitle.trimmingCharacters(in: .whitespacesAndNewlines),
                             url: url,
@@ -750,7 +758,7 @@ public struct BrowserBookmarksAndHistoryView: View {
 
     @ViewBuilder
     private var moveFolderSheetView: some View {
-        let store = BrowserBookmarkStore.shared
+        let store = bookmarkStore
         let candidateFolders = store.allFolders.filter { f in
             guard let moving = folderToMove else { return true }
             return f.id != moving.id && store.canMoveFolder(id: moving.id, toParentID: f.id)
@@ -832,7 +840,7 @@ public struct BrowserBookmarksAndHistoryView: View {
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Import") {
-                        let store = BrowserBookmarkStore.shared
+                        let store = bookmarkStore
                         let summary = BrowserBookmarkImporter.importHTMLString(
                             importHTMLText,
                             intoFolderID: currentFolderID,

@@ -43,7 +43,21 @@ public final class BrowserViewModel: NSObject, ObservableObject {
     @Published public var customSearchEngines: [CustomSearchEngine] = []
     @Published public var isShowingSearchEngineManager: Bool = false
     @Published public var quickAccessShortcuts: [QuickAccessShortcut] = []
-    public let quickAccessStore: QuickAccessStore = .shared
+    public let quickAccessStore: QuickAccessStore
+    public let bookmarkStore: BrowserBookmarkStore
+    public let historyStore: BrowserHistoryStore
+    public let sitePermissionsStore: BrowserSitePermissionsStore
+    public let faviconService: FaviconService
+    public let tabPreviewCache: BrowserTabPreviewCache
+    public let certificateDecisionStore: BrowserCertificateDecisionStore
+    #if canImport(WebKit)
+    public let contentBlocker: BrowserContentBlocker
+    #endif
+    public let permissionCoordinator: BrowserPermissionCoordinator
+    public let promptHandler: BrowserPromptHandler
+    public let authenticationHandler: BrowserAuthenticationHandler
+    public let diagnosticLogger: BrowserDiagnosticLogger
+    public let streamManifestExpander: StreamManifestResourceExpander
     @Published public private(set) var tabs: [BrowserTabState] = []
     @Published public private(set) var activeTabID: UUID?
     @Published public var isShowingTabSwitcher: Bool = false
@@ -254,7 +268,22 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         onOpenDownloads: (() -> Void)? = nil,
         streamingOrchestrator: StreamingDownloadOrchestrator? = nil,
         streamingDestinationDirectoryURL: URL? = nil,
-        sessionStore: BrowserSessionStore? = nil
+        sessionStore: BrowserSessionStore? = nil,
+        bookmarkStore: BrowserBookmarkStore = .shared,
+        historyStore: BrowserHistoryStore = .shared,
+        sitePermissionsStore: BrowserSitePermissionsStore = .shared,
+        quickAccessStore: QuickAccessStore = .shared,
+        faviconService: FaviconService = .shared,
+        tabPreviewCache: BrowserTabPreviewCache = .shared,
+        certificateDecisionStore: BrowserCertificateDecisionStore = .shared,
+        #if canImport(WebKit)
+        contentBlocker: BrowserContentBlocker = .shared,
+        #endif
+        permissionCoordinator: BrowserPermissionCoordinator = .shared,
+        promptHandler: BrowserPromptHandler = .shared,
+        authenticationHandler: BrowserAuthenticationHandler = .shared,
+        diagnosticLogger: BrowserDiagnosticLogger = .shared,
+        streamManifestExpander: StreamManifestResourceExpander = .shared
     ) {
         self.downloadDelegate = downloadDelegate
         self.magnetDelegate = magnetDelegate
@@ -262,7 +291,23 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         self.onOpenAddDownload = onOpenAddDownload
         self.onOpenDownloads = onOpenDownloads
         self.sessionStore = sessionStore
-        let orchestrator = streamingOrchestrator ?? StreamingDownloadOrchestrator.shared
+        self.bookmarkStore = bookmarkStore
+        self.historyStore = historyStore
+        self.sitePermissionsStore = sitePermissionsStore
+        self.quickAccessStore = quickAccessStore
+        self.faviconService = faviconService
+        self.tabPreviewCache = tabPreviewCache
+        self.certificateDecisionStore = certificateDecisionStore
+        #if canImport(WebKit)
+        self.contentBlocker = contentBlocker
+        #endif
+        self.permissionCoordinator = permissionCoordinator
+        self.promptHandler = promptHandler
+        self.authenticationHandler = authenticationHandler
+        self.diagnosticLogger = diagnosticLogger
+        self.streamManifestExpander = streamManifestExpander
+
+        let orchestrator = streamingOrchestrator ?? (downloadDelegate as? DownloadManagerViewModel)?.streamingOrchestrator
         if let orchestrator, let vm = downloadDelegate as? DownloadManagerViewModel {
             Task {
                 await vm.engine.setStreamingOrchestrator(orchestrator)
@@ -301,11 +346,13 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         }
 
         super.init()
-        BrowserPermissionCoordinator.shared.provider = self
+        permissionCoordinator.provider = self
+        authenticationHandler.promptProvider = self
+        promptHandler.provider = self
 
         #if canImport(WebKit)
         Task {
-            await BrowserContentBlocker.shared.prepareRuleLists(
+            await contentBlocker.prepareRuleLists(
                 whitelistedDomains: initialSettings.adBlockerWhitelistedDomains
             )
         }
@@ -557,7 +604,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
     @discardableResult
     public func closeTab(_ id: UUID) -> UUID? {
         let isIncognito = tabManager.tab(withID: id)?.isIncognito ?? false
-        BrowserTabPreviewCache.shared.removePreview(for: id)
+        tabPreviewCache.removePreview(for: id)
         #if canImport(WebKit)
         cancelBlobCapture(for: id)
         cancelMSECapture(for: id)
@@ -955,12 +1002,12 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         _ = tabManager.updateTab(tab)
         publishTabState()
         if !isLoading, let effectiveURL = tab.url, effectiveURL.absoluteString != "about:blank" {
-            BrowserHistoryStore.shared.recordVisit(url: effectiveURL, title: tab.title, isIncognito: tab.isIncognito)
+            self.historyStore.recordVisit(url: effectiveURL, title: tab.title, isIncognito: tab.isIncognito)
             #if canImport(UIKit)
             let tabIncognito = tab.isIncognito
             webView.takeSnapshot(with: nil) { [weak self] image, _ in
                 guard let image, let data = image.jpegData(compressionQuality: 0.6) else { return }
-                BrowserTabPreviewCache.shared.setPreview(data, for: tabID, isIncognito: tabIncognito)
+                self?.tabPreviewCache.setPreview(data, for: tabID, isIncognito: tabIncognito)
                 DispatchQueue.main.async {
                     self?.publishTabState()
                 }
@@ -1939,7 +1986,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
             blobCaptureErrorMessage = errorMsg
             return
         }
-        let effectiveOrchestrator = streamingOrchestrator ?? StreamingDownloadOrchestrator.shared
+        let effectiveOrchestrator = streamingOrchestrator ?? (downloadDelegate as? DownloadManagerViewModel)?.streamingOrchestrator
         guard let orchestrator = effectiveOrchestrator else {
             let errorMsg = "Streaming downloads are unavailable: StreamingDownloadOrchestrator is nil."
             print("[HLS Pipeline] \(errorMsg)")
@@ -2064,7 +2111,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
 
     public func executeStreamingProposal() {
         guard let proposal = streamingProposal,
-              let orchestrator = streamingOrchestrator ?? StreamingDownloadOrchestrator.shared,
+              let orchestrator = streamingOrchestrator ?? (downloadDelegate as? DownloadManagerViewModel)?.streamingOrchestrator,
               !isExecutingStreaming else { return }
 
         isExecutingStreaming = true
@@ -2173,7 +2220,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         customFilename: String? = nil,
         sessionSnapshot: BrowserSessionSnapshot? = nil
     ) {
-        let effectiveOrchestrator = streamingOrchestrator ?? StreamingDownloadOrchestrator.shared
+        let effectiveOrchestrator = streamingOrchestrator ?? (downloadDelegate as? DownloadManagerViewModel)?.streamingOrchestrator
         guard let orchestrator = effectiveOrchestrator else {
             let errorMsg = "Streaming downloads are unavailable: StreamingDownloadOrchestrator is nil."
             streamingErrorMessage = errorMsg
@@ -2248,13 +2295,13 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         Task { @MainActor [weak self] in
             guard let self = self else { return }
             for manifest in targets {
-                let expanded = await StreamManifestResourceExpander.shared.expand(manifestResource: manifest)
+                let expanded = await self.streamManifestExpander.expand(manifestResource: manifest)
                 guard expanded.count > 1 || (expanded.count == 1 && expanded[0].id != manifest.id) else {
                     continue
                 }
 
                 for variant in expanded {
-                    if let item = await StreamManifestResourceExpander.shared.variantItem(for: variant.id) {
+                    if let item = await self.streamManifestExpander.variantItem(for: variant.id) {
                         self.variantStreamItems[variant.id] = item
                     }
                 }
@@ -2610,7 +2657,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
     public func updateActiveTabBlocker() {
         #if canImport(WebKit)
         guard let webView = self.webView else { return }
-        BrowserContentBlocker.shared.update(
+        contentBlocker.update(
             for: webView,
             isAdBlockerEnabled: isAdBlockerEnabled,
             isTrackerBlockerEnabled: isTrackerBlockerEnabled,
@@ -2641,7 +2688,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         )
         #if canImport(WebKit)
         Task {
-            await BrowserContentBlocker.shared.prepareRuleLists(
+            await contentBlocker.prepareRuleLists(
                 whitelistedDomains: currentSettings.adBlockerWhitelistedDomains
             )
         }
@@ -3319,7 +3366,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
 
             switch decision.action {
             case .streaming(let manifestURL, _, let suggestedFilename, let cachedText, let requestContext):
-                if streamingOrchestrator == nil && StreamingDownloadOrchestrator.shared == nil {
+                if streamingOrchestrator == nil && (downloadDelegate as? DownloadManagerViewModel)?.streamingOrchestrator == nil {
                     let errorMsg = "Streaming downloads are unavailable: StreamingDownloadOrchestrator is nil."
                     blobCaptureErrorMessage = errorMsg
                     streamingErrorMessage = errorMsg
@@ -3922,7 +3969,7 @@ extension BrowserViewModel: @unchecked Sendable, BrowserMediaURLResolver, Browse
         frameURL: URL?,
         completionHandler: @escaping @Sendable (BrowserPermissionDecisionResult) -> Void
     ) {
-        let store = BrowserSitePermissionsStore.shared
+        let store = self.sitePermissionsStore
         if let stored = store.permission(for: originHost, type: type) {
             completionHandler(stored)
             return
@@ -3991,7 +4038,7 @@ public struct BrowserView: View {
             onDownloadInitiated: onDownloadInitiated,
             onOpenAddDownload: onOpenAddDownload,
             onOpenDownloads: onOpenDownloads,
-            streamingOrchestrator: StreamingDownloadOrchestrator.shared,
+            streamingOrchestrator: viewModel.streamingOrchestrator,
             streamingDestinationDirectoryURL: viewModel.downloadsDirectoryURL,
             sessionStore: BrowserSessionStore.shared
         ))
@@ -4978,7 +5025,7 @@ public struct BrowserTabSwitcherView: View {
                                 BrowserTabCardView(
                                     tab: tab,
                                     isActive: tab.id == viewModel.activeTabID,
-                                    previewData: BrowserTabPreviewCache.shared.preview(for: tab.id),
+                                    previewData: viewModel.tabPreviewCache.preview(for: tab.id),
                                     onSelect: {
                                         _ = viewModel.selectTab(tab.id)
                                         dismiss()
@@ -5950,7 +5997,7 @@ final class BrowserWebViewSession {
 #endif
 
         // Native Content Blocking & Privacy Shields (Granular Multi-List Configuration)
-        BrowserContentBlocker.shared.apply(
+        viewModel.contentBlocker.apply(
             to: config,
             isAdBlockerEnabled: viewModel.isAdBlockerEnabled,
             isTrackerBlockerEnabled: viewModel.isTrackerBlockerEnabled,
@@ -6111,7 +6158,7 @@ public final class BrowserWebViewCoordinator: NSObject, WKNavigationDelegate, WK
                 host,
                 in: Array(vm.adBlockerWhitelistedDomains)
             )
-            BrowserContentBlocker.shared.update(
+            vm.contentBlocker.update(
                 for: webView,
                 isAdBlockerEnabled: vm.isAdBlockerEnabled,
                 isTrackerBlockerEnabled: vm.isTrackerBlockerEnabled,
@@ -6187,7 +6234,8 @@ public final class BrowserWebViewCoordinator: NSObject, WKNavigationDelegate, WK
         if challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
            let serverTrust = challenge.protectionSpace.serverTrust {
             let host = challenge.protectionSpace.host
-            if BrowserCertificateDecisionStore.shared.isHostAllowedForSession(host) {
+            let decisionStore = viewModel?.certificateDecisionStore ?? BrowserCertificateDecisionStore.shared
+            if decisionStore.isHostAllowedForSession(host) {
                 completionHandler(.useCredential, URLCredential(trust: serverTrust))
                 return
             }
@@ -6207,7 +6255,7 @@ public final class BrowserWebViewCoordinator: NSObject, WKNavigationDelegate, WK
                     host: host,
                     message: "Your connection to '\(host)' is not private (\(errorMsg)). Attackers might be trying to steal your credentials or personal information.",
                     onProceed: {
-                        BrowserCertificateDecisionStore.shared.allowHostForSession(host)
+                        decisionStore.allowHostForSession(host)
                         completionHandler(.useCredential, URLCredential(trust: serverTrust))
                     },
                     onCancel: {
@@ -6218,7 +6266,8 @@ public final class BrowserWebViewCoordinator: NSObject, WKNavigationDelegate, WK
             return
         }
 
-        BrowserAuthenticationHandler.shared.handleChallenge(
+        let authHandler = viewModel?.authenticationHandler ?? BrowserAuthenticationHandler.shared
+        authHandler.handleChallenge(
             challenge,
             targetPageURL: webView.url,
             completionHandler: completionHandler
@@ -6426,7 +6475,8 @@ public final class BrowserWebViewCoordinator: NSObject, WKNavigationDelegate, WK
             url: frame.request.url,
             tabID: tabID
         )
-        BrowserPromptHandler.shared.handlePrompt(
+        let pHandler = viewModel?.promptHandler ?? BrowserPromptHandler.shared
+        pHandler.handlePrompt(
             prompt: prompt,
             defaultText: defaultText,
             frameURL: frame.request.url,
@@ -6450,14 +6500,16 @@ public final class BrowserWebViewCoordinator: NSObject, WKNavigationDelegate, WK
         @unknown default: permType = .cameraAndMicrophone
         }
 
-        BrowserDiagnosticLogger.shared.log(
+        let dLogger = viewModel?.diagnosticLogger ?? BrowserDiagnosticLogger.shared
+        dLogger.log(
             category: .policy,
             message: "Requesting media capture permission: \(permType.rawValue) for origin \(origin.host)",
             url: frame.request.url,
             tabID: tabID
         )
 
-        BrowserPermissionCoordinator.shared.decidePermission(
+        let permCoordinator = viewModel?.permissionCoordinator ?? BrowserPermissionCoordinator.shared
+        permCoordinator.decidePermission(
             type: permType,
             originHost: origin.host,
             frameURL: frame.request.url

@@ -82,7 +82,7 @@ public struct BrowserShieldSheet: View {
                 }
 
                 // Section 5: Current Site Hardware Permissions
-                let sitePermissions = BrowserSitePermissionsStore.shared.entries(for: viewModel.currentDomainDisplayName)
+                let sitePermissions = viewModel.sitePermissionsStore.entries(for: viewModel.currentDomainDisplayName)
                 if !sitePermissions.isEmpty {
                     Section(header: Text("Site Permissions for \(viewModel.currentDomainDisplayName)")) {
                         ForEach(sitePermissions) { perm in
@@ -93,7 +93,7 @@ public struct BrowserShieldSheet: View {
                                     .font(.caption)
                                     .foregroundColor(perm.decision == .grant ? .green : .red)
                                 Button {
-                                    BrowserSitePermissionsStore.shared.removePermission(for: viewModel.currentDomainDisplayName, type: perm.permissionType)
+                                    viewModel.sitePermissionsStore.removePermission(for: viewModel.currentDomainDisplayName, type: perm.permissionType)
                                 } label: {
                                     Image(systemName: "trash")
                                         .foregroundColor(.red)

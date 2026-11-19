@@ -417,6 +417,7 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
 
     // Recovery & Link Refresh Management
     public let recoveryManager: DownloadRecoveryManager
+    public let streamingOrchestrator: StreamingDownloadOrchestrator?
 
     private var eventTask: Task<Void, Never>? = nil
     private var torrentRefreshTask: Task<Void, Never>? = nil
@@ -460,10 +461,12 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
         engine: DownloadEngine,
         torrentEngine: TorrentEngine? = nil,
         downloadsDirectory: URL? = nil,
-        userDefaults: UserDefaults = .standard
+        userDefaults: UserDefaults = .standard,
+        streamingOrchestrator: StreamingDownloadOrchestrator? = nil
     ) {
         self.engine = engine
         self.torrentEngine = torrentEngine
+        self.streamingOrchestrator = streamingOrchestrator
         let resolvedDirectory: URL
         if let custom = downloadsDirectory {
             do {
@@ -492,8 +495,14 @@ public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendab
             engine: engine,
             persistenceStore: engine.persistenceStore,
             hlsPersistenceStore: hlsStore,
-            streamingOrchestrator: StreamingDownloadOrchestrator.shared
+            streamingOrchestrator: streamingOrchestrator
         )
+        if let streamingOrchestrator {
+            Task {
+                await engine.setStreamingOrchestrator(streamingOrchestrator)
+                await streamingOrchestrator.setDownloadEngine(engine)
+            }
+        }
 #if canImport(BackgroundTasks) && os(iOS) && SDE_ENABLE_BG_CONTINUED_PROCESSING
         self.continuedProcessingCoordinator = ContinuedProcessingTaskCoordinator(engine: engine)
         self.continuedProcessingCoordinator.registerIfAvailable()

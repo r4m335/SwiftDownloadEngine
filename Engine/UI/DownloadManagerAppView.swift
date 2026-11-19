@@ -6,10 +6,6 @@ public struct DownloadManagerAppView: View {
     @StateObject public var viewModel: DownloadManagerViewModel
 
     public init(engine: DownloadEngine, downloadsDirectory: URL? = nil) {
-        let vm = DownloadManagerViewModel(
-            engine: engine,
-            downloadsDirectory: downloadsDirectory
-        )
         let hlsPersistenceStore: HLSPersistenceStore?
         do {
             hlsPersistenceStore = try HLSPersistenceStore(
@@ -24,8 +20,11 @@ public struct DownloadManagerAppView: View {
             downloadEngine: engine,
             hlsPersistenceStore: hlsPersistenceStore
         )
-        StreamingDownloadOrchestrator.shared = orchestrator
-        Task { await engine.setStreamingOrchestrator(orchestrator) }
+        let vm = DownloadManagerViewModel(
+            engine: engine,
+            downloadsDirectory: downloadsDirectory,
+            streamingOrchestrator: orchestrator
+        )
         _viewModel = StateObject(wrappedValue: vm)
     }
 

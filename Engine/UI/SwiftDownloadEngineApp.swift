@@ -332,12 +332,6 @@ public struct SwiftDownloadEngineApp: App {
             print("Notice: TorrentEngine initialization skipped or deferred: \(error.localizedDescription)")
         }
 
-        let vm = DownloadManagerViewModel(
-            engine: engine,
-            torrentEngine: torrentEngine,
-            downloadsDirectory: downloadsDir,
-            userDefaults: .standard
-        )
         let hlsPersistenceStore: HLSPersistenceStore?
         do {
             hlsPersistenceStore = try HLSPersistenceStore(
@@ -355,42 +349,45 @@ public struct SwiftDownloadEngineApp: App {
             downloadEngine: engine,
             hlsPersistenceStore: hlsPersistenceStore
         )
-        StreamingDownloadOrchestrator.shared = orchestrator
+        let vm = DownloadManagerViewModel(
+            engine: engine,
+            torrentEngine: torrentEngine,
+            downloadsDirectory: downloadsDir,
+            userDefaults: .standard,
+            streamingOrchestrator: orchestrator
+        )
         Task { await engine.setStreamingOrchestrator(orchestrator) }
         _viewModel = StateObject(wrappedValue: vm)
     }
 
     /// Primary designated initializer allowing custom view model injection (e.g., testing or preview).
     public init(viewModel: DownloadManagerViewModel) {
-        let hlsPersistenceStore: HLSPersistenceStore?
-        do {
-            hlsPersistenceStore = try HLSPersistenceStore(
-                storageDirectoryURL: viewModel.engine.persistenceStore.storageDirectoryURL
+        if let orchestrator = viewModel.streamingOrchestrator {
+            Task { await viewModel.engine.setStreamingOrchestrator(orchestrator) }
+        } else {
+            let hlsPersistenceStore: HLSPersistenceStore?
+            do {
+                hlsPersistenceStore = try HLSPersistenceStore(
+                    storageDirectoryURL: viewModel.engine.persistenceStore.storageDirectoryURL
+                )
+                PipelineLogger.shared.log("[SwiftDownloadEngineApp] HLSPersistenceStore initialized at \(viewModel.engine.persistenceStore.storageDirectoryURL.path)")
+            } catch {
+                let nsErr = error as NSError
+                PipelineLogger.shared.log("[SwiftDownloadEngineApp] Critical: HLSPersistenceStore initialization failed at \(viewModel.engine.persistenceStore.storageDirectoryURL.path): Domain=\(nsErr.domain), Code=\(nsErr.code), Description=\(nsErr.localizedDescription)")
+                hlsPersistenceStore = nil
+            }
+            let orchestrator = StreamingDownloadOrchestrator(
+                downloadCoordinator: viewModel.engine.coordinator,
+                downloadEngine: viewModel.engine,
+                hlsPersistenceStore: hlsPersistenceStore
             )
-            PipelineLogger.shared.log("[SwiftDownloadEngineApp] HLSPersistenceStore initialized at \(viewModel.engine.persistenceStore.storageDirectoryURL.path)")
-        } catch {
-            let nsErr = error as NSError
-            PipelineLogger.shared.log("[SwiftDownloadEngineApp] Critical: HLSPersistenceStore initialization failed at \(viewModel.engine.persistenceStore.storageDirectoryURL.path): Domain=\(nsErr.domain), Code=\(nsErr.code), Description=\(nsErr.localizedDescription)")
-            hlsPersistenceStore = nil
+            Task { await viewModel.engine.setStreamingOrchestrator(orchestrator) }
         }
-        let orchestrator = StreamingDownloadOrchestrator(
-            downloadCoordinator: viewModel.engine.coordinator,
-            downloadEngine: viewModel.engine,
-            hlsPersistenceStore: hlsPersistenceStore
-        )
-        StreamingDownloadOrchestrator.shared = orchestrator
-        Task { await viewModel.engine.setStreamingOrchestrator(orchestrator) }
         _viewModel = StateObject(wrappedValue: viewModel)
     }
 
     /// Designated initializer accepting explicit engines.
     public init(engine: DownloadEngine, torrentEngine: TorrentEngine? = nil, downloadsDirectory: URL? = nil) {
-        let vm = DownloadManagerViewModel(
-            engine: engine,
-            torrentEngine: torrentEngine,
-            downloadsDirectory: downloadsDirectory,
-            userDefaults: .standard
-        )
         let hlsPersistenceStore: HLSPersistenceStore?
         do {
             hlsPersistenceStore = try HLSPersistenceStore(
@@ -405,7 +402,13 @@ public struct SwiftDownloadEngineApp: App {
             downloadEngine: engine,
             hlsPersistenceStore: hlsPersistenceStore
         )
-        StreamingDownloadOrchestrator.shared = orchestrator
+        let vm = DownloadManagerViewModel(
+            engine: engine,
+            torrentEngine: torrentEngine,
+            downloadsDirectory: downloadsDirectory,
+            userDefaults: .standard,
+            streamingOrchestrator: orchestrator
+        )
         Task { await engine.setStreamingOrchestrator(orchestrator) }
         _viewModel = StateObject(wrappedValue: vm)
     }
@@ -445,7 +448,7 @@ public struct SwiftDownloadEngineApp: App {
                         await viewModel.refreshSnapshots()
                         await viewModel.refreshTorrentSnapshots()
                     }
-                    if let orchestrator = StreamingDownloadOrchestrator.shared {
+                    if let orchestrator = viewModel.streamingOrchestrator {
                         await orchestrator.restoreHLSTransfers(resumeInterrupted: true)
                     }
                     await viewModel.reconcileSchedule()

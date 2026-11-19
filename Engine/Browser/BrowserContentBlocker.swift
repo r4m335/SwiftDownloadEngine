@@ -581,7 +581,7 @@ public final class BrowserContentBlocker: ObservableObject {
     @Published public private(set) var registeredCustomLists: [String: ContentBlockerList] = [:]
     @Published public private(set) var lastCompilationError: String? = nil
 
-    private init() {}
+    public init() {}
 
     // MARK: - Rule Compilation & Preparation
 
