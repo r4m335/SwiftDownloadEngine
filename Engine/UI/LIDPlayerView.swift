@@ -125,11 +125,10 @@ public final class LIDVLCRenderingContainerView: UIView {
 
     public override func willRemoveSubview(_ subview: UIView) {
         super.willRemoveSubview(subview)
-        let symbols = Thread.callStackSymbols.prefix(12).joined(separator: "\n    ")
         PipelineLogger.shared.logPlayer(
             session: LIDPlaybackEngine.activeSessionIdForLogging,
             category: "VideoRenderer",
-            message: "LIDVLCRenderingContainerView willRemoveSubview: class=\(type(of: subview)), subviewFrame=\(subview.frame)\n  Stack trace:\n    \(symbols)"
+            message: "LIDVLCRenderingContainerView willRemoveSubview: class=\(type(of: subview)), subviewFrame=\(subview.frame)"
         )
     }
 

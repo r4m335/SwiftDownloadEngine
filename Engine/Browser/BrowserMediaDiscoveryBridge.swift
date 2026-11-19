@@ -1363,14 +1363,32 @@ public final class BrowserMediaDiscoveryBridge: NSObject, @unchecked Sendable {
             acceptHeader = 'application/vnd.apple.mpegurl, application/x-mpegURL, */*';
         }
         const limit = Number(maxBytes) || 1048576;
+        let response;
         try {
-            const response = await fetch(url, {
+            response = await fetch(url, {
                 method: 'GET',
                 credentials: 'include',
                 headers: {
                     'Accept': acceptHeader
                 }
             });
+        } catch (e1) {
+            // If credentials: 'include' fails (e.g. CORS restrictions on wildcards Access-Control-Allow-Origin: *),
+            // fallback to credentials: 'omit' so the manifest can still be retrieved.
+            try {
+                response = await fetch(url, {
+                    method: 'GET',
+                    credentials: 'omit',
+                    headers: {
+                        'Accept': acceptHeader
+                    }
+                });
+            } catch (e2) {
+                const errMsg = (e2 && e2.name ? (e2.name + ': ' + (e2.message || '')) : String(e2));
+                return { error: errMsg || 'Unknown fetch error' };
+            }
+        }
+        try {
             if (!response.ok) {
                 return { error: 'HTTP ' + response.status + (response.statusText ? ' ' + response.statusText : '') };
             }
