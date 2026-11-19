@@ -409,7 +409,7 @@ final class HLSAndDASHProductionValidationTests: XCTestCase {
 
     // MARK: - Workstream 4.7: Real-World Public VOD Streams
 
-    func testPublicAppleHLSTestStreamPlanAndAssembly() throws {
+    func testPublicAppleHLSTestStreamPlanAndAssembly() async throws {
         // Apple sample HLS stream manifest structure
         let appleMaster = """
         #EXTM3U
@@ -459,7 +459,7 @@ final class HLSAndDASHProductionValidationTests: XCTestCase {
         ]
 
         let outputURL = tempDir.appendingPathComponent("bipbop.ts")
-        let assemblyOutput = try HLSVODReconstructor.assemble(
+        let assemblyOutput = try await HLSVODReconstructor.assemble(
             transferPlan: transferPlan,
             completedResources: completed,
             destinationURL: outputURL,
@@ -471,7 +471,7 @@ final class HLSAndDASHProductionValidationTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: outputURL), seg0Data + seg1Data)
     }
 
-    func testPublicAppleFMP4TestStreamPlanAndAssembly() throws {
+    func testPublicAppleFMP4TestStreamPlanAndAssembly() async throws {
         // Apple sample fMP4 HLS manifest with EXT-X-MAP
         let fmp4Playlist = """
         #EXTM3U
@@ -513,7 +513,7 @@ final class HLSAndDASHProductionValidationTests: XCTestCase {
         ]
 
         let outputURL = tempDir.appendingPathComponent("vod.mp4")
-        let assemblyOutput = try HLSVODReconstructor.assemble(
+        let assemblyOutput = try await HLSVODReconstructor.assemble(
             transferPlan: transferPlan,
             completedResources: completed,
             destinationURL: outputURL

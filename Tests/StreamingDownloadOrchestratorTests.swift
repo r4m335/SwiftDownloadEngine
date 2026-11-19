@@ -236,7 +236,7 @@ final class StreamingDownloadOrchestratorTests: XCTestCase {
             HLSCompletedResource(resource: $0.0, fileURL: $0.1)
         }
         let output = directory.appendingPathComponent("assembled.ts")
-        let result = try HLSVODReconstructor.assemble(
+        let result = try await HLSVODReconstructor.assemble(
             transferPlan: transferPlan,
             completedResources: completed,
             destinationURL: output,

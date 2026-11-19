@@ -33,7 +33,7 @@ final class DASHVODReconstructionTests: XCTestCase {
         XCTAssertEqual(reconstruction.assemblyRequest.tracks[1].mediaSegments.map(\.order), [0, 1])
     }
 
-    func testSingleVideoDASHVODAssemblyPublishesOrderedFragments() throws {
+    func testSingleVideoDASHVODAssemblyPublishesOrderedFragments() async throws {
         let manifest = try DASHManifestParser.parse(singleVideoMPD, baseURL: manifestURL)
         let transferPlan = try DASHTransferPlanner.makeVODPlan(from: manifest)
         let directory = try makeDirectory()
@@ -44,7 +44,7 @@ final class DASHVODReconstructionTests: XCTestCase {
             directory: directory
         )
         let output = directory.appendingPathComponent("movie.mp4")
-        let result = try DASHVODReconstructor.assemble(
+        let result = try await DASHVODReconstructor.assemble(
             transferPlan: transferPlan,
             completedResources: completed,
             destinationURL: output

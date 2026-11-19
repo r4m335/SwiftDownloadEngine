@@ -191,7 +191,7 @@ public enum DASHVODReconstructor {
         completedResources: [DASHCompletedResource],
         destinationURL: URL,
         temporaryDirectoryURL: URL? = nil
-    ) throws -> MediaAssemblyOutput {
+    ) async throws -> MediaAssemblyOutput {
         let reconstructionPlan = try DASHVODReconstructionPlanner.makePlan(
             from: transferPlan,
             completedResources: completedResources,

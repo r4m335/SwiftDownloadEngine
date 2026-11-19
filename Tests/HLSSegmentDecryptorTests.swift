@@ -111,7 +111,7 @@ final class HLSSegmentDecryptorTests: XCTestCase {
         #endif
     }
 
-    func testHLSVODReconstructorAssemblesAES128EncryptedStream() throws {
+    func testHLSVODReconstructorAssemblesAES128EncryptedStream() async throws {
         #if canImport(CommonCrypto)
         let manifestURL = URL(string: "https://video.example/vod/encrypted.m3u8")!
         let playlist = """
@@ -162,7 +162,7 @@ final class HLSSegmentDecryptorTests: XCTestCase {
         ]
 
         let outputURL = tempDir.appendingPathComponent("output.ts")
-        let result = try HLSVODReconstructor.assemble(
+        let result = try await HLSVODReconstructor.assemble(
             transferPlan: transferPlan,
             completedResources: completed,
             destinationURL: outputURL,

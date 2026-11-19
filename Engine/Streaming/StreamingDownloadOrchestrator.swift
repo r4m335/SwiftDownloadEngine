@@ -2809,7 +2809,7 @@ public actor StreamingDownloadOrchestrator {
             }
             try await persistHLSAssemblyState(id: parentID, state: .inProgress)
 
-            let assemblyOutput = try HLSVODReconstructor.assemble(
+            let assemblyOutput = try await HLSVODReconstructor.assemble(
                 transferPlan: transferPlan,
                 completedResources: validatedCompleted,
                 destinationURL: finalOutputURL,
@@ -3224,7 +3224,7 @@ public actor StreamingDownloadOrchestrator {
             DASHCompletedResource(resource: $0.0, fileURL: $0.1)
         }
         do {
-            let assemblyOutput = try DASHVODReconstructor.assemble(
+            let assemblyOutput = try await DASHVODReconstructor.assemble(
                 transferPlan: transferPlan,
                 completedResources: completed,
                 destinationURL: finalOutputURL,

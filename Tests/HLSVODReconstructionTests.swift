@@ -5,7 +5,16 @@ import XCTest
 final class HLSVODReconstructionTests: XCTestCase {
     private let manifestURL = URL(string: "https://video.example/vod/index.m3u8?sig=manifest")!
 
-    func testClearMPEGTSVODProducesOrderedOutput() throws {
+    private func assertThrowsAsyncError<T>(_ expression: @autoclosure () async throws -> T, _ errorHandler: (Error) -> Void = { _ in }) async {
+        do {
+            _ = try await expression()
+            XCTFail("Expected expression to throw an error, but it succeeded")
+        } catch {
+            errorHandler(error)
+        }
+    }
+
+    func testClearMPEGTSVODProducesOrderedOutput() async throws {
         let playlist = """
         #EXTM3U
         #EXT-X-PLAYLIST-TYPE:VOD
@@ -31,7 +40,7 @@ final class HLSVODReconstructionTests: XCTestCase {
             HLSCompletedResource(resource: transferPlan.resources[1], fileURL: second)
         ]
         let output = directory.appendingPathComponent("vod.ts")
-        let result = try HLSVODReconstructor.assemble(
+        let result = try await HLSVODReconstructor.assemble(
             transferPlan: transferPlan,
             completedResources: completed,
             destinationURL: output,
@@ -43,7 +52,7 @@ final class HLSVODReconstructionTests: XCTestCase {
         XCTAssertTrue(HLSVODReconstructionPlanner.suggestedFilename(for: transferPlan).hasSuffix(".mp4"))
     }
 
-    func testHLSVODReconstructorAssemblesMPEGTSToMP4WhenRemuxEnabled() throws {
+    func testHLSVODReconstructorAssemblesMPEGTSToMP4WhenRemuxEnabled() async throws {
         let playlist = """
         #EXTM3U
         #EXT-X-VERSION:3
@@ -65,7 +74,7 @@ final class HLSVODReconstructionTests: XCTestCase {
             HLSCompletedResource(resource: transferPlan.resources[0], fileURL: segmentFile)
         ]
         let output = directory.appendingPathComponent("vod.ts")
-        let result = try HLSVODReconstructor.assemble(
+        let result = try await HLSVODReconstructor.assemble(
             transferPlan: transferPlan,
             completedResources: completed,
             destinationURL: output,
@@ -77,7 +86,7 @@ final class HLSVODReconstructionTests: XCTestCase {
         XCTAssertGreaterThan(result.byteCount, 0)
     }
 
-    func testFragmentedMP4VODPreservesInitializationMapAndSegmentOrder() throws {
+    func testFragmentedMP4VODPreservesInitializationMapAndSegmentOrder() async throws {
         let playlist = """
         #EXTM3U
         #EXT-X-VERSION:7
@@ -106,7 +115,7 @@ final class HLSVODReconstructionTests: XCTestCase {
             HLSCompletedResource(resource: $0.0, fileURL: $0.1)
         }
         let output = directory.appendingPathComponent("vod.mp4")
-        let result = try HLSVODReconstructor.assemble(
+        let result = try await HLSVODReconstructor.assemble(
             transferPlan: transferPlan,
             completedResources: completed,
             destinationURL: output
@@ -231,7 +240,7 @@ final class HLSVODReconstructionTests: XCTestCase {
         XCTAssertEqual(plan.assemblyRequest.tracks[1].kind, .audio)
     }
 
-    func testEncryptedVideoWithSeparateAudioReconstruction() throws {
+    func testEncryptedVideoWithSeparateAudioReconstruction() async throws {
         #if canImport(CommonCrypto)
         let videoPlaylist = """
         #EXTM3U
@@ -308,8 +317,8 @@ final class HLSVODReconstructionTests: XCTestCase {
 
         let output = directory.appendingPathComponent("output.ts")
         // Multi-track assembly must NOT return a single-track fallback success when muxing fails
-        XCTAssertThrowsError(
-            try HLSVODReconstructor.assemble(
+        await assertThrowsAsyncError(
+            try await HLSVODReconstructor.assemble(
                 transferPlan: combinedPlan,
                 completedResources: completed,
                 destinationURL: output

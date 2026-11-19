@@ -212,7 +212,7 @@ public enum HLSVODReconstructor {
         destinationURL: URL,
         temporaryDirectoryURL: URL? = nil,
         remuxTSToMP4: Bool = true
-    ) throws -> MediaAssemblyOutput {
+    ) async throws -> MediaAssemblyOutput {
         let allPlanned = transferPlan.allResources
         let hasEncryption = allPlanned.contains {
             $0.kind == .encryptionKey || ($0.encryption != nil && $0.encryption != .clear)
