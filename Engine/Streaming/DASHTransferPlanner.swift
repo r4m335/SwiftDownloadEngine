@@ -207,7 +207,12 @@ public struct DASHVODTransferPlan: Sendable, Equatable {
     /// automatically when a resource is on another origin from the MPD.
     public func requestHeaders(for resource: DASHPlannedResource) -> [String: String] {
         guard let browserRequestContext else { return [:] }
-        return browserRequestContext.effectiveHeaders(for: resource.url)
+        let headers = browserRequestContext.effectiveHeaders(for: resource.url)
+        return BrowserHeaderFilter.stripCredentialsOnRedirect(
+            headers: headers,
+            from: manifestURL,
+            to: resource.url
+        )
     }
 }
 

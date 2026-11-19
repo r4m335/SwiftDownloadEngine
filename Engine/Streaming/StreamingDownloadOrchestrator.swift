@@ -3314,14 +3314,20 @@ public actor StreamingDownloadOrchestrator {
             context = plan.browserRequestContext
         }
         guard let context else { return [:] }
+        let headers: [String: String]
         switch manifest {
         case .hls(let plan):
             guard let planned = plan.allResources.first(where: { $0.url == resource.url && $0.order == resource.identity.order }) else { return [:] }
-            return plan.requestHeaders(for: planned)
+            headers = plan.requestHeaders(for: planned)
         case .dash(let plan):
             guard let planned = plan.resources.first(where: { $0.url == resource.url && $0.order == resource.identity.order }) else { return [:] }
-            return plan.requestHeaders(for: planned)
+            headers = plan.requestHeaders(for: planned)
         }
+        return BrowserHeaderFilter.stripCredentialsOnRedirect(
+            headers: headers,
+            from: context.url,
+            to: resource.url
+        )
     }
 
     private func makeResources(
