@@ -28,6 +28,7 @@ public final class DownloadRecoveryManager: ObservableObject, @unchecked Sendabl
     public let linkRefresher: DownloadLinkRefresher
     public let hlsRecoveryCoordinator: HLSRecoveryCoordinator
     public let matcher: BrowserDownloadMatcher
+    public let streamingOrchestrator: StreamingDownloadOrchestrator?
     private let engine: DownloadEngine
     private let persistenceStore: DownloadPersistenceStore
 
@@ -42,6 +43,7 @@ public final class DownloadRecoveryManager: ObservableObject, @unchecked Sendabl
     ) {
         self.engine = engine
         self.persistenceStore = persistenceStore
+        self.streamingOrchestrator = streamingOrchestrator
         self.linkRefresher = DownloadLinkRefresher(
             session: .shared,
             persistenceStore: persistenceStore

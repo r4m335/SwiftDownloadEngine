@@ -2,8 +2,8 @@ import Foundation
 
 /// Coordinates recovery of HLS streaming downloads with refreshed signed manifests and token URLs.
 public final class HLSRecoveryCoordinator: Sendable {
-    private let hlsPersistenceStore: HLSPersistenceStore?
-    private let streamingOrchestrator: StreamingDownloadOrchestrator?
+    public let hlsPersistenceStore: HLSPersistenceStore?
+    public let streamingOrchestrator: StreamingDownloadOrchestrator?
 
     public init(
         hlsPersistenceStore: HLSPersistenceStore?,
