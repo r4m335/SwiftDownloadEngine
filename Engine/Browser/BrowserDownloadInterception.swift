@@ -80,7 +80,7 @@ public final class BrowserDownloadInterceptionManager {
     /// 3. URL last path component
     /// 4. MIME-type fallback
     /// 5. Host-based fallback
-    public static func resolveFilename(
+    public nonisolated static func resolveFilename(
         serverSuggested: String?,
         contentDisposition: String?,
         url: URL,
@@ -121,7 +121,7 @@ public final class BrowserDownloadInterceptionManager {
     }
 
     /// Prepares a validated `BrowserDownloadHandoff` payload for engine admission.
-    public static func prepareHandoff(
+    public nonisolated static func prepareHandoff(
         originalURL: URL,
         finalURL: URL? = nil,
         serverSuggestedFilename: String? = nil,
@@ -198,7 +198,7 @@ public final class BrowserDownloadInterceptionManager {
 
     /// Evaluates whether a WebKit download error represents an intentional cancellation
     /// during handoff, rather than an authentic network failure.
-    public static func isIntentionalHandoffCancellation(_ error: Error) -> Bool {
+    public nonisolated static func isIntentionalHandoffCancellation(_ error: Error) -> Bool {
         let nsError = error as NSError
         // WKErrorDomain: code 2 is downloadCancelled
         if nsError.domain == "WKErrorDomain" && nsError.code == 2 {
