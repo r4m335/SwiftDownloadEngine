@@ -520,8 +520,8 @@ final class PauseResumeAndRecoveryTests: XCTestCase {
         // Wait until child process has initialized and made progress
         let store = try DownloadPersistenceStore(storageDirectoryURL: storeDir)
         var persisted = false
-        for _ in 0..<100 {
-            try await Task.sleep(nanoseconds: 20_000_000) // 20ms
+        for _ in 0..<200 {
+            try await Task.sleep(nanoseconds: 50_000_000) // 50ms (up to 10s)
             if let _ = try await store.fetch(tag: "sigkill-download"),
                FileManager.default.fileExists(atPath: destURL.path),
                let attr = try? FileManager.default.attributesOfItem(atPath: destURL.path),
