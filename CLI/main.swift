@@ -35,6 +35,7 @@ struct InterruptionCLI {
             try await coordinator.start(request)
             exit(0)
         } catch {
+            fputs("DM_InterruptionTestCLI failed: \(error)\n", stderr)
             exit(3)
         }
     }

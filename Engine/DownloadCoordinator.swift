@@ -353,6 +353,11 @@ public actor DownloadCoordinator {
         id.hasPrefix(InternalStreamingConstants.legacySegmentIDPrefix)
     }
 
+    public nonisolated static func isLoopbackURL(_ url: URL) -> Bool {
+        guard let host = url.host?.lowercased() else { return false }
+        return host == "127.0.0.1" || host == "localhost" || host == "::1" || host == "0.0.0.0"
+    }
+
     public init(
         session: URLSession = DownloadCoordinator.sharedSession,
         persistenceStore: DownloadPersistenceStore? = nil,
@@ -790,9 +795,11 @@ public actor DownloadCoordinator {
             var probeAttempt = 0
             while true {
                 try Task.checkCancellation()
-                try await connectivityGate.waitUntilAvailable(
-                    allowsCellular: request.networkPolicy.allowsCellularAccess
-                )
+                if !Self.isLoopbackURL(request.url) {
+                    try await connectivityGate.waitUntilAvailable(
+                        allowsCellular: request.networkPolicy.allowsCellularAccess
+                    )
+                }
                 do {
                     probeResult = try await probe.probe(configuration: probeConfig)
                     break
@@ -813,7 +820,7 @@ public actor DownloadCoordinator {
                     guard HTTPRetryPolicy.isRetryable(error) else {
                         throw error
                     }
-                    if HTTPRetryPolicy.shouldWaitForConnectivity(error) {
+                    if HTTPRetryPolicy.shouldWaitForConnectivity(error) && !Self.isLoopbackURL(request.url) {
                         try await connectivityGate.waitUntilAvailable(
                             allowsCellular: request.networkPolicy.allowsCellularAccess
                         )
@@ -1457,7 +1464,7 @@ public actor DownloadCoordinator {
                 attempt += 1
                 if attempt < maxAttempts && HTTPRetryPolicy.isRetryable(error) {
                     PipelineLogger.shared.log("[DownloadCoordinator] Segment \(request.id) encountered retryable error (\(error.localizedDescription)). Retrying attempt \(attempt + 1)/\(maxAttempts)...")
-                    if HTTPRetryPolicy.shouldWaitForConnectivity(error) {
+                    if HTTPRetryPolicy.shouldWaitForConnectivity(error) && !Self.isLoopbackURL(request.url) {
                         try? await connectivityGate.waitUntilAvailable(
                             allowsCellular: request.networkPolicy.allowsCellularAccess
                         )
@@ -1611,9 +1618,11 @@ public actor DownloadCoordinator {
                             var attempt = 0
                             while true {
                                 try Task.checkCancellation()
-                                try await self.connectivityGate.waitUntilAvailable(
-                                    allowsCellular: request.networkPolicy.allowsCellularAccess
-                                )
+                                if !Self.isLoopbackURL(request.url) {
+                                    try await self.connectivityGate.waitUntilAvailable(
+                                        allowsCellular: request.networkPolicy.allowsCellularAccess
+                                    )
+                                }
                                 do {
                                     try await downloader.download(
                                         url: probeResult.finalURL,
@@ -1692,7 +1701,7 @@ public actor DownloadCoordinator {
                                     guard HTTPRetryPolicy.isRetryable(error) else {
                                         throw error
                                     }
-                                    if HTTPRetryPolicy.shouldWaitForConnectivity(error) {
+                                    if HTTPRetryPolicy.shouldWaitForConnectivity(error) && !Self.isLoopbackURL(request.url) {
                                         try await self.connectivityGate.waitUntilAvailable(
                                             allowsCellular: request.networkPolicy.allowsCellularAccess
                                         )

@@ -481,8 +481,10 @@ final class PauseResumeAndRecoveryTests: XCTestCase {
     func testRealProcessTerminationViaSIGKILLAndRecovery() async throws {
         let cwd = FileManager.default.currentDirectoryPath
         let candidatePaths = [
+            "\(cwd)/.build/arm64-apple-macosx/debug/DM_InterruptionTestCLI",
             "\(cwd)/.build/debug/DM_InterruptionTestCLI",
             "\(cwd)/.build/x86_64-unknown-linux-gnu/debug/DM_InterruptionTestCLI",
+            "./.build/arm64-apple-macosx/debug/DM_InterruptionTestCLI",
             "./.build/debug/DM_InterruptionTestCLI",
             "./.build/x86_64-unknown-linux-gnu/debug/DM_InterruptionTestCLI"
         ]
@@ -512,8 +514,9 @@ final class PauseResumeAndRecoveryTests: XCTestCase {
             "2"
         ]
 
+        let errPipe = Pipe()
         process.standardOutput = FileHandle.nullDevice
-        process.standardError = FileHandle.nullDevice
+        process.standardError = errPipe
 
         try process.run()
 
@@ -529,6 +532,11 @@ final class PauseResumeAndRecoveryTests: XCTestCase {
                 persisted = true
                 break
             }
+        }
+        if !persisted {
+            let errData = errPipe.fileHandleForReading.availableData
+            let errStr = String(data: errData, encoding: .utf8) ?? ""
+            print("[PauseResumeAndRecoveryTests] Child process isRunning: \(process.isRunning), exit: \(process.terminationStatus), stderr: \(errStr)")
         }
         XCTAssertTrue(persisted, "Child process did not write partial file and persistence state in time")
 

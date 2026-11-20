@@ -43,6 +43,23 @@ public actor NetworkConnectivityGate {
             return
         }
 
+        // If latestPath is nil (monitor initializing), give it a brief window to report initial status
+        if latestPath == nil {
+            for _ in 0..<10 {
+                try await Task.sleep(nanoseconds: 50_000_000)
+                if let path = latestPath {
+                    if Self.isUsable(path, allowsCellular: allowsCellular) {
+                        return
+                    }
+                    break
+                }
+            }
+            // If still nil after 500ms (e.g. CLI process or loopback environment), proceed without blocking
+            if latestPath == nil {
+                return
+            }
+        }
+
         let waiterID = UUID()
         try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
