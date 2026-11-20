@@ -194,6 +194,7 @@ public struct HLSVariant: Codable, Sendable, Equatable, Hashable {
     public let audioGroup: String?
     public let videoGroup: String?
     public let subtitlesGroup: String?
+    public let isIFrameOnly: Bool
 
     public init(
         uri: URL,
@@ -204,7 +205,8 @@ public struct HLSVariant: Codable, Sendable, Equatable, Hashable {
         frameRate: Double? = nil,
         audioGroup: String? = nil,
         videoGroup: String? = nil,
-        subtitlesGroup: String? = nil
+        subtitlesGroup: String? = nil,
+        isIFrameOnly: Bool = false
     ) {
         self.uri = uri
         self.bandwidth = bandwidth
@@ -215,6 +217,7 @@ public struct HLSVariant: Codable, Sendable, Equatable, Hashable {
         self.audioGroup = audioGroup
         self.videoGroup = videoGroup
         self.subtitlesGroup = subtitlesGroup
+        self.isIFrameOnly = isIFrameOnly
     }
 }
 
@@ -286,6 +289,7 @@ public struct HLSManifest: Codable, Sendable, Equatable {
     public let lifecycle: HLSPlaylistLifecycle
     public let version: Int?
     public let independentSegments: Bool
+    public let isIFramesOnly: Bool
     public let variants: [HLSVariant]
     public let renditions: [HLSRendition]
     public let segments: [HLSMediaSegment]
@@ -298,6 +302,7 @@ public struct HLSManifest: Codable, Sendable, Equatable {
         lifecycle: HLSPlaylistLifecycle,
         version: Int? = nil,
         independentSegments: Bool = false,
+        isIFramesOnly: Bool = false,
         variants: [HLSVariant] = [],
         renditions: [HLSRendition] = [],
         segments: [HLSMediaSegment] = [],
@@ -309,11 +314,22 @@ public struct HLSManifest: Codable, Sendable, Equatable {
         self.lifecycle = lifecycle
         self.version = version
         self.independentSegments = independentSegments
+        self.isIFramesOnly = isIFramesOnly
         self.variants = variants
         self.renditions = renditions
         self.segments = segments
         self.encryption = encryption
         self.targetDuration = targetDuration
+    }
+
+    /// All variants representing full video streams (non-I-frame-only).
+    public var primaryVariants: [HLSVariant] {
+        variants.filter { !$0.isIFrameOnly }
+    }
+
+    /// All variants representing trick-play or I-frame-only streams.
+    public var iFrameVariants: [HLSVariant] {
+        variants.filter(\.isIFrameOnly)
     }
 
     /// All renditions with TYPE=SUBTITLES extracted from the manifest.

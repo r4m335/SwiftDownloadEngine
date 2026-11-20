@@ -148,7 +148,8 @@ public enum StreamQualityInspector {
                     hlsVariant: opt.hlsVariant,
                     dashVideoRepresentationID: opt.dashVideoRepresentationID,
                     dashAudioRepresentationID: opt.dashAudioRepresentationID,
-                    isLive: opt.isLive
+                    isLive: opt.isLive,
+                    isIFrameOnly: opt.isIFrameOnly
                 )
             }
         }

@@ -29,6 +29,7 @@ public struct StreamQualityOption: Identifiable, Sendable, Equatable, Hashable {
     public let dashVideoRepresentationID: String?
     public let dashAudioRepresentationID: String?
     public let isLive: Bool
+    public let isIFrameOnly: Bool
 
     public init(
         id: String,
@@ -52,7 +53,8 @@ public struct StreamQualityOption: Identifiable, Sendable, Equatable, Hashable {
         hlsVariant: HLSVariant? = nil,
         dashVideoRepresentationID: String? = nil,
         dashAudioRepresentationID: String? = nil,
-        isLive: Bool = false
+        isLive: Bool = false,
+        isIFrameOnly: Bool = false
     ) {
         self.id = id
         self.label = label
@@ -76,6 +78,7 @@ public struct StreamQualityOption: Identifiable, Sendable, Equatable, Hashable {
         self.dashVideoRepresentationID = dashVideoRepresentationID
         self.dashAudioRepresentationID = dashAudioRepresentationID
         self.isLive = isLive
+        self.isIFrameOnly = isIFrameOnly
     }
 
     public func hash(into hasher: inout Hasher) {
@@ -138,12 +141,19 @@ public struct StreamQualityOption: Identifiable, Sendable, Equatable, Hashable {
         isLive: Bool = false
     ) -> StreamQualityOption {
         let height = variant.resolution?.height
-        let qualityBadge: String = {
+        let baseBadge: String = {
             if let h = height { return "\(h)p" }
             return formatBandwidthAsBadge(Int64(variant.bandwidth))
         }()
+        let qualityBadge = variant.isIFrameOnly ? "\(baseBadge) (I-Frame)" : baseBadge
 
         let label: String = {
+            if variant.isIFrameOnly {
+                if let h = height {
+                    return "\(h)p (I-Frame Only)"
+                }
+                return "\(baseBadge) (I-Frame Only)"
+            }
             if let h = height {
                 if h >= 2160 { return "4K Ultra HD (\(h)p)" }
                 if h >= 1440 { return "2K Quad HD (\(h)p)" }
@@ -172,7 +182,9 @@ public struct StreamQualityOption: Identifiable, Sendable, Equatable, Hashable {
         }
 
         let hasAudio: Bool
-        if let _ = master {
+        if variant.isIFrameOnly {
+            hasAudio = false
+        } else if let _ = master {
             hasAudio = (resolvedAudioRendition != nil) || hasMuxedAudio
         } else if let _ = selectedAudioRendition {
             hasAudio = true
@@ -192,7 +204,8 @@ public struct StreamQualityOption: Identifiable, Sendable, Equatable, Hashable {
 
         let filename = variant.uri.lastPathComponent.isEmpty ? "stream" : variant.uri.lastPathComponent
         let uriHash = String(EngineSHA256.hash(data: Data(variant.uri.absoluteString.utf8)).prefix(8))
-        let id = "hls-\(variant.bandwidth)-\(height ?? 0)-\(filename)-\(uriHash)"
+        let iframePrefix = variant.isIFrameOnly ? "hls-iframe-" : "hls-"
+        let id = "\(iframePrefix)\(variant.bandwidth)-\(height ?? 0)-\(filename)-\(uriHash)"
 
         return StreamQualityOption(
             id: id,
@@ -214,7 +227,8 @@ public struct StreamQualityOption: Identifiable, Sendable, Equatable, Hashable {
             uri: variant.uri,
             manifestKind: .hls,
             hlsVariant: variant,
-            isLive: isLive
+            isLive: isLive,
+            isIFrameOnly: variant.isIFrameOnly
         )
     }
 

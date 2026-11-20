@@ -67,6 +67,7 @@ public enum HLSManifestParser {
 
         var version: Int?
         var independentSegments = false
+        var isIFramesOnly = false
         var playlistTypeTag: HLSPlaylistLifecycle?
         var endList = false
         var mediaSequence: Int64 = 0
@@ -102,6 +103,39 @@ public enum HLSManifestParser {
                     throw ManifestParserError.malformed(reason: "A variant is missing its URI.")
                 }
                 pendingVariantAttributes = try parseAttributes(String(line.dropFirst("#EXT-X-STREAM-INF:".count)))
+                continue
+            }
+
+            if line.hasPrefix("#EXT-X-I-FRAME-STREAM-INF:") {
+                guard pendingVariantAttributes == nil else {
+                    throw ManifestParserError.malformed(reason: "A variant is missing its URI.")
+                }
+                sawMasterTag = true
+                let attributes = try parseAttributes(String(line.dropFirst("#EXT-X-I-FRAME-STREAM-INF:".count)))
+                guard let uriString = attributes["URI"],
+                      let uri = try resolveVariantURL(uriString, against: baseURL) else {
+                    throw ManifestParserError.malformed(reason: "EXT-X-I-FRAME-STREAM-INF requires a valid URI attribute.")
+                }
+                guard let bandwidthText = attributes["BANDWIDTH"],
+                      let bandwidth = positiveInt(bandwidthText) else {
+                    throw ManifestParserError.malformed(reason: "EXT-X-I-FRAME-STREAM-INF requires a positive BANDWIDTH.")
+                }
+                let resolution = try parseResolution(attributes["RESOLUTION"])
+                let frameRate = try optionalPositiveDouble(attributes["FRAME-RATE"], name: "FRAME-RATE")
+                let averageBandwidth = try optionalPositiveInt(attributes["AVERAGE-BANDWIDTH"], name: "AVERAGE-BANDWIDTH")
+
+                variants.append(HLSVariant(
+                    uri: uri,
+                    bandwidth: bandwidth,
+                    averageBandwidth: averageBandwidth,
+                    resolution: resolution,
+                    codecs: attributes["CODECS"],
+                    frameRate: frameRate,
+                    audioGroup: nil,
+                    videoGroup: attributes["VIDEO"],
+                    subtitlesGroup: nil,
+                    isIFrameOnly: true
+                ))
                 continue
             }
 
@@ -276,6 +310,9 @@ public enum HLSManifestParser {
                 }
                 pendingProgramDate = date
                 sawMediaTag = true
+            } else if line == "#EXT-X-I-FRAMES-ONLY" {
+                isIFramesOnly = true
+                sawMediaTag = true
             }
         }
 
@@ -297,6 +334,7 @@ public enum HLSManifestParser {
                 lifecycle: lifecycle,
                 version: version,
                 independentSegments: independentSegments,
+                isIFramesOnly: isIFramesOnly,
                 variants: variants,
                 renditions: renditions
             )
@@ -312,6 +350,7 @@ public enum HLSManifestParser {
             lifecycle: lifecycle,
             version: version,
             independentSegments: independentSegments,
+            isIFramesOnly: isIFramesOnly,
             segments: segments,
             encryption: currentEncryptionClass,
             targetDuration: targetDuration

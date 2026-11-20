@@ -337,10 +337,14 @@ public actor StreamManifestResourceExpander {
             let isLive = option.isLive || masterResource.isLive
             let variantID = "\(masterResource.id)-variant-\(option.id)"
             let qualityLabel = option.qualityBadge
-            var filename = "\(baseStem)-\(qualityLabel).mp4"
+            let safeQualityLabel = qualityLabel
+                .replacingOccurrences(of: " ", with: "-")
+                .replacingOccurrences(of: "(", with: "")
+                .replacingOccurrences(of: ")", with: "")
+            var filename = "\(baseStem)-\(safeQualityLabel).mp4"
             if seenFilenames.contains(filename.lowercased()) {
                 let disambiguator = option.bitrateText.replacingOccurrences(of: " ", with: "")
-                filename = "\(baseStem)-\(qualityLabel)-\(disambiguator).mp4"
+                filename = "\(baseStem)-\(safeQualityLabel)-\(disambiguator).mp4"
             }
             seenFilenames.insert(filename.lowercased())
             let resText = option.resolutionText ?? option.resolution.map { "\($0.width) × \($0.height)" }
@@ -425,7 +429,8 @@ public actor StreamManifestResourceExpander {
                 videoCodec: option.videoCodec,
                 estimatedSizeBytes: isLive ? nil : option.estimatedSizeBytes,
                 estimatedSizeText: sizeText,
-                isLive: isLive
+                isLive: isLive,
+                isIFrameOnly: option.isIFrameOnly
             )
             items.append(item)
         }

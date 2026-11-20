@@ -312,4 +312,136 @@ final class StreamingManifestTests: XCTestCase {
         let extracted = HLSManifestParser.extractSubtitles(from: manifest)
         XCTAssertEqual(extracted.count, 2)
     }
+
+    func testMasterPlaylistContainingOnlyIFrameVariantsParsesCleanly() throws {
+        let playlist = """
+        #EXTM3U
+        #EXT-X-VERSION:4
+        #EXT-X-I-FRAME-STREAM-INF:BANDWIDTH=860000,AVERAGE-BANDWIDTH=750000,RESOLUTION=1920x1080,CODECS="avc1.640028",URI="iframe_1080p.m3u8"
+        #EXT-X-I-FRAME-STREAM-INF:BANDWIDTH=420000,RESOLUTION=1280x720,CODECS="avc1.4d401f",FRAME-RATE=29.97,URI="iframe_720p.m3u8"
+        """
+
+        let manifest = try HLSManifestParser.parse(playlist, baseURL: hlsURL)
+        XCTAssertEqual(manifest.playlistType, .master)
+        XCTAssertEqual(manifest.variants.count, 2)
+        XCTAssertTrue(manifest.primaryVariants.isEmpty)
+        XCTAssertEqual(manifest.iFrameVariants.count, 2)
+        XCTAssertTrue(manifest.variants.allSatisfy(\.isIFrameOnly))
+
+        let first = manifest.variants[0]
+        XCTAssertEqual(first.bandwidth, 860_000)
+        XCTAssertEqual(first.averageBandwidth, 750_000)
+        XCTAssertEqual(first.resolution, HLSResolution(width: 1920, height: 1080))
+        XCTAssertEqual(first.codecs, "avc1.640028")
+        XCTAssertEqual(first.uri.absoluteString, "https://example.com/video/iframe_1080p.m3u8?session=redacted")
+        XCTAssertTrue(first.isIFrameOnly)
+
+        let second = manifest.variants[1]
+        XCTAssertEqual(second.bandwidth, 420_000)
+        XCTAssertEqual(second.resolution, HLSResolution(width: 1280, height: 720))
+        XCTAssertEqual(second.frameRate ?? 0, 29.97, accuracy: 0.01)
+        XCTAssertEqual(second.uri.absoluteString, "https://example.com/video/iframe_720p.m3u8?session=redacted")
+        XCTAssertTrue(second.isIFrameOnly)
+    }
+
+    func testMixedMasterPlaylistRanksPrimaryBeforeIFrameVariants() throws {
+        let playlist = """
+        #EXTM3U
+        #EXT-X-VERSION:4
+        #EXT-X-I-FRAME-STREAM-INF:BANDWIDTH=1000000,RESOLUTION=1920x1080,URI="iframe_1080.m3u8"
+        #EXT-X-STREAM-INF:BANDWIDTH=5000000,RESOLUTION=1920x1080,CODECS="avc1.640028"
+        video_1080.m3u8
+        #EXT-X-STREAM-INF:BANDWIDTH=2500000,RESOLUTION=1280x720,CODECS="avc1.4d401f"
+        video_720.m3u8
+        #EXT-X-I-FRAME-STREAM-INF:BANDWIDTH=500000,RESOLUTION=1280x720,URI="iframe_720.m3u8"
+        """
+
+        let manifest = try HLSManifestParser.parse(playlist, baseURL: hlsURL)
+        XCTAssertEqual(manifest.variants.count, 4)
+        XCTAssertEqual(manifest.primaryVariants.count, 2)
+        XCTAssertEqual(manifest.iFrameVariants.count, 2)
+
+        let ranked = try HLSVariantSelector.rank(from: manifest)
+        XCTAssertEqual(ranked.count, 4)
+        // Primary streams must come before I-frame streams
+        XCTAssertFalse(ranked[0].isIFrameOnly)
+        XCTAssertEqual(ranked[0].bandwidth, 5_000_000)
+        XCTAssertFalse(ranked[1].isIFrameOnly)
+        XCTAssertEqual(ranked[1].bandwidth, 2_500_000)
+        XCTAssertTrue(ranked[2].isIFrameOnly)
+        XCTAssertEqual(ranked[2].bandwidth, 1_000_000)
+        XCTAssertTrue(ranked[3].isIFrameOnly)
+        XCTAssertEqual(ranked[3].bandwidth, 500_000)
+
+        // Select without preferences must select primary stream
+        let selected = try HLSVariantSelector.select(from: manifest)
+        XCTAssertFalse(selected.isIFrameOnly)
+        XCTAssertEqual(selected.bandwidth, 5_000_000)
+
+        // Deduplication must preserve both 1080p primary and 1080p iframe variant
+        let deduplicated = HLSVariantSelector.deduplicate(ranked)
+        XCTAssertEqual(deduplicated.count, 4)
+    }
+
+    func testMediaPlaylistWithIFramesOnlyTag() throws {
+        let playlist = """
+        #EXTM3U
+        #EXT-X-VERSION:4
+        #EXT-X-TARGETDURATION:6
+        #EXT-X-I-FRAMES-ONLY
+        #EXT-X-BYTERANGE:34000@0
+        #EXTINF:6.0,
+        segment.ts
+        #EXT-X-BYTERANGE:28000
+        #EXTINF:6.0,
+        segment.ts
+        #EXT-X-ENDLIST
+        """
+
+        let manifest = try HLSManifestParser.parse(playlist, baseURL: hlsURL)
+        XCTAssertEqual(manifest.playlistType, .media)
+        XCTAssertTrue(manifest.isIFramesOnly)
+        XCTAssertEqual(manifest.segments.count, 2)
+        XCTAssertEqual(manifest.segments[0].byteRange, HLSByteRange(length: 34000, offset: 0))
+        XCTAssertEqual(manifest.segments[1].byteRange, HLSByteRange(length: 28000, offset: 34000))
+    }
+
+    func testIFrameStreamInfValidationErrors() {
+        let missingURI = """
+        #EXTM3U
+        #EXT-X-I-FRAME-STREAM-INF:BANDWIDTH=500000,RESOLUTION=1920x1080
+        """
+        XCTAssertThrowsError(try HLSManifestParser.parse(missingURI, baseURL: hlsURL)) { error in
+            guard case ManifestParserError.malformed(let reason) = error else {
+                XCTFail("Expected malformed error, got: \(error)")
+                return
+            }
+            XCTAssertTrue(reason.contains("requires a valid URI"))
+        }
+
+        let missingBandwidth = """
+        #EXTM3U
+        #EXT-X-I-FRAME-STREAM-INF:URI="iframe.m3u8",RESOLUTION=1920x1080
+        """
+        XCTAssertThrowsError(try HLSManifestParser.parse(missingBandwidth, baseURL: hlsURL)) { error in
+            guard case ManifestParserError.malformed(let reason) = error else {
+                XCTFail("Expected malformed error, got: \(error)")
+                return
+            }
+            XCTAssertTrue(reason.contains("requires a positive BANDWIDTH"))
+        }
+
+        let danglingStreamInf = """
+        #EXTM3U
+        #EXT-X-STREAM-INF:BANDWIDTH=2000000,RESOLUTION=1280x720
+        #EXT-X-I-FRAME-STREAM-INF:BANDWIDTH=500000,URI="iframe.m3u8"
+        """
+        XCTAssertThrowsError(try HLSManifestParser.parse(danglingStreamInf, baseURL: hlsURL)) { error in
+            guard case ManifestParserError.malformed(let reason) = error else {
+                XCTFail("Expected malformed error, got: \(error)")
+                return
+            }
+            XCTAssertTrue(reason.contains("variant is missing its URI"))
+        }
+    }
 }

@@ -19,6 +19,7 @@ public struct HLSVariantStreamItem: Identifiable, Sendable, Hashable {
     public let estimatedSizeBytes: Int64?
     public let estimatedSizeText: String?
     public let isLive: Bool
+    public let isIFrameOnly: Bool
 
     public init(
         id: String,
@@ -37,7 +38,8 @@ public struct HLSVariantStreamItem: Identifiable, Sendable, Hashable {
         videoCodec: String? = nil,
         estimatedSizeBytes: Int64? = nil,
         estimatedSizeText: String? = nil,
-        isLive: Bool = false
+        isLive: Bool = false,
+        isIFrameOnly: Bool = false
     ) {
         self.id = id
         self.masterURL = masterURL
@@ -56,6 +58,7 @@ public struct HLSVariantStreamItem: Identifiable, Sendable, Hashable {
         self.estimatedSizeBytes = estimatedSizeBytes
         self.estimatedSizeText = estimatedSizeText
         self.isLive = isLive
+        self.isIFrameOnly = isIFrameOnly
     }
 }
 
@@ -88,6 +91,10 @@ public enum HLSResourceGrouping {
               manifest.playlistType == .master else { return nil }
         let isLive = manifest.lifecycle == .live || manifest.lifecycle == .event || resource.isLive
         let deduplicated = HLSVariantSelector.deduplicate(manifest.variants)
+        let variantsToSummarize: [HLSVariant] = {
+            let primary = deduplicated.filter { !$0.isIFrameOnly }
+            return primary.isEmpty ? deduplicated : primary
+        }()
         var seenHeights = Set<Int>()
         var seenBadges = Set<String>()
         var qualityBadges: [String] = []
@@ -96,7 +103,7 @@ public enum HLSResourceGrouping {
             qualityBadges.append("LIVE")
         }
 
-        let sorted = deduplicated.sorted { lhs, rhs in
+        let sorted = variantsToSummarize.sorted { lhs, rhs in
             let lRes = (lhs.resolution?.width ?? 0) * (lhs.resolution?.height ?? 0)
             let rRes = (rhs.resolution?.width ?? 0) * (rhs.resolution?.height ?? 0)
             if lRes != rRes { return lRes < rRes }
@@ -106,10 +113,12 @@ public enum HLSResourceGrouping {
         for variant in sorted {
             if let h = variant.resolution?.height {
                 if seenHeights.insert(h).inserted {
-                    qualityBadges.append("\(h)p")
+                    let badge = variant.isIFrameOnly ? "\(h)p (I-Frame)" : "\(h)p"
+                    qualityBadges.append(badge)
                 }
             } else {
-                let badge = formatBandwidthAsQuality(variant.bandwidth)
+                let baseBadge = formatBandwidthAsQuality(variant.bandwidth)
+                let badge = variant.isIFrameOnly ? "\(baseBadge) (I-Frame)" : baseBadge
                 if seenBadges.insert(badge).inserted {
                     qualityBadges.append(badge)
                 }
@@ -132,6 +141,9 @@ public enum HLSResourceGrouping {
         }
 
         let sorted = manifest.variants.sorted { lhs, rhs in
+            if lhs.isIFrameOnly != rhs.isIFrameOnly {
+                return !lhs.isIFrameOnly && rhs.isIFrameOnly
+            }
             let lhsBandwidth = lhs.averageBandwidth ?? lhs.bandwidth
             let rhsBandwidth = rhs.averageBandwidth ?? rhs.bandwidth
             if lhsBandwidth != rhsBandwidth { return lhsBandwidth > rhsBandwidth }
@@ -144,29 +156,38 @@ public enum HLSResourceGrouping {
 
         return deduplicated.map { variant in
             let height = variant.resolution?.height
-            let qualityLabel = height.map { "\($0)p" } ?? formatBandwidthAsQuality(variant.bandwidth)
+            let baseLabel = height.map { "\($0)p" } ?? formatBandwidthAsQuality(variant.bandwidth)
+            let qualityLabel = variant.isIFrameOnly ? "\(baseLabel) (I-Frame)" : baseLabel
             let resText = variant.resolution.map { "\($0.width)x\($0.height)" }
             let bwText = formatBandwidth(variant.bandwidth)
             let hasSub = variant.subtitlesGroup != nil || hasMasterSubtitles
 
-            let selectedAudio = HLSVariantSelector.selectAudioRendition(for: variant, master: manifest)
-            let muxedInCodecs = isAudioInCodecs(variant.codecs)
-            let legacyMuxed = (variant.codecs == nil && variant.audioGroup == nil)
-            let hasInStreamAudioRendition = (variant.codecs == nil) && manifest.renditions.contains {
-                $0.type.uppercased() == "AUDIO" && $0.groupID == variant.audioGroup && $0.uri == nil
-            }
-            let hasAud = (selectedAudio != nil) || muxedInCodecs || legacyMuxed || hasInStreamAudioRendition
-            let audioText: String? = {
-                if !hasAud { return nil }
-                if let audioName = selectedAudio?.name, !audioName.isEmpty {
-                    return audioName
+            let hasAud: Bool
+            let audioText: String?
+            if variant.isIFrameOnly {
+                hasAud = false
+                audioText = nil
+            } else {
+                let selectedAudio = HLSVariantSelector.selectAudioRendition(for: variant, master: manifest)
+                let muxedInCodecs = isAudioInCodecs(variant.codecs)
+                let legacyMuxed = (variant.codecs == nil && variant.audioGroup == nil)
+                let hasInStreamAudioRendition = (variant.codecs == nil) && manifest.renditions.contains {
+                    $0.type.uppercased() == "AUDIO" && $0.groupID == variant.audioGroup && $0.uri == nil
                 }
-                return "Audio"
-            }()
+                hasAud = (selectedAudio != nil) || muxedInCodecs || legacyMuxed || hasInStreamAudioRendition
+                audioText = {
+                    if !hasAud { return nil }
+                    if let audioName = selectedAudio?.name, !audioName.isEmpty {
+                        return audioName
+                    }
+                    return "Audio"
+                }()
+            }
 
             let vCodec = extractVideoCodecName(variant.codecs)
             let uriHash = String(EngineSHA256.hash(data: Data(variant.uri.absoluteString.utf8)).prefix(8))
-            let id = "\(resource.id)-variant-\(variant.bandwidth)-\(height ?? 0)-\(uriHash)"
+            let iframePrefix = variant.isIFrameOnly ? "iframe-" : ""
+            let id = "\(resource.id)-variant-\(iframePrefix)\(variant.bandwidth)-\(height ?? 0)-\(uriHash)"
 
             return HLSVariantStreamItem(
                 id: id,
@@ -185,7 +206,8 @@ public enum HLSResourceGrouping {
                 videoCodec: vCodec,
                 estimatedSizeBytes: isLive ? nil : nil,
                 estimatedSizeText: isLive ? "Live Broadcast" : nil,
-                isLive: isLive
+                isLive: isLive,
+                isIFrameOnly: variant.isIFrameOnly
             )
         }
     }
@@ -227,12 +249,16 @@ public enum HLSResourceGrouping {
         return items.map { item in
             let isLive = item.isLive || masterResource.isLive
             let baseFilename = (masterResource.suggestedFilename as NSString).deletingPathExtension
-            var filename = "\(baseFilename)-\(item.qualityLabel).mp4"
+            let safeQualityLabel = item.qualityLabel
+                .replacingOccurrences(of: " ", with: "-")
+                .replacingOccurrences(of: "(", with: "")
+                .replacingOccurrences(of: ")", with: "")
+            var filename = "\(baseFilename)-\(safeQualityLabel).mp4"
             let livePrefix = isLive ? "[LIVE] " : ""
             var title = "\(livePrefix)HLS \(item.qualityLabel)"
             if seenFilenames.contains(filename.lowercased()) {
                 let disambiguator = item.bitrateText.replacingOccurrences(of: " ", with: "")
-                filename = "\(baseFilename)-\(item.qualityLabel)-\(disambiguator).mp4"
+                filename = "\(baseFilename)-\(safeQualityLabel)-\(disambiguator).mp4"
                 title = "\(livePrefix)HLS \(item.qualityLabel) (\(item.bitrateText))"
             }
             seenFilenames.insert(filename.lowercased())

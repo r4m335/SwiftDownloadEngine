@@ -280,4 +280,76 @@ final class HLSResourceGroupingTests: XCTestCase {
         XCTAssertNotNil(res.unsupportedReason)
         XCTAssertTrue(res.title.hasPrefix("[LIVE]"))
     }
+
+    func testIFrameOnlyMasterPlaylistExtractsLabeledVariantsWithoutAudio() {
+        let masterURL = URL(string: "https://media.example.com/iframe_master.m3u8")!
+        let master = WebpageResource(
+            id: "iframe-master",
+            url: masterURL,
+            title: "Trickplay Thumbnails",
+            suggestedFilename: "master.m3u8",
+            resourceType: .video,
+            mimeType: "application/vnd.apple.mpegurl",
+            manifestText: """
+            #EXTM3U
+            #EXT-X-VERSION:4
+            #EXT-X-I-FRAME-STREAM-INF:BANDWIDTH=800000,RESOLUTION=1920x1080,URI="iframe_1080p.m3u8"
+            #EXT-X-I-FRAME-STREAM-INF:BANDWIDTH=400000,RESOLUTION=1280x720,URI="iframe_720p.m3u8"
+            """
+        )
+
+        let summary = HLSResourceGrouping.qualitySummary(for: master)
+        XCTAssertEqual(summary, "720p (I-Frame) · 1080p (I-Frame)")
+
+        let items = HLSResourceGrouping.extractVariantStreamItems(for: master)
+        XCTAssertEqual(items.count, 2)
+        XCTAssertTrue(items[0].isIFrameOnly)
+        XCTAssertEqual(items[0].qualityLabel, "1080p (I-Frame)")
+        XCTAssertFalse(items[0].hasAudio, "I-frame variant must not claim to have audio")
+        XCTAssertNil(items[0].audioText)
+
+        let resources = HLSResourceGrouping.extractVariantResources(from: master)
+        XCTAssertEqual(resources.count, 2)
+        XCTAssertTrue(resources[0].title.contains("1080p (I-Frame)"))
+        XCTAssertFalse(resources[0].suggestedFilename.contains("("), "Filename should not contain raw parens")
+    }
+
+    func testMixedMasterPlaylistQualitySummaryShowsPrimaryQualities() {
+        let masterURL = URL(string: "https://media.example.com/master.m3u8")!
+        let master = WebpageResource(
+            id: "mixed-master",
+            url: masterURL,
+            title: "Full Video with Trickplay",
+            suggestedFilename: "master.m3u8",
+            resourceType: .video,
+            mimeType: "application/vnd.apple.mpegurl",
+            manifestText: """
+            #EXTM3U
+            #EXT-X-STREAM-INF:BANDWIDTH=3000000,RESOLUTION=1920x1080,CODECS="avc1.640028,mp4a.40.2"
+            1080p.m3u8
+            #EXT-X-I-FRAME-STREAM-INF:BANDWIDTH=800000,RESOLUTION=1920x1080,URI="iframe_1080p.m3u8"
+            #EXT-X-STREAM-INF:BANDWIDTH=1500000,RESOLUTION=1280x720,CODECS="avc1.4d401f,mp4a.40.2"
+            720p.m3u8
+            """
+        )
+
+        // Summary must summarize primary variants (720p · 1080p) without duplicate (I-Frame) badges
+        let summary = HLSResourceGrouping.qualitySummary(for: master)
+        XCTAssertEqual(summary, "720p · 1080p")
+
+        let items = HLSResourceGrouping.extractVariantStreamItems(for: master)
+        XCTAssertEqual(items.count, 3)
+        // Primary 1080p, primary 720p, then I-frame 1080p
+        XCTAssertFalse(items[0].isIFrameOnly)
+        XCTAssertEqual(items[0].qualityLabel, "1080p")
+        XCTAssertTrue(items[0].hasAudio)
+
+        XCTAssertFalse(items[1].isIFrameOnly)
+        XCTAssertEqual(items[1].qualityLabel, "720p")
+        XCTAssertTrue(items[1].hasAudio)
+
+        XCTAssertTrue(items[2].isIFrameOnly)
+        XCTAssertEqual(items[2].qualityLabel, "1080p (I-Frame)")
+        XCTAssertFalse(items[2].hasAudio)
+    }
 }

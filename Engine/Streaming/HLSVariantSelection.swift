@@ -117,6 +117,9 @@ public enum HLSVariantSelector {
         }
 
         let sorted = finalMatching.sorted { lhs, rhs in
+            if lhs.isIFrameOnly != rhs.isIFrameOnly {
+                return !lhs.isIFrameOnly && rhs.isIFrameOnly
+            }
             let lhsBandwidth = lhs.averageBandwidth ?? lhs.bandwidth
             let rhsBandwidth = rhs.averageBandwidth ?? rhs.bandwidth
             if lhsBandwidth != rhsBandwidth { return lhsBandwidth > rhsBandwidth }
@@ -147,11 +150,12 @@ public enum HLSVariantSelector {
 
             let vCodec = extractVideoCodecFamily(variant.codecs)
             let fpsKey = variant.frameRate.map { "\(Int($0.rounded()))fps" } ?? "anyfps"
+            let iframeKey = variant.isIFrameOnly ? ":iframe" : ""
             let qualityKey: String
             if let res = variant.resolution {
-                qualityKey = "res:\(res.width)x\(res.height):\(vCodec ?? "any"):\(fpsKey)"
+                qualityKey = "res:\(res.width)x\(res.height):\(vCodec ?? "any"):\(fpsKey)\(iframeKey)"
             } else {
-                qualityKey = "bw:\(variant.bandwidth):\(vCodec ?? "any"):\(fpsKey)"
+                qualityKey = "bw:\(variant.bandwidth):\(vCodec ?? "any"):\(fpsKey)\(iframeKey)"
             }
 
             if seenKeys.contains(qualityKey) {

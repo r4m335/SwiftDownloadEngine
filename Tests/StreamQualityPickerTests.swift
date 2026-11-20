@@ -554,5 +554,30 @@ final class StreamQualityPickerTests: XCTestCase {
         XCTAssertTrue(options[0].label.contains("H.264") || options[0].label.contains("6.0 Mbps"))
         XCTAssertTrue(options[1].label.contains("HEVC") || options[1].label.contains("4.0 Mbps"))
     }
+
+    func testHLSQualityInspectionDiscoversIFrameVariants() throws {
+        let masterWithIFrames = """
+        #EXTM3U
+        #EXT-X-VERSION:4
+        #EXT-X-STREAM-INF:BANDWIDTH=4000000,RESOLUTION=1920x1080,CODECS="avc1.640028,mp4a.40.2"
+        1080p.m3u8
+        #EXT-X-I-FRAME-STREAM-INF:BANDWIDTH=800000,RESOLUTION=1920x1080,URI="iframe_1080p.m3u8"
+        """
+
+        let options = try StreamQualityInspector.inspectHLS(
+            manifestText: masterWithIFrames,
+            baseURL: masterURL
+        )
+
+        XCTAssertEqual(options.count, 2)
+        XCTAssertFalse(options[0].isIFrameOnly)
+        XCTAssertEqual(options[0].qualityBadge, "1080p")
+        XCTAssertTrue(options[0].hasAudio)
+
+        XCTAssertTrue(options[1].isIFrameOnly)
+        XCTAssertEqual(options[1].qualityBadge, "1080p (I-Frame)")
+        XCTAssertFalse(options[1].hasAudio)
+        XCTAssertTrue(options[1].id.contains("iframe"))
+    }
 }
 
