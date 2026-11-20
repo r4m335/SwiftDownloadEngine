@@ -88,6 +88,10 @@ public struct BlobExportLimits: Sendable, Equatable {
     public static let `default` = BlobExportLimits()
 }
 
+/// Backward compatibility alias for legacy call sites and tests.
+public typealias BrowserBlobCaptureLimits = BlobExportLimits
+
+
 // MARK: - Capture Authorization
 
 /// An authorization token issued by the native side before any JS messages are accepted.
