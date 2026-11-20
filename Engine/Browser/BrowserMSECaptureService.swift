@@ -342,7 +342,7 @@ public struct BrowserMSECaptureSnapshot: Sendable, Equatable {
     }
 }
 
-public enum BrowserMSECapturePrototypeError: Error, LocalizedError, Sendable, Equatable {
+public enum BrowserMSECaptureError: Error, LocalizedError, Sendable, Equatable {
     case invalidCaptureID
     case captureNotAuthorized
     case documentMismatch
@@ -417,7 +417,7 @@ public struct BrowserMSECaptureMetadata: Codable, Sendable, Equatable {
 /// Native receiver for ordered MSE segment chunks. Bytes are written to staging
 /// segment files immediately; reconstruction runs only when the user stops or
 /// the page signals end-of-stream.
-public actor BrowserMSECapturePrototypeWriter {
+public actor BrowserMSECaptureWriter {
     private struct TrackState {
         let mimeType: String
         let kind: BrowserMSECaptureTrackKind
@@ -458,10 +458,10 @@ public actor BrowserMSECapturePrototypeWriter {
 
     public func begin(metadata: BrowserMSECaptureMetadata) throws -> BrowserMSECaptureSnapshot {
         guard validCaptureID(metadata.captureID) else {
-            throw BrowserMSECapturePrototypeError.invalidCaptureID
+            throw BrowserMSECaptureError.invalidCaptureID
         }
         guard !sessions.keys.contains(metadata.captureID) else {
-            throw BrowserMSECapturePrototypeError.captureAlreadyComplete
+            throw BrowserMSECaptureError.captureAlreadyComplete
         }
 
         let support = BrowserMSECaptureSupportClassifier.evaluate(
@@ -469,10 +469,10 @@ public actor BrowserMSECapturePrototypeWriter {
             isPotentiallyProtected: metadata.isPotentiallyProtected
         )
         if support.status == .protectedMedia {
-            throw BrowserMSECapturePrototypeError.protectedMedia
+            throw BrowserMSECaptureError.protectedMedia
         }
         guard support.isCapturable else {
-            throw BrowserMSECapturePrototypeError.unsupportedSession
+            throw BrowserMSECaptureError.unsupportedSession
         }
 
         let staging = destinationDirectoryURL
@@ -481,7 +481,7 @@ public actor BrowserMSECapturePrototypeWriter {
         do {
             try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
         } catch {
-            throw BrowserMSECapturePrototypeError.fileOperationFailed
+            throw BrowserMSECaptureError.fileOperationFailed
         }
 
         var tracks: [Int: TrackState] = [:]
@@ -548,45 +548,45 @@ public actor BrowserMSECapturePrototypeWriter {
         appendTimestamp: Double? = nil
     ) throws -> BrowserMSECaptureSnapshot {
         guard var session = sessions[captureID] else {
-            throw BrowserMSECapturePrototypeError.unknownCapture
+            throw BrowserMSECaptureError.unknownCapture
         }
         guard session.lifecycle == .capturing else {
-            throw BrowserMSECapturePrototypeError.captureAlreadyComplete
+            throw BrowserMSECaptureError.captureAlreadyComplete
         }
 
         do {
             guard chunkIndex == session.nextChunkIndex else {
-                throw BrowserMSECapturePrototypeError.invalidChunkIndex
+                throw BrowserMSECaptureError.invalidChunkIndex
             }
             guard offset == session.nextChunkOffset else {
-                throw BrowserMSECapturePrototypeError.invalidChunkOffset
+                throw BrowserMSECaptureError.invalidChunkOffset
             }
             guard !data.isEmpty, data.count <= limits.maximumChunkBytes else {
-                throw BrowserMSECapturePrototypeError.chunkTooLarge
+                throw BrowserMSECaptureError.chunkTooLarge
             }
             guard session.bytesCaptured <= limits.maximumBytes - Int64(data.count) else {
-                throw BrowserMSECapturePrototypeError.sizeLimitExceeded
+                throw BrowserMSECaptureError.sizeLimitExceeded
             }
             guard sha256.count == 64, sha256.allSatisfy(\.isHexDigit) else {
-                throw BrowserMSECapturePrototypeError.invalidChecksum
+                throw BrowserMSECaptureError.invalidChecksum
             }
             guard EngineSHA256.hash(data: data).caseInsensitiveCompare(sha256) == .orderedSame else {
-                throw BrowserMSECapturePrototypeError.checksumMismatch
+                throw BrowserMSECaptureError.checksumMismatch
             }
             guard var track = session.tracks[trackIndex] else {
-                throw BrowserMSECapturePrototypeError.unsupportedSession
+                throw BrowserMSECaptureError.unsupportedSession
             }
             if segmentIndex < 0 || segmentIndex > track.nextExpectedSegmentIndex {
-                throw BrowserMSECapturePrototypeError.invalidSegmentIndex
+                throw BrowserMSECaptureError.invalidSegmentIndex
             }
             if track.mediaSegments.count + (track.initializationURL == nil ? 0 : 1) >= limits.maximumSegmentsPerTrack {
-                throw BrowserMSECapturePrototypeError.tooManySegments
+                throw BrowserMSECaptureError.tooManySegments
             }
 
             if track.openSegmentIndex != segmentIndex {
                 try closeOpenSegment(track: &track, container: session.support.container)
                 guard segmentIndex == track.nextExpectedSegmentIndex else {
-                    throw BrowserMSECapturePrototypeError.invalidSegmentIndex
+                    throw BrowserMSECaptureError.invalidSegmentIndex
                 }
                 let segmentURL = session.stagingDirectoryURL
                     .appendingPathComponent("track-\(trackIndex)-seg-\(segmentIndex).part", isDirectory: false)
@@ -596,7 +596,7 @@ public actor BrowserMSECapturePrototypeWriter {
                     PipelineLogger.shared.log(stage: .browser, message: "Failed to remove pre-existing segmentURL \(segmentURL.path): \(error)")
                 }
                 guard FileManager.default.createFile(atPath: segmentURL.path, contents: nil) else {
-                    throw BrowserMSECapturePrototypeError.fileOperationFailed
+                    throw BrowserMSECaptureError.fileOperationFailed
                 }
                 track.openHandle = try FileHandle(forWritingTo: segmentURL)
                 track.openURL = segmentURL
@@ -605,7 +605,7 @@ public actor BrowserMSECapturePrototypeWriter {
             }
 
             guard let handle = track.openHandle else {
-                throw BrowserMSECapturePrototypeError.fileOperationFailed
+                throw BrowserMSECaptureError.fileOperationFailed
             }
             try handle.write(contentsOf: data)
             track.openBytes += Int64(data.count)
@@ -643,12 +643,12 @@ public actor BrowserMSECapturePrototypeWriter {
             persistRecoveryRecord(recoveryRecord)
 
             return snapshot(for: session)
-        } catch let error as BrowserMSECapturePrototypeError {
+        } catch let error as BrowserMSECaptureError {
             abort(captureID: captureID)
             throw error
         } catch {
             abort(captureID: captureID)
-            throw BrowserMSECapturePrototypeError.fileOperationFailed
+            throw BrowserMSECaptureError.fileOperationFailed
         }
     }
 
@@ -656,10 +656,10 @@ public actor BrowserMSECapturePrototypeWriter {
     /// publishes a reconstructed file. Captured bytes alone are never success.
     public func complete(captureID: String) async throws -> BrowserMSECaptureSnapshot {
         guard var session = sessions[captureID] else {
-            throw BrowserMSECapturePrototypeError.unknownCapture
+            throw BrowserMSECaptureError.unknownCapture
         }
         guard session.lifecycle == .capturing else {
-            throw BrowserMSECapturePrototypeError.captureAlreadyComplete
+            throw BrowserMSECaptureError.captureAlreadyComplete
         }
 
         do {
@@ -687,12 +687,12 @@ public actor BrowserMSECapturePrototypeWriter {
             cleanupStaging(session: session, keepOutput: output)
             sessions.removeValue(forKey: captureID)
             return result
-        } catch let error as BrowserMSECapturePrototypeError {
+        } catch let error as BrowserMSECaptureError {
             abort(captureID: captureID)
             throw error
         } catch {
             abort(captureID: captureID)
-            throw BrowserMSECapturePrototypeError.reconstructionFailed
+            throw BrowserMSECaptureError.reconstructionFailed
         }
     }
 
@@ -737,7 +737,7 @@ public actor BrowserMSECapturePrototypeWriter {
             if track.initializationURL != nil {
                 // Quality switches that re-append init are outside the narrow
                 // prototype; treat as unsupported rather than corrupting output.
-                throw BrowserMSECapturePrototypeError.unsupportedSession
+                throw BrowserMSECaptureError.unsupportedSession
             }
             track.initializationURL = finalURL
             track.initializationByteCount = bytes
@@ -774,14 +774,14 @@ public actor BrowserMSECapturePrototypeWriter {
 
     private func reconstruct(session: Session) async throws -> URL {
         guard session.bytesCaptured > 0, session.segmentCount > 0 else {
-            throw BrowserMSECapturePrototypeError.incompleteCapture
+            throw BrowserMSECaptureError.incompleteCapture
         }
 
         let assemblyContainer: MediaAssemblyContainer
         switch session.support.container {
         case .fragmentedMP4: assemblyContainer = .fragmentedMP4
         case .mpegTS: assemblyContainer = .mpegTS
-        case .unsupported: throw BrowserMSECapturePrototypeError.unsupportedSession
+        case .unsupported: throw BrowserMSECaptureError.unsupportedSession
         }
 
         var tracks: [MediaAssemblyTrack] = []
@@ -791,16 +791,16 @@ public actor BrowserMSECapturePrototypeWriter {
             switch track.kind {
             case .video: kind = .video
             case .audio: kind = .audio
-            case .unknown: throw BrowserMSECapturePrototypeError.unsupportedSession
+            case .unknown: throw BrowserMSECaptureError.unsupportedSession
             }
 
             if assemblyContainer == .fragmentedMP4 {
                 guard let initURL = track.initializationURL,
                       let initBytes = track.initializationByteCount else {
-                    throw BrowserMSECapturePrototypeError.missingInitializationSegment
+                    throw BrowserMSECaptureError.missingInitializationSegment
                 }
                 guard !track.mediaSegments.isEmpty else {
-                    throw BrowserMSECapturePrototypeError.incompleteCapture
+                    throw BrowserMSECaptureError.incompleteCapture
                 }
                 let media = track.mediaSegments.enumerated().map { index, item in
                     MediaAssemblySegment(
@@ -824,7 +824,7 @@ public actor BrowserMSECapturePrototypeWriter {
                 ))
             } else {
                 guard !track.mediaSegments.isEmpty else {
-                    throw BrowserMSECapturePrototypeError.incompleteCapture
+                    throw BrowserMSECaptureError.incompleteCapture
                 }
                 let media = track.mediaSegments.enumerated().map { index, item in
                     MediaAssemblySegment(
@@ -862,18 +862,18 @@ public actor BrowserMSECapturePrototypeWriter {
         } catch let error as MediaAssemblyError {
             switch error {
             case .encryptedMediaNotSupported:
-                throw BrowserMSECapturePrototypeError.protectedMedia
+                throw BrowserMSECaptureError.protectedMedia
             case .missingInitializationSegment:
-                throw BrowserMSECapturePrototypeError.missingInitializationSegment
+                throw BrowserMSECaptureError.missingInitializationSegment
             case .invalidMediaData:
-                throw BrowserMSECapturePrototypeError.invalidMediaData
+                throw BrowserMSECaptureError.invalidMediaData
             case .muxingUnavailable, .muxingFailed, .multipleTracksNotSupported:
-                throw BrowserMSECapturePrototypeError.reconstructionFailed
+                throw BrowserMSECaptureError.reconstructionFailed
             default:
-                throw BrowserMSECapturePrototypeError.reconstructionFailed
+                throw BrowserMSECaptureError.reconstructionFailed
             }
         } catch {
-            throw BrowserMSECapturePrototypeError.reconstructionFailed
+            throw BrowserMSECaptureError.reconstructionFailed
         }
     }
 
@@ -994,7 +994,7 @@ public actor BrowserMSECapturePrototypeWriter {
                     }
                 }
             } catch {
-                PipelineLogger.shared.log(stage: .browser, message: "[BrowserMSECapturePrototype] Corrupt recovery record at \(recoveryURL.path) was quarantined: \(error)")
+                PipelineLogger.shared.log(stage: .browser, message: "[BrowserMSECaptureService] Corrupt recovery record at \(recoveryURL.path) was quarantined: \(error)")
                 continue
             }
         }
@@ -1013,7 +1013,7 @@ public actor BrowserMSECapturePrototypeWriter {
         do {
             return try DurableStorage.load(from: recoveryURL, decoder: decoder)
         } catch {
-            PipelineLogger.shared.log(stage: .browser, message: "[BrowserMSECapturePrototype] Corrupt recovery record at \(recoveryURL.path) was quarantined: \(error)")
+            PipelineLogger.shared.log(stage: .browser, message: "[BrowserMSECaptureService] Corrupt recovery record at \(recoveryURL.path) was quarantined: \(error)")
             return nil
         }
     }
@@ -1097,7 +1097,7 @@ enum BrowserMSECaptureSegmentInspector {
     }
 }
 
-public struct BrowserMSECapturePrototypeMessage: Codable, Sendable, Equatable {
+public struct BrowserMSECaptureMessage: Codable, Sendable, Equatable {
     public enum Kind: String, Codable, Sendable, Equatable {
         case metadata
         case chunk
@@ -1210,17 +1210,17 @@ public struct BrowserMSECapturePrototypeMessage: Codable, Sendable, Equatable {
     }
 }
 
-public struct BrowserMSECapturePrototypeAck: Sendable, Equatable {
+public struct BrowserMSECaptureAck: Sendable, Equatable {
     public let captureID: String
     public let accepted: Bool
     public let snapshot: BrowserMSECaptureSnapshot?
-    public let error: BrowserMSECapturePrototypeError?
+    public let error: BrowserMSECaptureError?
 
     public init(
         captureID: String,
         accepted: Bool,
         snapshot: BrowserMSECaptureSnapshot? = nil,
-        error: BrowserMSECapturePrototypeError? = nil
+        error: BrowserMSECaptureError? = nil
     ) {
         self.captureID = captureID
         self.accepted = accepted
@@ -1229,12 +1229,12 @@ public struct BrowserMSECapturePrototypeAck: Sendable, Equatable {
     }
 }
 
-public actor BrowserMSECapturePrototypeReceiver {
-    private let writer: BrowserMSECapturePrototypeWriter
+public actor BrowserMSECaptureReceiver {
+    private let writer: BrowserMSECaptureWriter
     private var authorizedCaptureIDs: Set<String> = []
     private var expectedDocumentIDs: [String: String] = [:]
 
-    public init(writer: BrowserMSECapturePrototypeWriter) {
+    public init(writer: BrowserMSECaptureWriter) {
         self.writer = writer
     }
 
@@ -1253,10 +1253,10 @@ public actor BrowserMSECapturePrototypeReceiver {
         await writer.cancel(captureID: captureID)
     }
 
-    public nonisolated func receive(payload: Any) async -> BrowserMSECapturePrototypeAck {
+    public nonisolated func receive(payload: Any) async -> BrowserMSECaptureAck {
         guard JSONSerialization.isValidJSONObject(payload),
               let data = try? JSONSerialization.data(withJSONObject: payload) else {
-            return BrowserMSECapturePrototypeAck(
+            return BrowserMSECaptureAck(
                 captureID: "",
                 accepted: false,
                 error: .fileOperationFailed
@@ -1265,26 +1265,26 @@ public actor BrowserMSECapturePrototypeReceiver {
         return await receive(data: data)
     }
 
-    public func receive(data: Data) async -> BrowserMSECapturePrototypeAck {
+    public func receive(data: Data) async -> BrowserMSECaptureAck {
         var captureID = ""
         do {
-            guard let message = try? JSONDecoder().decode(BrowserMSECapturePrototypeMessage.self, from: data) else {
-                throw BrowserMSECapturePrototypeError.fileOperationFailed
+            guard let message = try? JSONDecoder().decode(BrowserMSECaptureMessage.self, from: data) else {
+                throw BrowserMSECaptureError.fileOperationFailed
             }
             captureID = message.captureID
             guard authorizedCaptureIDs.contains(message.captureID) else {
-                throw BrowserMSECapturePrototypeError.captureNotAuthorized
+                throw BrowserMSECaptureError.captureNotAuthorized
             }
             if let expectedDocumentID = expectedDocumentIDs[message.captureID],
                message.documentID != expectedDocumentID {
-                throw BrowserMSECapturePrototypeError.documentMismatch
+                throw BrowserMSECaptureError.documentMismatch
             }
 
             switch message.kind {
             case .metadata:
                 guard let mediaSourceURL = message.mediaSourceURL,
                       let mimeTypes = message.mimeTypes else {
-                    throw BrowserMSECapturePrototypeError.unsupportedSession
+                    throw BrowserMSECaptureError.unsupportedSession
                 }
                 let metadata = BrowserMSECaptureMetadata(
                     captureID: message.captureID,
@@ -1294,7 +1294,7 @@ public actor BrowserMSECapturePrototypeReceiver {
                     isPotentiallyProtected: message.isPotentiallyProtected == true
                 )
                 let snapshot = try await writer.begin(metadata: metadata)
-                return BrowserMSECapturePrototypeAck(captureID: message.captureID, accepted: true, snapshot: snapshot)
+                return BrowserMSECaptureAck(captureID: message.captureID, accepted: true, snapshot: snapshot)
             case .chunk:
                 guard let index = message.chunkIndex,
                       let offset = message.offset,
@@ -1303,7 +1303,7 @@ public actor BrowserMSECapturePrototypeReceiver {
                       let base64 = message.base64,
                       let checksum = message.sha256,
                       let data = Data(base64Encoded: base64) else {
-                    throw BrowserMSECapturePrototypeError.fileOperationFailed
+                    throw BrowserMSECaptureError.fileOperationFailed
                 }
                 let snapshot = try await writer.appendChunk(
                     captureID: message.captureID,
@@ -1317,31 +1317,31 @@ public actor BrowserMSECapturePrototypeReceiver {
                     timestampOffset: message.timestampOffset,
                     appendTimestamp: message.appendTimestamp
                 )
-                return BrowserMSECapturePrototypeAck(captureID: message.captureID, accepted: true, snapshot: snapshot)
+                return BrowserMSECaptureAck(captureID: message.captureID, accepted: true, snapshot: snapshot)
             case .complete:
                 let snapshot = try await writer.complete(captureID: message.captureID)
                 authorizedCaptureIDs.remove(message.captureID)
                 expectedDocumentIDs.removeValue(forKey: message.captureID)
-                return BrowserMSECapturePrototypeAck(captureID: message.captureID, accepted: true, snapshot: snapshot)
+                return BrowserMSECaptureAck(captureID: message.captureID, accepted: true, snapshot: snapshot)
             case .failure, .cancel:
                 authorizedCaptureIDs.remove(message.captureID)
                 expectedDocumentIDs.removeValue(forKey: message.captureID)
                 await writer.cancel(captureID: message.captureID)
-                return BrowserMSECapturePrototypeAck(captureID: message.captureID, accepted: true)
+                return BrowserMSECaptureAck(captureID: message.captureID, accepted: true)
             }
-        } catch let error as BrowserMSECapturePrototypeError {
+        } catch let error as BrowserMSECaptureError {
             if !captureID.isEmpty {
                 authorizedCaptureIDs.remove(captureID)
                 expectedDocumentIDs.removeValue(forKey: captureID)
                 await writer.cancel(captureID: captureID)
             }
-            return BrowserMSECapturePrototypeAck(captureID: captureID, accepted: false, error: error)
+            return BrowserMSECaptureAck(captureID: captureID, accepted: false, error: error)
         } catch {
             if !captureID.isEmpty {
                 expectedDocumentIDs.removeValue(forKey: captureID)
                 await writer.cancel(captureID: captureID)
             }
-            return BrowserMSECapturePrototypeAck(captureID: captureID, accepted: false, error: .fileOperationFailed)
+            return BrowserMSECaptureAck(captureID: captureID, accepted: false, error: .fileOperationFailed)
         }
     }
 
@@ -1366,17 +1366,17 @@ public actor BrowserMSECapturePrototypeReceiver {
 }
 
 public actor BrowserMSECaptureService {
-    public nonisolated let receiver: BrowserMSECapturePrototypeReceiver
+    public nonisolated let receiver: BrowserMSECaptureReceiver
 
     public init(
         destinationDirectoryURL: URL,
         limits: BrowserMSECaptureLimits = .default
     ) {
-        let writer = BrowserMSECapturePrototypeWriter(
+        let writer = BrowserMSECaptureWriter(
             destinationDirectoryURL: destinationDirectoryURL,
             limits: limits
         )
-        self.receiver = BrowserMSECapturePrototypeReceiver(writer: writer)
+        self.receiver = BrowserMSECaptureReceiver(writer: writer)
     }
 
     public func register(captureID: String, documentID: String?) async {
@@ -1399,22 +1399,22 @@ public actor BrowserMSECaptureService {
         await receiver.loadRecoveryRecord(for: captureID)
     }
 
-    public func receive(data: Data) async -> BrowserMSECapturePrototypeAck {
+    public func receive(data: Data) async -> BrowserMSECaptureAck {
         await receiver.receive(data: data)
     }
 
-    public nonisolated func receive(payload: Any) async -> BrowserMSECapturePrototypeAck {
+    public nonisolated func receive(payload: Any) async -> BrowserMSECaptureAck {
         await receiver.receive(payload: payload)
     }
 }
 
 #if canImport(WebKit)
 @MainActor
-public final class BrowserMSECapturePrototypeWebKitHandler: NSObject, WKScriptMessageHandler {
-    public let receiver: BrowserMSECapturePrototypeReceiver
-    public var acknowledgementHandler: ((BrowserMSECapturePrototypeAck) -> Void)?
+public final class BrowserMSECaptureWebKitHandler: NSObject, WKScriptMessageHandler {
+    public let receiver: BrowserMSECaptureReceiver
+    public var acknowledgementHandler: ((BrowserMSECaptureAck) -> Void)?
 
-    public init(receiver: BrowserMSECapturePrototypeReceiver) {
+    public init(receiver: BrowserMSECaptureReceiver) {
         self.receiver = receiver
         super.init()
     }
@@ -1422,19 +1422,19 @@ public final class BrowserMSECapturePrototypeWebKitHandler: NSObject, WKScriptMe
     public func install(on configuration: WKWebViewConfiguration) {
         configuration.userContentController.addUserScript(
             WKUserScript(
-                source: BrowserMSECapturePrototypeBridge.script,
+                source: BrowserMSECaptureBridge.script,
                 injectionTime: .atDocumentStart,
                 forMainFrameOnly: false
             )
         )
-        configuration.userContentController.add(self, name: BrowserMSECapturePrototypeBridge.messageName)
+        configuration.userContentController.add(self, name: BrowserMSECaptureBridge.messageName)
     }
 
     public func userContentController(
         _ userContentController: WKUserContentController,
         didReceive message: WKScriptMessage
     ) {
-        guard message.name == BrowserMSECapturePrototypeBridge.messageName,
+        guard message.name == BrowserMSECaptureBridge.messageName,
               let data = try? JSONSerialization.data(withJSONObject: message.body) else {
             return
         }
@@ -1446,7 +1446,7 @@ public final class BrowserMSECapturePrototypeWebKitHandler: NSObject, WKScriptMe
             guard let webView,
                   !acknowledgement.captureID.isEmpty else { return }
             _ = try? await webView.evaluateJavaScript(
-                BrowserMSECapturePrototypeBridge.acknowledgeCommand(
+                BrowserMSECaptureBridge.acknowledgeCommand(
                     captureID: acknowledgement.captureID,
                     accepted: acknowledgement.accepted
                 )
@@ -1458,7 +1458,7 @@ public final class BrowserMSECapturePrototypeWebKitHandler: NSObject, WKScriptMe
 
 /// Page bridge for optional MSE capture. Bytes are copied from `appendBuffer`
 /// only while an explicit capture is active for that MediaSource.
-public enum BrowserMSECapturePrototypeBridge {
+public enum BrowserMSECaptureBridge {
     public static let messageName = "browserMSECapture"
     public static let maximumChunkBytes = 256 * 1024
 
@@ -2030,16 +2030,21 @@ public enum BrowserMSECapturePrototypeBridge {
                                         info.initBoxTypes = getBoxTypes(copy);
                                     }
                                 } else {
-                                    // Bounded media fragments retention
-                                    info.mediaFragments.push({
-                                        bytes: copy,
-                                        byteLength: copy.length,
-                                        timestamp: Date.now(),
-                                        appendOrder: ++globalAppendCounter,
-                                        timestampOffset: Number(this.timestampOffset) || 0
-                                    });
-                                    info.totalMediaBytes += copy.length;
-                                    evictPreCaptureMediaFragments(info);
+                                    var objectURL = info.mediaSourceURL;
+                                    var session = objectURL ? activeCaptureForMediaSourceURL(objectURL) : null;
+                                    // Only buffer media fragments when an explicit capture session is active
+                                    // to eliminate unbounded WebKit JavaScript heap memory accumulation.
+                                    if (session) {
+                                        info.mediaFragments.push({
+                                            bytes: copy,
+                                            byteLength: copy.length,
+                                            timestamp: Date.now(),
+                                            appendOrder: ++globalAppendCounter,
+                                            timestampOffset: Number(this.timestampOffset) || 0
+                                        });
+                                        info.totalMediaBytes += copy.length;
+                                        evictPreCaptureMediaFragments(info);
+                                    }
                                 }
 
                                 var objectURL = info.mediaSourceURL;
@@ -2126,3 +2131,12 @@ public enum BrowserMSECapturePrototypeBridge {
         return String(encoded.dropFirst().dropLast())
     }
 }
+
+// MARK: - Legacy Compatibility Typealiases
+public typealias BrowserMSECapturePrototypeError = BrowserMSECaptureError
+public typealias BrowserMSECapturePrototypeWriter = BrowserMSECaptureWriter
+public typealias BrowserMSECapturePrototypeMessage = BrowserMSECaptureMessage
+public typealias BrowserMSECapturePrototypeAck = BrowserMSECaptureAck
+public typealias BrowserMSECapturePrototypeReceiver = BrowserMSECaptureReceiver
+public typealias BrowserMSECapturePrototypeWebKitHandler = BrowserMSECaptureWebKitHandler
+public typealias BrowserMSECapturePrototypeBridge = BrowserMSECaptureBridge

@@ -267,34 +267,24 @@ public final class SegmentDownloader: Sendable {
             DownloadRequestEnricher.recordResponseCookies(headers: allHeaders, for: url)
         }
 
-        if httpResponse.statusCode == 401 {
-            throw SegmentDownloaderError.tokenExpired
-        }
-
-        if httpResponse.statusCode == 403 {
-            throw SegmentDownloaderError.accessDenied
-        }
-
-        if httpResponse.statusCode == 404 || httpResponse.statusCode == 410 {
-            throw SegmentDownloaderError.linkExpired
-        }
-
-        if httpResponse.statusCode == 429 {
-            let retryAfter = HTTPRangeProbe.parseRetryAfter(httpResponse.value(forHTTPHeaderField: "Retry-After"))
-            throw SegmentDownloaderError.rateLimited(retryAfterSeconds: retryAfter)
-        }
-
-        // Strict 206 Partial Content enforcement (C1569kI.java:L126 & e.java:L5649)
-        guard httpResponse.statusCode == 206 else {
-            throw SegmentDownloaderError.unexpectedStatus(expected: 206, actual: httpResponse.statusCode)
+        do {
+            try HTTPTransportValidator.validateResponseStatus(httpResponse, expectingPartial: true)
+        } catch let error as HTTPTransportValidator.Error {
+            switch error {
+            case .tokenExpired: throw SegmentDownloaderError.tokenExpired
+            case .accessDenied: throw SegmentDownloaderError.accessDenied
+            case .linkExpired: throw SegmentDownloaderError.linkExpired
+            case .rateLimited(let sec): throw SegmentDownloaderError.rateLimited(retryAfterSeconds: sec)
+            case .unexpectedStatus(let exp, let act): throw SegmentDownloaderError.unexpectedStatus(expected: exp, actual: act)
+            default: throw SegmentDownloaderError.invalidHTTPResponse
+            }
         }
 
         // Validate Content-Type: reject HTML error/captive portal pages when downloading binary data
-        if let contentType = httpResponse.value(forHTTPHeaderField: "Content-Type")?.lowercased() {
-            if contentType.contains("text/html") || contentType.contains("application/xhtml+xml") {
-                if (expectedTotalSize ?? 0) > 64 * 1024 || (expectedTotalSize == nil && segment.length > 64 * 1024) {
-                    throw SegmentDownloaderError.htmlErrorPageReceived(contentType: contentType)
-                }
+        let contentType = httpResponse.value(forHTTPHeaderField: "Content-Type")
+        if HTTPTransportValidator.isHTMLResponse(contentType: contentType) {
+            if (expectedTotalSize ?? 0) > 64 * 1024 || (expectedTotalSize == nil && segment.length > 64 * 1024) {
+                throw SegmentDownloaderError.htmlErrorPageReceived(contentType: contentType ?? "text/html")
             }
         }
 
@@ -384,41 +374,29 @@ public final class SegmentDownloader: Sendable {
         expectedEnd: Int64,
         expectedTotalSize: Int64?
     ) throws {
-        guard let value = headerValue?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else {
-            throw SegmentDownloaderError.invalidContentRange
-        }
-
-        // Expected format: "bytes <start>-<end>/<total>"
-        let parts = value.split(separator: " ", maxSplits: 1)
-        guard parts.count == 2, parts[0].lowercased() == "bytes" else {
-            throw SegmentDownloaderError.invalidContentRange
-        }
-
-        let rangeAndTotal = parts[1].split(separator: "/", maxSplits: 1)
-        guard rangeAndTotal.count == 2 else {
-            throw SegmentDownloaderError.invalidContentRange
-        }
-
-        let bounds = rangeAndTotal[0].split(separator: "-", maxSplits: 1)
-        guard bounds.count == 2,
-              let actualStart = Int64(bounds[0].trimmingCharacters(in: .whitespaces)),
-              let actualEnd = Int64(bounds[1].trimmingCharacters(in: .whitespaces)) else {
-            throw SegmentDownloaderError.invalidContentRange
-        }
-
-        guard actualStart == expectedStart, actualEnd == expectedEnd else {
-            throw SegmentDownloaderError.contentRangeMismatch(
+        do {
+            try HTTPTransportValidator.validateContentRange(
+                headerValue,
                 expectedStart: expectedStart,
                 expectedEnd: expectedEnd,
-                actualStart: actualStart,
-                actualEnd: actualEnd
+                expectedTotalSize: expectedTotalSize,
+                allowWildcardTotal: true
             )
-        }
-
-        let totalStr = String(rangeAndTotal[1]).trimmingCharacters(in: .whitespaces)
-        if totalStr != "*", let actualTotal = Int64(totalStr), let expectedTotal = expectedTotalSize {
-            guard actualTotal == expectedTotal else {
-                throw SegmentDownloaderError.totalSizeMismatch(expected: expectedTotal, actual: actualTotal)
+        } catch let error as HTTPTransportValidator.Error {
+            switch error {
+            case .invalidContentRange:
+                throw SegmentDownloaderError.invalidContentRange
+            case .contentRangeMismatch(let expS, let expE, let actS, let actE):
+                throw SegmentDownloaderError.contentRangeMismatch(
+                    expectedStart: expS,
+                    expectedEnd: expE,
+                    actualStart: actS,
+                    actualEnd: actE
+                )
+            case .totalSizeMismatch(let exp, let act):
+                throw SegmentDownloaderError.totalSizeMismatch(expected: exp, actual: act)
+            default:
+                throw SegmentDownloaderError.invalidContentRange
             }
         }
     }

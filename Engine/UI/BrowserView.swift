@@ -1435,7 +1435,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
             }
             do {
                 _ = try await webView.evaluateJavaScript(
-                    BrowserMSECapturePrototypeBridge.startCommand(
+                    BrowserMSECaptureBridge.startCommand(
                         mediaSourceURL: mediaSourceURL,
                         captureID: captureID,
                         documentID: documentID
@@ -1458,7 +1458,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
               let tabID = activeMSECaptureTabID,
               let session = tabSessions[tabID] else { return }
         _ = try? session.webView.evaluateJavaScript(
-            BrowserMSECapturePrototypeBridge.stopCommand(captureID: captureID)
+            BrowserMSECaptureBridge.stopCommand(captureID: captureID)
         )
     }
 
@@ -1468,7 +1468,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         let targetTabID = activeMSECaptureTabID
         if let targetTabID, let session = tabSessions[targetTabID] {
             _ = try? session.webView.evaluateJavaScript(
-                BrowserMSECapturePrototypeBridge.cancelCommand(captureID: captureID)
+                BrowserMSECaptureBridge.cancelCommand(captureID: captureID)
             )
             let service = session.mseCaptureService
             Task { await service.cancel(captureID: captureID) }
@@ -1480,7 +1480,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
     }
 
     fileprivate func handleMSECaptureAcknowledgement(
-        _ acknowledgement: BrowserMSECapturePrototypeAck,
+        _ acknowledgement: BrowserMSECaptureAck,
         tabID: UUID
     ) {
         guard acknowledgement.captureID == activeMSECaptureID,
@@ -6027,7 +6027,7 @@ final class BrowserWebViewSession {
                 .appendingPathComponent("MSEExports", isDirectory: true)
         )
         self.mseCaptureService = mseCaptureService
-        let mseHandler = BrowserMSECapturePrototypeWebKitHandler(
+        let mseHandler = BrowserMSECaptureWebKitHandler(
             receiver: mseCaptureService.receiver
         )
         mseHandler.acknowledgementHandler = { [weak viewModel] acknowledgement in

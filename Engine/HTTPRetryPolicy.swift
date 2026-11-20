@@ -12,6 +12,21 @@ enum HTTPRetryPolicy {
             return false
         }
 
+        if let transportError = error as? HTTPTransportValidator.Error {
+            switch transportError {
+            case .rateLimited:
+                return true
+            case .unexpectedStatus(_, let actual):
+                return (500...599).contains(actual)
+            case .bodyLengthMismatch:
+                return true
+            case .invalidResponse, .invalidContentRange, .contentRangeMismatch,
+                 .totalSizeMismatch, .wildcardTotalRejected, .tokenExpired,
+                 .accessDenied, .linkExpired, .htmlErrorPageReceived, .cancelled:
+                return false
+            }
+        }
+
         if let probeError = error as? HTTPRangeProbeError {
             switch probeError {
             case .rateLimited:

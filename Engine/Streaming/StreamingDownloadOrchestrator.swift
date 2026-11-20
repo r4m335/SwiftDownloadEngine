@@ -520,38 +520,45 @@ public actor URLSessionStreamingSegmentExecutor: StreamingSegmentExecutor {
         _ request: StreamingSegmentTransferRequest,
         progress: (@Sendable (Double) -> Void)? = nil
     ) async throws {
-        var urlRequest = URLRequest(url: request.url)
-        for (k, v) in request.headers {
-            urlRequest.setValue(v, forHTTPHeaderField: k)
-        }
-        if let byteRange = request.byteRange {
-            urlRequest.setValue(byteRange.headerValue, forHTTPHeaderField: "Range")
-        }
-        urlRequest = DownloadRequestEnricher.enrich(urlRequest)
+        let rangeTuple = request.byteRange.map { ($0.offset, $0.offset + $0.length - 1) }
+        let urlRequest = HTTPTransportValidator.normalizeRequest(
+            url: request.url,
+            headers: request.headers,
+            byteRange: rangeTuple
+        )
 
-        let (tempURL, response) = try await session.download(for: urlRequest)
-        guard let httpResponse = response as? HTTPURLResponse,
-              (200...299).contains(httpResponse.statusCode) else {
-            throw StreamingDownloadOrchestratorError.segmentTransferFailed(order: request.identity.order)
-        }
+        try await HTTPTransportValidator.executeWithRetry(
+            maxAttempts: 3,
+            isRetryable: { HTTPRetryPolicy.isRetryable($0) },
+            onRetry: { error, attempt, maxAttempts in
+                PipelineLogger.shared.log("[URLSessionStreamingSegmentExecutor] Segment \(request.identity.order) encountered retryable error (\(error.localizedDescription)). Retrying attempt \(attempt + 1)/\(maxAttempts)...")
+            }
+        ) {
+            let (tempURL, response) = try await session.download(for: urlRequest)
+            guard let httpResponse = response as? HTTPURLResponse else {
+                throw StreamingDownloadOrchestratorError.segmentTransferFailed(order: request.identity.order)
+            }
 
-        let fileManager = FileManager.default
-        if let mime = httpResponse.mimeType?.lowercased(), mime.contains("text/html") {
             do {
-                try fileManager.removeItem(at: tempURL)
+                try HTTPTransportValidator.validateResponseStatus(httpResponse, expectingPartial: request.byteRange != nil)
             } catch {
-                PipelineLogger.shared.log("[StreamingDownloadOrchestrator] Failed to remove HTML tempURL: \(error)")
+                throw StreamingDownloadOrchestratorError.segmentTransferFailed(order: request.identity.order)
             }
-            throw StreamingDownloadOrchestratorError.segmentTransferFailed(order: request.identity.order)
-        }
-        if let handle = try? FileHandle(forReadingFrom: tempURL) {
-            let headerBytes = (try? handle.read(upToCount: 512)) ?? Data()
-            do {
-                try handle.close()
-            } catch {
-                PipelineLogger.shared.log("[StreamingDownloadOrchestrator] Failed to close handle: \(error)")
+
+            let fileManager = FileManager.default
+            let headerBytes: Data
+            if let handle = try? FileHandle(forReadingFrom: tempURL) {
+                headerBytes = (try? handle.read(upToCount: 512)) ?? Data()
+                do {
+                    try handle.close()
+                } catch {
+                    PipelineLogger.shared.log("[StreamingDownloadOrchestrator] Failed to close handle: \(error)")
+                }
+            } else {
+                headerBytes = Data()
             }
-            if StreamingDownloadOrchestrator.isHTMLResponse(headerBytes) {
+
+            if HTTPTransportValidator.isHTMLResponse(contentType: httpResponse.mimeType, bodyPrefix: headerBytes) {
                 do {
                     try fileManager.removeItem(at: tempURL)
                 } catch {
@@ -559,16 +566,34 @@ public actor URLSessionStreamingSegmentExecutor: StreamingSegmentExecutor {
                 }
                 throw StreamingDownloadOrchestratorError.segmentTransferFailed(order: request.identity.order)
             }
-        }
 
-        let parentDir = request.destinationURL.deletingLastPathComponent()
-        try DownloadManagerViewModel.ensureDirectoryExistsAndWritable(parentDir, fileManager: fileManager)
+            let parentDir = request.destinationURL.deletingLastPathComponent()
+            try DownloadManagerViewModel.ensureDirectoryExistsAndWritable(parentDir, fileManager: fileManager)
 
-        if fileManager.fileExists(atPath: request.destinationURL.path) {
-            #if canImport(Darwin)
-            do {
-                _ = try fileManager.replaceItemAt(request.destinationURL, withItemAt: tempURL, backupItemName: nil, options: [])
-            } catch {
+            if fileManager.fileExists(atPath: request.destinationURL.path) {
+                #if canImport(Darwin)
+                do {
+                    _ = try fileManager.replaceItemAt(request.destinationURL, withItemAt: tempURL, backupItemName: nil, options: [])
+                } catch {
+                    let backupURL = parentDir.appendingPathComponent(".backup-\(UUID().uuidString)-\(request.destinationURL.lastPathComponent)")
+                    try fileManager.moveItem(at: request.destinationURL, to: backupURL)
+                    do {
+                        try fileManager.moveItem(at: tempURL, to: request.destinationURL)
+                        do {
+                            try fileManager.removeItem(at: backupURL)
+                        } catch {
+                            PipelineLogger.shared.log("[StreamingDownloadOrchestrator] Failed to remove backupURL \(backupURL.path): \(error)")
+                        }
+                    } catch {
+                        do {
+                            try fileManager.moveItem(at: backupURL, to: request.destinationURL)
+                        } catch {
+                            PipelineLogger.shared.log("[StreamingDownloadOrchestrator] Failed to restore backupURL \(backupURL.path): \(error)")
+                        }
+                        throw error
+                    }
+                }
+                #else
                 let backupURL = parentDir.appendingPathComponent(".backup-\(UUID().uuidString)-\(request.destinationURL.lastPathComponent)")
                 try fileManager.moveItem(at: request.destinationURL, to: backupURL)
                 do {
@@ -586,29 +611,12 @@ public actor URLSessionStreamingSegmentExecutor: StreamingSegmentExecutor {
                     }
                     throw error
                 }
-            }
-            #else
-            let backupURL = parentDir.appendingPathComponent(".backup-\(UUID().uuidString)-\(request.destinationURL.lastPathComponent)")
-            try fileManager.moveItem(at: request.destinationURL, to: backupURL)
-            do {
+                #endif
+            } else {
                 try fileManager.moveItem(at: tempURL, to: request.destinationURL)
-                do {
-                    try fileManager.removeItem(at: backupURL)
-                } catch {
-                    PipelineLogger.shared.log("[StreamingDownloadOrchestrator] Failed to remove backupURL \(backupURL.path): \(error)")
-                }
-            } catch {
-                do {
-                    try fileManager.moveItem(at: backupURL, to: request.destinationURL)
-                } catch {
-                    PipelineLogger.shared.log("[StreamingDownloadOrchestrator] Failed to restore backupURL \(backupURL.path): \(error)")
-                }
-                throw error
             }
-            #endif
-        } else {
-            try fileManager.moveItem(at: tempURL, to: request.destinationURL)
         }
+    }
         progress?(1.0)
     }
 
@@ -1240,18 +1248,7 @@ public actor StreamingDownloadOrchestrator {
     }
 
     public static func isHTMLResponse(_ data: Data) -> Bool {
-        guard !data.isEmpty else { return false }
-        let sample = String(decoding: data.prefix(2048), as: UTF8.self)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .drop(while: { $0 == "\u{FEFF}" })
-            .lowercased()
-        if sample.hasPrefix("<html") || sample.hasPrefix("<!doctype html") {
-            return true
-        }
-        if sample.hasPrefix("<!doctype") && sample.contains("html") {
-            return true
-        }
-        return false
+        return HTTPTransportValidator.isHTMLData(data)
     }
 
     private func loadManifestResponse(

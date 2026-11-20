@@ -333,9 +333,9 @@ public enum BackgroundResponseValidator {
         }
 
         // 2. HTML Error / Login Page Detection
-        if let contentType = httpResponse.value(forCaseInsensitiveField: "Content-Type"),
-           contentType.lowercased().contains("text/html") {
-            throw BackgroundTransportError.htmlErrorPageReceived(contentType: contentType)
+        let contentType = httpResponse.value(forCaseInsensitiveField: "Content-Type")
+        if HTTPTransportValidator.isHTMLResponse(contentType: contentType) {
+            throw BackgroundTransportError.htmlErrorPageReceived(contentType: contentType ?? "text/html")
         }
 
         // 3. Content-Range Header Validation
@@ -343,52 +343,41 @@ public enum BackgroundResponseValidator {
             throw BackgroundTransportError.invalidContentRange
         }
 
-        // Parse: "bytes <start>-<end>/<total>"
-        let parsed = try parseContentRange(contentRange)
-        if parsed.start != expectedStart || parsed.end != expectedEnd {
-            throw BackgroundTransportError.contentRangeMismatch(
+        do {
+            try HTTPTransportValidator.validateContentRange(
+                contentRange,
                 expectedStart: expectedStart,
                 expectedEnd: expectedEnd,
-                actualStart: parsed.start,
-                actualEnd: parsed.end
+                expectedTotalSize: expectedTotalSize,
+                allowWildcardTotal: false
             )
-        }
-
-        if let expectedTotal = expectedTotalSize {
-            guard let actualTotal = parsed.total else {
-                // Server responded with wildcard total (*) when exact size was expected
-                throw BackgroundTransportError.contentRangeWildcardTotalRejected(rangeHeader: contentRange)
-            }
-            if actualTotal != expectedTotal {
-                throw BackgroundTransportError.totalSizeMismatch(expected: expectedTotal, actual: actualTotal)
+        } catch let error as HTTPTransportValidator.Error {
+            switch error {
+            case .invalidContentRange:
+                throw BackgroundTransportError.invalidContentRange
+            case .contentRangeMismatch(let expS, let expE, let actS, let actE):
+                throw BackgroundTransportError.contentRangeMismatch(
+                    expectedStart: expS,
+                    expectedEnd: expE,
+                    actualStart: actS,
+                    actualEnd: actE
+                )
+            case .wildcardTotalRejected(let header):
+                throw BackgroundTransportError.contentRangeWildcardTotalRejected(rangeHeader: header)
+            case .totalSizeMismatch(let exp, let act):
+                throw BackgroundTransportError.totalSizeMismatch(expected: exp, actual: act)
+            default:
+                throw BackgroundTransportError.invalidContentRange
             }
         }
     }
 
     public static func parseContentRange(_ header: String) throws -> (start: Int64, end: Int64, total: Int64?) {
-        let trimmed = header.trimmingCharacters(in: .whitespaces)
-        guard trimmed.lowercased().hasPrefix("bytes ") else {
+        do {
+            return try HTTPTransportValidator.parseContentRange(header)
+        } catch {
             throw BackgroundTransportError.invalidContentRange
         }
-
-        let rangePart = String(trimmed.dropFirst(6)) // drops "bytes "
-        let components = rangePart.split(separator: "/")
-        guard components.count == 2 else {
-            throw BackgroundTransportError.invalidContentRange
-        }
-
-        let bounds = components[0].split(separator: "-")
-        guard bounds.count == 2,
-              let start = Int64(bounds[0]),
-              let end = Int64(bounds[1]),
-              start <= end else {
-            throw BackgroundTransportError.invalidContentRange
-        }
-
-        let totalStr = String(components[1]).trimmingCharacters(in: .whitespaces)
-        let total = totalStr == "*" ? nil : Int64(totalStr)
-
-        return (start: start, end: end, total: total)
     }
 }
 

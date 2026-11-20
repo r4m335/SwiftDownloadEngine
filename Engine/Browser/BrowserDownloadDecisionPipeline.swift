@@ -25,7 +25,7 @@ public enum BrowserDownloadAction: Sendable, Equatable {
         candidate: BrowserMediaCandidate
     )
 
-    /// Native fragmented-MP4 capture of MediaSource appends via BrowserMSECapturePrototype
+    /// Native fragmented-MP4 capture of MediaSource appends via BrowserMSECaptureService
     case mseCapture(
         candidate: BrowserMediaCandidate
     )
@@ -175,7 +175,7 @@ public enum BrowserDownloadDecisionPipeline {
                 return BrowserDownloadDecision(
                     action: .mseCapture(candidate: candidate),
                     candidate: candidate,
-                    reason: "Clear fragmented-MP4 MediaSource capturable via BrowserMSECapturePrototype"
+                    reason: "Clear fragmented-MP4 MediaSource capturable via BrowserMSECaptureService"
                 )
             case .protectedMedia:
                 return BrowserDownloadDecision(
