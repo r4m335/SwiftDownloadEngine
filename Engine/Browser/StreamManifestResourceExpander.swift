@@ -210,8 +210,17 @@ public actor StreamManifestResourceExpander {
             // check if this is an HLS media playlist containing #EXT-X-TARGETDURATION
             if options.isEmpty || (options.count == 1 && (options[0].id.hasPrefix("default-") || (options[0].resolution == nil && options[0].hlsVariant == nil))) {
                 let isMediaPlaylist = effectiveText.contains("#EXT-X-TARGETDURATION")
+                let isLive = options.first?.isLive ?? (manifestResource.isLive || (isMediaPlaylist && !effectiveText.contains("#EXT-X-ENDLIST")))
                 let updatedTitle: String
-                if isMediaPlaylist && !manifestResource.title.contains("Media Playlist") {
+                if isLive {
+                    let base = manifestResource.title.isEmpty ? manifestResource.suggestedFilename : manifestResource.title
+                    let cleanedBase = base.hasPrefix("[LIVE]") ? base : "[LIVE] \(base)"
+                    if isMediaPlaylist && !cleanedBase.contains("Media Playlist") {
+                        updatedTitle = "\(cleanedBase) (Media Playlist)"
+                    } else {
+                        updatedTitle = cleanedBase
+                    }
+                } else if isMediaPlaylist && !manifestResource.title.contains("Media Playlist") {
                     let base = manifestResource.title.isEmpty ? manifestResource.suggestedFilename : manifestResource.title
                     updatedTitle = "\(base) (Media Playlist)"
                 } else {
@@ -225,12 +234,13 @@ public actor StreamManifestResourceExpander {
                     suggestedFilename: manifestResource.suggestedFilename,
                     resourceType: manifestResource.resourceType,
                     mimeType: manifestResource.mimeType,
-                    estimatedSize: manifestResource.estimatedSize,
-                    isSupported: true,
-                    unsupportedReason: nil,
+                    estimatedSize: isLive ? nil : manifestResource.estimatedSize,
+                    isSupported: !isLive,
+                    unsupportedReason: isLive ? "Live stream recording required; VOD download unsupported for live/event manifests" : nil,
                     requestContext: manifestResource.requestContext,
                     manifestText: effectiveText.isEmpty ? manifestResource.manifestText : effectiveText,
-                    discoveredAt: manifestResource.discoveredAt
+                    discoveredAt: manifestResource.discoveredAt,
+                    isLive: isLive
                 )
 
                 return ExpansionResult(
@@ -324,6 +334,7 @@ public actor StreamManifestResourceExpander {
         var seenFilenames = Set<String>()
 
         for option in options {
+            let isLive = option.isLive || masterResource.isLive
             let variantID = "\(masterResource.id)-variant-\(option.id)"
             let qualityLabel = option.qualityBadge
             var filename = "\(baseStem)-\(qualityLabel).mp4"
@@ -336,7 +347,9 @@ public actor StreamManifestResourceExpander {
             let bitrateText = option.bitrateText
 
             let sizeText: String = {
-                if let bytes = option.estimatedSizeBytes {
+                if isLive {
+                    return "Live Broadcast"
+                } else if let bytes = option.estimatedSizeBytes {
                     return "~\(StreamQualityOption.formatByteSize(bytes))"
                 } else if let text = option.estimatedSizeText, !text.isEmpty {
                     return text
@@ -346,10 +359,11 @@ public actor StreamManifestResourceExpander {
             }()
 
             let title: String = {
+                let livePrefix = isLive ? "[LIVE] " : ""
                 if option.isAudioOnly {
-                    return "HLS Audio (\(option.audioCodec ?? "AAC"))"
+                    return "\(livePrefix)HLS Audio (\(option.audioCodec ?? "AAC"))"
                 } else {
-                    return "HLS \(qualityLabel)"
+                    return "\(livePrefix)HLS \(qualityLabel)"
                 }
             }()
 
@@ -361,8 +375,16 @@ public actor StreamManifestResourceExpander {
             )
 
             let optionDrm = drmResult.isProtected ? drmResult : StreamDRMDetector.evaluate(manifestText: "", url: option.uri)
-            let isSupported = !optionDrm.isProtected
-            let unsupportedReason = optionDrm.reason
+            let isSupported = !optionDrm.isProtected && !isLive
+            let unsupportedReason: String? = {
+                if optionDrm.isProtected {
+                    return optionDrm.reason
+                }
+                if isLive {
+                    return "Live stream recording required; VOD download unsupported for live/event manifests"
+                }
+                return nil
+            }()
 
             let resource = WebpageResource(
                 id: variantID,
@@ -371,7 +393,7 @@ public actor StreamManifestResourceExpander {
                 suggestedFilename: filename,
                 resourceType: option.isAudioOnly ? .audio : .video,
                 mimeType: masterResource.mimeType ?? "application/vnd.apple.mpegurl",
-                estimatedSize: option.estimatedSizeBytes,
+                estimatedSize: isLive ? nil : option.estimatedSizeBytes,
                 isSupported: isSupported,
                 unsupportedReason: unsupportedReason,
                 requestContext: masterResource.requestContext,
@@ -381,7 +403,8 @@ public actor StreamManifestResourceExpander {
                 dashAudioRepresentationID: option.dashAudioRepresentationID,
                 isDRMProtected: optionDrm.isProtected,
                 drmProtectionType: optionDrm.protectionType,
-                discoveredAt: masterResource.discoveredAt
+                discoveredAt: masterResource.discoveredAt,
+                isLive: isLive
             )
             variants.append(resource)
 
@@ -400,8 +423,9 @@ public actor StreamManifestResourceExpander {
                 subtitleText: nil,
                 codecs: option.codecs,
                 videoCodec: option.videoCodec,
-                estimatedSizeBytes: option.estimatedSizeBytes,
-                estimatedSizeText: sizeText
+                estimatedSizeBytes: isLive ? nil : option.estimatedSizeBytes,
+                estimatedSizeText: sizeText,
+                isLive: isLive
             )
             items.append(item)
         }
@@ -425,6 +449,31 @@ public actor StreamManifestResourceExpander {
         }
 
         if options.count == 1 && (options[0].id.hasPrefix("default-") || (options[0].resolution == nil && options[0].hlsVariant == nil)) {
+            let singleOption = options[0]
+            if singleOption.isLive || masterResource.isLive {
+                let liveTitle = masterResource.title.hasPrefix("[LIVE]") ? masterResource.title : "[LIVE] \(masterResource.title)"
+                let liveResource = WebpageResource(
+                    id: masterResource.id,
+                    url: masterResource.url,
+                    title: liveTitle,
+                    suggestedFilename: masterResource.suggestedFilename,
+                    resourceType: masterResource.resourceType,
+                    mimeType: masterResource.mimeType,
+                    estimatedSize: nil,
+                    isSupported: false,
+                    unsupportedReason: "Live stream recording required; VOD download unsupported for live/event manifests",
+                    requestContext: masterResource.requestContext,
+                    manifestText: manifestText,
+                    hlsVariantPreferences: masterResource.hlsVariantPreferences,
+                    dashVideoRepresentationID: masterResource.dashVideoRepresentationID,
+                    dashAudioRepresentationID: masterResource.dashAudioRepresentationID,
+                    isDRMProtected: masterResource.isDRMProtected,
+                    drmProtectionType: masterResource.drmProtectionType,
+                    discoveredAt: masterResource.discoveredAt,
+                    isLive: true
+                )
+                return ([liveResource], [])
+            }
             return ([masterResource], [])
         }
 

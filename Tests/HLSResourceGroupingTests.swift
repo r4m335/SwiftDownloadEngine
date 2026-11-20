@@ -208,4 +208,76 @@ final class HLSResourceGroupingTests: XCTestCase {
         XCTAssertNotEqual(resources[0].id, resources[1].id)
         XCTAssertNotEqual(resources[0].suggestedFilename, resources[1].suggestedFilename, "Filenames must be disambiguated when sharing quality label")
     }
+
+    func testLiveMasterStreamIsDisabledForNormalVODDownloadAndLabeled() {
+        let liveMasterURL = URL(string: "https://media.example.com/live/master.m3u8")!
+        let liveMaster = WebpageResource(
+            id: "live-master",
+            url: liveMasterURL,
+            title: "Live Broadcast 24/7",
+            suggestedFilename: "live.m3u8",
+            resourceType: .video,
+            mimeType: "application/vnd.apple.mpegurl",
+            manifestText: """
+            #EXTM3U
+            #EXT-X-PLAYLIST-TYPE:EVENT
+            #EXT-X-STREAM-INF:BANDWIDTH=4000000,RESOLUTION=1920x1080,CODECS="avc1.640028,mp4a.40.2"
+            1080p.m3u8
+            #EXT-X-STREAM-INF:BANDWIDTH=2000000,RESOLUTION=1280x720,CODECS="avc1.4d401f,mp4a.40.2"
+            720p.m3u8
+            """
+        )
+
+        // Quality summary must include LIVE indicator
+        let summary = HLSResourceGrouping.qualitySummary(for: liveMaster)
+        XCTAssertNotNil(summary)
+        XCTAssertTrue(summary?.contains("LIVE") == true, "Quality summary for live stream must contain LIVE badge")
+
+        // Items metadata
+        let items = HLSResourceGrouping.extractVariantStreamItems(for: liveMaster)
+        XCTAssertEqual(items.count, 2)
+        XCTAssertTrue(items.allSatisfy { $0.isLive }, "Extracted variant stream items must be marked isLive")
+        XCTAssertEqual(items[0].estimatedSizeText, "Live Broadcast")
+
+        // Extracted variant resources for grabber
+        let resources = HLSResourceGrouping.extractVariantResources(from: liveMaster)
+        XCTAssertEqual(resources.count, 2)
+        for res in resources {
+            XCTAssertTrue(res.isLive, "Live variant resource must have isLive=true")
+            XCTAssertFalse(res.isSupported, "Live stream must be disabled for finite VOD downloads")
+            XCTAssertNotNil(res.unsupportedReason)
+            XCTAssertTrue(res.unsupportedReason?.contains("Live stream recording required") == true)
+            XCTAssertTrue(res.title.hasPrefix("[LIVE]"), "Live variant resource title must have [LIVE] prefix")
+        }
+    }
+
+    func testLiveMediaPlaylistWithoutEndlistIsDisabledAndLabeled() {
+        let liveMediaURL = URL(string: "https://media.example.com/live/index.m3u8")!
+        let liveMedia = WebpageResource(
+            id: "live-media",
+            url: liveMediaURL,
+            title: "Live Sports Game",
+            suggestedFilename: "index.m3u8",
+            resourceType: .video,
+            mimeType: "application/vnd.apple.mpegurl",
+            manifestText: """
+            #EXTM3U
+            #EXT-X-VERSION:3
+            #EXT-X-TARGETDURATION:6
+            #EXT-X-MEDIA-SEQUENCE:100
+            #EXTINF:6.0,
+            seg100.ts
+            #EXTINF:6.0,
+            seg101.ts
+            """
+        )
+
+        let resources = HLSResourceGrouping.extractVariantResources(from: liveMedia)
+        XCTAssertEqual(resources.count, 1)
+        let res = resources[0]
+        XCTAssertTrue(res.isLive, "Single media live stream must have isLive=true")
+        XCTAssertFalse(res.isSupported, "Single media live stream must have isSupported=false")
+        XCTAssertNotNil(res.unsupportedReason)
+        XCTAssertTrue(res.title.hasPrefix("[LIVE]"))
+    }
 }

@@ -261,10 +261,11 @@ public enum HLSManifestParser {
             guard !variants.isEmpty || !renditions.isEmpty else {
                 throw ManifestParserError.malformed(reason: "Master playlist contains no variants or renditions.")
             }
+            let lifecycle: HLSPlaylistLifecycle = playlistTypeTag ?? (endList ? .vod : .vod)
             return HLSManifest(
                 url: baseURL,
                 playlistType: .master,
-                lifecycle: .vod,
+                lifecycle: lifecycle,
                 version: version,
                 independentSegments: independentSegments,
                 variants: variants,

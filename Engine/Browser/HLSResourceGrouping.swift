@@ -18,6 +18,7 @@ public struct HLSVariantStreamItem: Identifiable, Sendable, Hashable {
     public let videoCodec: String? // e.g. "H.264", "HEVC", "AV1"
     public let estimatedSizeBytes: Int64?
     public let estimatedSizeText: String?
+    public let isLive: Bool
 
     public init(
         id: String,
@@ -35,7 +36,8 @@ public struct HLSVariantStreamItem: Identifiable, Sendable, Hashable {
         codecs: String? = nil,
         videoCodec: String? = nil,
         estimatedSizeBytes: Int64? = nil,
-        estimatedSizeText: String? = nil
+        estimatedSizeText: String? = nil,
+        isLive: Bool = false
     ) {
         self.id = id
         self.masterURL = masterURL
@@ -53,6 +55,7 @@ public struct HLSVariantStreamItem: Identifiable, Sendable, Hashable {
         self.videoCodec = videoCodec
         self.estimatedSizeBytes = estimatedSizeBytes
         self.estimatedSizeText = estimatedSizeText
+        self.isLive = isLive
     }
 }
 
@@ -83,10 +86,15 @@ public enum HLSResourceGrouping {
         guard let text = resource.manifestText,
               let manifest = cachedParse(text: text, baseURL: resource.url),
               manifest.playlistType == .master else { return nil }
+        let isLive = manifest.lifecycle == .live || manifest.lifecycle == .event || resource.isLive
         let deduplicated = HLSVariantSelector.deduplicate(manifest.variants)
         var seenHeights = Set<Int>()
         var seenBadges = Set<String>()
         var qualityBadges: [String] = []
+
+        if isLive {
+            qualityBadges.append("LIVE")
+        }
 
         let sorted = deduplicated.sorted { lhs, rhs in
             let lRes = (lhs.resolution?.width ?? 0) * (lhs.resolution?.height ?? 0)
@@ -116,6 +124,8 @@ public enum HLSResourceGrouping {
               let manifest = cachedParse(text: text, baseURL: resource.url),
               manifest.playlistType == .master,
               !manifest.variants.isEmpty else { return [] }
+
+        let isLive = manifest.lifecycle == .live || manifest.lifecycle == .event || resource.isLive
 
         let hasMasterSubtitles = manifest.renditions.contains {
             $0.type.uppercased() == "SUBTITLES" || $0.type.uppercased() == "CLOSED-CAPTIONS"
@@ -172,7 +182,10 @@ public enum HLSResourceGrouping {
                 hasSubtitles: hasSub,
                 subtitleText: hasSub ? "Subtitles" : nil,
                 codecs: variant.codecs,
-                videoCodec: vCodec
+                videoCodec: vCodec,
+                estimatedSizeBytes: isLive ? nil : nil,
+                estimatedSizeText: isLive ? "Live Broadcast" : nil,
+                isLive: isLive
             )
         }
     }
@@ -180,17 +193,47 @@ public enum HLSResourceGrouping {
     /// Converts an HLS master resource into individual selectable video items in the grabber list.
     public static func extractVariantResources(from masterResource: WebpageResource) -> [WebpageResource] {
         let items = extractVariantStreamItems(for: masterResource)
-        guard !items.isEmpty else { return [masterResource] }
+        guard !items.isEmpty else {
+            if let text = masterResource.manifestText,
+               let manifest = cachedParse(text: text, baseURL: masterResource.url),
+               (manifest.lifecycle == .live || manifest.lifecycle == .event || masterResource.isLive) {
+                let liveTitle = masterResource.title.hasPrefix("[LIVE]") ? masterResource.title : "[LIVE] \(masterResource.title)"
+                let liveResource = WebpageResource(
+                    id: masterResource.id,
+                    url: masterResource.url,
+                    title: liveTitle,
+                    suggestedFilename: masterResource.suggestedFilename,
+                    resourceType: masterResource.resourceType,
+                    mimeType: masterResource.mimeType,
+                    estimatedSize: nil,
+                    isSupported: false,
+                    unsupportedReason: "Live stream recording required; VOD download unsupported for live/event manifests",
+                    requestContext: masterResource.requestContext,
+                    manifestText: masterResource.manifestText,
+                    hlsVariantPreferences: masterResource.hlsVariantPreferences,
+                    dashVideoRepresentationID: masterResource.dashVideoRepresentationID,
+                    dashAudioRepresentationID: masterResource.dashAudioRepresentationID,
+                    isDRMProtected: masterResource.isDRMProtected,
+                    drmProtectionType: masterResource.drmProtectionType,
+                    discoveredAt: masterResource.discoveredAt,
+                    isLive: true
+                )
+                return [liveResource]
+            }
+            return [masterResource]
+        }
 
         var seenFilenames = Set<String>()
         return items.map { item in
+            let isLive = item.isLive || masterResource.isLive
             let baseFilename = (masterResource.suggestedFilename as NSString).deletingPathExtension
             var filename = "\(baseFilename)-\(item.qualityLabel).mp4"
-            var title = "HLS \(item.qualityLabel)"
+            let livePrefix = isLive ? "[LIVE] " : ""
+            var title = "\(livePrefix)HLS \(item.qualityLabel)"
             if seenFilenames.contains(filename.lowercased()) {
                 let disambiguator = item.bitrateText.replacingOccurrences(of: " ", with: "")
                 filename = "\(baseFilename)-\(item.qualityLabel)-\(disambiguator).mp4"
-                title = "HLS \(item.qualityLabel) (\(item.bitrateText))"
+                title = "\(livePrefix)HLS \(item.qualityLabel) (\(item.bitrateText))"
             }
             seenFilenames.insert(filename.lowercased())
 
@@ -201,6 +244,9 @@ public enum HLSResourceGrouping {
                 exactURI: item.variantURL
             )
 
+            let isSupported = !isLive
+            let unsupportedReason = isLive ? "Live stream recording required; VOD download unsupported for live/event manifests" : nil
+
             return WebpageResource(
                 id: item.id,
                 url: masterResource.url, // Points to master manifest so orchestrator plans with variant preferences
@@ -208,11 +254,16 @@ public enum HLSResourceGrouping {
                 suggestedFilename: filename,
                 resourceType: .video,
                 mimeType: masterResource.mimeType ?? "application/vnd.apple.mpegurl",
-                estimatedSize: item.estimatedSizeBytes,
-                isSupported: true,
+                estimatedSize: isLive ? nil : item.estimatedSizeBytes,
+                isSupported: isSupported,
+                unsupportedReason: unsupportedReason,
                 requestContext: masterResource.requestContext,
                 manifestText: masterResource.manifestText,
-                hlsVariantPreferences: preferences
+                hlsVariantPreferences: preferences,
+                isDRMProtected: masterResource.isDRMProtected,
+                drmProtectionType: masterResource.drmProtectionType,
+                discoveredAt: masterResource.discoveredAt,
+                isLive: isLive
             )
         }
     }

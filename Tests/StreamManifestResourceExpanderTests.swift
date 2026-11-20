@@ -611,6 +611,104 @@ final class StreamManifestResourceExpanderTests: XCTestCase {
         let cached = await expander.cachedResult(for: testURL)
         XCTAssertNil(cached)
     }
+
+    // MARK: - Live Stream Identification & Grabber Presentation Tests
+
+    func testLiveManifestExpansionDisablesVODAndLabelsVariants() {
+        let liveMasterManifest = """
+        #EXTM3U
+        #EXT-X-PLAYLIST-TYPE:EVENT
+        #EXT-X-STREAM-INF:BANDWIDTH=5000000,RESOLUTION=1920x1080,CODECS="avc1.640028,mp4a.40.2"
+        1080p.m3u8
+        #EXT-X-STREAM-INF:BANDWIDTH=2500000,RESOLUTION=1280x720,CODECS="avc1.4d401f,mp4a.40.2"
+        720p.m3u8
+        """
+        let liveMasterURL = URL(string: "https://live.example.com/master.m3u8")!
+        let liveMaster = WebpageResource(
+            url: liveMasterURL,
+            title: "Breaking News Live",
+            suggestedFilename: "master.m3u8",
+            resourceType: .video,
+            mimeType: "application/vnd.apple.mpegurl",
+            manifestText: liveMasterManifest
+        )
+
+        let (variants, items) = StreamManifestResourceExpander.expandSynchronously(
+            masterResource: liveMaster,
+            manifestText: liveMasterManifest
+        )
+
+        XCTAssertEqual(variants.count, 2)
+        XCTAssertEqual(items.count, 2)
+
+        for res in variants {
+            XCTAssertTrue(res.isLive, "Live variant resource must have isLive=true")
+            XCTAssertFalse(res.isSupported, "Live variant resource must have isSupported=false for VOD download")
+            XCTAssertNotNil(res.unsupportedReason)
+            XCTAssertTrue(res.unsupportedReason?.contains("Live stream recording required") == true)
+            XCTAssertTrue(res.title.hasPrefix("[LIVE]"), "Live variant title must have [LIVE] prefix: \(res.title)")
+        }
+
+        for item in items {
+            XCTAssertTrue(item.isLive, "Live item must have isLive=true")
+            XCTAssertEqual(item.estimatedSizeText, "Live Broadcast")
+        }
+    }
+
+    func testLiveSingleMediaPlaylistExpansionDisablesVODAndLabelsResource() {
+        let liveMediaManifest = """
+        #EXTM3U
+        #EXT-X-VERSION:3
+        #EXT-X-TARGETDURATION:6
+        #EXT-X-MEDIA-SEQUENCE:100
+        #EXTINF:6.0,
+        seg100.ts
+        #EXTINF:6.0,
+        seg101.ts
+        """
+        let liveMediaURL = URL(string: "https://live.example.com/live.m3u8")!
+        let liveMedia = WebpageResource(
+            url: liveMediaURL,
+            title: "Live Stream",
+            suggestedFilename: "live.m3u8",
+            resourceType: .video,
+            mimeType: "application/vnd.apple.mpegurl",
+            manifestText: liveMediaManifest
+        )
+
+        let (variants, items) = StreamManifestResourceExpander.expandSynchronously(
+            masterResource: liveMedia,
+            manifestText: liveMediaManifest
+        )
+
+        XCTAssertEqual(variants.count, 1)
+        XCTAssertTrue(items.isEmpty)
+        let res = variants[0]
+        XCTAssertTrue(res.isLive, "Single media live stream must have isLive=true")
+        XCTAssertFalse(res.isSupported, "Single media live stream must have isSupported=false")
+        XCTAssertNotNil(res.unsupportedReason)
+        XCTAssertTrue(res.title.hasPrefix("[LIVE]"))
+    }
+
+    func testVODManifestExpansionRemainsSupportedWithoutLiveLabel() {
+        let master = makeMasterResource()
+        let (variants, items) = StreamManifestResourceExpander.expandSynchronously(
+            masterResource: master,
+            manifestText: muxMasterManifest
+        )
+
+        XCTAssertEqual(variants.count, 5)
+        for res in variants {
+            XCTAssertFalse(res.isLive, "VOD variant must not be marked isLive")
+            XCTAssertTrue(res.isSupported, "VOD variant must remain supported for finite download")
+            XCTAssertNil(res.unsupportedReason)
+            XCTAssertFalse(res.title.hasPrefix("[LIVE]"))
+        }
+        for item in items {
+            XCTAssertFalse(item.isLive)
+            XCTAssertNotEqual(item.estimatedSizeText, "Live Broadcast")
+        }
+    }
 }
 
 // MARK: - Failing URL Protocol Helper for Error Testing

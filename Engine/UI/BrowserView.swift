@@ -1718,7 +1718,8 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                         dashAudioRepresentationID: old.dashAudioRepresentationID,
                         isDRMProtected: old.isDRMProtected,
                         drmProtectionType: old.drmProtectionType,
-                        discoveredAt: old.discoveredAt
+                        discoveredAt: old.discoveredAt,
+                        isLive: old.isLive
                     )
                 }
                 continue
@@ -1904,7 +1905,9 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                         dashVideoRepresentationID: resource.dashVideoRepresentationID,
                         dashAudioRepresentationID: resource.dashAudioRepresentationID,
                         isDRMProtected: resource.isDRMProtected,
-                        drmProtectionType: resource.drmProtectionType
+                        drmProtectionType: resource.drmProtectionType,
+                        discoveredAt: resource.discoveredAt,
+                        isLive: resource.isLive
                     )
                     updatedResources[idx] = updated
                     discoveredResources = updatedResources
@@ -2042,7 +2045,11 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                             manifestText: cachedText,
                             hlsVariantPreferences: effectiveResource.hlsVariantPreferences,
                             dashVideoRepresentationID: effectiveResource.dashVideoRepresentationID,
-                            dashAudioRepresentationID: effectiveResource.dashAudioRepresentationID
+                            dashAudioRepresentationID: effectiveResource.dashAudioRepresentationID,
+                            isDRMProtected: effectiveResource.isDRMProtected,
+                            drmProtectionType: effectiveResource.drmProtectionType,
+                            discoveredAt: effectiveResource.discoveredAt,
+                            isLive: effectiveResource.isLive
                         )
                     } else if let cachedText = self.mediaCandidates.first(where: { $0.url == resource.url })?.cachedManifestText, !cachedText.isEmpty {
                         effectiveResource = WebpageResource(
@@ -2059,7 +2066,11 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                             manifestText: cachedText,
                             hlsVariantPreferences: effectiveResource.hlsVariantPreferences,
                             dashVideoRepresentationID: effectiveResource.dashVideoRepresentationID,
-                            dashAudioRepresentationID: effectiveResource.dashAudioRepresentationID
+                            dashAudioRepresentationID: effectiveResource.dashAudioRepresentationID,
+                            isDRMProtected: effectiveResource.isDRMProtected,
+                            drmProtectionType: effectiveResource.drmProtectionType,
+                            discoveredAt: effectiveResource.discoveredAt,
+                            isLive: effectiveResource.isLive
                         )
                     }
                 }
@@ -2084,6 +2095,30 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                     } catch {
                         print("[HLS Pipeline] Quality inspection note: \(error.localizedDescription). Proceeding with standard preparation.")
                     }
+                }
+
+                if effectiveResource.isLive {
+                    let docDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first ?? FileManager.default.temporaryDirectory
+                    let videosDir = docDir.appendingPathComponent("Downloads/Videos", isDirectory: true)
+                    let effectiveFilename = self.activeStreamingFilename ?? (effectiveResource.suggestedFilename.isEmpty ? "live_stream.mp4" : effectiveResource.suggestedFilename)
+                    let destination = videosDir.appendingPathComponent(effectiveFilename)
+                    let req = LiveRecordingRequest(
+                        manifestURL: effectiveResource.url,
+                        manifestKind: (effectiveResource.url.pathExtension.lowercased() == "mpd") ? .dash : .hls,
+                        destinationURL: destination,
+                        title: effectiveFilename,
+                        requestContext: effectiveResource.requestContext,
+                        preferredQualityOption: nil
+                    )
+                    do {
+                        try LiveStreamRecorder.shared.startRecording(request: req)
+                        self.downloadSuccessNotification = "Live stream recording started: \(effectiveFilename)"
+                        self.isPreparingStreaming = false
+                    } catch {
+                        self.streamingErrorMessage = "Live recording error: \(error.localizedDescription)"
+                        self.isPreparingStreaming = false
+                    }
+                    return
                 }
 
                 print("[HLS Pipeline] Creating StreamingManifestCandidate and preparing proposal with orchestrator...")
@@ -2325,18 +2360,21 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                                     updated.append(v)
                                 }
                             }
+                            let isMasterLive = expanded.first?.isLive == true || res.isLive
+                            let livePrefix = (isMasterLive && !res.title.hasPrefix("[LIVE]")) ? "[LIVE] " : ""
                             let parent = WebpageResource(
                                 id: res.id,
                                 url: res.url,
-                                title: "\(res.title) (Master Playlist)",
+                                title: "\(livePrefix)\(res.title) (Master Playlist)",
                                 suggestedFilename: res.suggestedFilename,
                                 resourceType: res.resourceType,
                                 mimeType: res.mimeType,
-                                estimatedSize: res.estimatedSize,
-                                isSupported: true,
-                                unsupportedReason: "Parent master manifest containing \(expanded.count) quality variants",
+                                estimatedSize: isMasterLive ? nil : res.estimatedSize,
+                                isSupported: !isMasterLive,
+                                unsupportedReason: isMasterLive ? "Live stream recording required; VOD download unsupported for live/event manifests" : "Parent master manifest containing \(expanded.count) quality variants",
                                 requestContext: res.requestContext,
-                                manifestText: expanded.first?.manifestText ?? res.manifestText
+                                manifestText: expanded.first?.manifestText ?? res.manifestText,
+                                isLive: isMasterLive
                             )
                             updated.append(parent)
                             inserted = true
@@ -2487,12 +2525,17 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                 resourceType: isAudio ? .audio : .video,
                 mimeType: resource.mimeType,
                 estimatedSize: selectedQualityOption?.estimatedSizeBytes ?? resource.estimatedSize,
-                isSupported: true,
+                isSupported: selectedQualityOption?.isLive != true && resource.isSupported,
+                unsupportedReason: selectedQualityOption?.isLive == true ? "Live stream recording required; VOD download unsupported for live/event manifests" : resource.unsupportedReason,
                 requestContext: resource.requestContext,
                 manifestText: (targetURL == resource.url) ? resource.manifestText : nil,
                 hlsVariantPreferences: prefs,
                 dashVideoRepresentationID: selectedQualityOption?.dashVideoRepresentationID,
-                dashAudioRepresentationID: selectedQualityOption?.dashAudioRepresentationID
+                dashAudioRepresentationID: selectedQualityOption?.dashAudioRepresentationID,
+                isDRMProtected: resource.isDRMProtected,
+                drmProtectionType: resource.drmProtectionType,
+                discoveredAt: resource.discoveredAt,
+                isLive: selectedQualityOption?.isLive ?? resource.isLive
             )
 
             if selectedQualityOption?.isLive == true {
@@ -3713,6 +3756,29 @@ public final class BrowserViewModel: NSObject, ObservableObject {
             isShowingDownloadSheet = false
             let finalFilename = customFilename.isEmpty ? res.suggestedFilename : customFilename
             activeStreamingFilename = finalFilename
+
+            let isLive = res.isLive || (self.variantStreamItems[res.id]?.isLive == true)
+            if isLive {
+                let docDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first ?? FileManager.default.temporaryDirectory
+                let videosDir = docDir.appendingPathComponent("Downloads/Videos", isDirectory: true)
+                let destination = videosDir.appendingPathComponent(finalFilename)
+                let req = LiveRecordingRequest(
+                    manifestURL: res.hlsVariantPreferences?.exactURI ?? res.url,
+                    manifestKind: (res.url.pathExtension.lowercased() == "mpd") ? .dash : .hls,
+                    destinationURL: destination,
+                    title: finalFilename,
+                    requestContext: res.requestContext ?? effectiveContext,
+                    preferredQualityOption: nil
+                )
+                do {
+                    try LiveStreamRecorder.shared.startRecording(request: req)
+                    self.downloadSuccessNotification = "Live stream recording started: \(finalFilename)"
+                } catch {
+                    self.streamingErrorMessage = "Live recording error: \(error.localizedDescription)"
+                }
+                return
+            }
+
             let configuredResource = WebpageResource(
                 id: res.id,
                 url: res.url,
@@ -3728,7 +3794,9 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                 dashVideoRepresentationID: res.dashVideoRepresentationID,
                 dashAudioRepresentationID: res.dashAudioRepresentationID,
                 isDRMProtected: res.isDRMProtected,
-                drmProtectionType: res.drmProtectionType
+                drmProtectionType: res.drmProtectionType,
+                discoveredAt: res.discoveredAt,
+                isLive: false
             )
             promptStreamingDownload(for: configuredResource, customFilename: finalFilename)
             return
@@ -5592,17 +5660,20 @@ public struct BrowserDownloadSheet: View {
 
         // 1. Try matching HLSVariantStreamItem from viewModel.variantStreamItems
         if let item = viewModel.variantStreamItems[res.id] {
+            let isLive = res.isLive || item.isLive
             let badge = item.qualityLabel
             let resText = item.resolutionText ?? item.resolution.map { "\($0.width) × \($0.height)" }
             var detailsParts: [String] = []
-            if let size = item.estimatedSizeText, !size.isEmpty && size != "Size unavailable" {
+            if isLive {
+                detailsParts.append("Live Broadcast")
+            } else if let size = item.estimatedSizeText, !size.isEmpty && size != "Size unavailable" {
                 detailsParts.append(size)
             }
             if !item.bitrateText.isEmpty {
                 detailsParts.append(item.bitrateText)
             }
             let details = detailsParts.isEmpty ? nil : detailsParts.joined(separator: " • ")
-            let title = isAudio ? "Download Audio" : "Download \(badge)"
+            let title = isLive ? "Record Live Stream" : (isAudio ? "Download Audio" : "Download \(badge)")
             return (badge, resText, details, isAudio, title)
         }
 
@@ -5638,7 +5709,9 @@ public struct BrowserDownloadSheet: View {
     private var downloadFileInfo: (badge: String, badgeColor: Color, resolution: String?, details: String?, isAudio: Bool, buttonTitle: String) {
         if isPreSelectedVariant {
             let info = preSelectedVariantQualityInfo
-            return (info.badge, info.isAudio ? Color.orange : Color.blue, info.resolution, info.details, info.isAudio, info.buttonTitle)
+            let isLive = viewModel.activeDownloadResource?.isLive == true || (viewModel.activeDownloadResource != nil && viewModel.variantStreamItems[viewModel.activeDownloadResource!.id]?.isLive == true)
+            let badgeColor: Color = isLive ? .red : (info.isAudio ? .orange : .blue)
+            return (info.badge, badgeColor, info.resolution, info.details, info.isAudio, info.buttonTitle)
         }
 
         let res = viewModel.activeDownloadResource
@@ -5829,7 +5902,7 @@ public struct BrowserDownloadSheet: View {
                         .padding(.vertical, 6)
                     }
                     .disabled(isSubmitting || viewModel.downloadCandidateURL == nil)
-                    .listRowBackground(Color.blue)
+                    .listRowBackground(info.badgeColor)
                 }
             }
             .navigationTitle("Download File")

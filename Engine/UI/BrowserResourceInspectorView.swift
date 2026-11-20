@@ -537,6 +537,9 @@ public struct ResourceRowView: View {
     }
 
     public var displayFileSize: String {
+        if resource.isLive || variantItem?.isLive == true {
+            return "Live Broadcast"
+        }
         if let bytes = variantItem?.estimatedSizeBytes {
             return "~\(StreamQualityOption.formatByteSize(bytes))"
         }
@@ -668,6 +671,19 @@ public struct ResourceRowView: View {
                                 .padding(.vertical, 2)
                                 .background(Color.red.opacity(0.85))
                                 .cornerRadius(4)
+                            } else if resource.isLive || variantItem?.isLive == true {
+                                HStack(spacing: 3) {
+                                    Circle()
+                                        .fill(Color.white)
+                                        .frame(width: 5, height: 5)
+                                    Text("LIVE")
+                                        .font(.system(size: 9, weight: .bold))
+                                }
+                                .foregroundColor(.white)
+                                .padding(.horizontal, 5)
+                                .padding(.vertical, 2)
+                                .background(Color.red)
+                                .cornerRadius(4)
                             } else if resource.isExpired() {
                                 HStack(spacing: 3) {
                                     Image(systemName: "exclamationmark.clock.fill")
@@ -696,7 +712,7 @@ public struct ResourceRowView: View {
                                     .foregroundColor(.white)
                                     .padding(.horizontal, 6)
                                     .padding(.vertical, 2)
-                                    .background(Color.blue)
+                                    .background((variant.isLive || resource.isLive) ? Color.red : Color.blue)
                                     .cornerRadius(4)
                             } else if let qualitySummary {
                                 Text(qualitySummary)
@@ -757,7 +773,11 @@ public struct ResourceRowView: View {
                 Button {
                     onSelect()
                 } label: {
-                    Label("Configure Download", systemImage: "arrow.down.circle")
+                    if resource.isLive || variantItem?.isLive == true {
+                        Label("Record Live Stream", systemImage: "record.circle")
+                    } else {
+                        Label("Configure Download", systemImage: "arrow.down.circle")
+                    }
                 }
 
                 if let onOpenAddDownload {

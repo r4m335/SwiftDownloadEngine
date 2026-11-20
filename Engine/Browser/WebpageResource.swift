@@ -51,6 +51,8 @@ public struct WebpageResource: Identifiable, Hashable, Sendable {
     public let drmProtectionType: String?
     /// Timestamp when this resource was discovered or captured.
     public let discoveredAt: Date
+    /// Whether this resource represents a live broadcast or event stream (requiring continuous live recording rather than finite VOD transfer).
+    public let isLive: Bool
 
     /// Manifest candidates are intentionally kept outside the ordinary
     /// `isSupported` download path. They require planning and coordinator-
@@ -156,7 +158,8 @@ public struct WebpageResource: Identifiable, Hashable, Sendable {
         dashAudioRepresentationID: String? = nil,
         isDRMProtected: Bool = false,
         drmProtectionType: String? = nil,
-        discoveredAt: Date = Date()
+        discoveredAt: Date = Date(),
+        isLive: Bool = false
     ) {
         self.id = id
         self.url = url
@@ -175,6 +178,7 @@ public struct WebpageResource: Identifiable, Hashable, Sendable {
         self.isDRMProtected = isDRMProtected
         self.drmProtectionType = drmProtectionType
         self.discoveredAt = discoveredAt
+        self.isLive = isLive
     }
 
     /// Evaluates whether this resource URL or its signed variant URL has already passed its signed expiration timestamp.
