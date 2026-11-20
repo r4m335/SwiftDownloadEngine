@@ -1651,7 +1651,7 @@ public actor StreamingDownloadOrchestrator {
         }
 
         PipelineLogger.shared.log("[HLS Pipeline] Master playlist detected [depth=\(depth)]. Discovered \(manifest.variants.count) variants; \(rankedVariants.count) eligible variants ranked by preference.")
-        BrowserDiagnosticLogger.shared.log(
+        await BrowserDiagnosticLogger.shared.log(
             category: .policy,
             message: "HLS variants discovered and ranked",
             url: baseURL,
@@ -1778,7 +1778,7 @@ public actor StreamingDownloadOrchestrator {
                 } catch StreamingDownloadOrchestratorError.unsupportedEncryption {
                     sawUnsupportedEncryption = true
                     PipelineLogger.shared.log("[HLS Pipeline] Nested master playlist rejected due to unsupported encryption. Trying next variant...")
-                    BrowserDiagnosticLogger.shared.log(
+                    await BrowserDiagnosticLogger.shared.log(
                         category: .policy,
                         message: "Nested HLS master playlist rejected due to unsupported encryption",
                         url: variantURI,
@@ -1812,7 +1812,7 @@ public actor StreamingDownloadOrchestrator {
                     sawUnsupportedEncryption = true
                     let reason = "Unsupported video encryption: \(classification.rawValue)"
                     PipelineLogger.shared.log("[HLS Pipeline] \(variantDesc) rejected: \(reason). Trying next variant...")
-                    BrowserDiagnosticLogger.shared.log(
+                    await BrowserDiagnosticLogger.shared.log(
                         category: .policy,
                         message: "HLS variant rejected: \(reason)",
                         url: variantURI,
@@ -1895,7 +1895,7 @@ public actor StreamingDownloadOrchestrator {
                         audioFailedUnsupported = true
                         let reason = "Unsupported audio encryption: \(classification.rawValue)"
                         PipelineLogger.shared.log("[HLS Pipeline] \(variantDesc) rejected: \(reason). Trying next variant...")
-                        BrowserDiagnosticLogger.shared.log(
+                        await BrowserDiagnosticLogger.shared.log(
                             category: .policy,
                             message: "HLS variant rejected: \(reason)",
                             url: variantURI,
@@ -1920,7 +1920,7 @@ public actor StreamingDownloadOrchestrator {
             // Both video (and separate audio, if present) are compatible!
             let encryptionType = parsedChild.segments.first?.encryption?.classification.rawValue ?? "Clear"
             PipelineLogger.shared.log("[HLS Pipeline] Successfully selected compatible \(variantDesc) [encryption=\(encryptionType)].")
-            BrowserDiagnosticLogger.shared.log(
+            await BrowserDiagnosticLogger.shared.log(
                 category: .policy,
                 message: "HLS compatible variant selected",
                 url: variantURI,

@@ -258,15 +258,15 @@ public struct BrowserCertificatePrompt: Identifiable, Sendable {
     public let id: UUID
     public let host: String
     public let message: String
-    public let onProceed: @Sendable () -> Void
-    public let onCancel: @Sendable () -> Void
+    public let onProceed: @MainActor @Sendable () -> Void
+    public let onCancel: @MainActor @Sendable () -> Void
 
     public init(
         id: UUID = UUID(),
         host: String,
         message: String,
-        onProceed: @escaping @Sendable () -> Void,
-        onCancel: @escaping @Sendable () -> Void
+        onProceed: @escaping @MainActor @Sendable () -> Void,
+        onCancel: @escaping @MainActor @Sendable () -> Void
     ) {
         self.id = id
         self.host = host
@@ -279,14 +279,14 @@ public struct BrowserCertificatePrompt: Identifiable, Sendable {
 public struct BrowserSuspiciousDownloadPrompt: Identifiable, Sendable {
     public let id: UUID
     public let warning: BrowserDownloadSecurityInspector.SecurityWarning
-    public let onProceed: @Sendable () -> Void
-    public let onCancel: @Sendable () -> Void
+    public let onProceed: @MainActor @Sendable () -> Void
+    public let onCancel: @MainActor @Sendable () -> Void
 
     public init(
         id: UUID = UUID(),
         warning: BrowserDownloadSecurityInspector.SecurityWarning,
-        onProceed: @escaping @Sendable () -> Void,
-        onCancel: @escaping @Sendable () -> Void
+        onProceed: @escaping @MainActor @Sendable () -> Void,
+        onCancel: @escaping @MainActor @Sendable () -> Void
     ) {
         self.id = id
         self.warning = warning
@@ -299,13 +299,13 @@ public struct BrowserPermissionPrompt: Identifiable, Sendable {
     public let id: UUID
     public let type: BrowserPermissionType
     public let host: String
-    public let onDecision: @Sendable (BrowserPermissionDecisionResult) -> Void
+    public let onDecision: @MainActor @Sendable (BrowserPermissionDecisionResult) -> Void
 
     public init(
         id: UUID = UUID(),
         type: BrowserPermissionType,
         host: String,
-        onDecision: @escaping @Sendable (BrowserPermissionDecisionResult) -> Void
+        onDecision: @escaping @MainActor @Sendable (BrowserPermissionDecisionResult) -> Void
     ) {
         self.id = id
         self.type = type

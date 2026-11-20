@@ -59,6 +59,7 @@ public struct LIDPlayerLibraryView: View {
     // History state
     @State private var historyRecords: [LIDPlaybackRecord] = []
 
+    @MainActor
     public init(
         baseDirectory: URL,
         knownTransfers: [UnifiedTransfer] = [],

@@ -239,6 +239,7 @@ public struct LIDPlayerView: View {
     @State private var layerViewRef: LIDPlayerLayerView? = nil
     #endif
 
+    @MainActor
     public init(
         source: LIDPlayerSource,
         engine: LIDPlaybackEngine = .shared,
@@ -253,6 +254,7 @@ public struct LIDPlayerView: View {
         self.onDismiss = onDismiss
     }
 
+    @MainActor
     public init(
         url: URL,
         title: String? = nil,
