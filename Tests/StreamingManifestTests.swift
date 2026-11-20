@@ -614,4 +614,74 @@ final class StreamingManifestTests: XCTestCase {
             XCTAssertTrue(reason.contains("requires a valid TYPE"))
         }
     }
+
+    func testHLSMasterPlaylistSkipsMalformedVariantAndKeepsValidVariants() throws {
+        let manifest = """
+        #EXTM3U
+        #EXT-X-STREAM-INF:BANDWIDTH=5000000,RESOLUTION=1920x1080
+        1080p.m3u8
+        #EXT-X-STREAM-INF:BANDWIDTH=not-a-number,RESOLUTION=1280x720
+        720p_bad.m3u8
+        #EXT-X-STREAM-INF:BANDWIDTH=2000000,RESOLUTION=badxres
+        480p_bad.m3u8
+        #EXT-X-STREAM-INF:BANDWIDTH=800000,RESOLUTION=640x360
+        360p.m3u8
+        """
+        let parsed = try HLSManifestParser.parse(manifest, baseURL: hlsURL)
+        XCTAssertEqual(parsed.playlistType, .master)
+        XCTAssertEqual(parsed.variants.count, 2)
+        XCTAssertEqual(parsed.variants[0].bandwidth, 5000000)
+        XCTAssertEqual(parsed.variants[0].resolution?.width, 1920)
+        XCTAssertEqual(parsed.variants[0].uri.lastPathComponent, "1080p.m3u8")
+        XCTAssertEqual(parsed.variants[1].bandwidth, 800000)
+        XCTAssertEqual(parsed.variants[1].resolution?.width, 640)
+        XCTAssertEqual(parsed.variants[1].uri.lastPathComponent, "360p.m3u8")
+    }
+
+    func testHLSMasterPlaylistSkipsMalformedTagAttributesAndKeepsValidVariants() throws {
+        let manifest = """
+        #EXTM3U
+        #EXT-X-STREAM-INF:BANDWIDTH="unterminated
+        bad_attr.m3u8
+        #EXT-X-STREAM-INF:BANDWIDTH=3000000,RESOLUTION=1280x720
+        720p.m3u8
+        """
+        let parsed = try HLSManifestParser.parse(manifest, baseURL: hlsURL)
+        XCTAssertEqual(parsed.playlistType, .master)
+        XCTAssertEqual(parsed.variants.count, 1)
+        XCTAssertEqual(parsed.variants[0].bandwidth, 3000000)
+        XCTAssertEqual(parsed.variants[0].uri.lastPathComponent, "720p.m3u8")
+    }
+
+    func testHLSMasterPlaylistSkipsMalformedIFrameVariantsAndKeepsValidVariants() throws {
+        let manifest = """
+        #EXTM3U
+        #EXT-X-STREAM-INF:BANDWIDTH=5000000,RESOLUTION=1920x1080
+        1080p.m3u8
+        #EXT-X-I-FRAME-STREAM-INF:BANDWIDTH=500000,RESOLUTION=1920x1080
+        #EXT-X-I-FRAME-STREAM-INF:URI="iframe.m3u8",BANDWIDTH=0
+        #EXT-X-I-FRAME-STREAM-INF:URI="iframe_valid.m3u8",BANDWIDTH=600000,RESOLUTION=1280x720
+        """
+        let parsed = try HLSManifestParser.parse(manifest, baseURL: hlsURL)
+        XCTAssertEqual(parsed.playlistType, .master)
+        XCTAssertEqual(parsed.variants.count, 2)
+        XCTAssertEqual(parsed.variants[0].bandwidth, 5000000)
+        XCTAssertFalse(parsed.variants[0].isIFrameOnly)
+        XCTAssertEqual(parsed.variants[1].bandwidth, 600000)
+        XCTAssertTrue(parsed.variants[1].isIFrameOnly)
+        XCTAssertEqual(parsed.variants[1].uri.lastPathComponent, "iframe_valid.m3u8")
+    }
+
+    func testHLSMasterPlaylistAllVariantsMalformedFailsActionably() {
+        let allMalformed = """
+        #EXTM3U
+        #EXT-X-STREAM-INF:BANDWIDTH=-500,RESOLUTION=1920x1080
+        1080p.m3u8
+        #EXT-X-STREAM-INF:BANDWIDTH=0,RESOLUTION=1280x720
+        720p.m3u8
+        """
+        XCTAssertThrowsError(try HLSManifestParser.parse(allMalformed, baseURL: hlsURL)) { error in
+            XCTAssertTrue(error.localizedDescription.contains("BANDWIDTH"))
+        }
+    }
 }

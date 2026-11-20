@@ -80,6 +80,8 @@ public enum HLSManifestParser {
         var mediaSequence: Int64 = 0
         var sawMediaTag = false
         var sawMasterTag = false
+        var skippingMalformedVariantURI = false
+        var lastMalformedVariantError: Error?
         var pendingVariantAttributes: [String: String]?
         var pendingSegment: (duration: Double, title: String?)?
         var pendingByteRange: HLSByteRange?
@@ -104,12 +106,29 @@ public enum HLSManifestParser {
             let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !line.isEmpty, line != "#EXTM3U" else { continue }
 
+            if skippingMalformedVariantURI {
+                if line.hasPrefix("#") {
+                    if line.hasPrefix("#EXT") {
+                        skippingMalformedVariantURI = false
+                    }
+                } else {
+                    skippingMalformedVariantURI = false
+                    continue
+                }
+            }
+
             if line.hasPrefix("#EXT-X-STREAM-INF:") {
                 sawMasterTag = true
                 guard pendingVariantAttributes == nil else {
                     throw ManifestParserError.malformed(reason: "A variant is missing its URI.")
                 }
-                pendingVariantAttributes = try parseAttributes(String(line.dropFirst("#EXT-X-STREAM-INF:".count)))
+                do {
+                    pendingVariantAttributes = try parseAttributes(String(line.dropFirst("#EXT-X-STREAM-INF:".count)))
+                } catch {
+                    PipelineLogger.shared.log("Skipping malformed EXT-X-STREAM-INF tag: \(error)", level: .warning)
+                    lastMalformedVariantError = error
+                    skippingMalformedVariantURI = true
+                }
                 continue
             }
 
@@ -118,77 +137,93 @@ public enum HLSManifestParser {
                     throw ManifestParserError.malformed(reason: "A variant is missing its URI.")
                 }
                 sawMasterTag = true
-                let attributes = try parseAttributes(String(line.dropFirst("#EXT-X-I-FRAME-STREAM-INF:".count)))
-                guard let uriString = attributes["URI"],
-                      let uri = try resolveVariantURL(uriString, against: baseURL) else {
-                    throw ManifestParserError.malformed(reason: "EXT-X-I-FRAME-STREAM-INF requires a valid URI attribute.")
-                }
-                guard let bandwidthText = attributes["BANDWIDTH"],
-                      let bandwidth = positiveInt(bandwidthText) else {
-                    throw ManifestParserError.malformed(reason: "EXT-X-I-FRAME-STREAM-INF requires a positive BANDWIDTH.")
-                }
-                let resolution = try parseResolution(attributes["RESOLUTION"])
-                let frameRate = try optionalPositiveDouble(attributes["FRAME-RATE"], name: "FRAME-RATE")
-                let averageBandwidth = try optionalPositiveInt(attributes["AVERAGE-BANDWIDTH"], name: "AVERAGE-BANDWIDTH")
+                do {
+                    let attributes = try parseAttributes(String(line.dropFirst("#EXT-X-I-FRAME-STREAM-INF:".count)))
+                    guard let uriString = attributes["URI"],
+                          let uri = try resolveVariantURL(uriString, against: baseURL) else {
+                        throw ManifestParserError.malformed(reason: "EXT-X-I-FRAME-STREAM-INF requires a valid URI attribute.")
+                    }
+                    guard let bandwidthText = attributes["BANDWIDTH"],
+                          let bandwidth = positiveInt(bandwidthText) else {
+                        throw ManifestParserError.malformed(reason: "EXT-X-I-FRAME-STREAM-INF requires a positive BANDWIDTH.")
+                    }
+                    let resolution = try parseResolution(attributes["RESOLUTION"])
+                    let frameRate = try optionalPositiveDouble(attributes["FRAME-RATE"], name: "FRAME-RATE")
+                    let averageBandwidth = try optionalPositiveInt(attributes["AVERAGE-BANDWIDTH"], name: "AVERAGE-BANDWIDTH")
 
-                variants.append(HLSVariant(
-                    uri: uri,
-                    bandwidth: bandwidth,
-                    averageBandwidth: averageBandwidth,
-                    resolution: resolution,
-                    codecs: attributes["CODECS"],
-                    frameRate: frameRate,
-                    audioGroup: nil,
-                    videoGroup: attributes["VIDEO"],
-                    subtitlesGroup: nil,
-                    isIFrameOnly: true
-                ))
+                    variants.append(HLSVariant(
+                        uri: uri,
+                        bandwidth: bandwidth,
+                        averageBandwidth: averageBandwidth,
+                        resolution: resolution,
+                        codecs: attributes["CODECS"],
+                        frameRate: frameRate,
+                        audioGroup: nil,
+                        videoGroup: attributes["VIDEO"],
+                        subtitlesGroup: nil,
+                        isIFrameOnly: true
+                    ))
+                } catch {
+                    PipelineLogger.shared.log("Skipping malformed EXT-X-I-FRAME-STREAM-INF: \(error)", level: .warning)
+                    lastMalformedVariantError = error
+                }
                 continue
             }
 
             if line.hasPrefix("#EXT-X-MEDIA:") {
                 sawMasterTag = true
-                let attributes = try parseAttributes(String(line.dropFirst("#EXT-X-MEDIA:".count)))
-                guard let type = attributes["TYPE"],
-                      let groupID = attributes["GROUP-ID"],
-                      let name = attributes["NAME"] else {
-                    throw ManifestParserError.malformed(reason: "EXT-X-MEDIA requires TYPE, GROUP-ID, and NAME.")
+                do {
+                    let attributes = try parseAttributes(String(line.dropFirst("#EXT-X-MEDIA:".count)))
+                    guard let type = attributes["TYPE"],
+                          let groupID = attributes["GROUP-ID"],
+                          let name = attributes["NAME"] else {
+                        throw ManifestParserError.malformed(reason: "EXT-X-MEDIA requires TYPE, GROUP-ID, and NAME.")
+                    }
+                    let uri = try resolveRenditionURL(attributes["URI"], baseURL: baseURL)
+                    renditions.append(HLSRendition(
+                        type: type,
+                        groupID: groupID,
+                        name: name,
+                        uri: uri,
+                        language: attributes["LANGUAGE"],
+                        isDefault: attributes["DEFAULT"]?.uppercased() == "YES",
+                        isAutoSelect: attributes["AUTOSELECT"]?.uppercased() == "YES"
+                    ))
+                } catch {
+                    PipelineLogger.shared.log("Skipping malformed EXT-X-MEDIA: \(error)", level: .warning)
+                    lastMalformedVariantError = error
                 }
-                let uri = try resolveRenditionURL(attributes["URI"], baseURL: baseURL)
-                renditions.append(HLSRendition(
-                    type: type,
-                    groupID: groupID,
-                    name: name,
-                    uri: uri,
-                    language: attributes["LANGUAGE"],
-                    isDefault: attributes["DEFAULT"]?.uppercased() == "YES",
-                    isAutoSelect: attributes["AUTOSELECT"]?.uppercased() == "YES"
-                ))
                 continue
             }
 
             if let attributes = pendingVariantAttributes, !line.hasPrefix("#") {
-                guard let bandwidthText = attributes["BANDWIDTH"],
-                      let bandwidth = positiveInt(bandwidthText) else {
-                    throw ManifestParserError.malformed(reason: "EXT-X-STREAM-INF requires a positive BANDWIDTH.")
+                defer { pendingVariantAttributes = nil }
+                do {
+                    guard let bandwidthText = attributes["BANDWIDTH"],
+                          let bandwidth = positiveInt(bandwidthText) else {
+                        throw ManifestParserError.malformed(reason: "EXT-X-STREAM-INF requires a positive BANDWIDTH.")
+                    }
+                    let resolution = try parseResolution(attributes["RESOLUTION"])
+                    let frameRate = try optionalPositiveDouble(attributes["FRAME-RATE"], name: "FRAME-RATE")
+                    let averageBandwidth = try optionalPositiveInt(attributes["AVERAGE-BANDWIDTH"], name: "AVERAGE-BANDWIDTH")
+                    guard let uri = try resolveVariantURL(line, against: baseURL) else {
+                        throw ManifestParserError.invalidURL
+                    }
+                    variants.append(HLSVariant(
+                        uri: uri,
+                        bandwidth: bandwidth,
+                        averageBandwidth: averageBandwidth,
+                        resolution: resolution,
+                        codecs: attributes["CODECS"],
+                        frameRate: frameRate,
+                        audioGroup: attributes["AUDIO"],
+                        videoGroup: attributes["VIDEO"],
+                        subtitlesGroup: attributes["SUBTITLES"]
+                    ))
+                } catch {
+                    PipelineLogger.shared.log("Skipping malformed variant URI '\(line)': \(error)", level: .warning)
+                    lastMalformedVariantError = error
                 }
-                let resolution = try parseResolution(attributes["RESOLUTION"])
-                let frameRate = try optionalPositiveDouble(attributes["FRAME-RATE"], name: "FRAME-RATE")
-                guard let uri = try resolveVariantURL(line, against: baseURL) else {
-                    throw ManifestParserError.invalidURL
-                }
-                variants.append(HLSVariant(
-                    uri: uri,
-                    bandwidth: bandwidth,
-                    averageBandwidth: try optionalPositiveInt(attributes["AVERAGE-BANDWIDTH"], name: "AVERAGE-BANDWIDTH"),
-                    resolution: resolution,
-                    codecs: attributes["CODECS"],
-                    frameRate: frameRate,
-                    audioGroup: attributes["AUDIO"],
-                    videoGroup: attributes["VIDEO"],
-                    subtitlesGroup: attributes["SUBTITLES"]
-                ))
-                pendingVariantAttributes = nil
                 continue
             }
 
@@ -447,6 +482,9 @@ public enum HLSManifestParser {
 
         if sawMasterTag {
             guard !variants.isEmpty || !renditions.isEmpty else {
+                if let error = lastMalformedVariantError {
+                    throw error
+                }
                 throw ManifestParserError.malformed(reason: "Master playlist contains no variants or renditions.")
             }
             let lifecycle: HLSPlaylistLifecycle = playlistTypeTag ?? (endList ? .vod : .vod)
