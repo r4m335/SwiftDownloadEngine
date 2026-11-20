@@ -416,14 +416,15 @@ jobs:
                       portEnd: 18900
                   )
                   try await downloaderEngine.start()
+
+                  let downloadedFile = downloaderPath + "/swarm_sample.bin"
+                  assert(!FileManager.default.fileExists(atPath: downloadedFile), "Payload file must not exist prior to swarm transfer")
+
                   let downloaderTask = try await downloaderEngine.addTorrent(
                       fileURL: URL(fileURLWithPath: torrentFilePath),
                       saveDirectoryURL: URL(fileURLWithPath: downloaderPath)
                   )
                   assert(downloaderTask.infoHash.lowercased() == torrentInfoHash.lowercased())
-
-                  let downloadedFile = downloaderPath + "/swarm_sample.bin"
-                  assert(!FileManager.default.fileExists(atPath: downloadedFile), "Payload file must not exist prior to swarm transfer")
 
                   // 4. Connect Downloader to Seeder via loopback socket
                   try await downloaderEngine.connectPeer(
