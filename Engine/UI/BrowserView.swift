@@ -1867,18 +1867,30 @@ public final class BrowserViewModel: NSObject, ObservableObject {
 
     /// Refreshes expired or expiring signed media tokens from the active webpage.
     public func refreshResourceToken(for resource: WebpageResource) {
+        let targetURL = resource.hlsVariantPreferences?.exactURI ?? resource.url
         if let newer = mediaCandidates.first(where: { cand in
-            cand.url != nil && cand.url != resource.url &&
-            cand.url?.host == resource.url.host &&
-            cand.url?.path == resource.url.path &&
+            cand.url != nil && cand.url != targetURL &&
+            cand.url?.host == targetURL.host &&
+            cand.url?.path == targetURL.path &&
             !cand.isExpired
         }) {
             if let newURL = newer.url {
                 var updatedResources = discoveredResources
                 if let idx = updatedResources.firstIndex(where: { $0.id == resource.id }) {
+                    let updatedPreferences: HLSVariantSelectionPreferences? = {
+                        if let currentPrefs = resource.hlsVariantPreferences {
+                            return HLSVariantSelectionPreferences(
+                                maximumBandwidth: currentPrefs.maximumBandwidth,
+                                maximumWidth: currentPrefs.maximumWidth,
+                                maximumHeight: currentPrefs.maximumHeight,
+                                exactURI: newURL
+                            )
+                        }
+                        return nil
+                    }()
                     let updated = WebpageResource(
                         id: resource.id,
-                        url: newURL,
+                        url: resource.hlsVariantPreferences != nil ? resource.url : newURL,
                         title: resource.title,
                         suggestedFilename: resource.suggestedFilename,
                         resourceType: resource.resourceType,
@@ -1888,7 +1900,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                         unsupportedReason: resource.unsupportedReason,
                         requestContext: newer.requestContext ?? resource.requestContext,
                         manifestText: resource.manifestText,
-                        hlsVariantPreferences: resource.hlsVariantPreferences,
+                        hlsVariantPreferences: updatedPreferences ?? resource.hlsVariantPreferences,
                         dashVideoRepresentationID: resource.dashVideoRepresentationID,
                         dashAudioRepresentationID: resource.dashAudioRepresentationID,
                         isDRMProtected: resource.isDRMProtected,

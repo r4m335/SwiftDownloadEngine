@@ -177,19 +177,33 @@ public struct WebpageResource: Identifiable, Hashable, Sendable {
         self.discoveredAt = discoveredAt
     }
 
-    /// Evaluates whether this resource URL has already passed its signed expiration timestamp.
+    /// Evaluates whether this resource URL or its signed variant URL has already passed its signed expiration timestamp.
     public func isExpired(now: Date = Date()) -> Bool {
-        DirectMediaTransferPlanner.isURLExpired(url, now: now)
+        if let exactURI = hlsVariantPreferences?.exactURI, DirectMediaTransferPlanner.isURLExpired(exactURI, now: now) {
+            return true
+        }
+        return DirectMediaTransferPlanner.isURLExpired(url, now: now)
     }
 
-    /// Evaluates whether this resource URL will expire soon (default within 300 seconds).
+    /// Evaluates whether this resource URL or its signed variant URL will expire soon (default within 300 seconds).
     public func isExpiringSoon(thresholdSeconds: TimeInterval = 300, now: Date = Date()) -> Bool {
-        DirectMediaTransferPlanner.isURLExpiringSoon(url, thresholdSeconds: thresholdSeconds, now: now)
+        if let exactURI = hlsVariantPreferences?.exactURI, DirectMediaTransferPlanner.isURLExpiringSoon(exactURI, thresholdSeconds: thresholdSeconds, now: now) {
+            return true
+        }
+        return DirectMediaTransferPlanner.isURLExpiringSoon(url, thresholdSeconds: thresholdSeconds, now: now)
     }
 
-    /// Computed expiration date extracted from signed URL query parameters if present.
+    /// Computed expiration date extracted from signed URL query parameters if present,
+    /// returning the earliest expiration deadline among the master manifest and variant URLs.
     public var expirationDate: Date? {
-        DirectMediaTransferPlanner.urlExpirationDate(url)
+        let masterExp = DirectMediaTransferPlanner.urlExpirationDate(url)
+        let variantExp = hlsVariantPreferences?.exactURI.flatMap { DirectMediaTransferPlanner.urlExpirationDate($0) }
+        switch (masterExp, variantExp) {
+        case let (m?, v?): return min(m, v)
+        case let (m?, nil): return m
+        case let (nil, v?): return v
+        case (nil, nil): return nil
+        }
     }
 
     public var suggestedExtension: String {

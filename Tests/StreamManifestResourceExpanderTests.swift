@@ -424,6 +424,62 @@ final class StreamManifestResourceExpanderTests: XCTestCase {
         XCTAssertTrue(vm.selectedResourceIDs.contains(master.id))
         XCTAssertFalse(vm.selectedResourceIDs.contains(highest.id))
     }
+
+    func testSignedVariantExpirationEvaluation() {
+        let masterURL = URL(string: "https://example.com/master.m3u8")!
+        let expiredTimestamp = Int(Date().timeIntervalSince1970 - 1000)
+        let expiredVariantURL = URL(string: "https://cdn.example.com/stream_1080p.m3u8?Expires=\(expiredTimestamp)&Signature=xyz")!
+
+        let prefs = HLSVariantSelectionPreferences(exactURI: expiredVariantURL)
+        let resource = WebpageResource(
+            url: masterURL,
+            title: "HLS 1080p",
+            suggestedFilename: "test-1080p.mp4",
+            resourceType: .video,
+            hlsVariantPreferences: prefs
+        )
+
+        XCTAssertTrue(resource.isExpired())
+        XCTAssertEqual(resource.expirationDate, Date(timeIntervalSince1970: Double(expiredTimestamp)))
+    }
+
+    func testSignedVariantExpiringSoonEvaluation() {
+        let masterURL = URL(string: "https://example.com/master.m3u8")!
+        let soonTimestamp = Int(Date().timeIntervalSince1970 + 120) // expires in 2 minutes
+        let soonVariantURL = URL(string: "https://cdn.example.com/stream_720p.m3u8?Expires=\(soonTimestamp)&Signature=xyz")!
+
+        let prefs = HLSVariantSelectionPreferences(exactURI: soonVariantURL)
+        let resource = WebpageResource(
+            url: masterURL,
+            title: "HLS 720p",
+            suggestedFilename: "test-720p.mp4",
+            resourceType: .video,
+            hlsVariantPreferences: prefs
+        )
+
+        XCTAssertFalse(resource.isExpired())
+        XCTAssertTrue(resource.isExpiringSoon(thresholdSeconds: 300))
+        XCTAssertEqual(resource.expirationDate, Date(timeIntervalSince1970: Double(soonTimestamp)))
+    }
+
+    func testSignedVariantEarliestExpirationResolution() {
+        let masterTimestamp = Int(Date().timeIntervalSince1970 + 600) // expires in 10 minutes
+        let masterURL = URL(string: "https://example.com/master.m3u8?Expires=\(masterTimestamp)")!
+        let variantTimestamp = Int(Date().timeIntervalSince1970 + 180) // expires in 3 minutes (earlier)
+        let variantURL = URL(string: "https://cdn.example.com/variant.m3u8?Expires=\(variantTimestamp)")!
+
+        let prefs = HLSVariantSelectionPreferences(exactURI: variantURL)
+        let resource = WebpageResource(
+            url: masterURL,
+            title: "HLS 1080p",
+            suggestedFilename: "test.mp4",
+            resourceType: .video,
+            hlsVariantPreferences: prefs
+        )
+
+        // The earliest expiration deadline should be chosen
+        XCTAssertEqual(resource.expirationDate, Date(timeIntervalSince1970: Double(variantTimestamp)))
+    }
     #endif
 }
 
