@@ -91,7 +91,7 @@ public enum StreamQualityInspector {
 
         guard manifest.playlistType == .master, !manifest.variants.isEmpty else {
             // Media playlist (single variant)
-            return [StreamQualityOption.defaultMedia(url: baseURL, mimeType: "application/vnd.apple.mpegurl", kind: .hls, isLive: isLive)]
+            return [StreamQualityOption.defaultMedia(url: baseURL, mimeType: "application/vnd.apple.mpegurl", kind: .hls, isLive: isLive, isLowLatency: manifest.isLowLatency)]
         }
 
         // Rank variants highest to lowest and deduplicate redundant quality tiers
@@ -149,7 +149,8 @@ public enum StreamQualityInspector {
                     dashVideoRepresentationID: opt.dashVideoRepresentationID,
                     dashAudioRepresentationID: opt.dashAudioRepresentationID,
                     isLive: opt.isLive,
-                    isIFrameOnly: opt.isIFrameOnly
+                    isIFrameOnly: opt.isIFrameOnly,
+                    isLowLatency: opt.isLowLatency
                 )
             }
         }

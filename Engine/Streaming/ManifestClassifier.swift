@@ -101,7 +101,9 @@ public enum StreamingManifestClassifier {
             if let query = url.query?.lowercased() {
                 if query.contains("format=mpd") || query.contains("type=mpd") || query.contains("manifest=mpd") {
                     extensionKind = .dash
-                } else if query.contains("format=m3u8") || query.contains("type=m3u8") || query.contains("manifest=m3u8") {
+                } else if query.contains("format=m3u8") || query.contains("type=m3u8") || query.contains("manifest=m3u8") ||
+                          query.contains("format=ll-hls") || query.contains("type=ll-hls") || query.contains("format=hls") ||
+                          query.contains("_hls_msn") || query.contains("_hls_part") || query.contains("_hls_skip") {
                     extensionKind = .hls
                 } else {
                     extensionKind = .unknown
@@ -153,7 +155,11 @@ public enum StreamingManifestClassifier {
         if lower.hasPrefix("<html") || lower.hasPrefix("<!doctype html") || (lower.hasPrefix("<!doctype") && lower.contains("html")) {
             return .none
         }
-        let hls = normalized.hasPrefix("#EXTM3U")
+        let hls = normalized.hasPrefix("#EXTM3U") ||
+                  normalized.contains("#EXT-X-SERVER-CONTROL") ||
+                  normalized.contains("#EXT-X-PART-INF") ||
+                  normalized.contains("#EXT-X-PART:") ||
+                  normalized.contains("#EXT-X-PRELOAD-HINT")
         let dash = normalized.range(of: #"<\s*(?:[A-Za-z_][A-Za-z0-9_.-]*:)?MPD(?:\s|>)"#, options: [.regularExpression, .caseInsensitive]) != nil
         if hls && dash { return .conflict }
         if hls { return .hls }

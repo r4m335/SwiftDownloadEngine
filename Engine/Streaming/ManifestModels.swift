@@ -259,6 +259,7 @@ public struct HLSMediaSegment: Codable, Sendable, Equatable {
     public let encryption: HLSEncryption?
     public let isDiscontinuity: Bool
     public let programDateTime: Date?
+    public let parts: [HLSPartialSegment]
 
     public init(
         sequenceNumber: Int64,
@@ -269,7 +270,8 @@ public struct HLSMediaSegment: Codable, Sendable, Equatable {
         initializationMap: HLSInitializationMap? = nil,
         encryption: HLSEncryption? = nil,
         isDiscontinuity: Bool = false,
-        programDateTime: Date? = nil
+        programDateTime: Date? = nil,
+        parts: [HLSPartialSegment] = []
     ) {
         self.sequenceNumber = sequenceNumber
         self.uri = uri
@@ -280,6 +282,79 @@ public struct HLSMediaSegment: Codable, Sendable, Equatable {
         self.encryption = encryption
         self.isDiscontinuity = isDiscontinuity
         self.programDateTime = programDateTime
+        self.parts = parts
+    }
+}
+
+/// Server control directives for Low-Latency HLS (RFC 8216bis Section 4.4.3.8).
+public struct HLSServerControl: Codable, Sendable, Equatable {
+    public let canBlockReload: Bool
+    public let canSkipUntil: Double?
+    public let canSkipDateRanges: Bool
+    public let holdBack: Double?
+    public let partHoldBack: Double?
+
+    public init(
+        canBlockReload: Bool = false,
+        canSkipUntil: Double? = nil,
+        canSkipDateRanges: Bool = false,
+        holdBack: Double? = nil,
+        partHoldBack: Double? = nil
+    ) {
+        self.canBlockReload = canBlockReload
+        self.canSkipUntil = canSkipUntil
+        self.canSkipDateRanges = canSkipDateRanges
+        self.holdBack = holdBack
+        self.partHoldBack = partHoldBack
+    }
+}
+
+/// A Low-Latency HLS partial media segment (RFC 8216bis Section 4.4.4.9).
+public struct HLSPartialSegment: Codable, Sendable, Equatable {
+    public let uri: URL
+    public let duration: Double
+    public let isIndependent: Bool
+    public let byteRange: HLSByteRange?
+    public let isGap: Bool
+
+    public init(
+        uri: URL,
+        duration: Double,
+        isIndependent: Bool = false,
+        byteRange: HLSByteRange? = nil,
+        isGap: Bool = false
+    ) {
+        self.uri = uri
+        self.duration = duration
+        self.isIndependent = isIndependent
+        self.byteRange = byteRange
+        self.isGap = isGap
+    }
+}
+
+/// Preload hint resource type for Low-Latency HLS (RFC 8216bis Section 4.4.5.3).
+public enum HLSPreloadHintType: String, Codable, Sendable, Equatable {
+    case part = "PART"
+    case map = "MAP"
+}
+
+/// A Low-Latency HLS preload hint for upcoming partial segment or initialization map.
+public struct HLSPreloadHint: Codable, Sendable, Equatable {
+    public let type: HLSPreloadHintType
+    public let uri: URL
+    public let byteRangeStart: Int64?
+    public let byteRangeLength: Int64?
+
+    public init(
+        type: HLSPreloadHintType,
+        uri: URL,
+        byteRangeStart: Int64? = nil,
+        byteRangeLength: Int64? = nil
+    ) {
+        self.type = type
+        self.uri = uri
+        self.byteRangeStart = byteRangeStart
+        self.byteRangeLength = byteRangeLength
     }
 }
 
@@ -290,11 +365,16 @@ public struct HLSManifest: Codable, Sendable, Equatable {
     public let version: Int?
     public let independentSegments: Bool
     public let isIFramesOnly: Bool
+    public let serverControl: HLSServerControl?
+    public let partTargetDuration: Double?
+    public let parts: [HLSPartialSegment]
+    public let preloadHints: [HLSPreloadHint]
     public let variants: [HLSVariant]
     public let renditions: [HLSRendition]
     public let segments: [HLSMediaSegment]
     public let encryption: HLSKeyClassification
     public let targetDuration: Double?
+    public let hasSynthesizedSegmentsFromParts: Bool
 
     public init(
         url: URL,
@@ -303,11 +383,16 @@ public struct HLSManifest: Codable, Sendable, Equatable {
         version: Int? = nil,
         independentSegments: Bool = false,
         isIFramesOnly: Bool = false,
+        serverControl: HLSServerControl? = nil,
+        partTargetDuration: Double? = nil,
+        parts: [HLSPartialSegment] = [],
+        preloadHints: [HLSPreloadHint] = [],
         variants: [HLSVariant] = [],
         renditions: [HLSRendition] = [],
         segments: [HLSMediaSegment] = [],
         encryption: HLSKeyClassification = .clear,
-        targetDuration: Double? = nil
+        targetDuration: Double? = nil,
+        hasSynthesizedSegmentsFromParts: Bool = false
     ) {
         self.url = url
         self.playlistType = playlistType
@@ -315,11 +400,31 @@ public struct HLSManifest: Codable, Sendable, Equatable {
         self.version = version
         self.independentSegments = independentSegments
         self.isIFramesOnly = isIFramesOnly
+        self.serverControl = serverControl
+        self.partTargetDuration = partTargetDuration
+        self.parts = parts
+        self.preloadHints = preloadHints
         self.variants = variants
         self.renditions = renditions
         self.segments = segments
         self.encryption = encryption
         self.targetDuration = targetDuration
+        self.hasSynthesizedSegmentsFromParts = hasSynthesizedSegmentsFromParts
+    }
+
+    /// Whether this manifest contains Low-Latency HLS tags or partial segments.
+    public var isLowLatency: Bool {
+        serverControl != nil || partTargetDuration != nil || !parts.isEmpty || !preloadHints.isEmpty
+    }
+
+    /// All partial segments that appear after the last completed media segment in the playlist.
+    public var trailingParts: [HLSPartialSegment] {
+        if hasSynthesizedSegmentsFromParts {
+            return parts
+        }
+        let completedPartCount = segments.reduce(0) { $0 + $1.parts.count }
+        guard completedPartCount < parts.count else { return [] }
+        return Array(parts.dropFirst(completedPartCount))
     }
 
     /// All variants representing full video streams (non-I-frame-only).

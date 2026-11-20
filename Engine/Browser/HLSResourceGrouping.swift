@@ -20,6 +20,7 @@ public struct HLSVariantStreamItem: Identifiable, Sendable, Hashable {
     public let estimatedSizeText: String?
     public let isLive: Bool
     public let isIFrameOnly: Bool
+    public let isLowLatency: Bool
 
     public init(
         id: String,
@@ -39,7 +40,8 @@ public struct HLSVariantStreamItem: Identifiable, Sendable, Hashable {
         estimatedSizeBytes: Int64? = nil,
         estimatedSizeText: String? = nil,
         isLive: Bool = false,
-        isIFrameOnly: Bool = false
+        isIFrameOnly: Bool = false,
+        isLowLatency: Bool = false
     ) {
         self.id = id
         self.masterURL = masterURL
@@ -59,6 +61,7 @@ public struct HLSVariantStreamItem: Identifiable, Sendable, Hashable {
         self.estimatedSizeText = estimatedSizeText
         self.isLive = isLive
         self.isIFrameOnly = isIFrameOnly
+        self.isLowLatency = isLowLatency
     }
 }
 
@@ -207,7 +210,8 @@ public enum HLSResourceGrouping {
                 estimatedSizeBytes: isLive ? nil : nil,
                 estimatedSizeText: isLive ? "Live Broadcast" : nil,
                 isLive: isLive,
-                isIFrameOnly: variant.isIFrameOnly
+                isIFrameOnly: variant.isIFrameOnly,
+                isLowLatency: manifest.isLowLatency
             )
         }
     }

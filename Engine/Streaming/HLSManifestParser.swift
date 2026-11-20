@@ -68,6 +68,13 @@ public enum HLSManifestParser {
         var version: Int?
         var independentSegments = false
         var isIFramesOnly = false
+        var serverControl: HLSServerControl?
+        var partTargetDuration: Double?
+        var pendingParts: [HLSPartialSegment] = []
+        var allParts: [HLSPartialSegment] = []
+        var preloadHints: [HLSPreloadHint] = []
+        var lastPartURI: URL?
+        var lastPartByteRange: HLSByteRange?
         var playlistTypeTag: HLSPlaylistLifecycle?
         var endList = false
         var mediaSequence: Int64 = 0
@@ -225,8 +232,10 @@ public enum HLSManifestParser {
                     initializationMap: currentMap,
                     encryption: currentEncryption,
                     isDiscontinuity: pendingDiscontinuity,
-                    programDateTime: pendingProgramDate
+                    programDateTime: pendingProgramDate,
+                    parts: pendingParts
                 ))
+                pendingParts.removeAll()
                 pendingSegment = nil
                 pendingByteRange = nil
                 pendingDiscontinuity = false
@@ -313,6 +322,119 @@ public enum HLSManifestParser {
             } else if line == "#EXT-X-I-FRAMES-ONLY" {
                 isIFramesOnly = true
                 sawMediaTag = true
+            } else if line.hasPrefix("#EXT-X-SERVER-CONTROL:") {
+                guard pendingVariantAttributes == nil else {
+                    throw ManifestParserError.malformed(reason: "A variant is missing its URI.")
+                }
+                guard pendingSegment == nil else {
+                    throw ManifestParserError.malformed(reason: "A media segment is missing its URI.")
+                }
+                let attributes = try parseAttributes(String(line.dropFirst("#EXT-X-SERVER-CONTROL:".count)))
+                let canBlock = attributes["CAN-BLOCK-RELOAD"]?.uppercased() == "YES"
+                let canSkipDate = attributes["CAN-SKIP-DATE-RANGES"]?.uppercased() == "YES"
+                let canSkipUntil = try optionalPositiveDouble(attributes["CAN-SKIP-UNTIL"], name: "CAN-SKIP-UNTIL")
+                let holdBack = try optionalPositiveDouble(attributes["HOLD-BACK"], name: "HOLD-BACK")
+                let partHoldBack = try optionalPositiveDouble(attributes["PART-HOLD-BACK"], name: "PART-HOLD-BACK")
+                serverControl = HLSServerControl(
+                    canBlockReload: canBlock,
+                    canSkipUntil: canSkipUntil,
+                    canSkipDateRanges: canSkipDate,
+                    holdBack: holdBack,
+                    partHoldBack: partHoldBack
+                )
+                if !sawMasterTag {
+                    sawMediaTag = true
+                }
+            } else if line.hasPrefix("#EXT-X-PART-INF:") {
+                guard pendingVariantAttributes == nil else {
+                    throw ManifestParserError.malformed(reason: "A variant is missing its URI.")
+                }
+                guard pendingSegment == nil else {
+                    throw ManifestParserError.malformed(reason: "A media segment is missing its URI.")
+                }
+                let attributes = try parseAttributes(String(line.dropFirst("#EXT-X-PART-INF:".count)))
+                guard let targetText = attributes["PART-TARGET"],
+                      let target = Double(targetText), target > 0, target.isFinite else {
+                    throw ManifestParserError.malformed(reason: "EXT-X-PART-INF requires a positive PART-TARGET.")
+                }
+                partTargetDuration = target
+                sawMediaTag = true
+            } else if line.hasPrefix("#EXT-X-PART:") {
+                guard pendingVariantAttributes == nil else {
+                    throw ManifestParserError.malformed(reason: "A variant is missing its URI.")
+                }
+                guard pendingSegment == nil else {
+                    throw ManifestParserError.malformed(reason: "A media segment is missing its URI.")
+                }
+                let attributes = try parseAttributes(String(line.dropFirst("#EXT-X-PART:".count)))
+                guard let uriValue = attributes["URI"],
+                      let uri = try resolveSegmentURL(uriValue, against: baseURL) else {
+                    throw ManifestParserError.malformed(reason: "EXT-X-PART requires a valid URI attribute.")
+                }
+                guard let durationText = attributes["DURATION"],
+                      let duration = Double(durationText), duration >= 0, duration.isFinite else {
+                    throw ManifestParserError.malformed(reason: "EXT-X-PART requires a non-negative DURATION.")
+                }
+                let isIndependent = attributes["INDEPENDENT"]?.uppercased() == "YES"
+                let isGap = attributes["GAP"]?.uppercased() == "YES"
+
+                let resolvedByteRange: HLSByteRange?
+                if let rangeText = attributes["BYTERANGE"] {
+                    let parsed = try parseByteRange(rangeText, defaultOffset: nil)
+                    if let offset = parsed.offset {
+                        resolvedByteRange = parsed
+                    } else {
+                        let contOffset: Int64
+                        if lastPartURI == uri, let lastRange = lastPartByteRange {
+                            contOffset = (lastRange.offset ?? 0) + lastRange.length
+                        } else {
+                            contOffset = 0
+                        }
+                        resolvedByteRange = HLSByteRange(length: parsed.length, offset: contOffset)
+                    }
+                    lastPartURI = uri
+                    lastPartByteRange = resolvedByteRange
+                } else {
+                    resolvedByteRange = nil
+                    lastPartURI = nil
+                    lastPartByteRange = nil
+                }
+
+                let part = HLSPartialSegment(
+                    uri: uri,
+                    duration: duration,
+                    isIndependent: isIndependent,
+                    byteRange: resolvedByteRange,
+                    isGap: isGap
+                )
+                pendingParts.append(part)
+                allParts.append(part)
+                sawMediaTag = true
+            } else if line.hasPrefix("#EXT-X-PRELOAD-HINT:") {
+                guard pendingVariantAttributes == nil else {
+                    throw ManifestParserError.malformed(reason: "A variant is missing its URI.")
+                }
+                guard pendingSegment == nil else {
+                    throw ManifestParserError.malformed(reason: "A media segment is missing its URI.")
+                }
+                let attributes = try parseAttributes(String(line.dropFirst("#EXT-X-PRELOAD-HINT:".count)))
+                guard let typeText = attributes["TYPE"]?.uppercased(),
+                      let hintType = HLSPreloadHintType(rawValue: typeText) else {
+                    throw ManifestParserError.malformed(reason: "EXT-X-PRELOAD-HINT requires a valid TYPE (PART or MAP).")
+                }
+                guard let uriValue = attributes["URI"],
+                      let uri = try resolveSegmentURL(uriValue, against: baseURL) else {
+                    throw ManifestParserError.malformed(reason: "EXT-X-PRELOAD-HINT requires a valid URI attribute.")
+                }
+                let start = try optionalNonNegativeInt64(attributes["BYTERANGE-START"], name: "BYTERANGE-START")
+                let length = try optionalPositiveInt64(attributes["BYTERANGE-LENGTH"], name: "BYTERANGE-LENGTH")
+                preloadHints.append(HLSPreloadHint(
+                    type: hintType,
+                    uri: uri,
+                    byteRangeStart: start,
+                    byteRangeLength: length
+                ))
+                sawMediaTag = true
             }
         }
 
@@ -335,12 +457,61 @@ public enum HLSManifestParser {
                 version: version,
                 independentSegments: independentSegments,
                 isIFramesOnly: isIFramesOnly,
+                serverControl: serverControl,
+                partTargetDuration: partTargetDuration,
+                parts: allParts,
+                preloadHints: preloadHints,
                 variants: variants,
                 renditions: renditions
             )
         }
 
-        guard sawMediaTag, !segments.isEmpty else {
+        var finalSegments = segments
+        var hasSynthesized = false
+        if finalSegments.isEmpty && !allParts.isEmpty {
+            // Low-Latency HLS playlist containing only partial segments (no complete media segments yet)
+            for (index, part) in allParts.enumerated() {
+                finalSegments.append(HLSMediaSegment(
+                    sequenceNumber: mediaSequence + Int64(index),
+                    uri: part.uri,
+                    duration: part.duration,
+                    title: nil,
+                    byteRange: part.byteRange,
+                    initializationMap: currentMap,
+                    encryption: currentEncryption,
+                    isDiscontinuity: false,
+                    programDateTime: nil,
+                    parts: [part]
+                ))
+            }
+            hasSynthesized = true
+        } else if finalSegments.isEmpty && allParts.isEmpty && !preloadHints.isEmpty {
+            for (index, hint) in preloadHints.enumerated() where hint.type == .part {
+                let range: HLSByteRange?
+                if let len = hint.byteRangeLength {
+                    range = HLSByteRange(length: len, offset: hint.byteRangeStart ?? 0)
+                } else {
+                    range = nil
+                }
+                finalSegments.append(HLSMediaSegment(
+                    sequenceNumber: mediaSequence + Int64(index),
+                    uri: hint.uri,
+                    duration: partTargetDuration ?? targetDuration ?? 1.0,
+                    title: nil,
+                    byteRange: range,
+                    initializationMap: currentMap,
+                    encryption: currentEncryption,
+                    isDiscontinuity: false,
+                    programDateTime: nil,
+                    parts: []
+                ))
+            }
+            if !finalSegments.isEmpty {
+                hasSynthesized = true
+            }
+        }
+
+        guard sawMediaTag, !finalSegments.isEmpty else {
             throw ManifestParserError.malformed(reason: "Playlist contains no media segments or master variants.")
         }
         let lifecycle: HLSPlaylistLifecycle = endList ? .vod : (playlistTypeTag ?? .live)
@@ -351,9 +522,14 @@ public enum HLSManifestParser {
             version: version,
             independentSegments: independentSegments,
             isIFramesOnly: isIFramesOnly,
-            segments: segments,
+            serverControl: serverControl,
+            partTargetDuration: partTargetDuration,
+            parts: allParts,
+            preloadHints: preloadHints,
+            segments: finalSegments,
             encryption: currentEncryptionClass,
-            targetDuration: targetDuration
+            targetDuration: targetDuration,
+            hasSynthesizedSegmentsFromParts: hasSynthesized
         )
     }
 
@@ -543,6 +719,22 @@ public enum HLSManifestParser {
             throw ManifestParserError.malformed(reason: "\(name) must be a non-negative integer.")
         }
         return result
+    }
+
+    private static func optionalNonNegativeInt64(_ value: String?, name: String) throws -> Int64? {
+        guard let value else { return nil }
+        guard let parsed = Int64(value.trimmingCharacters(in: .whitespacesAndNewlines)), parsed >= 0 else {
+            throw ManifestParserError.malformed(reason: "\(name) must be a non-negative integer.")
+        }
+        return parsed
+    }
+
+    private static func optionalPositiveInt64(_ value: String?, name: String) throws -> Int64? {
+        guard let value else { return nil }
+        guard let parsed = Int64(value.trimmingCharacters(in: .whitespacesAndNewlines)), parsed > 0 else {
+            throw ManifestParserError.malformed(reason: "\(name) must be a positive integer.")
+        }
+        return parsed
     }
 
     private static func maxEncryption(_ lhs: HLSKeyClassification, _ rhs: HLSKeyClassification) -> HLSKeyClassification {

@@ -430,7 +430,8 @@ public actor StreamManifestResourceExpander {
                 estimatedSizeBytes: isLive ? nil : option.estimatedSizeBytes,
                 estimatedSizeText: sizeText,
                 isLive: isLive,
-                isIFrameOnly: option.isIFrameOnly
+                isIFrameOnly: option.isIFrameOnly,
+                isLowLatency: option.isLowLatency
             )
             items.append(item)
         }

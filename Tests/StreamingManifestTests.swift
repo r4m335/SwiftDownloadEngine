@@ -444,4 +444,174 @@ final class StreamingManifestTests: XCTestCase {
             XCTAssertTrue(reason.contains("variant is missing its URI"))
         }
     }
+
+    func testLLHLSPlaylistWithOnlyPartialSegmentsParsesCleanly() throws {
+        let playlist = """
+        #EXTM3U
+        #EXT-X-VERSION:6
+        #EXT-X-TARGETDURATION:2
+        #EXT-X-SERVER-CONTROL:CAN-BLOCK-RELOAD=YES,PART-HOLD-BACK=1.004000,CAN-SKIP-UNTIL=12.0
+        #EXT-X-PART-INF:PART-TARGET=0.33334
+        #EXT-X-MEDIA-SEQUENCE:100
+        #EXT-X-PART:DURATION=0.33334,URI="part100.0.ts",INDEPENDENT=YES,BYTERANGE=1000@0
+        #EXT-X-PART:DURATION=0.33334,URI="part100.0.ts",BYTERANGE=2000
+        #EXT-X-PART:DURATION=0.33334,URI="part100.1.ts",GAP=YES
+        #EXT-X-PRELOAD-HINT:TYPE=PART,URI="part100.2.ts",BYTERANGE-START=0,BYTERANGE-LENGTH=1500
+        """
+
+        let manifest = try HLSManifestParser.parse(playlist, baseURL: hlsURL)
+        XCTAssertEqual(manifest.playlistType, .media)
+        XCTAssertEqual(manifest.lifecycle, .live)
+        XCTAssertTrue(manifest.isLowLatency)
+        XCTAssertTrue(manifest.hasSynthesizedSegmentsFromParts)
+
+        // Server control
+        XCTAssertNotNil(manifest.serverControl)
+        XCTAssertTrue(manifest.serverControl?.canBlockReload == true)
+        XCTAssertEqual(manifest.serverControl?.partHoldBack ?? 0, 1.004, accuracy: 0.001)
+        XCTAssertEqual(manifest.serverControl?.canSkipUntil ?? 0, 12.0, accuracy: 0.001)
+
+        // Part target duration
+        XCTAssertEqual(manifest.partTargetDuration ?? 0, 0.33334, accuracy: 0.00001)
+
+        // Parts
+        XCTAssertEqual(manifest.parts.count, 3)
+        XCTAssertEqual(manifest.parts[0].uri.absoluteString, "https://example.com/video/part100.0.ts?session=redacted")
+        XCTAssertTrue(manifest.parts[0].isIndependent)
+        XCTAssertEqual(manifest.parts[0].byteRange, HLSByteRange(length: 1000, offset: 0))
+
+        // Implicit offset continuation on same URI
+        XCTAssertEqual(manifest.parts[1].byteRange, HLSByteRange(length: 2000, offset: 1000))
+
+        // Gap flag
+        XCTAssertTrue(manifest.parts[2].isGap)
+
+        // Preload hint
+        XCTAssertEqual(manifest.preloadHints.count, 1)
+        XCTAssertEqual(manifest.preloadHints[0].type, .part)
+        XCTAssertEqual(manifest.preloadHints[0].uri.absoluteString, "https://example.com/video/part100.2.ts?session=redacted")
+        XCTAssertEqual(manifest.preloadHints[0].byteRangeStart, 0)
+        XCTAssertEqual(manifest.preloadHints[0].byteRangeLength, 1500)
+
+        // Synthesized segments for downstream recorders
+        XCTAssertEqual(manifest.segments.count, 3)
+        XCTAssertEqual(manifest.segments[0].sequenceNumber, 100)
+        XCTAssertEqual(manifest.segments[0].duration, 0.33334, accuracy: 0.00001)
+        XCTAssertEqual(manifest.segments[0].uri.absoluteString, "https://example.com/video/part100.0.ts?session=redacted")
+        XCTAssertEqual(manifest.segments[1].sequenceNumber, 101)
+        XCTAssertEqual(manifest.segments[2].sequenceNumber, 102)
+    }
+
+    func testLLHLSPlaylistWithBothCompleteSegmentsAndTrailingParts() throws {
+        let playlist = """
+        #EXTM3U
+        #EXT-X-VERSION:6
+        #EXT-X-TARGETDURATION:4
+        #EXT-X-SERVER-CONTROL:CAN-BLOCK-RELOAD=YES,PART-HOLD-BACK=1.0
+        #EXT-X-PART-INF:PART-TARGET=0.5
+        #EXT-X-MEDIA-SEQUENCE:50
+        #EXT-X-PART:DURATION=0.5,URI="seg50.part0.ts",INDEPENDENT=YES
+        #EXT-X-PART:DURATION=0.5,URI="seg50.part1.ts"
+        #EXTINF:1.0,Opening
+        seg50.ts
+        #EXT-X-PART:DURATION=0.5,URI="seg51.part0.ts",INDEPENDENT=YES
+        #EXT-X-PRELOAD-HINT:TYPE=PART,URI="seg51.part1.ts"
+        """
+
+        let manifest = try HLSManifestParser.parse(playlist, baseURL: hlsURL)
+        XCTAssertEqual(manifest.playlistType, .media)
+        XCTAssertTrue(manifest.isLowLatency)
+        XCTAssertFalse(manifest.hasSynthesizedSegmentsFromParts)
+
+        // 1 complete media segment
+        XCTAssertEqual(manifest.segments.count, 1)
+        XCTAssertEqual(manifest.segments[0].sequenceNumber, 50)
+        XCTAssertEqual(manifest.segments[0].duration, 1.0, accuracy: 0.001)
+        XCTAssertEqual(manifest.segments[0].title, "Opening")
+        XCTAssertEqual(manifest.segments[0].parts.count, 2)
+
+        // All parts: 2 in seg50, 1 trailing for seg51
+        XCTAssertEqual(manifest.parts.count, 3)
+
+        // Trailing parts
+        XCTAssertEqual(manifest.trailingParts.count, 1)
+        XCTAssertEqual(manifest.trailingParts[0].uri.absoluteString, "https://example.com/video/seg51.part0.ts?session=redacted")
+
+        // Preload hint
+        XCTAssertEqual(manifest.preloadHints.count, 1)
+    }
+
+    func testLLHLSPlaylistWithOnlyPreloadHintSynthesizesSegment() throws {
+        let playlist = """
+        #EXTM3U
+        #EXT-X-VERSION:6
+        #EXT-X-TARGETDURATION:2
+        #EXT-X-SERVER-CONTROL:CAN-BLOCK-RELOAD=YES
+        #EXT-X-PART-INF:PART-TARGET=0.5
+        #EXT-X-MEDIA-SEQUENCE:1
+        #EXT-X-PRELOAD-HINT:TYPE=PART,URI="part0.ts"
+        """
+
+        let manifest = try HLSManifestParser.parse(playlist, baseURL: hlsURL)
+        XCTAssertEqual(manifest.playlistType, .media)
+        XCTAssertTrue(manifest.isLowLatency)
+        XCTAssertTrue(manifest.hasSynthesizedSegmentsFromParts)
+        XCTAssertEqual(manifest.segments.count, 1)
+        XCTAssertEqual(manifest.segments[0].uri.absoluteString, "https://example.com/video/part0.ts?session=redacted")
+        XCTAssertEqual(manifest.segments[0].duration, 0.5, accuracy: 0.001)
+    }
+
+    func testStreamingManifestClassifierClassifiesLLHLSQueriesAndContent() {
+        let llHlsURL = URL(string: "https://example.com/live/stream?_HLS_msn=100&_HLS_part=2")!
+        let classification = StreamingManifestClassifier.classify(url: llHlsURL)
+        XCTAssertEqual(classification.kind, .hls)
+
+        let llHlsContent = """
+        #EXT-X-SERVER-CONTROL:CAN-BLOCK-RELOAD=YES
+        #EXT-X-PART:DURATION=0.5,URI="part0.ts"
+        """
+        let contentClassification = StreamingManifestClassifier.classify(url: dashURL, content: llHlsContent)
+        XCTAssertEqual(contentClassification.kind, .hls)
+    }
+
+    func testLLHLSValidationErrors() {
+        let missingURI = """
+        #EXTM3U
+        #EXT-X-VERSION:6
+        #EXT-X-PART:DURATION=0.5
+        """
+        XCTAssertThrowsError(try HLSManifestParser.parse(missingURI, baseURL: hlsURL)) { error in
+            guard case ManifestParserError.malformed(let reason) = error else {
+                XCTFail("Expected malformed error, got: \(error)")
+                return
+            }
+            XCTAssertTrue(reason.contains("requires a valid URI"))
+        }
+
+        let missingDuration = """
+        #EXTM3U
+        #EXT-X-VERSION:6
+        #EXT-X-PART:URI="part.ts"
+        """
+        XCTAssertThrowsError(try HLSManifestParser.parse(missingDuration, baseURL: hlsURL)) { error in
+            guard case ManifestParserError.malformed(let reason) = error else {
+                XCTFail("Expected malformed error, got: \(error)")
+                return
+            }
+            XCTAssertTrue(reason.contains("requires a non-negative DURATION"))
+        }
+
+        let invalidPreloadHint = """
+        #EXTM3U
+        #EXT-X-VERSION:6
+        #EXT-X-PRELOAD-HINT:TYPE=UNKNOWN,URI="part.ts"
+        """
+        XCTAssertThrowsError(try HLSManifestParser.parse(invalidPreloadHint, baseURL: hlsURL)) { error in
+            guard case ManifestParserError.malformed(let reason) = error else {
+                XCTFail("Expected malformed error, got: \(error)")
+                return
+            }
+            XCTAssertTrue(reason.contains("requires a valid TYPE"))
+        }
+    }
 }

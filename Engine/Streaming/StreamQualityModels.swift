@@ -30,6 +30,7 @@ public struct StreamQualityOption: Identifiable, Sendable, Equatable, Hashable {
     public let dashAudioRepresentationID: String?
     public let isLive: Bool
     public let isIFrameOnly: Bool
+    public let isLowLatency: Bool
 
     public init(
         id: String,
@@ -54,7 +55,8 @@ public struct StreamQualityOption: Identifiable, Sendable, Equatable, Hashable {
         dashVideoRepresentationID: String? = nil,
         dashAudioRepresentationID: String? = nil,
         isLive: Bool = false,
-        isIFrameOnly: Bool = false
+        isIFrameOnly: Bool = false,
+        isLowLatency: Bool = false
     ) {
         self.id = id
         self.label = label
@@ -79,6 +81,7 @@ public struct StreamQualityOption: Identifiable, Sendable, Equatable, Hashable {
         self.dashAudioRepresentationID = dashAudioRepresentationID
         self.isLive = isLive
         self.isIFrameOnly = isIFrameOnly
+        self.isLowLatency = isLowLatency
     }
 
     public func hash(into hasher: inout Hasher) {
@@ -138,8 +141,10 @@ public struct StreamQualityOption: Identifiable, Sendable, Equatable, Hashable {
         selectedAudioRendition: HLSRendition? = nil,
         masterURL: URL,
         durationSeconds: Double? = nil,
-        isLive: Bool = false
+        isLive: Bool = false,
+        isLowLatency: Bool = false
     ) -> StreamQualityOption {
+        let effectiveLowLatency = isLowLatency || (master?.isLowLatency ?? false)
         let height = variant.resolution?.height
         let baseBadge: String = {
             if let h = height { return "\(h)p" }
@@ -228,7 +233,8 @@ public struct StreamQualityOption: Identifiable, Sendable, Equatable, Hashable {
             manifestKind: .hls,
             hlsVariant: variant,
             isLive: isLive,
-            isIFrameOnly: variant.isIFrameOnly
+            isIFrameOnly: variant.isIFrameOnly,
+            isLowLatency: effectiveLowLatency
         )
     }
 
@@ -346,12 +352,13 @@ public struct StreamQualityOption: Identifiable, Sendable, Equatable, Hashable {
         mimeType: String? = nil,
         bandwidth: Int64 = 2_500_000,
         kind: StreamingManifestKind = .hls,
-        isLive: Bool = false
+        isLive: Bool = false,
+        isLowLatency: Bool = false
     ) -> StreamQualityOption {
         StreamQualityOption(
             id: "default-\(url.absoluteString)",
-            label: "Default Stream Quality",
-            qualityBadge: "HD",
+            label: isLowLatency ? "Default LL-HLS Stream Quality" : "Default Stream Quality",
+            qualityBadge: isLowLatency ? "LL-HLS" : "HD",
             resolution: nil,
             resolutionText: nil,
             bandwidth: bandwidth,
@@ -367,7 +374,8 @@ public struct StreamQualityOption: Identifiable, Sendable, Equatable, Hashable {
             estimatedSizeText: "Size unavailable",
             uri: url,
             manifestKind: kind,
-            isLive: isLive
+            isLive: isLive,
+            isLowLatency: isLowLatency
         )
     }
 

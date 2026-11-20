@@ -382,7 +382,10 @@ public final class LiveStreamRecorder: ObservableObject {
             return nil
         }
 
-        // Return polling interval: target duration or average segment duration
+        // Return polling interval: part target duration for LL-HLS, or target duration / segment duration
+        if manifest.isLowLatency, let partTarget = manifest.partTargetDuration {
+            return partTarget
+        }
         return manifest.targetDuration ?? (manifest.segments.last?.duration ?? 4.0)
     }
 
