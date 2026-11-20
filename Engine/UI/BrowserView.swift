@@ -341,8 +341,6 @@ public final class BrowserViewModel: NSObject, ObservableObject {
 
         super.init()
         permissionCoordinator.provider = self
-        authenticationHandler.promptProvider = self
-        promptHandler.provider = self
 
         #if canImport(WebKit)
         Task {

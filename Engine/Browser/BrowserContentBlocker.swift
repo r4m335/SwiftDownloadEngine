@@ -778,6 +778,18 @@ public final class BrowserContentBlocker: ObservableObject {
         }
     }
 }
+#else
+@MainActor
+public final class BrowserContentBlocker: ObservableObject {
+    public static let shared = BrowserContentBlocker()
+    public static let adBlockListID = "lid-adblock-standard"
+    public static let trackerBlockListID = "lid-tracker-protection"
+    public static let annoyanceBlockListID = "lid-annoyance-blocking"
+    public static let thirdPartyCookieBlockListID = "lid-third-party-cookies"
+    public static let allCookieBlockListID = "lid-all-cookies"
+    public init() {}
+    public func prepareRuleLists(whitelistedDomains: [String] = []) async {}
+}
 #endif
 
 // MARK: - Redirect & Popup Confirmation Models
@@ -1055,16 +1067,3 @@ public enum BrowserPopupPolicyEvaluator {
         return .promptConfirmation(reason: .automaticCrossDomainRedirect, isSuspicious: false)
     }
 }
-#else
-@MainActor
-public final class BrowserContentBlocker: ObservableObject {
-    public static let shared = BrowserContentBlocker()
-    public static let adBlockListID = "lid-adblock-standard"
-    public static let trackerBlockListID = "lid-tracker-protection"
-    public static let annoyanceBlockListID = "lid-annoyance-blocking"
-    public static let thirdPartyCookieBlockListID = "lid-third-party-cookies"
-    public static let allCookieBlockListID = "lid-all-cookies"
-    public init() {}
-    public func prepareRuleLists(whitelistedDomains: [String] = []) async {}
-}
-#endif
