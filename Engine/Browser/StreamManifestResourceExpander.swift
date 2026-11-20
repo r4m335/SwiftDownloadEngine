@@ -18,6 +18,15 @@ public actor StreamManifestResourceExpander {
         public let variants: [WebpageResource]
         public let variantStreamItems: [HLSVariantStreamItem]
         public let isExpanded: Bool
+        public let cachedAt: Date
+        public let expirationDate: Date?
+
+        public func isExpired(now: Date = Date(), maxTTL: TimeInterval = 300) -> Bool {
+            if let exp = expirationDate, now >= exp {
+                return true
+            }
+            return now.timeIntervalSince(cachedAt) > maxTTL
+        }
 
         public init(
             masterURL: URL,
@@ -25,7 +34,9 @@ public actor StreamManifestResourceExpander {
             options: [StreamQualityOption],
             variants: [WebpageResource],
             variantStreamItems: [HLSVariantStreamItem],
-            isExpanded: Bool
+            isExpanded: Bool,
+            cachedAt: Date = Date(),
+            expirationDate: Date? = nil
         ) {
             self.masterURL = masterURL
             self.manifestText = manifestText
@@ -33,6 +44,20 @@ public actor StreamManifestResourceExpander {
             self.variants = variants
             self.variantStreamItems = variantStreamItems
             self.isExpanded = isExpanded
+            self.cachedAt = cachedAt
+            if let expirationDate = expirationDate {
+                self.expirationDate = expirationDate
+            } else {
+                let masterExp = DirectMediaTransferPlanner.urlExpirationDate(masterURL)
+                let variantExpirations = variants.compactMap { $0.expirationDate }
+                let earliestVariant = variantExpirations.min()
+                switch (masterExp, earliestVariant) {
+                case let (m?, v?): self.expirationDate = min(m, v)
+                case let (m?, nil): self.expirationDate = m
+                case let (nil, v?): self.expirationDate = v
+                case (nil, nil): self.expirationDate = nil
+                }
+            }
         }
     }
 
@@ -43,7 +68,7 @@ public actor StreamManifestResourceExpander {
     /// to avoid duplicate concurrent network fetches while isolating different contexts.
     private var inFlight: [String: Task<ExpansionResult, Never>] = [:]
 
-    /// Clears the expansion cache (e.g. on page navigation, tab close, or cache invalidation).
+    /// Clears the expansion cache and cancels all active in-flight expansion tasks.
     public func clearCache(
         for url: URL? = nil,
         requestContext: BrowserRequestContext? = nil
@@ -51,13 +76,20 @@ public actor StreamManifestResourceExpander {
         if let url = url {
             let key = BrowserRequestContext.manifestCacheKey(for: url, requestContext: requestContext)
             cache.removeValue(forKey: key)
-            inFlight.removeValue(forKey: key)
+            if let task = inFlight.removeValue(forKey: key) {
+                task.cancel()
+            }
             if requestContext == nil {
                 let bare = url.absoluteString.lowercased()
                 cache.removeValue(forKey: bare)
-                inFlight.removeValue(forKey: bare)
+                if let task = inFlight.removeValue(forKey: bare) {
+                    task.cancel()
+                }
             }
         } else {
+            for task in inFlight.values {
+                task.cancel()
+            }
             cache.removeAll()
             inFlight.removeAll()
         }
@@ -66,30 +98,41 @@ public actor StreamManifestResourceExpander {
     /// Retrieves cached variant stream item metadata by variant resource ID.
     public func variantItem(for resourceID: String) -> HLSVariantStreamItem? {
         for result in cache.values {
-            if let match = result.variantStreamItems.first(where: { $0.id == resourceID }) {
+            if !result.isExpired(), let match = result.variantStreamItems.first(where: { $0.id == resourceID }) {
                 return match
             }
         }
         return nil
     }
 
-    /// Retrieves cached expansion result for a given manifest URL and optional browser context if available.
+    /// Retrieves cached expansion result for a given manifest URL and optional browser context if available and unexpired.
     public func cachedResult(
         for url: URL,
         requestContext: BrowserRequestContext? = nil
     ) -> ExpansionResult? {
         let key = BrowserRequestContext.manifestCacheKey(for: url, requestContext: requestContext)
         if let direct = cache[key] {
+            if direct.isExpired() || DirectMediaTransferPlanner.isURLExpired(url) {
+                cache.removeValue(forKey: key)
+                return nil
+            }
             return direct
         }
         if requestContext == nil {
-            return cache[url.absoluteString.lowercased()]
+            let bareKey = url.absoluteString.lowercased()
+            if let bare = cache[bareKey] {
+                if bare.isExpired() || DirectMediaTransferPlanner.isURLExpired(url) {
+                    cache.removeValue(forKey: bareKey)
+                    return nil
+                }
+                return bare
+            }
         }
         return nil
     }
 
     /// Asynchronously expands a master manifest resource into individual quality variants.
-    /// If the manifest is already cached for the given browser context, results return immediately without network latency.
+    /// If the manifest is already cached for the given browser context and unexpired, results return immediately without network latency.
     public func expand(
         manifestResource: WebpageResource,
         session: URLSession = .shared
@@ -100,12 +143,18 @@ public actor StreamManifestResourceExpander {
         )
 
         if let existing = cache[key] {
-            return existing.variants
+            if existing.isExpired() || manifestResource.isExpired() {
+                cache.removeValue(forKey: key)
+            } else {
+                return existing.variants
+            }
         }
 
         if let pending = inFlight[key] {
             let result = await pending.value
-            return result.variants
+            if !result.isExpired() {
+                return result.variants
+            }
         }
 
         let task = Task<ExpansionResult, Never> {
@@ -114,7 +163,9 @@ public actor StreamManifestResourceExpander {
         inFlight[key] = task
         let result = await task.value
         inFlight.removeValue(forKey: key)
-        cache[key] = result
+        if !result.isExpired() {
+            cache[key] = result
+        }
         return result.variants
     }
 
@@ -122,6 +173,16 @@ public actor StreamManifestResourceExpander {
         manifestResource: WebpageResource,
         session: URLSession
     ) async -> ExpansionResult {
+        if Task.isCancelled {
+            return ExpansionResult(
+                masterURL: manifestResource.url,
+                manifestText: "",
+                options: [],
+                variants: [],
+                variantStreamItems: [],
+                isExpanded: false
+            )
+        }
         let url = manifestResource.url
         var effectiveText = manifestResource.manifestText ?? ""
 

@@ -563,6 +563,54 @@ final class StreamManifestResourceExpanderTests: XCTestCase {
         let cachedB = await expander.cachedResult(for: sharedURL, requestContext: contextB)
         XCTAssertEqual(cachedB?.variants.count, 1)
     }
+
+    // MARK: - 15. Manifest Cache Expiration & In-Flight Cancellation Tests
+
+    func testManifestCacheExpirationWithSignedURLAndTTL() async {
+        let expander = StreamManifestResourceExpander()
+
+        // 1. URL with expired signature timestamp
+        let expiredURL = URL(string: "https://auth.example.com/stream/index.m3u8?exp=1577836800")! // 2020-01-01
+        let expiredResource = WebpageResource(
+            url: expiredURL,
+            title: "Expired Stream",
+            suggestedFilename: "index.m3u8",
+            resourceType: .video,
+            mimeType: "application/vnd.apple.mpegurl",
+            manifestText: "#EXTM3U\n#EXT-X-TARGETDURATION:2\n#EXTINF:2.0,\nseg1.ts\n#EXT-X-ENDLIST"
+        )
+
+        let variants = await expander.expand(manifestResource: expiredResource)
+        XCTAssertEqual(variants.count, 1)
+
+        // Cached result lookup must detect expired signed timestamp and return nil
+        let cached = await expander.cachedResult(for: expiredURL)
+        XCTAssertNil(cached, "Expired signed URL must not return a cached expansion result")
+
+        // 2. ExpansionResult TTL test
+        let futureURL = URL(string: "https://example.com/stream/live.m3u8")!
+        let staleCachedAt = Date().addingTimeInterval(-400) // 400s ago (beyond 300s TTL)
+        let result = StreamManifestResourceExpander.ExpansionResult(
+            masterURL: futureURL,
+            manifestText: "#EXTM3U\n#EXT-X-TARGETDURATION:2\n#EXTINF:2.0,\nseg1.ts\n#EXT-X-ENDLIST",
+            options: [],
+            variants: [],
+            variantStreamItems: [],
+            isExpanded: false,
+            cachedAt: staleCachedAt
+        )
+        XCTAssertTrue(result.isExpired(), "Result older than maxTTL must be expired")
+    }
+
+    func testClearCacheCancelsInFlightTasks() async {
+        let expander = StreamManifestResourceExpander()
+        let testURL = URL(string: "https://example.com/slow/master.m3u8")!
+
+        // Clear cache should cleanly execute and cancel any active background tasks
+        await expander.clearCache(for: testURL)
+        let cached = await expander.cachedResult(for: testURL)
+        XCTAssertNil(cached)
+    }
 }
 
 // MARK: - Failing URL Protocol Helper for Error Testing

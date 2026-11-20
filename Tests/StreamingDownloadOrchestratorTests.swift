@@ -2745,6 +2745,49 @@ final class StreamingDownloadOrchestratorTests: XCTestCase {
         let loadCount = await loader.loadCount
         XCTAssertEqual(loadCount, 0)
     }
+
+    func testCachedManifestExpiryWithSignedURLAndTTL() async throws {
+        let pastTimestamp = Int(Date().addingTimeInterval(-100).timeIntervalSince1970)
+        let expiredURL = URL(string: "https://cdn.example.com/live/index.m3u8?expires=\(pastTimestamp)")!
+        let loader = RecordingManifestLoader(
+            data: Data(),
+            finalURL: expiredURL,
+            mimeType: "application/vnd.apple.mpegurl"
+        )
+        let executor = RecordingSegmentExecutor()
+        let orchestrator = StreamingDownloadOrchestrator(
+            manifestLoader: loader,
+            segmentExecutor: executor
+        )
+
+        let playlist = """
+        #EXTM3U
+        #EXT-X-PLAYLIST-TYPE:VOD
+        #EXT-X-TARGETDURATION:4
+        #EXTINF:4.0,
+        segment1.ts
+        #EXT-X-ENDLIST
+        """
+
+        // Attempt to record an already-expired manifest
+        await orchestrator.recordCachedManifest(text: playlist, for: expiredURL)
+
+        let candidate = try StreamingManifestCandidate(
+            url: expiredURL,
+            mimeType: "application/vnd.apple.mpegurl"
+        )
+
+        // Prepare should ignore the expired cached manifest and fail or query loader
+        do {
+            _ = try await orchestrator.prepare(candidate: candidate)
+        } catch {
+            // Expected since loader has empty data and cached entry was rejected for expiration
+        }
+
+        // Verify loader was queried because the expired cache was ignored
+        let loadCount = await loader.loadCount
+        XCTAssertEqual(loadCount, 1, "Orchestrator must bypass expired cached manifest and attempt network load")
+    }
 }
 
 private final class DummyAuthSender: NSObject, URLAuthenticationChallengeSender {

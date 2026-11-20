@@ -727,25 +727,54 @@ public actor StreamingDownloadOrchestrator {
     private var cancelledTransfers: Set<String> = []
     private var registeredTransferIDs: [String: String] = [:]
     private var candidatesByTransfer: [String: StreamingManifestCandidate] = [:]
-    private var cachedManifestTextsByURL: [String: String] = [:]
+    public struct CachedManifestEntry: Sendable {
+        public let text: String
+        public let cachedAt: Date
+        public let expirationDate: Date?
+
+        public init(text: String, cachedAt: Date = Date(), expirationDate: Date? = nil) {
+            self.text = text
+            self.cachedAt = cachedAt
+            self.expirationDate = expirationDate
+        }
+
+        public func isExpired(now: Date = Date(), maxTTL: TimeInterval = 300) -> Bool {
+            if let exp = expirationDate, now >= exp {
+                return true
+            }
+            return now.timeIntervalSince(cachedAt) > maxTTL
+        }
+    }
+
+    private var cachedManifestTextsByURL: [String: CachedManifestEntry] = [:]
 
     public func recordCachedManifest(
         text: String,
         for url: URL,
         requestContext: BrowserRequestContext? = nil,
-        browserSessionSnapshot: BrowserSessionSnapshot? = nil
+        browserSessionSnapshot: BrowserSessionSnapshot? = nil,
+        cachedAt: Date = Date(),
+        expirationDate: Date? = nil
     ) {
         let normalized = text.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: "\u{FEFF}", with: "")
         guard !normalized.isEmpty else { return }
+
+        let expDate = expirationDate ?? DirectMediaTransferPlanner.urlExpirationDate(url)
+        let entry = CachedManifestEntry(text: normalized, cachedAt: cachedAt, expirationDate: expDate)
+
+        if entry.isExpired() {
+            return
+        }
+
         let key = BrowserRequestContext.manifestCacheKey(
             for: url,
             requestContext: requestContext,
             browserSessionSnapshot: browserSessionSnapshot
         )
-        cachedManifestTextsByURL[key] = normalized
+        cachedManifestTextsByURL[key] = entry
         if requestContext == nil && browserSessionSnapshot == nil {
-            cachedManifestTextsByURL[url.absoluteString] = normalized
-            cachedManifestTextsByURL[url.absoluteString.lowercased()] = normalized
+            cachedManifestTextsByURL[url.absoluteString] = entry
+            cachedManifestTextsByURL[url.absoluteString.lowercased()] = entry
         }
     }
 
@@ -768,6 +797,37 @@ public actor StreamingDownloadOrchestrator {
         } else {
             cachedManifestTextsByURL.removeAll()
         }
+    }
+
+    private func validCachedManifestText(
+        for url: URL,
+        requestContext: BrowserRequestContext?,
+        browserSessionSnapshot: BrowserSessionSnapshot?
+    ) -> String? {
+        let key = BrowserRequestContext.manifestCacheKey(
+            for: url,
+            requestContext: requestContext,
+            browserSessionSnapshot: browserSessionSnapshot
+        )
+        if let entry = cachedManifestTextsByURL[key] {
+            if entry.isExpired() || DirectMediaTransferPlanner.isURLExpired(url) {
+                cachedManifestTextsByURL.removeValue(forKey: key)
+                return nil
+            }
+            return entry.text
+        }
+        if requestContext == nil && browserSessionSnapshot == nil {
+            for fallbackKey in [url.absoluteString, url.absoluteString.lowercased()] {
+                if let entry = cachedManifestTextsByURL[fallbackKey] {
+                    if entry.isExpired() || DirectMediaTransferPlanner.isURLExpired(url) {
+                        cachedManifestTextsByURL.removeValue(forKey: fallbackKey)
+                    } else {
+                        return entry.text
+                    }
+                }
+            }
+        }
+        return nil
     }
 
     /// HLS uses the proposal transfer ID as its durable parent ID. Proposal
@@ -1288,18 +1348,11 @@ public actor StreamingDownloadOrchestrator {
         candidate: StreamingManifestCandidate,
         headers: [String: String]
     ) async throws -> StreamingManifestResponse {
-        let cacheKey = BrowserRequestContext.manifestCacheKey(
+        if let cached = validCachedManifestText(
             for: candidate.url,
             requestContext: candidate.browserRequestContext,
             browserSessionSnapshot: candidate.browserSessionSnapshot
-        )
-        let cachedCandidateText = cachedManifestTextsByURL[cacheKey] ?? (
-            (candidate.browserRequestContext == nil && candidate.browserSessionSnapshot == nil)
-                ? (cachedManifestTextsByURL[candidate.url.absoluteString] ?? cachedManifestTextsByURL[candidate.url.absoluteString.lowercased()])
-                : nil
-        )
-        if let cached = cachedCandidateText,
-           !cached.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        ), !cached.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             let normalized = cached.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: "\u{FEFF}", with: "")
             let data = Data(normalized.utf8)
             if data.count <= parsingLimits.maxBytes && !Self.isHTMLResponse(data) {
@@ -1434,17 +1487,17 @@ public actor StreamingDownloadOrchestrator {
         var parsedManifest: StreamingTransferManifest?
         var manifestData: Data?
 
-        let cacheKey = BrowserRequestContext.manifestCacheKey(
-            for: candidate.url,
-            requestContext: candidate.browserRequestContext,
-            browserSessionSnapshot: candidate.browserSessionSnapshot
-        )
-        let cachedLookupText = cachedManifestTextsByURL[cacheKey] ?? (
-            (candidate.browserRequestContext == nil && candidate.browserSessionSnapshot == nil)
-                ? (cachedManifestTextsByURL[candidate.url.absoluteString] ?? cachedManifestTextsByURL[candidate.url.absoluteString.lowercased()])
-                : nil
-        )
-        let rawCachedText = candidate.cachedManifestText ?? cachedLookupText
+        let rawCachedText: String?
+        if DirectMediaTransferPlanner.isURLExpired(candidate.url) {
+            rawCachedText = nil
+        } else {
+            let cachedLookupText = validCachedManifestText(
+                for: candidate.url,
+                requestContext: candidate.browserRequestContext,
+                browserSessionSnapshot: candidate.browserSessionSnapshot
+            )
+            rawCachedText = candidate.cachedManifestText ?? cachedLookupText
+        }
         if let rawCachedText, !rawCachedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             let normalizedText = rawCachedText.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: "\u{FEFF}", with: "")
             let cachedData = Data(normalizedText.utf8)
@@ -1649,15 +1702,10 @@ public actor StreamingDownloadOrchestrator {
                 effectiveAudioURI = audioURI
             }
 
-            let audioCacheKey = BrowserRequestContext.manifestCacheKey(
+            let audioCachedText = validCachedManifestText(
                 for: effectiveAudioURI,
                 requestContext: candidate.browserRequestContext,
                 browserSessionSnapshot: candidate.browserSessionSnapshot
-            )
-            let audioCachedText = cachedManifestTextsByURL[audioCacheKey] ?? (
-                (candidate.browserRequestContext == nil && candidate.browserSessionSnapshot == nil)
-                    ? (cachedManifestTextsByURL[effectiveAudioURI.absoluteString] ?? cachedManifestTextsByURL[effectiveAudioURI.absoluteString.lowercased()])
-                    : nil
             )
             let audioCandidate = try StreamingManifestCandidate(
                 url: effectiveAudioURI,
@@ -1774,15 +1822,10 @@ public actor StreamingDownloadOrchestrator {
                 variantURI = variant.uri
             }
 
-            let variantCacheKey = BrowserRequestContext.manifestCacheKey(
+            let variantCachedText = validCachedManifestText(
                 for: variantURI,
                 requestContext: candidate.browserRequestContext,
                 browserSessionSnapshot: candidate.browserSessionSnapshot
-            )
-            let variantCachedText = cachedManifestTextsByURL[variantCacheKey] ?? (
-                (candidate.browserRequestContext == nil && candidate.browserSessionSnapshot == nil)
-                    ? (cachedManifestTextsByURL[variantURI.absoluteString] ?? cachedManifestTextsByURL[variantURI.absoluteString.lowercased()])
-                    : nil
             )
             let variantCandidate = try StreamingManifestCandidate(
                 url: variantURI,
