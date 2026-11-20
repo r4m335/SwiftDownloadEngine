@@ -403,6 +403,7 @@ final class StreamManifestResourceExpanderTests: XCTestCase {
         }
     }
 
+    @MainActor
     func testManifestExpansionDoesNotAutoSelectHighestQualityVariant() async {
         let master = makeMasterResource()
         let vm = BrowserViewModel()
