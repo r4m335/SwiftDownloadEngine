@@ -1,6 +1,6 @@
 import XCTest
 import Foundation
-@testable import DM_Reverse_engineering
+@testable import SwiftDownloadEngine
 
 final class DownloadPersistenceTests: XCTestCase {
     private var tempStorageURL: URL!
@@ -9,7 +9,7 @@ final class DownloadPersistenceTests: XCTestCase {
     override func setUp() async throws {
         try await super.setUp()
         tempStorageURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("1DM_Persistence_Tests_\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("SDE_Persistence_Tests_\(UUID().uuidString)", isDirectory: true)
         store = try DownloadPersistenceStore(storageDirectoryURL: tempStorageURL)
     }
 
@@ -45,7 +45,7 @@ final class DownloadPersistenceTests: XCTestCase {
             lastModified: "Wed, 21 Oct 2025 07:28:00 GMT",
             suggestedFilename: "movie.mp4",
             mimeType: "video/mp4",
-            headers: ["User-Agent": "1DM-iOS/1.0", "Cookie": "session=abc"],
+            headers: ["User-Agent": "SwiftDownloadEngine/1.0", "Cookie": "session=abc"],
             segments: segments
         )
 
@@ -69,7 +69,7 @@ final class DownloadPersistenceTests: XCTestCase {
         XCTAssertEqual(decoded.lastModified, "Wed, 21 Oct 2025 07:28:00 GMT")
         XCTAssertEqual(decoded.suggestedFilename, "movie.mp4")
         XCTAssertEqual(decoded.mimeType, "video/mp4")
-        XCTAssertEqual(decoded.headers["User-Agent"], "1DM-iOS/1.0")
+        XCTAssertEqual(decoded.headers["User-Agent"], "SwiftDownloadEngine/1.0")
         XCTAssertEqual(decoded.segments.count, 2)
         XCTAssertEqual(decoded.completedBytes, 750)
         XCTAssertEqual(decoded.remainingBytes, 250)

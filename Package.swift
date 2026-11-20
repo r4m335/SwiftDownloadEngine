@@ -18,18 +18,18 @@ if hasVLCKit {
 
 var packageTargets: [Target] = [
     .target(
-        name: "DM_Reverse_engineering",
+        name: "SwiftDownloadEngine",
         dependencies: engineDependencies,
         path: "Engine"
     ),
     .executableTarget(
-        name: "DM_InterruptionTestCLI",
-        dependencies: ["DM_Reverse_engineering"],
+        name: "DownloadInterruptionCLI",
+        dependencies: ["SwiftDownloadEngine"],
         path: "CLI"
     ),
     .testTarget(
-        name: "DM_Reverse_engineeringTests",
-        dependencies: ["DM_Reverse_engineering"],
+        name: "SwiftDownloadEngineTests",
+        dependencies: ["SwiftDownloadEngine"],
         path: "Tests"
     ),
 ]
@@ -53,15 +53,15 @@ if hasVLCKit {
 }
 
 let package = Package(
-    name: "DM_Reverse_engineering",
+    name: "SwiftDownloadEngine",
     platforms: [
         .iOS(.v15),
         .macOS(.v12)
     ],
     products: [
         .library(
-            name: "DM_Reverse_engineering",
-            targets: ["DM_Reverse_engineering"]
+            name: "SwiftDownloadEngine",
+            targets: ["SwiftDownloadEngine"]
         ),
     ],
     dependencies: [],

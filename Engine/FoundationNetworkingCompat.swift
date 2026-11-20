@@ -38,7 +38,7 @@ public struct AsyncBytes: AsyncSequence, Sendable {
 }
 
 public extension URLSession {
-    typealias AsyncBytes = DM_Reverse_engineering.AsyncBytes
+    typealias AsyncBytes = SwiftDownloadEngine.AsyncBytes
 
     func bytes(
         for request: URLRequest,

@@ -1,6 +1,6 @@
 import Foundation
 import XCTest
-@testable import DM_Reverse_engineering
+@testable import SwiftDownloadEngine
 
 /// Comprehensive production validation tests for HLS and DASH VOD pipelines
 /// covering Workstreams 4.1 through 4.7.

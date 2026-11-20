@@ -5,7 +5,7 @@ import SwiftUI
 #if canImport(AVFoundation)
 import AVFoundation
 #endif
-@testable import DM_Reverse_engineering
+@testable import SwiftDownloadEngine
 
 @MainActor
 final class PlayerAndBrowserSettingsIntegrationTests: XCTestCase {

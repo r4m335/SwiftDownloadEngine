@@ -3,7 +3,7 @@ import Foundation
 /// Defines how the probe request is sent to the remote server.
 enum ProbeMethod: String, Sendable {
     /// Issues a GET request with a `Range: bytes=0-` header.
-    /// This is the primary method used by 1DM+ (e.java:L7331) because many media servers
+    /// Primary probe method using byte range 0-0 because many media servers
     /// and CDNs disallow HEAD requests or report inaccurate lengths.
     case rangeGet = "GET"
 
@@ -22,7 +22,7 @@ struct HTTPRangeProbeConfiguration: Sendable {
     /// Preferred probing method (defaults to `.rangeGet`).
     let probeMethod: ProbeMethod
 
-    /// Network timeout interval in seconds (default is 45s, matching 1DM+).
+    /// Network timeout interval in seconds (default is 45s).
     let timeoutInterval: TimeInterval
 
     /// Whether to allow requests over cellular networks.
@@ -128,7 +128,7 @@ enum HTTPRangeProbeError: Error, LocalizedError, Equatable {
 /// Discovers server capabilities, validates HTTP Range support, resolves redirects,
 /// and determines file size prior to multi-segment downloading.
 ///
-/// Direct translation of 1DM+ v18.2's `e.m16668()` and `UZ.m8426()` into Swift Concurrency.
+/// Asynchronous probe implementation resolving range support, content lengths, and filenames.
 final class HTTPRangeProbe: Sendable {
     private let urlSession: URLSession
 
@@ -162,8 +162,8 @@ final class HTTPRangeProbe: Sendable {
         }
         #endif
 
-        // Replicating 1DM+ header setup:
-        // Accept-Encoding: gzip, deflate (e.java:L5637, e.java:L7331)
+        // Standard probe request headers:
+        // Accept-Encoding: gzip, deflate for content compression discovery
         request.setValue("gzip, deflate", forHTTPHeaderField: "Accept-Encoding")
         request.setValue("*/*", forHTTPHeaderField: "Accept")
 
@@ -243,19 +243,19 @@ final class HTTPRangeProbe: Sendable {
             break
         }
 
-        // 1. Range Support & Resumability Determination (e.java:L7385-7389)
+        // 1. Range Support & Resumability Determination
         let supportsRange = (statusCode == 206)
         let acceptRangesHeader = headers["accept-ranges"]?.lowercased()
         let canResume = supportsRange || (statusCode == 200 && acceptRangesHeader == "bytes")
 
-        // 2. Length Calculation (UZ.m8426)
+        // 2. Length Calculation
         let totalSize = Self.parseTotalSize(statusCode: statusCode, headers: headers)
 
         // 3. MIME Type Extraction
         let rawMime = headers["content-type"]
         let cleanedMime = rawMime?.split(separator: ";").first.map { String($0).trimmingCharacters(in: .whitespaces) }
 
-        // 4. Filename Resolution (UZ.m8471)
+        // 4. Filename Resolution
         let filename = Self.resolveFilename(
             contentDisposition: headers["content-disposition"],
             finalURL: finalURL,
@@ -298,7 +298,7 @@ final class HTTPRangeProbe: Sendable {
 
     // MARK: - Length Resolution
 
-    /// Direct translation of 1DM+'s `UZ.m8426()` length resolution algorithm.
+    /// Resolves total content length across standard and CDN-specific headers.
     static func parseTotalSize(statusCode: Int, headers: [String: String]) -> Int64? {
         // Priority 1: Content-Range header (for 206 Partial Content or 416 with empty representation */0)
         if (statusCode == 206 || statusCode == 416), let contentRange = headers["content-range"] {
@@ -319,7 +319,7 @@ final class HTTPRangeProbe: Sendable {
             }
         }
 
-        // Priority 3: CDN-specific length headers (UZ.java:L11357 - e.g. TikTok / ByteDance)
+        // Priority 3: CDN-specific length headers (e.g. TikTok / ByteDance)
         if let customLen = headers["x-ttdb-l"] ?? headers["x-content-length"] {
             if let length = Int64(customLen.trimmingCharacters(in: .whitespaces)), length > 0 {
                 return length
@@ -331,7 +331,7 @@ final class HTTPRangeProbe: Sendable {
 
     // MARK: - Filename Resolution
 
-    /// Direct translation of 1DM+'s `UZ.m8471()` filename extraction and sanitization.
+    /// Filename extraction and sanitization across Content-Disposition and URL path.
     static func resolveFilename(
         contentDisposition: String?,
         finalURL: URL,

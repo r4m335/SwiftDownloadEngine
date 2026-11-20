@@ -195,7 +195,7 @@ public enum DownloadQueueError: Error, LocalizedError, Equatable, Sendable {
 
 public typealias DownloadError = DownloadQueueError
 
-/// Persistent download queue and global lifecycle manager for the 1DM+-inspired Swift engine.
+/// Persistent download queue and global lifecycle manager.
 ///
 /// Features:
 /// - Global Concurrency Control: Configurable limit (default 3) on simultaneously active downloads.

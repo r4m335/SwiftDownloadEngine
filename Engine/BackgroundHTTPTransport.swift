@@ -115,13 +115,13 @@ public struct BackgroundDownloadTaskRecord: Codable, Equatable, Identifiable, Se
 
     /// Task description string embedded directly into the URLSessionTask for system-level persistence.
     public var systemTaskDescription: String {
-        "1DM_BG:\(sessionIdentifier):\(downloadID):\(segmentID)"
+        "SDE_BG:\(sessionIdentifier):\(downloadID):\(segmentID)"
     }
 
     /// Parses embedded task description if present.
     public static func parseSystemTaskDescription(_ desc: String) -> (sessionIdentifier: String, downloadID: String, segmentID: Int)? {
         let parts = desc.split(separator: ":")
-        guard parts.count == 4, parts[0] == "1DM_BG", let segID = Int(parts[3]) else {
+        guard parts.count == 4, (parts[0] == "SDE_BG" || parts[0].hasSuffix("_BG")), let segID = Int(parts[3]) else {
             return nil
         }
         return (String(parts[1]), String(parts[2]), segID)

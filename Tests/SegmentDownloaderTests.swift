@@ -1,5 +1,5 @@
 import XCTest
-@testable import DM_Reverse_engineering
+@testable import SwiftDownloadEngine
 
 final class SegmentDownloaderTests: XCTestCase {
     private var session: URLSession!
@@ -14,7 +14,7 @@ final class SegmentDownloaderTests: XCTestCase {
         session = URLSession(configuration: config)
         
         tempDirectory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("1DM_Tests_\(UUID().uuidString)")
+            .appendingPathComponent("SDE_Tests_\(UUID().uuidString)")
         try? FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
     }
     

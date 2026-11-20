@@ -11,7 +11,7 @@ import Glibc
 import Darwin
 #endif
 
-@testable import DM_Reverse_engineering
+@testable import SwiftDownloadEngine
 
 final class DownloadSortOrderTests: XCTestCase {
 

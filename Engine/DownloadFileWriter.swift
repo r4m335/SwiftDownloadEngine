@@ -12,7 +12,7 @@ import Glibc
 import Musl
 #endif
 
-/// Storage strategy recovered from the 1DM+ investigation notes.
+/// Storage strategy providing segment-isolated sparse disk writing.
 public enum DownloadStorageMode: String, Codable, Sendable {
     /// Standard HTTP downloads write segments directly to their absolute offsets
     /// in one pre-sized destination file.

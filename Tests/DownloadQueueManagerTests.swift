@@ -11,7 +11,7 @@ import Glibc
 import Darwin
 #endif
 
-@testable import DM_Reverse_engineering
+@testable import SwiftDownloadEngine
 
 /// Thread-safe test helper avoiding captured var mutations in Swift 6 concurrency mode.
 private final class TestStateAccumulator: @unchecked Sendable {
@@ -80,7 +80,7 @@ final class DownloadQueueManagerTests: XCTestCase {
         try server.start()
 
         tempDirectory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("1DM_Queue_Tests_\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("SDE_Queue_Tests_\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
 
         let storeURL = tempDirectory.appendingPathComponent("Store", isDirectory: true)

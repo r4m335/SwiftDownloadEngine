@@ -1,6 +1,6 @@
 import Foundation
 
-/// Reconstructs 1DM+ v18.2's segment-boundary calculation from the
+/// Calculates segment byte range boundaries for multi-connection parallel transfers.
 /// supplied decompilation notes. This is intentionally isolated from networking.
 public struct DownloadSegment: Codable, Equatable, Identifiable, Sendable {
     public let id: Int
@@ -61,7 +61,7 @@ public enum SegmentAllocator {
             throw SegmentAllocatorError.invalidThreadCount
         }
 
-        // This unusual formula mirrors the recovered 1DM+ allocation logic.
+        // Proportional chunk boundary calculation allocating balanced ranges across workers.
         let base = (totalSize / Int64(count)) - Int64(count)
         var cursor: Int64 = 0
         var result: [DownloadSegment] = []

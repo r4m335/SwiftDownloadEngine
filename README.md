@@ -5,7 +5,7 @@
 [![Tests](https://img.shields.io/badge/Tests-144%20Passing-brightgreen.svg)]()
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-A high-performance, resilient, multi-segment HTTP range download engine for Swift. Architected from the reverse-engineered principles of industry-leading download managers (such as 1DM+ and IDM), **SwiftDownloadEngine** delivers accelerated parallel downloads, token-bucket bandwidth throttling, global HTTP request budgeting, cooperative pause/resume, persistent queue scheduling, and reactive Swift Concurrency event streams.
+A high-performance, resilient, multi-segment HTTP range download engine for Swift. Architected from modern multi-connection acceleration principles, **SwiftDownloadEngine** delivers accelerated parallel downloads, token-bucket bandwidth throttling, global HTTP request budgeting, cooperative pause/resume, persistent queue scheduling, and reactive Swift Concurrency event streams.
 
 ---
 
@@ -75,7 +75,7 @@ Or add the URL directly via Xcode: **File** > **Add Package Dependencies...**
 
 ```swift
 import Foundation
-import DM_Reverse_engineering
+import SwiftDownloadEngine
 
 // Create the engine with customizable concurrency and bandwidth caps
 let engine = try DownloadEngine(

@@ -39,7 +39,7 @@ public enum ResourceIdentityOutcome: Equatable, Sendable {
 }
 
 /// Verifies resource identity before allowing resume or link replacement.
-/// Matches 1DM+'s integrity philosophy: never silently mix data from incompatible files.
+/// Enforces identity verification to prevent mixing data from incompatible remote files.
 public struct DownloadIdentityVerifier: Sendable {
     public struct ProbeMetadata: Sendable, Equatable {
         public let finalURL: URL
@@ -162,7 +162,7 @@ public struct DownloadIdentityVerifier: Sendable {
         return .compatible(reasons: reasons)
     }
 
-    /// Internal overload accepting internal HTTPRangeProbeResult from DM_Reverse_engineering.
+    /// Internal overload accepting internal HTTPRangeProbeResult from SwiftDownloadEngine.
     func verify(
         record: DownloadRecord,
         probe: HTTPRangeProbeResult,

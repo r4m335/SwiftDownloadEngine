@@ -311,7 +311,7 @@ private actor ProgressAccumulator {
     }
 }
 
-/// Master download coordinator reproducing 1DM+'s complete download engine lifecycle.
+/// Master download coordinator managing multi-segmented parallel downloads and lifecycle states.
 ///
 /// Workflow:
 /// 1. **Probe:** Query remote server using `HTTPRangeProbe` (`Range: bytes=0-`) to determine redirect URL,
@@ -859,7 +859,7 @@ public actor DownloadCoordinator {
                         )
                     }
                     // Remote server does not support byte ranges for resumption.
-                    // 1DM+ architectural rule: automatically restart download from byte 0 instead of failing.
+                    // Resiliency rule: automatically restart download from byte 0 instead of failing.
                     print("[DownloadCoordinator] Server does not support byte ranges on resume for \(request.id); restarting download from byte 0.")
                     isResume = false
                     if FileManager.default.fileExists(atPath: request.destinationURL.path) {
@@ -919,7 +919,7 @@ public actor DownloadCoordinator {
                                 reason: "Resume unavailable: This server doesn't support reliable download resumption. Restarting the download may be required."
                             )
                         }
-                        // 1DM+ rule: restart from 0 instead of failing with cannotResume
+                        // Resiliency rule: restart from 0 instead of failing with cannotResume
                         print("[DownloadCoordinator] Server non-resumable on resume for \(request.id); restarting download cleanly from byte 0.")
                         isResume = false
                         if FileManager.default.fileExists(atPath: request.destinationURL.path) {

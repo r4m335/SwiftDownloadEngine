@@ -1,12 +1,12 @@
 import Foundation
-import DM_Reverse_engineering
+import SwiftDownloadEngine
 
 @main
 struct InterruptionCLI {
     static func main() async throws {
         let args = ProcessInfo.processInfo.arguments
         guard args.count >= 6 else {
-            print("Usage: DM_InterruptionTestCLI <id> <url> <destPath> <storePath> <threads>")
+            print("Usage: DownloadInterruptionCLI <id> <url> <destPath> <storePath> <threads>")
             exit(1)
         }
 
@@ -35,7 +35,7 @@ struct InterruptionCLI {
             try await coordinator.start(request)
             exit(0)
         } catch {
-            fputs("DM_InterruptionTestCLI failed: \(error)\n", stderr)
+            fputs("DownloadInterruptionCLI failed: \(error)\n", stderr)
             exit(3)
         }
     }

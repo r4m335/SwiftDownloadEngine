@@ -5,7 +5,7 @@ import Foundation
 import SwiftUI
 #endif
 
-@testable import DM_Reverse_engineering
+@testable import SwiftDownloadEngine
 
 final class DownloadsViewInteractionTests: XCTestCase {
 #if canImport(SwiftUI)

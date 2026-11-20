@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Controlled RFC 7233 HTTP Range Server for 1DM+ reverse-engineering verification.
+Controlled RFC 7233 HTTP Range Server for test verification.
 Supports HEAD, standard GET, ranged GET (206 Partial Content), 416 (Range Not Satisfiable),
 Content-Range validation, ETag generation, and dynamic payloads.
 """
@@ -32,7 +32,7 @@ def get_or_generate_payload(size_bytes, seed=0x5A):
     return data
 
 class HTTPRangeRequestHandler(BaseHTTPRequestHandler):
-    server_version = "1DM_Range_Server/1.0"
+    server_version = "SwiftDownloadRangeServer/1.0"
 
     def do_HEAD(self):
         data, etag, mime = self._resolve_resource()

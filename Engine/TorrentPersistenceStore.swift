@@ -26,7 +26,7 @@ public actor TorrentPersistenceStore {
             let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             let fallback = FileManager.default.temporaryDirectory
             let base = appSupport ?? fallback
-            rootURL = base.appendingPathComponent("1DMDownloads/TorrentMetadata", isDirectory: true)
+            rootURL = base.appendingPathComponent("DownloadsEngine/TorrentMetadata", isDirectory: true)
         }
 
         self.storageDirectoryURL = rootURL

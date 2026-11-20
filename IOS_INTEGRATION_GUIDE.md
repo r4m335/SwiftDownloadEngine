@@ -8,7 +8,7 @@ This guide describes how to build, run, and validate the **SwiftDownloadEngine**
 
 The repository cleanly separates the underlying multi-worker transfer engine from the SwiftUI application presentation:
 
-* **Engine Library (`DM_Reverse_engineering`)**: Multi-worker segmented range transfers, pause/resume offset recovery, priority queue scheduling, token-bucket bandwidth throttling, SHA-256 integrity verification, and persistent JSON manifest storage.
+* **Engine Library (`SwiftDownloadEngine`)**: Multi-worker segmented range transfers, pause/resume offset recovery, priority queue scheduling, token-bucket bandwidth throttling, SHA-256 integrity verification, and persistent JSON manifest storage.
 * **UI Layer (`Engine/UI/`)**: Complete SwiftUI user experience structured around a 4-tab navigation hierarchy coordinated by [DownloadManagerAppView](file:///c:/mini%20project/DM%20Reverse%20engineering/Engine/UI/DownloadManagerAppView.swift):
   1. **Downloads Tab (`DownloadsView`)**: Active/completed transfers, live speeds, ETA counters, segmented progress bars, and pause/resume/cancel/retry actions.
   2. **Browser Tab (`BrowserView`)**: Native WebKit browser (`WKWebView`) with unified address/search bar, navigation controls, loading progress, quick shortcuts, and direct download dispatch to the existing coordinator.
@@ -32,7 +32,7 @@ The repository provides a ready-to-run Xcode project root bundle: `SwiftDownload
    * **App Target**: `SwiftDownloadEngine` (iOS 15.0+ deployment target).
    * **Entry Point**: `iOSApp/iOSAppEntry.swift`.
    * **Info.plist**: `iOSApp/Info.plist`.
-   * **Package Dependency**: Pre-linked local `DM_Reverse_engineering` package product.
+   * **Package Dependency**: Pre-linked local `SwiftDownloadEngine` package product.
    * **Shared Scheme**: `SwiftDownloadEngine` pre-selected for building and debugging.
 3. Select an iOS Simulator (e.g. **iPhone 15 Pro** or **iPhone 16**, iOS 17/18) or a connected physical iPhone.
 4. Press **⌘R** (or click **Product > Run**). Xcode will resolve the local package, build the library, and launch the application.
@@ -45,7 +45,7 @@ If integrating into an existing iOS workspace or container:
    * Select your project in the Project Navigator.
    * Under **Package Dependencies**, click **+ > Add Local...**.
    * Select the repository root folder containing `Package.swift`.
-   * Link the `DM_Reverse_engineering` library product to the app target under **Frameworks, Libraries, and Embedded Content**.
+   * Link the `SwiftDownloadEngine` library product to the app target under **Frameworks, Libraries, and Embedded Content**.
 3. Replace the template `*App.swift` with [iOSApp/iOSAppEntry.swift](file:///c:/mini%20project/DM%20Reverse%20engineering/iOSApp/iOSAppEntry.swift).
 4. Set the build setting **Info.plist File** (`INFOPLIST_FILE`) to `iOSApp/Info.plist`.
 

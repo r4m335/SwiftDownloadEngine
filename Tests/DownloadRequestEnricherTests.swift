@@ -2,7 +2,7 @@ import XCTest
 #if canImport(FoundationNetworking)
 import FoundationNetworking
 #endif
-@testable import DM_Reverse_engineering
+@testable import SwiftDownloadEngine
 
 final class DownloadRequestEnricherTests: XCTestCase {
 
@@ -270,7 +270,7 @@ final class DownloadRequestEnricherTests: XCTestCase {
         // Must NOT be in Caches or Temporary directory
         XCTAssertFalse(dir.path.contains("/Caches/"))
         XCTAssertFalse(dir.path.contains("/tmp/"))
-        XCTAssertFalse(dir.path.contains("/1DMDownloads"))
+        XCTAssertFalse(dir.path.contains("/Metadata"))
         XCTAssertTrue(FileManager.default.isWritableFile(atPath: dir.path))
     }
 

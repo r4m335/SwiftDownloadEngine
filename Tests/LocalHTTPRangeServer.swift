@@ -1,5 +1,5 @@
 import Foundation
-@testable import DM_Reverse_engineering
+@testable import SwiftDownloadEngine
 
 #if canImport(Glibc)
 import Glibc
@@ -237,7 +237,7 @@ public final class LocalHTTPRangeServer: @unchecked Sendable {
         let thread = Thread { [weak self] in
             self?.acceptLoop(serverSock: sock)
         }
-        thread.name = "1DM_LocalHTTPRangeServer"
+        thread.name = "SwiftDownloadRangeServer"
         thread.start()
         self.listeningThread = thread
     }

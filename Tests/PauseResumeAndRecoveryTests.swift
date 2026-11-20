@@ -11,7 +11,7 @@ import Glibc
 import Darwin
 #endif
 
-@testable import DM_Reverse_engineering
+@testable import SwiftDownloadEngine
 
 final class PauseResumeAndRecoveryTests: XCTestCase {
     private var server: LocalHTTPRangeServer!
@@ -30,7 +30,7 @@ final class PauseResumeAndRecoveryTests: XCTestCase {
         try server.start()
 
         tempDirectory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("1DM_PauseResume_Tests_\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("SDE_PauseResume_Tests_\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
 
         let storeURL = tempDirectory.appendingPathComponent("Store", isDirectory: true)
@@ -481,15 +481,15 @@ final class PauseResumeAndRecoveryTests: XCTestCase {
     func testRealProcessTerminationViaSIGKILLAndRecovery() async throws {
         let cwd = FileManager.default.currentDirectoryPath
         let candidatePaths = [
-            "\(cwd)/.build/arm64-apple-macosx/debug/DM_InterruptionTestCLI",
-            "\(cwd)/.build/debug/DM_InterruptionTestCLI",
-            "\(cwd)/.build/x86_64-unknown-linux-gnu/debug/DM_InterruptionTestCLI",
-            "./.build/arm64-apple-macosx/debug/DM_InterruptionTestCLI",
-            "./.build/debug/DM_InterruptionTestCLI",
-            "./.build/x86_64-unknown-linux-gnu/debug/DM_InterruptionTestCLI"
+            "\(cwd)/.build/arm64-apple-macosx/debug/DownloadInterruptionCLI",
+            "\(cwd)/.build/debug/DownloadInterruptionCLI",
+            "\(cwd)/.build/x86_64-unknown-linux-gnu/debug/DownloadInterruptionCLI",
+            "./.build/arm64-apple-macosx/debug/DownloadInterruptionCLI",
+            "./.build/debug/DownloadInterruptionCLI",
+            "./.build/x86_64-unknown-linux-gnu/debug/DownloadInterruptionCLI"
         ]
         guard let executablePath = candidatePaths.first(where: { FileManager.default.fileExists(atPath: $0) }) else {
-            print("Skipping child process test: DM_InterruptionTestCLI binary not found at candidate paths.")
+            print("Skipping child process test: DownloadInterruptionCLI binary not found at candidate paths.")
             return
         }
 

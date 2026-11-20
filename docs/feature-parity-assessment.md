@@ -1,8 +1,8 @@
-# 1DM+ Feature Parity Assessment: LID Download Manager vs. Android 1DM+
+# Feature Parity Assessment: LID Download Manager vs. Industry Baseline
 
 **Repository:** `r4m335/SwiftDownloadEngine`  
 **Application:** LID Download Manager (iOS)  
-**Reference Application:** Android 1DM+ (1DM: Browser & Video / Torrent Downloader)  
+**Reference Application:** Multi-protocol Mobile Download Manager Baseline  
 **Baseline Commit:** `7d73a8bddf81b0ae09e3f25241387b48d8bba26f`  
 **Date of Assessment:** November 2026  
 
@@ -10,14 +10,14 @@
 
 ## 1. Executive Summary & Parity Statistics
 
-This assessment evaluates the degree of feature parity between **LID Download Manager (iOS)** and **1DM+ (Android)** across 7 core functional categories.
+This assessment evaluates the degree of feature parity between **LID Download Manager (iOS)** and industry reference download managers across 7 core functional categories.
 
 ### 1.1 Methodology & Strict Classification Criteria
 Each capability is classified under one of six unambiguous statuses:
 - **`Complete`**: Fully implemented in code, validated by automated CI test suites, and architecturally complete.
 - **`Partial`**: Core engine capability or partial UI exists, but user-facing controls, options, or workflows are incomplete.
 - **`Untested`**: Code is present in the repository, but lacks dedicated automated regression tests or end-to-end verification.
-- **`Missing`**: Feature is present in Android 1DM+ but completely absent in LID.
+- **`Missing`**: Feature is present in baseline reference but absent in LID.
 - **`iOS Restricted`**: Blocked or severely constrained by Apple's sandboxing, background execution policies, or network extension entitlements.
 - **`Not Applicable`**: Android-specific platform idiosyncrasies that have no equivalent on iOS.
 
@@ -44,7 +44,7 @@ Each capability is classified under one of six unambiguous statuses:
 
 ### Category 1: Download Engine & Network Core
 
-| # | Feature | 1DM+ Android Reference | LID Status | Code Evidence | Test Evidence | Gaps & Platform Limitations |
+| # | Feature | Industry Baseline Reference | LID Status | Code Evidence | Test Evidence | Gaps & Platform Limitations |
 |---|---|---|:---:|---|---|---|
 | 1 | Multi-Part Segmented HTTP Downloads | Up to 32 concurrent threads per download; dynamic range slicing | **Complete** | `AdaptiveSegmentWorkQueue.swift`, `SegmentAllocator.swift`, `SegmentDownloader.swift`, `DownloadCoordinator.swift` | `AdaptiveSegmentWorkQueueTests.swift`, `SegmentAllocatorTests.swift`, `EndToEndHTTPRangeTests.swift` | Fully functional up to 32 threads. Allocates segments dynamically and reassembles parts into final file. |
 | 2 | Dynamic Work Stealing & Rebalancing | Reallocates trailing slow chunks to idle connections in real time | **Complete** | `AdaptiveSegmentWorkQueue.swift:stealWork()`, `SegmentDownloader.swift` | `AdaptiveSegmentWorkQueueTests.test04_WorkStealing()` | Tested with synthetic range servers. |
@@ -65,7 +65,7 @@ Each capability is classified under one of six unambiguous statuses:
 
 ### Category 2: Integrated Web Browser & Media Discovery
 
-| # | Feature | 1DM+ Android Reference | LID Status | Code Evidence | Test Evidence | Gaps & Platform Limitations |
+| # | Feature | Industry Baseline Reference | LID Status | Code Evidence | Test Evidence | Gaps & Platform Limitations |
 |---|---|---|:---:|---|---|---|
 | 15 | Multi-Tab Web Browser | Tab switcher, multi-tab session management | **Complete** | `BrowserView.swift`, `BrowserTabs.swift:BrowserTabManager` | `BrowserTests.swift`, `BrowserNavigationTests.swift` | Dynamic tab creation, per-tab webview sessions, tab switcher grid. |
 | 16 | Media Sniffing & Asset Detection | Intercepts video, audio, and media streams from HTML5 elements and network requests | **Complete** | `BrowserMediaDiscoveryBridge.swift`, `BrowserMediaCandidateClassifier.swift` | `BrowserMediaDiscoveryTests.swift`, `BrowserMediaCandidateTests.swift` | Injects JavaScript observers for `<video>`, `<audio>`, `fetch()`, `XMLHttpRequest`, and URL regex patterns. |
@@ -83,7 +83,7 @@ Each capability is classified under one of six unambiguous statuses:
 
 ### Category 3: Streaming Media Downloads (HLS, DASH, Blob, MSE)
 
-| # | Feature | 1DM+ Android Reference | LID Status | Code Evidence | Test Evidence | Gaps & Platform Limitations |
+| # | Feature | Industry Baseline Reference | LID Status | Code Evidence | Test Evidence | Gaps & Platform Limitations |
 |---|---|---|:---:|---|---|---|
 | 26 | HLS Master & Media Playlist Parsing | Parses multivariant playlists, EXT-X-BYTERANGE, EXT-X-KEY | **Complete** | `HLSManifestParser.swift`, `StreamingDownloadOrchestrator.swift` | `StreamingManifestTests.swift`, `HLSLifecycleTests.swift` | Supports RFC 8216 HLS specs, discrete video/audio renditions. |
 | 27 | HLS AES-128 Segment Decryption | Decrypts encrypted segments using fetched keys and initialization vectors | **Complete** | `HLSSegmentDecryptor.swift` | `HLSSegmentDecryptorTests.swift` | AES-128-CBC software decryptor using Apple `CryptoKit` / `CommonCrypto`. |
@@ -100,7 +100,7 @@ Each capability is classified under one of six unambiguous statuses:
 
 ### Category 4: BitTorrent & Swarm Capabilities
 
-| # | Feature | 1DM+ Android Reference | LID Status | Code Evidence | Test Evidence | Gaps & Platform Limitations |
+| # | Feature | Industry Baseline Reference | LID Status | Code Evidence | Test Evidence | Gaps & Platform Limitations |
 |---|---|---|:---:|---|---|---|
 | 36 | Native BitTorrent Engine Core | C++ engine with DHT, PeX, LSD, and uTP support | **Complete** | `TorrentEngine.swift`, `LibTorrent.xcframework` (libtorrent 2.0 rasterbar) | `TorrentEngineTests.swift`, `TorrentSessionBridgeTests.swift` | Real arm64 native binary compiled via CI; pure Swift mock fallback for non-Darwin. |
 | 37 | Magnet Link Resolution & Parsing | Resolves `magnet:?xt=urn:btih:` and extracts trackers/names | **Complete** | `Engine/Browser/MagnetLink.swift`, `TorrentEngine.swift:addTorrent(magnetURI:)` | `MagnetLinkTests.swift`, `TorrentEngineTests.swift` | Robust parsing of BTIH (hex & base32), display names, and tracker lists. |
@@ -119,7 +119,7 @@ Each capability is classified under one of six unambiguous statuses:
 
 ### Category 5: File Management & Storage
 
-| # | Feature | 1DM+ Android Reference | LID Status | Code Evidence | Test Evidence | Gaps & Platform Limitations |
+| # | Feature | Industry Baseline Reference | LID Status | Code Evidence | Test Evidence | Gaps & Platform Limitations |
 |---|---|---|:---:|---|---|---|
 | 48 | Unified Downloads List Screen | Consolidated list of HTTP, Torrent, and Stream transfers | **Complete** | `DownloadsView.swift`, `DownloadItemRowView` | `DownloadsViewInteractionTests.swift` | Clean SwiftUI list with badges, speeds, progress, and context menus. |
 | 49 | In-App Media & Document Preview | QuickLook and AVPlayer integration for completed files | **Complete** | `FilePreviewView.swift:FilePreviewController`, `FilePreviewContainerView` | `DownloadsViewInteractionTests.swift` | Supports videos, audio, images, PDFs, and text without leaving app. Includes floating "Done" button. |
@@ -135,7 +135,7 @@ Each capability is classified under one of six unambiguous statuses:
 
 ### Category 6: User Experience & Automation
 
-| # | Feature | 1DM+ Android Reference | LID Status | Code Evidence | Test Evidence | Gaps & Platform Limitations |
+| # | Feature | Industry Baseline Reference | LID Status | Code Evidence | Test Evidence | Gaps & Platform Limitations |
 |---|---|---|:---:|---|---|---|
 | 57 | Real-time Speed, Progress, and ETA | Instantaneous throughput, byte counts, and completion ETA | **Complete** | `DownloadSpeedTracker.swift`, `UIFormatters.swift` | `DownloadCoordinatorTests.swift` | Formatted cleanly with rolling average window. |
 | 58 | Multi-Select & Batch Actions | Long-press to select multiple items for bulk pause, resume, delete | **Complete** | `DownloadsView.swift:isSelectingMultiple`, `selectedIDs`, `showBulkDeleteAlert` | `DownloadsViewInteractionTests.swift` | Allows bulk deletion and queue control. |
@@ -150,7 +150,7 @@ Each capability is classified under one of six unambiguous statuses:
 
 ### Category 7: Advanced Capabilities & Security
 
-| # | Feature | 1DM+ Android Reference | LID Status | Code Evidence | Test Evidence | Gaps & Platform Limitations |
+| # | Feature | Industry Baseline Reference | LID Status | Code Evidence | Test Evidence | Gaps & Platform Limitations |
 |---|---|---|:---:|---|---|---|
 | 65 | Hardware-Backed Keychain Storage | Stores sensitive server logins and proxy passwords securely | **Complete** | `Engine/Security/KeychainManager.swift`, `kSecClassInternetPassword` | `KeychainManagerTests.swift` | Encrypted in iOS Secure Enclave / Keychain; never stored in plaintext AppSettings. |
 | 66 | Cellular Data Gating (Wi-Fi Only) | Global toggle to restrict downloads to Wi-Fi | **Complete** | `AppSettings.allowCellular`, `NetworkConnectivityGate.swift` | `DownloadURLPolicyTests.swift` | Rejects cellular transfers when disabled. |

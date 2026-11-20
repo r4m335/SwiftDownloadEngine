@@ -11,7 +11,7 @@ import Glibc
 import Darwin
 #endif
 
-@testable import DM_Reverse_engineering
+@testable import SwiftDownloadEngine
 
 /// Thread-safe event collector for AsyncStream<DownloadEvent> consumption.
 private actor EventCollector {
@@ -62,7 +62,7 @@ final class DownloadEngineTests: XCTestCase {
         try server.start()
 
         tempDirectory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("1DM_Engine_Tests_\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("SDE_Engine_Tests_\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
 
         let storeURL = tempDirectory.appendingPathComponent("Store", isDirectory: true)

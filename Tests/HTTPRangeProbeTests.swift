@@ -1,5 +1,5 @@
 import XCTest
-@testable import DM_Reverse_engineering // Or standalone module import
+@testable import SwiftDownloadEngine // Or standalone module import
 
 // MARK: - Mock URL Protocol for Local Isolated Testing
 

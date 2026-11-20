@@ -1,6 +1,6 @@
 # Phase 5: Download Engine Public API & Application Integration
 
-This document describes the high-level public API introduced in Phase 5 for the 1DM+-inspired Swift download engine. The API is designed for clean integration into modern Swift applications and future iOS/macOS user interfaces without exposing internal segment workers or breaking existing queue and persistence guarantees.
+This document describes the high-level public API introduced in Phase 5 for the SwiftDownloadEngine framework. The API is designed for clean integration into modern Swift applications and future iOS/macOS user interfaces without exposing internal segment workers or breaking existing queue and persistence guarantees.
 
 ---
 
@@ -9,11 +9,11 @@ This document describes the high-level public API introduced in Phase 5 for the 
 `DownloadEngine` is an `actor` providing thread-safe, structured access to all underlying queue, transfer, throttling, and persistence systems.
 
 ### Option A: Standard Application Initialization
-Using default storage paths (`Application Support/1DMDownloads/Metadata` or temporary directory fallback on Linux) and standard limits:
+Using default storage paths (`Application Support/DownloadsEngine/Metadata` or temporary directory fallback on Linux) and standard limits:
 
 ```swift
 import Foundation
-import DM_Reverse_engineering
+import SwiftDownloadEngine
 
 // Initialize with default or customized storage and limits
 let engine = try DownloadEngine(

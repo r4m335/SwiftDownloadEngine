@@ -11,7 +11,7 @@ import Glibc
 import Darwin
 #endif
 
-@testable import DM_Reverse_engineering
+@testable import SwiftDownloadEngine
 
 final class DownloadManagerViewModelTests: XCTestCase {
     private var server: LocalHTTPRangeServer!
@@ -34,7 +34,7 @@ final class DownloadManagerViewModelTests: XCTestCase {
         try server.start()
 
         tempDirectory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("1DM_UI_Tests_\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("SDE_UI_Tests_\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
 
         let storeURL = tempDirectory.appendingPathComponent("Store", isDirectory: true)

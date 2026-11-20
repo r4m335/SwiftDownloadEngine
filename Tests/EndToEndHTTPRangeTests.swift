@@ -5,7 +5,7 @@ import Foundation
 import FoundationNetworking
 #endif
 
-@testable import DM_Reverse_engineering
+@testable import SwiftDownloadEngine
 
 final class EndToEndHTTPRangeTests: XCTestCase {
     private var server: LocalHTTPRangeServer!
@@ -20,7 +20,7 @@ final class EndToEndHTTPRangeTests: XCTestCase {
         try server.start()
 
         tempDirectory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("1DM_E2E_Tests_\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("SDE_E2E_Tests_\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
 
         let storeURL = tempDirectory.appendingPathComponent("Store", isDirectory: true)
@@ -176,7 +176,7 @@ final class EndToEndHTTPRangeTests: XCTestCase {
         XCTAssertEqual(record?.state, .completed)
         XCTAssertEqual(record?.completedBytes, Int64(size))
 
-        // In 1DM+, 10MB file with 2MB minimum chunk threshold produces 5 segments
+        // 10MB file with 2MB minimum chunk threshold produces 5 segments
         let segments = record?.segments ?? []
         XCTAssertEqual(segments.count, 5)
 

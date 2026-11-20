@@ -9,7 +9,7 @@ import FoundationNetworking
 import UIKit
 #endif
 
-@testable import DM_Reverse_engineering
+@testable import SwiftDownloadEngine
 
 final class BackgroundHTTPTransportTests: XCTestCase {
 
@@ -130,7 +130,7 @@ final class BackgroundHTTPTransportTests: XCTestCase {
         )
 
         let desc = rec.systemTaskDescription
-        XCTAssertEqual(desc, "1DM_BG:com.r4m335.SwiftDownloadEngine.background-http:download_12345:3")
+        XCTAssertEqual(desc, "SDE_BG:com.r4m335.SwiftDownloadEngine.background-http:download_12345:3")
 
         let parsed = BackgroundDownloadTaskRecord.parseSystemTaskDescription(desc)
         XCTAssertNotNil(parsed)
@@ -139,8 +139,8 @@ final class BackgroundHTTPTransportTests: XCTestCase {
         XCTAssertEqual(parsed?.segmentID, 3)
 
         XCTAssertNil(BackgroundDownloadTaskRecord.parseSystemTaskDescription("invalid_format"))
-        XCTAssertNil(BackgroundDownloadTaskRecord.parseSystemTaskDescription("1DM_BG:missing_seg"))
-        XCTAssertNil(BackgroundDownloadTaskRecord.parseSystemTaskDescription("1DM_BG:sess:dl:not_a_number"))
+        XCTAssertNil(BackgroundDownloadTaskRecord.parseSystemTaskDescription("SDE_BG:missing_seg"))
+        XCTAssertNil(BackgroundDownloadTaskRecord.parseSystemTaskDescription("SDE_BG:sess:dl:not_a_number"))
     }
 
     // MARK: - 2. Segment Progress Accounting Tests

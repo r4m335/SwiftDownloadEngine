@@ -166,7 +166,7 @@ public struct DownloadsView: View {
                 // Bandwidth Dashboard (Milestone 4.3)
                 BandwidthDashboardSection(viewModel: viewModel)
 
-                // Clipboard Auto-Detection Banner (1DM+ Architecture)
+                // Clipboard Auto-Detection Banner
                 if showClipboardBanner, let url = detectedClipboardURL {
                     HStack(spacing: 12) {
                         Image(systemName: "doc.on.clipboard.fill")

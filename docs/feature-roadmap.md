@@ -1,8 +1,8 @@
-# 1DM+ Implementation Roadmap: LID Download Manager
+# Implementation Roadmap: LID Download Manager
 
 **Repository:** `r4m335/SwiftDownloadEngine`  
 **Application:** LID Download Manager (iOS)  
-**Reference Application:** Android 1DM+  
+**Reference Application:** Industry Baseline Reference  
 **Target Architecture:** Swift 5.10 / iOS 15.0+  
 **Date:** November 2026  
 
@@ -10,7 +10,7 @@
 
 ## 1. Roadmap Strategy & Architectural Principles
 
-Based on the **1DM+ Feature Parity Assessment** (`docs/1dm-feature-parity-assessment.md`), LID currently achieves **63.4% full parity** (45/71 features complete).
+Based on the **1DM+ Feature Parity Assessment** (`docs/feature-parity-assessment.md`), LID currently achieves **63.4% full parity** (45/71 features complete).
 
 To bridge the remaining functional distance without compromising stability or violating iOS platform boundaries, subsequent development is structured into three prioritized phases:
 
@@ -294,7 +294,7 @@ To bridge the remaining functional distance without compromising stability or vi
   - The existing `LIDPlaybackEngine` relies entirely on AVFoundation.
   - Standalone MPEG-TS playback currently uses a generated single-segment HLS manifest wrapper. Physical iPhone testing has shown that this approach does not reliably play the user's downloaded TS files.
   - The current Swift package has no VLCKit dependency.
-  - The Xcode application target currently links only the local `DM_Reverse_engineering` package product.
+  - The Xcode application target currently links only the local `SwiftDownloadEngine` package product.
   - Additional TS-specific AVPlayer workarounds will not provide the broad container and codec compatibility expected from VLC.
 
 #### 1. Target Architecture

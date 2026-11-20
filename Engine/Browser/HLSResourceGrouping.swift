@@ -89,7 +89,7 @@ public enum HLSResourceGrouping {
         return qualities.isEmpty ? nil : qualities.joined(separator: " · ")
     }
 
-    /// Extracts rich metadata for every variant in a master playlist (1DM-style).
+    /// Extracts rich metadata for every variant in a master playlist.
     public static func extractVariantStreamItems(for resource: WebpageResource) -> [HLSVariantStreamItem] {
         guard let text = resource.manifestText,
               let manifest = cachedParse(text: text, baseURL: resource.url),

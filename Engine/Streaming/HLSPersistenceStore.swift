@@ -56,7 +56,7 @@ public actor HLSPersistenceStore {
         } else {
             let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             let fallback = FileManager.default.temporaryDirectory
-            baseURL = (appSupport ?? fallback).appendingPathComponent("1DMDownloads/Metadata", isDirectory: true)
+            baseURL = (appSupport ?? fallback).appendingPathComponent("DownloadsEngine/Metadata", isDirectory: true)
         }
         let hlsDir = baseURL.appendingPathComponent("HLSTransfers", isDirectory: true)
         do {
@@ -82,7 +82,7 @@ public actor HLSPersistenceStore {
     /// In-memory only store for testing.
     public init(inMemory: Bool) {
         let tempURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("1DMHLSTransfers_\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("HLSTransfers_\(UUID().uuidString)", isDirectory: true)
         try? FileManager.default.createDirectory(at: tempURL, withIntermediateDirectories: true)
         self.storageDirectoryURL = tempURL
 

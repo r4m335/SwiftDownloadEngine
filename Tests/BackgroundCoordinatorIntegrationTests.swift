@@ -5,7 +5,7 @@ import Foundation
 import FoundationNetworking
 #endif
 
-@testable import DM_Reverse_engineering
+@testable import SwiftDownloadEngine
 
 final class BackgroundCoordinatorIntegrationTests: XCTestCase {
 
@@ -20,7 +20,7 @@ final class BackgroundCoordinatorIntegrationTests: XCTestCase {
         try await super.setUp()
 
         tempDirectory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("1DM_BG_Coord_Tests_\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("SDE_BG_Coord_Tests_\(UUID().uuidString)", isDirectory: true)
         storageDirectory = tempDirectory.appendingPathComponent("Store", isDirectory: true)
         try FileManager.default.createDirectory(at: storageDirectory, withIntermediateDirectories: true)
 

@@ -1,6 +1,6 @@
 import XCTest
 import Foundation
-@testable import DM_Reverse_engineering
+@testable import SwiftDownloadEngine
 
 final class DownloadCoordinatorTests: XCTestCase {
     private var session: URLSession!
@@ -17,7 +17,7 @@ final class DownloadCoordinatorTests: XCTestCase {
         session = URLSession(configuration: config)
 
         tempDirectory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("1DM_Coordinator_Tests_\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("SDE_Coordinator_Tests_\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
 
         let storeDir = tempDirectory.appendingPathComponent("Store", isDirectory: true)

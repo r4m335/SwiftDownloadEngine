@@ -256,7 +256,7 @@ public struct SwiftDownloadEngineApp: App {
             )
         } catch {
             print("Notice: DownloadEngine primary storage initialization failed: \(error.localizedDescription). Initializing fallback storage.")
-            let fallbackStore = FileManager.default.temporaryDirectory.appendingPathComponent("1DMDownloads_Fallback", isDirectory: true)
+            let fallbackStore = FileManager.default.temporaryDirectory.appendingPathComponent("Downloads_Fallback", isDirectory: true)
             do {
                 try FileManager.default.createDirectory(at: fallbackStore, withIntermediateDirectories: true)
             } catch {

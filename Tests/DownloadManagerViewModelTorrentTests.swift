@@ -1,6 +1,6 @@
 import XCTest
 import Foundation
-@testable import DM_Reverse_engineering
+@testable import SwiftDownloadEngine
 
 final class DownloadManagerViewModelTorrentTests: XCTestCase {
     private var tempDirectory: URL!

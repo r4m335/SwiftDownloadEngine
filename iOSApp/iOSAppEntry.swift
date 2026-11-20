@@ -1,6 +1,6 @@
 #if canImport(SwiftUI)
 import SwiftUI
-import DM_Reverse_engineering
+import SwiftDownloadEngine
 
 /// Production entry point for the launchable iOS application target.
 ///

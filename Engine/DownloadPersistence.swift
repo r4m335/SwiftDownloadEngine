@@ -1,6 +1,6 @@
 import Foundation
 
-/// Lifecycle states matching 1DM+ download status codes.
+/// Lifecycle states for managed downloads.
 public enum DownloadState: Codable, Equatable, Sendable {
     case pending
     case probing
@@ -41,7 +41,7 @@ public enum DownloadState: Codable, Equatable, Sendable {
 
 /// Policy governing resumption of downloads when remote origin server provides no validator (no ETag and no Last-Modified).
 public enum ResumeIntegrityPolicy: String, Codable, Sendable, CaseIterable {
-    /// Compatibility mode: Permits resuming when remote Content-Length matches persisted size, matching 1DM+ behavior.
+    /// Compatibility mode: Permits resuming when remote Content-Length matches persisted size.
     /// Note: A remote file could change in content while retaining the exact same size.
     case compatibility
 
@@ -81,7 +81,7 @@ public enum HTTPTransportPolicy: String, Codable, Sendable, CaseIterable {
     case background
 }
 
-/// Durable segment progress record corresponding to 1DM+'s `ThreadInfo`.
+/// Durable segment progress record tracking byte ranges and offsets.
 public struct SegmentRecord: Codable, Equatable, Identifiable, Sendable {
     public let id: Int
     public let startOffset: Int64
@@ -134,7 +134,7 @@ public enum InternalStreamingConstants {
     public static let legacySegmentIDPrefix = "stream-segment-"
 }
 
-/// Comprehensive persistent download record reproducing 1DM+'s `DownloadInfo`.
+/// Comprehensive persistent download record tracking transfer state.
 public struct DownloadRecord: Codable, Equatable, Identifiable, Sendable, SchemaVersioned {
     public static let currentSchemaVersion: Int = 1
 
@@ -295,7 +295,7 @@ public struct DownloadRecord: Codable, Equatable, Identifiable, Sendable, Schema
     }
 
     /// Evaluates remote server headers before resuming an interrupted download.
-    /// Matches 1DM+'s consistency checks (e.java:L7331).
+    /// Validates remote server response consistency against recorded size.
     public func validateForResume(
         remoteETag: String?,
         remoteLastModified: String?,
@@ -414,7 +414,7 @@ public enum DownloadPersistenceError: Error, LocalizedError, Equatable, Sendable
 /// - Atomic disk writes preventing corrupt state during crashes or power cuts.
 /// - In-memory cache for high-throughput progress updates without repetitive filesystem scans.
 /// - ISO 8601 date serialization matching standard interchange formats.
-/// - Segment-level progress persistence matching 1DM+'s `threads` SQLite table.
+/// - Segment-level progress persistence with atomic disk sync.
 public actor DownloadPersistenceStore {
     public let storageDirectoryURL: URL
 
@@ -430,7 +430,7 @@ public actor DownloadPersistenceStore {
             let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             let fallback = FileManager.default.temporaryDirectory
             let base = appSupport ?? fallback
-            directoryURL = base.appendingPathComponent("1DMDownloads/Metadata", isDirectory: true)
+            directoryURL = base.appendingPathComponent("DownloadsEngine/Metadata", isDirectory: true)
         }
 
         self.storageDirectoryURL = directoryURL
@@ -456,7 +456,7 @@ public actor DownloadPersistenceStore {
 
     /// Safe fallback initializer that ensures storage is allocated without throwing.
     public init(inMemory: Bool) {
-        let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent("1DMDownloads_Mem_\(UUID().uuidString)", isDirectory: true)
+        let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent("Downloads_Mem_\(UUID().uuidString)", isDirectory: true)
         try? FileManager.default.createDirectory(at: tempURL, withIntermediateDirectories: true)
         self.storageDirectoryURL = tempURL
         let jsonEncoder = JSONEncoder()
@@ -756,7 +756,7 @@ public actor DownloadPersistenceStore {
     }
 }
 
-// MARK: - File Collision & Conflict Resolver (1DM+ Architecture)
+// MARK: - File Collision & Conflict Resolver
 
 /// Manages filename sanitization and non-destructive duplicate resolution (e.g. "video (1).mp4").
 public enum FileConflictResolver {

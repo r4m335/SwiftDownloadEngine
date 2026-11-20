@@ -11,7 +11,7 @@ import Glibc
 import Darwin
 #endif
 
-@testable import DM_Reverse_engineering
+@testable import SwiftDownloadEngine
 
 final class ResourceThrottlingTests: XCTestCase {
     private var server: LocalHTTPRangeServer!
@@ -30,7 +30,7 @@ final class ResourceThrottlingTests: XCTestCase {
         try server.start()
 
         tempDirectory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("1DM_Throttling_Tests_\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("SDE_Throttling_Tests_\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
 
         let storeURL = tempDirectory.appendingPathComponent("Store", isDirectory: true)

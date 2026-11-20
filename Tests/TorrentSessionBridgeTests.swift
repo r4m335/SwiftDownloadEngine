@@ -19,7 +19,7 @@ final class TorrentSessionBridgeTests: XCTestCase {
 
     func testSessionLifecycleCreationAndShutdown() throws {
         let tempDir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("1DM_Torrent_Test_\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("SDE_Torrent_Test_\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
         defer {
             try? FileManager.default.removeItem(at: tempDir)
@@ -40,7 +40,7 @@ final class TorrentSessionBridgeTests: XCTestCase {
 
     func testBridgeMagnetAdditionAndStatusAndRemoval() throws {
         let tempDir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("1DM_Torrent_Magnet_\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("SDE_Torrent_Magnet_\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
         defer {
             try? FileManager.default.removeItem(at: tempDir)
@@ -85,7 +85,7 @@ final class TorrentSessionBridgeTests: XCTestCase {
 
     func testBridgeFastResumeGenerationAndRestoration() throws {
         let tempDir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("1DM_Torrent_Resume_\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("SDE_Torrent_Resume_\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
         defer {
             try? FileManager.default.removeItem(at: tempDir)

@@ -1,6 +1,6 @@
 import Foundation
 import XCTest
-@testable import DM_Reverse_engineering
+@testable import SwiftDownloadEngine
 
 final class DirectMediaTransferPlannerTests: XCTestCase {
     private let now = Date(timeIntervalSince1970: 1_700_000_000)
