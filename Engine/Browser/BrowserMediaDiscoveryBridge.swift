@@ -1606,7 +1606,7 @@ public final class BrowserMediaDiscoveryBridge: NSObject {
     }
 
     /// Filters a list of media candidates based on user-configured sniffer filters.
-    public static func filter(
+    public nonisolated static func filter(
         candidates: [BrowserMediaCandidate],
         using filter: BrowserSnifferFilter = BrowserSnifferFilter.load()
     ) -> [BrowserMediaCandidate] {
