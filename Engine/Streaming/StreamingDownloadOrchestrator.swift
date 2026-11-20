@@ -1769,6 +1769,7 @@ public actor StreamingDownloadOrchestrator {
             ]
         )
 
+        let isExplicitVariantSelection = candidate.hlsVariantPreferences.exactURI != nil
         var sawUnsupportedEncryption = false
         var lastPlanningError: Error? = nil
         var deferredSampleAESSelection: ResolvedHLSSelection? = nil
@@ -1845,15 +1846,29 @@ public actor StreamingDownloadOrchestrator {
             } catch is CancellationError {
                 throw CancellationError()
             } catch let error as StreamingManifestLoadError {
-                // Do not downgrade on HTTP 401/403 authentication, 404/410, or network load errors!
-                PipelineLogger.shared.log("[HLS Pipeline] Network/Auth error loading variant playlist: \(error.localizedDescription). Aborting without downgrade.")
-                throw error
+                if isExplicitVariantSelection {
+                    PipelineLogger.shared.log("[HLS Pipeline] Network/Auth error loading explicitly selected variant playlist: \(error.localizedDescription). Aborting without downgrade.")
+                    throw error
+                }
+                lastPlanningError = error
+                PipelineLogger.shared.log("[HLS Pipeline] Network/Auth error loading \(variantDesc): \(error.localizedDescription). Falling back to next eligible variant in master playlist...")
+                continue
             } catch let error as URLError {
-                PipelineLogger.shared.log("[HLS Pipeline] URLError loading variant playlist: \(error.localizedDescription). Aborting without downgrade.")
-                throw error
+                if isExplicitVariantSelection {
+                    PipelineLogger.shared.log("[HLS Pipeline] URLError loading explicitly selected variant playlist: \(error.localizedDescription). Aborting without downgrade.")
+                    throw error
+                }
+                lastPlanningError = error
+                PipelineLogger.shared.log("[HLS Pipeline] URLError loading \(variantDesc): \(error.localizedDescription). Falling back to next eligible variant in master playlist...")
+                continue
             } catch {
-                PipelineLogger.shared.log("[HLS Pipeline] Unexpected error loading variant playlist: \(error.localizedDescription). Aborting without downgrade.")
-                throw error
+                if isExplicitVariantSelection {
+                    PipelineLogger.shared.log("[HLS Pipeline] Unexpected error loading explicitly selected variant playlist: \(error.localizedDescription). Aborting without downgrade.")
+                    throw error
+                }
+                lastPlanningError = error
+                PipelineLogger.shared.log("[HLS Pipeline] Unexpected error loading \(variantDesc): \(error.localizedDescription). Falling back to next eligible variant in master playlist...")
+                continue
             }
 
             let parsedChild: HLSManifest
@@ -1864,8 +1879,13 @@ public actor StreamingDownloadOrchestrator {
                     limits: parsingLimits
                 )
             } catch let error as ManifestParserError {
-                PipelineLogger.shared.log("[HLS Pipeline] Child variant playlist failed to parse: \(error.localizedDescription). Aborting without downgrade.")
-                throw StreamingDownloadOrchestratorError.manifestParseFailed(error)
+                if isExplicitVariantSelection {
+                    PipelineLogger.shared.log("[HLS Pipeline] Explicitly selected variant playlist failed to parse: \(error.localizedDescription). Aborting without downgrade.")
+                    throw StreamingDownloadOrchestratorError.manifestParseFailed(error)
+                }
+                lastPlanningError = StreamingDownloadOrchestratorError.manifestParseFailed(error)
+                PipelineLogger.shared.log("[HLS Pipeline] Child variant playlist failed to parse for \(variantDesc): \(error.localizedDescription). Falling back to next eligible variant...")
+                continue
             }
 
             if parsedChild.playlistType == .master {
@@ -1902,7 +1922,12 @@ public actor StreamingDownloadOrchestrator {
                     )
                     continue
                 } catch {
-                    throw error
+                    if isExplicitVariantSelection {
+                        throw error
+                    }
+                    lastPlanningError = error
+                    PipelineLogger.shared.log("[HLS Pipeline] Nested master playlist failed for \(variantDesc): \(error.localizedDescription). Falling back to next eligible variant...")
+                    continue
                 }
             }
 
@@ -1971,11 +1996,29 @@ public actor StreamingDownloadOrchestrator {
                 } catch is CancellationError {
                     throw CancellationError()
                 } catch let error as StreamingManifestLoadError {
-                    throw error
+                    if isExplicitVariantSelection {
+                        PipelineLogger.shared.log("[HLS Pipeline] Explicitly selected variant separate audio failed to load: \(error.localizedDescription). Aborting without downgrade.")
+                        throw error
+                    }
+                    lastPlanningError = error
+                    PipelineLogger.shared.log("[HLS Pipeline] Failed to load separate audio playlist for \(variantDesc): \(error.localizedDescription). Falling back to next eligible variant...")
+                    continue
                 } catch let error as URLError {
-                    throw error
+                    if isExplicitVariantSelection {
+                        PipelineLogger.shared.log("[HLS Pipeline] Explicitly selected variant separate audio network error: \(error.localizedDescription). Aborting without downgrade.")
+                        throw error
+                    }
+                    lastPlanningError = error
+                    PipelineLogger.shared.log("[HLS Pipeline] URLError loading separate audio playlist for \(variantDesc): \(error.localizedDescription). Falling back to next eligible variant...")
+                    continue
                 } catch {
-                    throw error
+                    if isExplicitVariantSelection {
+                        PipelineLogger.shared.log("[HLS Pipeline] Explicitly selected variant separate audio error: \(error.localizedDescription). Aborting without downgrade.")
+                        throw error
+                    }
+                    lastPlanningError = error
+                    PipelineLogger.shared.log("[HLS Pipeline] Unexpected error loading separate audio playlist for \(variantDesc): \(error.localizedDescription). Falling back to next eligible variant...")
+                    continue
                 }
 
                 let parsedAudio: HLSManifest
@@ -1986,7 +2029,13 @@ public actor StreamingDownloadOrchestrator {
                         limits: parsingLimits
                     )
                 } catch let error as ManifestParserError {
-                    throw StreamingDownloadOrchestratorError.manifestParseFailed(error)
+                    if isExplicitVariantSelection {
+                        PipelineLogger.shared.log("[HLS Pipeline] Explicitly selected variant separate audio failed to parse: \(error.localizedDescription). Aborting without downgrade.")
+                        throw StreamingDownloadOrchestratorError.manifestParseFailed(error)
+                    }
+                    lastPlanningError = StreamingDownloadOrchestratorError.manifestParseFailed(error)
+                    PipelineLogger.shared.log("[HLS Pipeline] Separate audio playlist failed to parse for \(variantDesc): \(error.localizedDescription). Falling back to next eligible variant...")
+                    continue
                 }
 
                 guard parsedAudio.playlistType == .media else {
@@ -2077,6 +2126,9 @@ public actor StreamingDownloadOrchestrator {
         }
         if let planErr = lastPlanningError as? HLSVODTransferPlanError {
             throw StreamingDownloadOrchestratorError.hlsPlanningFailed(planErr)
+        }
+        if let lastErr = lastPlanningError {
+            throw lastErr
         }
         throw StreamingDownloadOrchestratorError.playlistRequiresVariantSelection
     }

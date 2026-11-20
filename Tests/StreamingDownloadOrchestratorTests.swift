@@ -2427,7 +2427,7 @@ final class StreamingDownloadOrchestratorTests: XCTestCase {
         }
     }
 
-    func testHighestQualityHTTP403PropagatesAuthenticationErrorWithoutDowngrade() async throws {
+    func testExplicitVariantSelectionDoesNotDowngradeOnAuthFailure() async throws {
         let masterURL = URL(string: "https://video.example/master.m3u8")!
         let highURL = URL(string: "https://video.example/1080p.m3u8")!
         let lowURL = URL(string: "https://video.example/720p.m3u8")!
@@ -2459,19 +2459,105 @@ final class StreamingDownloadOrchestratorTests: XCTestCase {
         )
 
         let orchestrator = StreamingDownloadOrchestrator(manifestLoader: loader, segmentExecutor: RecordingSegmentExecutor())
-        let candidate = try StreamingManifestCandidate(url: masterURL)
+        // Explicitly selected variant: must abort without downgrade
+        let candidate = try StreamingManifestCandidate(
+            url: masterURL,
+            hlsVariantPreferences: HLSVariantSelectionPreferences(exactURI: highURL)
+        )
 
         do {
             _ = try await orchestrator.prepare(candidate: candidate)
-            XCTFail("Expected HTTP 401/403 to propagate immediately without downgrade")
+            XCTFail("Expected HTTP 401/403 to propagate immediately without downgrade when explicitly selected")
         } catch let error as StreamingManifestLoadError {
             XCTAssertEqual(error, .authenticationRequired)
         }
 
-        // Assert 720p was NEVER requested because auth error must immediately halt
+        // Assert 720p was NEVER requested because auth error must immediately halt for explicit selection
         let requested = await loader.requestedURLs
         XCTAssertTrue(requested.contains(highURL))
         XCTAssertFalse(requested.contains(lowURL))
+    }
+
+    func testGenericMasterFetchFallsBackOnVariantAuthOrLoadFailure() async throws {
+        let masterURL = URL(string: "https://video.example/master.m3u8")!
+        let highURL = URL(string: "https://video.example/1080p.m3u8")!
+        let lowURL = URL(string: "https://video.example/720p.m3u8")!
+
+        let masterPlaylist = """
+        #EXTM3U
+        #EXT-X-STREAM-INF:BANDWIDTH=5000000,RESOLUTION=1920x1080
+        1080p.m3u8
+        #EXT-X-STREAM-INF:BANDWIDTH=2500000,RESOLUTION=1280x720
+        720p.m3u8
+        """
+
+        let lowPlaylist = """
+        #EXTM3U
+        #EXT-X-PLAYLIST-TYPE:VOD
+        #EXTINF:2.0,
+        segment-720.ts
+        #EXT-X-ENDLIST
+        """
+
+        let loader = VariantManifestLoader(
+            responses: [
+                masterURL: StreamingManifestResponse(data: Data(masterPlaylist.utf8), finalURL: masterURL, mimeType: "application/vnd.apple.mpegurl"),
+                lowURL: StreamingManifestResponse(data: Data(lowPlaylist.utf8), finalURL: lowURL, mimeType: "application/vnd.apple.mpegurl")
+            ],
+            errors: [
+                highURL: StreamingManifestLoadError.authenticationRequired
+            ]
+        )
+
+        let orchestrator = StreamingDownloadOrchestrator(manifestLoader: loader, segmentExecutor: RecordingSegmentExecutor())
+        // Generic master fetch: exactURI is nil
+        let candidate = try StreamingManifestCandidate(url: masterURL)
+
+        let proposal = try await orchestrator.prepare(candidate: candidate)
+
+        // Proposal successfully resolved lowURL (720p) after falling back from highURL 403
+        XCTAssertEqual(proposal.resources.first?.url, URL(string: "https://video.example/segment-720.ts")!)
+        let requested = await loader.requestedURLs
+        XCTAssertTrue(requested.contains(highURL))
+        XCTAssertTrue(requested.contains(lowURL))
+    }
+
+    func testGenericMasterFetchFailsWhenAllVariantsFail() async throws {
+        let masterURL = URL(string: "https://video.example/master.m3u8")!
+        let highURL = URL(string: "https://video.example/1080p.m3u8")!
+        let lowURL = URL(string: "https://video.example/720p.m3u8")!
+
+        let masterPlaylist = """
+        #EXTM3U
+        #EXT-X-STREAM-INF:BANDWIDTH=5000000,RESOLUTION=1920x1080
+        1080p.m3u8
+        #EXT-X-STREAM-INF:BANDWIDTH=2500000,RESOLUTION=1280x720
+        720p.m3u8
+        """
+
+        let loader = VariantManifestLoader(
+            responses: [
+                masterURL: StreamingManifestResponse(data: Data(masterPlaylist.utf8), finalURL: masterURL, mimeType: "application/vnd.apple.mpegurl")
+            ],
+            errors: [
+                highURL: StreamingManifestLoadError.authenticationRequired,
+                lowURL: StreamingManifestLoadError.expiredOrMissing
+            ]
+        )
+
+        let orchestrator = StreamingDownloadOrchestrator(manifestLoader: loader, segmentExecutor: RecordingSegmentExecutor())
+        let candidate = try StreamingManifestCandidate(url: masterURL)
+
+        do {
+            _ = try await orchestrator.prepare(candidate: candidate)
+            XCTFail("Expected error when all variants fail")
+        } catch let error as StreamingManifestLoadError {
+            XCTAssertEqual(error, .expiredOrMissing)
+        }
+
+        let requested = await loader.requestedURLs
+        XCTAssertTrue(requested.contains(highURL))
+        XCTAssertTrue(requested.contains(lowURL))
     }
 
     func testUserBandwidthPreferenceExcludesHighestVariant() async throws {
