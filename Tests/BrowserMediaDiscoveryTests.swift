@@ -887,6 +887,96 @@ final class BrowserMediaDiscoveryTests: XCTestCase {
         // Verify graceful fallback to VLCKit
         XCTAssertEqual(engine.activeBackendType, .vlcKit, "Engine must automatically switch to VLCKit on AVFoundation failure")
     }
+
+    func testMultipleMastersVisibleWhenOneExpandsAndOtherUnexpanded() {
+        let master1URL = URL(string: "https://cdn.example.com/stream1/master.m3u8")!
+        let master1 = WebpageResource(
+            id: "master1-id",
+            url: master1URL,
+            title: "Stream 1 Master",
+            suggestedFilename: "stream1.m3u8",
+            resourceType: .video,
+            mimeType: "application/vnd.apple.mpegurl"
+        )
+        let master1Variant1080 = WebpageResource(
+            id: "master1-id-variant-1080",
+            url: master1URL,
+            title: "HLS 1080p",
+            suggestedFilename: "stream1-1080p.mp4",
+            resourceType: .video,
+            mimeType: "application/vnd.apple.mpegurl",
+            hlsVariantPreferences: HLSVariantSelectionPreferences(maximumBandwidth: 5000000, maximumHeight: 1080)
+        )
+        let master1Variant720 = WebpageResource(
+            id: "master1-id-variant-720",
+            url: master1URL,
+            title: "HLS 720p",
+            suggestedFilename: "stream1-720p.mp4",
+            resourceType: .video,
+            mimeType: "application/vnd.apple.mpegurl",
+            hlsVariantPreferences: HLSVariantSelectionPreferences(maximumBandwidth: 2500000, maximumHeight: 720)
+        )
+
+        let master2URL = URL(string: "https://cdn.example.com/stream2/master.m3u8")!
+        let master2 = WebpageResource(
+            id: "master2-id",
+            url: master2URL,
+            title: "Stream 2 Master",
+            suggestedFilename: "stream2.m3u8",
+            resourceType: .video,
+            mimeType: "application/vnd.apple.mpegurl"
+        )
+
+        let discovered = [master1Variant1080, master1Variant720, master1, master2]
+
+        // Under standard Media view (showsAllResources: false)
+        let eligible = BrowserResourceInspectorSheet.eligibleResources(in: discovered, showsAllResources: false)
+
+        let eligibleIDs = Set(eligible.map { $0.id })
+        XCTAssertTrue(eligibleIDs.contains(master1Variant1080.id), "Master 1 1080p variant must be visible")
+        XCTAssertTrue(eligibleIDs.contains(master1Variant720.id), "Master 1 720p variant must be visible")
+        XCTAssertFalse(eligibleIDs.contains(master1.id), "Master 1 parent must be hidden since its own variants are present")
+        XCTAssertTrue(eligibleIDs.contains(master2.id), "Master 2 must NOT be hidden by Master 1's expansion flag")
+    }
+
+    func testUnexpandedMasterSynchronouslyExpandsWhenAnotherMasterAlreadyExpanded() {
+        let master1URL = URL(string: "https://cdn.example.com/stream1/master.m3u8")!
+        let master1Variant1080 = WebpageResource(
+            id: "master1-id-variant-1080",
+            url: master1URL,
+            title: "HLS 1080p",
+            suggestedFilename: "stream1-1080p.mp4",
+            resourceType: .video,
+            mimeType: "application/vnd.apple.mpegurl",
+            hlsVariantPreferences: HLSVariantSelectionPreferences(maximumBandwidth: 5000000, maximumHeight: 1080)
+        )
+
+        let master2Text = """
+        #EXTM3U
+        #EXT-X-STREAM-INF:BANDWIDTH=800000,RESOLUTION=854x480
+        480p.m3u8
+        #EXT-X-STREAM-INF:BANDWIDTH=2500000,RESOLUTION=1280x720
+        720p.m3u8
+        """
+        let master2URL = URL(string: "https://cdn.example.com/stream2/master.m3u8")!
+        let master2 = WebpageResource(
+            id: "master2-id",
+            url: master2URL,
+            title: "Stream 2 Master",
+            suggestedFilename: "stream2.m3u8",
+            resourceType: .video,
+            mimeType: "application/vnd.apple.mpegurl",
+            manifestText: master2Text
+        )
+
+        let discovered = [master1Variant1080, master2]
+        let eligible = BrowserResourceInspectorSheet.eligibleResources(in: discovered, showsAllResources: false)
+
+        let titles = eligible.map { $0.title }
+        XCTAssertTrue(titles.contains("HLS 1080p"))
+        XCTAssertTrue(titles.contains("HLS 720p"))
+        XCTAssertTrue(titles.contains("HLS 480p"))
+    }
     #endif
 }
 

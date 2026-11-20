@@ -41,14 +41,38 @@ public struct BrowserResourceInspectorSheet: View {
         return map
     }
 
-    private var eligibleResources: [WebpageResource] {
-        let hasStreamingManifest = viewModel.discoveredResources.contains(where: { $0.isStreamingManifest })
-        let sequentialChunkIDs = WebpageResourceExtractor.detectSequentialSegmentChunks(in: viewModel.discoveredResources)
-        let variantURLs = knownHLSVariantURLs
-        let hasExpandedVariants = viewModel.discoveredResources.contains(where: { $0.hlsVariantPreferences != nil || $0.dashVideoRepresentationID != nil })
+    public static func eligibleResources(
+        in discoveredResources: [WebpageResource],
+        variantURLs: Set<String>? = nil,
+        showsAllResources: Bool = false
+    ) -> [WebpageResource] {
+        let hasStreamingManifest = discoveredResources.contains(where: { $0.isStreamingManifest })
+        let sequentialChunkIDs = WebpageResourceExtractor.detectSequentialSegmentChunks(in: discoveredResources)
+        let resolvedVariantURLs = variantURLs ?? HLSResourceGrouping.variantURLs(in: discoveredResources)
+        let expandedMasterIDs: Set<String> = {
+            var ids = Set<String>()
+            for res in discoveredResources {
+                if res.hlsVariantPreferences != nil || res.dashVideoRepresentationID != nil {
+                    if let range = res.id.range(of: "-variant-") {
+                        let masterID = String(res.id[..<range.lowerBound])
+                        ids.insert(masterID)
+                    }
+                }
+            }
+            return ids
+        }()
+        let expandedMasterURLs: Set<URL> = {
+            var urls = Set<URL>()
+            for res in discoveredResources {
+                if res.hlsVariantPreferences != nil || res.dashVideoRepresentationID != nil {
+                    urls.insert(res.url)
+                }
+            }
+            return urls
+        }()
         var expanded: [WebpageResource] = []
 
-        for res in viewModel.discoveredResources {
+        for res in discoveredResources {
             let isChunk = res.isSegmentChunk || sequentialChunkIDs.contains(res.id)
             // Discard raw .ts/.m4s/.m4a segment chunks when an .m3u8/.mpd manifest is present or in standard media view,
             // as they are internal segment chunks that cannot be played standalone.
@@ -61,18 +85,22 @@ public struct BrowserResourceInspectorSheet: View {
                 continue
             }
             // Discard raw child playlist URLs discovered separately without metadata
-            if variantURLs.contains(res.url.absoluteString.lowercased()) && res.hlsVariantPreferences == nil {
+            if resolvedVariantURLs.contains(res.url.absoluteString.lowercased()) && res.hlsVariantPreferences == nil {
                 continue
             }
 
-            // In standard "Media" view, when expanded variants exist, hide the unexpanded parent master manifest
-            // so users only see the individual video qualities. Under "All", the parent master is visible.
-            if res.isStreamingManifest && res.hlsVariantPreferences == nil && res.dashVideoRepresentationID == nil && hasExpandedVariants && !showsAllResources {
+            let isUnexpandedMaster = res.isStreamingManifest && res.hlsVariantPreferences == nil && res.dashVideoRepresentationID == nil
+            let hasOwnExpandedVariants = isUnexpandedMaster && (expandedMasterIDs.contains(res.id) || expandedMasterURLs.contains(res.url))
+
+            // In standard "Media" view, when a master manifest has already been expanded into its own quality variants,
+            // hide this specific parent master manifest so users only see the individual video qualities.
+            // Under "All", the parent master is visible alongside its variants.
+            if hasOwnExpandedVariants && !showsAllResources {
                 continue
             }
 
-            // Expand master playlist synchronously if text is present and not already expanded
-            if res.isStreamingManifest, res.hlsVariantPreferences == nil, res.dashVideoRepresentationID == nil,
+            // Expand master playlist synchronously if text is present and it hasn't already been expanded into discoveredResources
+            if isUnexpandedMaster && !hasOwnExpandedVariants,
                let text = res.manifestText, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 let syncResult = StreamManifestResourceExpander.expandSynchronously(masterResource: res, manifestText: text)
                 if !syncResult.variants.isEmpty && (syncResult.variants.count > 1 || syncResult.variants[0].id != res.id) {
@@ -89,6 +117,14 @@ public struct BrowserResourceInspectorSheet: View {
         return expanded
     }
 
+    private var eligibleResources: [WebpageResource] {
+        Self.eligibleResources(
+            in: viewModel.discoveredResources,
+            variantURLs: knownHLSVariantURLs,
+            showsAllResources: showsAllResources
+        )
+    }
+
     private var hlsMasterQualitySummaries: [String: String] {
         Dictionary(uniqueKeysWithValues: viewModel.discoveredResources.compactMap {
             guard let summary = HLSResourceGrouping.qualitySummary(for: $0) else { return nil }
@@ -100,8 +136,14 @@ public struct BrowserResourceInspectorSheet: View {
         HLSResourceGrouping.variantURLs(in: viewModel.discoveredResources)
     }
 
-    public var filteredResources: [WebpageResource] {
-        let base = eligibleResources
+    public static func filteredResources(
+        in discoveredResources: [WebpageResource],
+        variantURLs: Set<String>? = nil,
+        selectedCategory: WebpageResourceType? = nil,
+        showsAllResources: Bool = false,
+        searchText: String = ""
+    ) -> [WebpageResource] {
+        let base = eligibleResources(in: discoveredResources, variantURLs: variantURLs, showsAllResources: showsAllResources)
         let hasStreamingManifest = base.contains(where: { $0.isStreamingManifest })
         let cleanSearch = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         let resources = base.filter { res in
@@ -127,6 +169,16 @@ public struct BrowserResourceInspectorSheet: View {
             }
             return $0.suggestedFilename.localizedCaseInsensitiveCompare($1.suggestedFilename) == .orderedAscending
         }
+    }
+
+    public var filteredResources: [WebpageResource] {
+        Self.filteredResources(
+            in: viewModel.discoveredResources,
+            variantURLs: knownHLSVariantURLs,
+            selectedCategory: selectedCategory,
+            showsAllResources: showsAllResources,
+            searchText: searchText
+        )
     }
 
     public var body: some View {
