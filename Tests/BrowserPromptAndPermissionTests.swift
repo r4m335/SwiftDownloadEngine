@@ -2,6 +2,7 @@ import Foundation
 import XCTest
 @testable import DM_Reverse_engineering
 
+@MainActor
 final class BrowserPromptAndPermissionTests: XCTestCase {
 
     // MARK: - Prompt Handler Tests
@@ -28,7 +29,7 @@ final class BrowserPromptAndPermissionTests: XCTestCase {
                 message: String,
                 defaultText: String?,
                 frameURL: URL?,
-                completionHandler: @escaping @Sendable (String?) -> Void
+                completionHandler: @escaping (String?) -> Void
             ) {
                 if message.contains("passcode") {
                     completionHandler("1234")

@@ -5,6 +5,7 @@ import FoundationNetworking
 import XCTest
 @testable import DM_Reverse_engineering
 
+@MainActor
 final class BrowserAuthenticationTests: XCTestCase {
     private let host = "auth.example.com"
     private let testURL = URL(string: "https://auth.example.com/secure")!
@@ -62,7 +63,7 @@ final class BrowserAuthenticationTests: XCTestCase {
             func promptForCredentials(
                 host: String,
                 realm: String?,
-                completionHandler: @escaping @Sendable (String?, String?) -> Void
+                completionHandler: @escaping (String?, String?) -> Void
             ) {
                 prompted = true
                 completionHandler("userFromPrompt", "promptSecret987")
@@ -110,7 +111,7 @@ final class BrowserAuthenticationTests: XCTestCase {
             func promptForCredentials(
                 host: String,
                 realm: String?,
-                completionHandler: @escaping @Sendable (String?, String?) -> Void
+                completionHandler: @escaping (String?, String?) -> Void
             ) {
                 completionHandler(nil, nil)
             }

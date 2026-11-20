@@ -1985,13 +1985,14 @@ final class StreamingDownloadOrchestratorTests: XCTestCase {
         )
     }
 
+    @MainActor
     func testBrowserAuthenticationHandlerEnforcesStrictOriginEquality() {
         final class MockPromptProvider: BrowserAuthenticationProviding, @unchecked Sendable {
             var promptedHost: String?
             func promptForCredentials(
                 host: String,
                 realm: String?,
-                completionHandler: @escaping @Sendable (String?, String?) -> Void
+                completionHandler: @escaping (String?, String?) -> Void
             ) {
                 promptedHost = host
                 completionHandler("user", "pass")
