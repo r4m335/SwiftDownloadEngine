@@ -36,16 +36,31 @@ public actor StreamManifestResourceExpander {
         }
     }
 
-    /// In-memory cache of expansion results keyed by normalized manifest URL.
+    /// In-memory cache of expansion results keyed by normalized manifest URL and browser context fingerprint.
     private var cache: [String: ExpansionResult] = [:]
 
-    /// In-flight expansion tasks keyed by normalized manifest URL to avoid duplicate concurrent network fetches.
+    /// In-flight expansion tasks keyed by normalized manifest URL and browser context fingerprint
+    /// to avoid duplicate concurrent network fetches while isolating different contexts.
     private var inFlight: [String: Task<ExpansionResult, Never>] = [:]
 
-    /// Clears the expansion cache (e.g. on page navigation or tab close).
-    public func clearCache() {
-        cache.removeAll()
-        inFlight.removeAll()
+    /// Clears the expansion cache (e.g. on page navigation, tab close, or cache invalidation).
+    public func clearCache(
+        for url: URL? = nil,
+        requestContext: BrowserRequestContext? = nil
+    ) {
+        if let url = url {
+            let key = BrowserRequestContext.manifestCacheKey(for: url, requestContext: requestContext)
+            cache.removeValue(forKey: key)
+            inFlight.removeValue(forKey: key)
+            if requestContext == nil {
+                let bare = url.absoluteString.lowercased()
+                cache.removeValue(forKey: bare)
+                inFlight.removeValue(forKey: bare)
+            }
+        } else {
+            cache.removeAll()
+            inFlight.removeAll()
+        }
     }
 
     /// Retrieves cached variant stream item metadata by variant resource ID.
@@ -58,18 +73,31 @@ public actor StreamManifestResourceExpander {
         return nil
     }
 
-    /// Retrieves cached expansion result for a given manifest URL if available.
-    public func cachedResult(for url: URL) -> ExpansionResult? {
-        cache[url.absoluteString.lowercased()]
+    /// Retrieves cached expansion result for a given manifest URL and optional browser context if available.
+    public func cachedResult(
+        for url: URL,
+        requestContext: BrowserRequestContext? = nil
+    ) -> ExpansionResult? {
+        let key = BrowserRequestContext.manifestCacheKey(for: url, requestContext: requestContext)
+        if let direct = cache[key] {
+            return direct
+        }
+        if requestContext == nil {
+            return cache[url.absoluteString.lowercased()]
+        }
+        return nil
     }
 
     /// Asynchronously expands a master manifest resource into individual quality variants.
-    /// If the manifest is already cached, results return immediately without network latency.
+    /// If the manifest is already cached for the given browser context, results return immediately without network latency.
     public func expand(
         manifestResource: WebpageResource,
         session: URLSession = .shared
     ) async -> [WebpageResource] {
-        let key = manifestResource.url.absoluteString.lowercased()
+        let key = BrowserRequestContext.manifestCacheKey(
+            for: manifestResource.url,
+            requestContext: manifestResource.requestContext
+        )
 
         if let existing = cache[key] {
             return existing.variants

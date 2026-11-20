@@ -2980,8 +2980,20 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         }
 
         if let prefix = observation.manifestPrefix, !prefix.isEmpty {
+            let pageURL = currentURL ?? observation.pageOrigin
             Task { [weak self] in
-                await self?.streamingOrchestrator?.recordCachedManifest(text: prefix, for: resourceURL)
+                let context = BrowserRequestContext(
+                    url: resourceURL,
+                    pageURL: pageURL,
+                    userAgent: BrowserViewModel.defaultDesktopUserAgent,
+                    cookies: [],
+                    source: .webpageResource
+                )
+                await self?.streamingOrchestrator?.recordCachedManifest(
+                    text: prefix,
+                    for: resourceURL,
+                    requestContext: context
+                )
             }
         }
 

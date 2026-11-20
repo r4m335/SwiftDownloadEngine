@@ -514,4 +514,74 @@ public struct BrowserHeaderFilter {
             lhsHost == rhsHost &&
             effectivePort(for: lhs, scheme: lhsScheme) == effectivePort(for: rhs, scheme: rhsScheme)
     }
+
+    // MARK: - Manifest Cache Key Discriminator
+
+    /// Computes a deterministic cache key for a media manifest URL and its associated browser context.
+    /// Incorporates cookies, headers, page origin, and user agent to prevent cross-tab, cross-user,
+    /// or private-browsing cache pollution for signed or authenticated streaming manifests.
+    public static func manifestCacheKey(
+        for url: URL,
+        requestContext: BrowserRequestContext? = nil,
+        browserSessionSnapshot: BrowserSessionSnapshot? = nil
+    ) -> String {
+        let normalizedURL = url.absoluteString.lowercased()
+        var components: [String] = [normalizedURL]
+
+        if let context = requestContext {
+            if let page = context.pageURL?.absoluteString.lowercased() {
+                components.append("page:\(page)")
+            }
+            if let ua = context.userAgent, !ua.isEmpty {
+                components.append("ua:\(ua)")
+            }
+            let matchingCookies = context.cookies.filter { $0.matches(url: url) }
+            let targetCookies = matchingCookies.isEmpty ? context.cookies : matchingCookies
+            if !targetCookies.isEmpty {
+                let cookieStr = targetCookies
+                    .map { "\($0.name)=\($0.value)@\($0.domain)\($0.path)" }
+                    .sorted()
+                    .joined(separator: ";")
+                components.append("cookies:\(cookieStr)")
+            }
+            if !context.customHeaders.isEmpty {
+                let headerStr = context.customHeaders
+                    .sorted(by: { $0.key.lowercased() < $1.key.lowercased() })
+                    .map { "\($0.key.lowercased()):\($0.value)" }
+                    .joined(separator: "\n")
+                components.append("headers:\(headerStr)")
+            }
+        }
+
+        if let snapshot = browserSessionSnapshot {
+            if let page = snapshot.pageURL?.absoluteString.lowercased() {
+                components.append("snapshot_page:\(page)")
+            }
+            if !snapshot.userAgent.isEmpty {
+                components.append("snapshot_ua:\(snapshot.userAgent)")
+            }
+            let matching = snapshot.allCookies.filter { cookie in
+                if let host = url.host?.lowercased() {
+                    let domain = cookie.domain.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "."))
+                    return host == domain || host.hasSuffix("." + domain)
+                }
+                return true
+            }
+            let targetCookies = matching.isEmpty ? snapshot.allCookies : matching
+            if !targetCookies.isEmpty {
+                let cookieStr = targetCookies
+                    .map { "\($0.name)=\($0.value)@\($0.domain)\($0.path)" }
+                    .sorted()
+                    .joined(separator: ";")
+                components.append("snapshot_cookies:\(cookieStr)")
+            }
+        }
+
+        if components.count == 1 {
+            return normalizedURL
+        }
+
+        let digest = EngineSHA256.hash(data: Data(components.joined(separator: "|").utf8))
+        return "\(normalizedURL)#ctx-\(digest.prefix(16))"
+    }
 }

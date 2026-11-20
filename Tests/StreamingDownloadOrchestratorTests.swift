@@ -2665,6 +2665,86 @@ final class StreamingDownloadOrchestratorTests: XCTestCase {
         XCTAssertEqual(proposal.resources.count, 1)
         XCTAssertEqual(proposal.resources.first?.url, URL(string: "https://video.example/sub2_seg.ts")!)
     }
+
+    func testManifestCacheIsolatesDifferentBrowserContexts() async throws {
+        let manifestURL = URL(string: "https://cdn.example.com/live/index.m3u8?signed=true")!
+        let loader = RecordingManifestLoader(
+            data: Data(),
+            finalURL: manifestURL,
+            mimeType: "application/vnd.apple.mpegurl"
+        )
+        let executor = RecordingSegmentExecutor()
+        let orchestrator = StreamingDownloadOrchestrator(
+            manifestLoader: loader,
+            segmentExecutor: executor
+        )
+
+        let contextA = BrowserRequestContext(
+            url: manifestURL,
+            pageURL: URL(string: "https://example.com/tab1")!,
+            userAgent: "Tab1/User",
+            cookies: [BrowserCookie(name: "auth", value: "tab1Cookie", domain: "cdn.example.com")],
+            customHeaders: ["X-User-ID": "user1"]
+        )
+
+        let contextB = BrowserRequestContext(
+            url: manifestURL,
+            pageURL: URL(string: "https://example.com/tab2")!,
+            userAgent: "Tab2/User",
+            cookies: [BrowserCookie(name: "auth", value: "tab2Cookie", domain: "cdn.example.com")],
+            customHeaders: ["X-User-ID": "user2"]
+        )
+
+        let playlistA = """
+        #EXTM3U
+        #EXT-X-PLAYLIST-TYPE:VOD
+        #EXT-X-TARGETDURATION:4
+        #EXTINF:4.0,
+        segmentA_1.ts
+        #EXTINF:4.0,
+        segmentA_2.ts
+        #EXT-X-ENDLIST
+        """
+
+        let playlistB = """
+        #EXTM3U
+        #EXT-X-PLAYLIST-TYPE:VOD
+        #EXT-X-TARGETDURATION:2
+        #EXTINF:2.0,
+        segmentB_1.ts
+        #EXT-X-ENDLIST
+        """
+
+        // Record cached manifests for the same URL under different browser contexts
+        await orchestrator.recordCachedManifest(text: playlistA, for: manifestURL, requestContext: contextA)
+        await orchestrator.recordCachedManifest(text: playlistB, for: manifestURL, requestContext: contextB)
+
+        let candidateA = try StreamingManifestCandidate(
+            url: manifestURL,
+            mimeType: "application/vnd.apple.mpegurl",
+            browserRequestContext: contextA
+        )
+        let candidateB = try StreamingManifestCandidate(
+            url: manifestURL,
+            mimeType: "application/vnd.apple.mpegurl",
+            browserRequestContext: contextB
+        )
+
+        let proposalA = try await orchestrator.prepare(candidate: candidateA)
+        let proposalB = try await orchestrator.prepare(candidate: candidateB)
+
+        // Proposal A must have 2 segments matching playlistA
+        XCTAssertEqual(proposalA.resources.count, 2)
+        XCTAssertTrue(proposalA.resources[0].url.absoluteString.contains("segmentA_1.ts"))
+
+        // Proposal B must have 1 segment matching playlistB
+        XCTAssertEqual(proposalB.resources.count, 1)
+        XCTAssertTrue(proposalB.resources[0].url.absoluteString.contains("segmentB_1.ts"))
+
+        // Network loader should not be called because both matched their respective context cache
+        let loadCount = await loader.loadCount
+        XCTAssertEqual(loadCount, 0)
+    }
 }
 
 private final class DummyAuthSender: NSObject, URLAuthenticationChallengeSender {

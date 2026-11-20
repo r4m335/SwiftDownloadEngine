@@ -481,6 +481,88 @@ final class StreamManifestResourceExpanderTests: XCTestCase {
         XCTAssertEqual(resource.expirationDate, Date(timeIntervalSince1970: Double(variantTimestamp)))
     }
     #endif
+
+    // MARK: - 14. Browser Context Cache Isolation Tests
+
+    func testManifestCacheIsolatesDifferentBrowserContexts() async {
+        let expander = StreamManifestResourceExpander()
+
+        let sharedURL = URL(string: "https://auth.example.com/stream/master.m3u8?token=shared")!
+        let pageURL = URL(string: "https://auth.example.com/watch")!
+
+        let contextA = BrowserRequestContext(
+            url: sharedURL,
+            pageURL: pageURL,
+            userAgent: "Browser/UserA",
+            cookies: [BrowserCookie(name: "session", value: "userA", domain: "auth.example.com")],
+            customHeaders: ["Authorization": "Bearer tokenA"]
+        )
+
+        let contextB = BrowserRequestContext(
+            url: sharedURL,
+            pageURL: pageURL,
+            userAgent: "Browser/UserB",
+            cookies: [BrowserCookie(name: "session", value: "userB", domain: "auth.example.com")],
+            customHeaders: ["Authorization": "Bearer tokenB"]
+        )
+
+        let manifestA = """
+        #EXTM3U
+        #EXT-X-VERSION:3
+        #EXT-X-STREAM-INF:BANDWIDTH=5000000,RESOLUTION=1920x1080
+        1080p.m3u8
+        #EXT-X-STREAM-INF:BANDWIDTH=2500000,RESOLUTION=1280x720
+        720p.m3u8
+        """
+
+        let manifestB = """
+        #EXTM3U
+        #EXT-X-VERSION:3
+        #EXT-X-STREAM-INF:BANDWIDTH=800000,RESOLUTION=640x360
+        360p.m3u8
+        """
+
+        let resourceA = WebpageResource(
+            url: sharedURL,
+            title: "User A Stream",
+            suggestedFilename: "master.m3u8",
+            resourceType: .video,
+            mimeType: "application/vnd.apple.mpegurl",
+            requestContext: contextA,
+            manifestText: manifestA
+        )
+
+        let resourceB = WebpageResource(
+            url: sharedURL,
+            title: "User B Stream",
+            suggestedFilename: "master.m3u8",
+            resourceType: .video,
+            mimeType: "application/vnd.apple.mpegurl",
+            requestContext: contextB,
+            manifestText: manifestB
+        )
+
+        // Expand resource A for user A
+        let variantsA = await expander.expand(manifestResource: resourceA)
+        XCTAssertEqual(variantsA.count, 2)
+        XCTAssertTrue(variantsA.contains(where: { $0.title.contains("1080p") }))
+
+        // Cache for context B must be empty and must NOT reuse user A's manifest
+        let cachedBBefore = await expander.cachedResult(for: sharedURL, requestContext: contextB)
+        XCTAssertNil(cachedBBefore, "User B context must not reuse User A's cached manifest result")
+
+        // Expand resource B for user B
+        let variantsB = await expander.expand(manifestResource: resourceB)
+        XCTAssertEqual(variantsB.count, 1)
+        XCTAssertTrue(variantsB.contains(where: { $0.title.contains("360p") }))
+
+        // Verify both cached results remain isolated
+        let cachedA = await expander.cachedResult(for: sharedURL, requestContext: contextA)
+        XCTAssertEqual(cachedA?.variants.count, 2)
+
+        let cachedB = await expander.cachedResult(for: sharedURL, requestContext: contextB)
+        XCTAssertEqual(cachedB?.variants.count, 1)
+    }
 }
 
 // MARK: - Failing URL Protocol Helper for Error Testing
