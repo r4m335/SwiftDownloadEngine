@@ -141,8 +141,19 @@ public final class LIDPlaybackEngine: NSObject, ObservableObject, LIDMediaEngine
         case .localFile, .partialDownload:
             // Route all local media to VLCKit by default for universal container and codec decoding.
             return .vlcKit
-        case .hlsStream, .torrentSwarm:
-            // Preserve native HLS adaptive bitrate streaming and BitTorrent AVAssetResourceLoader integration.
+        case .hlsStream(let url, let variantPreferences, _, let requestContext):
+            // If variant preferences specifically designate a non-native codec unsupported by AVFoundation
+            // (e.g. VP9, AV1, Opus, Vorbis), route directly to VLCKit.
+            if let codec = variantPreferences?.preferredCodecPrefix?.lowercased() {
+                let nonNativeCodecs = ["vp9", "vp09", "av01", "av1", "opus", "vorbis"]
+                if nonNativeCodecs.contains(where: { codec.contains($0) }) {
+                    return .vlcKit
+                }
+            }
+            // Preserve native HLS adaptive bitrate streaming initially.
+            return .avFoundation
+        case .torrentSwarm:
+            // Preserve native BitTorrent AVAssetResourceLoader integration.
             return .avFoundation
         case .dashStream:
             // MPEG-DASH manifests route through VLCKit's demuxer.
@@ -688,13 +699,7 @@ public final class LIDPlaybackEngine: NSObject, ObservableObject, LIDMediaEngine
         // If AVFoundation fails on a network or HLS stream (e.g. 403 Forbidden, unauthorized, or unsupported codec),
         // automatically fall back to VLCKit to handle the direct stream transport.
         if engine.backendType == .avFoundation, let source = currentSource {
-            PipelineLogger.shared.logPlayer(
-                session: currentSessionId,
-                category: "PlayerFallback",
-                message: "AVFoundation failed with error (\(error)). Gracefully falling back to VLCKit backend."
-            )
-            self.activeBackendType = .vlcKit
-            self.vlcBackend.load(source: source, autoPlay: true)
+            fallbackToVLCKit(source: source, reason: "AVFoundation failed with error (\(error))")
             return
         }
 
@@ -704,6 +709,25 @@ public final class LIDPlaybackEngine: NSObject, ObservableObject, LIDMediaEngine
             category: "PlayerError",
             message: "Engine failed: \(error)"
         )
+    }
+
+    /// Gracefully transitions playback from AVFoundation to VLCKit, tearing down the native
+    /// player layer and re-binding the rendering pipeline.
+    @MainActor
+    public func fallbackToVLCKit(source: LIDPlayerSource, reason: String) {
+        PipelineLogger.shared.logPlayer(
+            session: currentSessionId,
+            category: "PlayerFallback",
+            message: "\(reason). Gracefully falling back to VLCKit backend."
+        )
+        self.activeBackendType = .vlcKit
+        self.avBackend.stop()
+        #if canImport(AVFoundation)
+        self.player = nil
+        #endif
+        self.playbackState = .loading
+        self.startLoadingWatchdog()
+        self.vlcBackend.load(source: source, autoPlay: true)
     }
 
     // MARK: - Internal Helpers
@@ -725,6 +749,13 @@ public final class LIDPlaybackEngine: NSObject, ObservableObject, LIDMediaEngine
             Task { @MainActor [weak self] in
                 guard let self = self else { return }
                 if self.playbackState.isLoading {
+                    if self.activeBackendType == .avFoundation, let source = self.currentSource {
+                        self.fallbackToVLCKit(
+                            source: source,
+                            reason: "AVFoundation preview/playback loading timed out (15s)"
+                        )
+                        return
+                    }
                     let err = "Playback initialization timed out. The media format or codec could not be decoded."
                     self.playbackState = .failed(error: err)
                     PipelineLogger.shared.logPlayer(

@@ -94,6 +94,7 @@ public final class LIDAVFoundationBackend: NSObject, LIDMediaEngineProtocol {
     private var likelyToKeepUpObserver: NSKeyValueObservation?
     private var loadedTimeRangesObserver: NSKeyValueObservation?
     private var seekableTimeRangesObserver: NSKeyValueObservation?
+    private var failedToPlayObserverToken: NSObjectProtocol?
     private var torrentStreamAdapter: LIDTorrentStreamAdapter?
     private var dashStreamAdapter: LIDDASHStreamAdapter?
     #endif
@@ -112,6 +113,9 @@ public final class LIDAVFoundationBackend: NSObject, LIDMediaEngineProtocol {
         likelyToKeepUpObserver?.invalidate()
         loadedTimeRangesObserver?.invalidate()
         seekableTimeRangesObserver?.invalidate()
+        if let token = failedToPlayObserverToken {
+            NotificationCenter.default.removeObserver(token)
+        }
         if let token = timeObserverToken, let p = player {
             p.removeTimeObserver(token)
         }
@@ -217,6 +221,10 @@ public final class LIDAVFoundationBackend: NSObject, LIDMediaEngineProtocol {
         if let token = timeObserverToken, let p = player {
             p.removeTimeObserver(token)
             timeObserverToken = nil
+        }
+        if let token = failedToPlayObserverToken {
+            NotificationCenter.default.removeObserver(token)
+            failedToPlayObserverToken = nil
         }
         statusObserver?.invalidate()
         statusObserver = nil
@@ -415,6 +423,25 @@ public final class LIDAVFoundationBackend: NSObject, LIDMediaEngineProtocol {
                     self.bufferedDurationSeconds = range.end.seconds
                     self.delegate?.engineDidUpdateBuffering(self, bufferedSeconds: self.bufferedDurationSeconds)
                 }
+            }
+        }
+
+        failedToPlayObserverToken = NotificationCenter.default.addObserver(
+            forName: .AVPlayerItemFailedToPlayToEndTime,
+            object: item,
+            queue: .main
+        ) { [weak self] notification in
+            Task { @MainActor [weak self] in
+                guard let self = self else { return }
+                let err = (notification.userInfo?[AVPlayerItemFailedToPlayToEndTimeErrorKey] as? Error)?.localizedDescription
+                    ?? "AVPlayerItem failed to play stream to end time"
+                self.playbackState = .failed(error: err)
+                PipelineLogger.shared.logPlayer(
+                    session: self.activeSessionId,
+                    category: "PlayerError",
+                    message: "AVPlayerItemFailedToPlayToEndTime: \(err)"
+                )
+                self.delegate?.engineDidFail(self, error: err)
             }
         }
     }

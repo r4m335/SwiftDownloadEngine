@@ -258,4 +258,59 @@ final class LIDPlaybackEngineTests: XCTestCase {
         XCTAssertTrue(engine.playbackState.isFailed, "Loading corrupted TS must transition to failed state")
         XCTAssertTrue(engine.playbackState.errorMessage?.contains("0x47") ?? false)
     }
+
+    // MARK: - 9. AVFoundation Preview Rejection Fallback to VLCKit
+
+    @MainActor
+    func testAVFoundationPreviewFailureTriggersVLCKitFallback() {
+        let engine = LIDPlaybackEngine()
+        let streamURL = URL(string: "https://example.com/hls/master.m3u8")!
+        let variantURL = URL(string: "https://example.com/hls/1080p.m3u8")!
+        let prefs = HLSVariantSelectionPreferences(exactURI: variantURL)
+        let context = BrowserRequestContext(
+            url: streamURL,
+            userAgent: "Mozilla/5.0",
+            cookies: [],
+            customHeaders: ["Authorization": "Bearer token123"]
+        )
+        let source = LIDPlayerSource.hlsStream(
+            url: streamURL,
+            variantPreferences: prefs,
+            title: "Secured HLS",
+            requestContext: context
+        )
+
+        // 1. Initial selection routes to AVFoundation
+        engine.load(source: source, autoPlay: false)
+        XCTAssertEqual(engine.activeBackendType, .avFoundation)
+
+        // 2. Simulate AVFoundation error (e.g. 403 Forbidden on child variant or segment)
+        engine.engineDidFail(engine.avBackend, error: "The server responded with 403 Forbidden")
+
+        // 3. Backend must gracefully fall back to VLCKit, clearing AVPlayer
+        XCTAssertEqual(engine.activeBackendType, .vlcKit, "Engine must fall back to VLCKit on AVFoundation failure")
+        #if canImport(AVFoundation)
+        XCTAssertNil(engine.player, "AVPlayer reference must be nil'd on fallback to decouple layer")
+        #endif
+    }
+
+    @MainActor
+    func testNonNativeCodecHLSStreamRouting() {
+        let engine = LIDPlaybackEngine()
+        let streamURL = URL(string: "https://example.com/hls/master.m3u8")!
+
+        // Standard HLS routes to AVFoundation
+        let standardSource = LIDPlayerSource.hlsStream(url: streamURL, variantPreferences: nil, title: "Standard HLS")
+        XCTAssertEqual(engine.selectBackend(for: standardSource), .avFoundation)
+
+        // Non-native VP9 codec routes directly to VLCKit
+        let vp9Prefs = HLSVariantSelectionPreferences(preferredCodecPrefix: "vp09")
+        let vp9Source = LIDPlayerSource.hlsStream(url: streamURL, variantPreferences: vp9Prefs, title: "VP9 HLS")
+        XCTAssertEqual(engine.selectBackend(for: vp9Source), .vlcKit)
+
+        // Non-native AV1 codec routes directly to VLCKit
+        let av1Prefs = HLSVariantSelectionPreferences(preferredCodecPrefix: "av01")
+        let av1Source = LIDPlayerSource.hlsStream(url: streamURL, variantPreferences: av1Prefs, title: "AV1 HLS")
+        XCTAssertEqual(engine.selectBackend(for: av1Source), .vlcKit)
+    }
 }
