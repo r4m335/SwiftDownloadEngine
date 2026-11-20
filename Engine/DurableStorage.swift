@@ -200,3 +200,21 @@ public enum DurableStorage {
         }
     }
 }
+
+extension FileManager {
+    /// Safely resolves physical file size across Darwin (NSNumber) and Linux/POSIX (Int64/Int).
+    public func fileSize(atPath path: String) -> Int64? {
+        do {
+            let attributes = try attributesOfItem(atPath: path)
+            guard let sizeValue = attributes[.size] else { return nil }
+            return (sizeValue as? NSNumber)?.int64Value ?? (sizeValue as? Int64)
+        } catch {
+            return nil
+        }
+    }
+
+    /// Safely resolves physical file size across Darwin (NSNumber) and Linux/POSIX (Int64/Int).
+    public func fileSize(at url: URL) -> Int64? {
+        fileSize(atPath: url.path)
+    }
+}
