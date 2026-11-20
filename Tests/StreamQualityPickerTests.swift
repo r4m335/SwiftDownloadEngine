@@ -486,5 +486,73 @@ final class StreamQualityPickerTests: XCTestCase {
         XCTAssertNil(source)
     }
     #endif
+
+    func testDeduplicateVariantsWithSameResolutionAndBitrateAcrossDifferentURIs() throws {
+        let masterWithMirrors = """
+        #EXTM3U
+        #EXT-X-VERSION:4
+        #EXT-X-STREAM-INF:BANDWIDTH=5000000,RESOLUTION=1920x1080
+        https://cdn-primary.example.com/1080p.m3u8
+        #EXT-X-STREAM-INF:BANDWIDTH=5000000,RESOLUTION=1920x1080
+        https://cdn-backup.example.com/1080p.m3u8
+        #EXT-X-STREAM-INF:BANDWIDTH=2500000,RESOLUTION=1280x720
+        https://cdn-primary.example.com/720p.m3u8
+        #EXT-X-STREAM-INF:BANDWIDTH=2500000,RESOLUTION=1280x720
+        https://cdn-backup.example.com/720p.m3u8
+        """
+
+        let options = try StreamQualityInspector.inspectHLS(
+            manifestText: masterWithMirrors,
+            baseURL: masterURL
+        )
+
+        // Deduplication must collapse the 4 variants into 2 distinct quality tiers
+        XCTAssertEqual(options.count, 2)
+        XCTAssertEqual(options[0].qualityBadge, "1080p")
+        XCTAssertEqual(options[0].uri, URL(string: "https://cdn-primary.example.com/1080p.m3u8")!)
+        XCTAssertEqual(options[1].qualityBadge, "720p")
+        XCTAssertEqual(options[1].uri, URL(string: "https://cdn-primary.example.com/720p.m3u8")!)
+    }
+
+    func testVariantIDsDoNotCollideWhenFilenameBandwidthAndResolutionMatch() throws {
+        let manifest = """
+        #EXTM3U
+        #EXT-X-VERSION:4
+        #EXT-X-STREAM-INF:BANDWIDTH=5000000,RESOLUTION=1920x1080
+        https://cdn-a.example.com/live/stream.m3u8
+        #EXT-X-STREAM-INF:BANDWIDTH=5000000,RESOLUTION=1920x1080
+        https://cdn-b.example.com/live/stream.m3u8
+        """
+
+        let parsed = try HLSManifestParser.parse(manifest, baseURL: masterURL)
+        let ranked = try HLSVariantSelector.rank(from: parsed, deduplicate: false)
+        XCTAssertEqual(ranked.count, 2)
+
+        let optA = StreamQualityOption.from(variant: ranked[0], masterURL: masterURL)
+        let optB = StreamQualityOption.from(variant: ranked[1], masterURL: masterURL)
+
+        XCTAssertNotEqual(optA.id, optB.id, "Variant IDs must not collide even if bandwidth, resolution, and filename are identical")
+    }
+
+    func testVariantsWithSameResolutionDisambiguateLabelsWhenRetained() throws {
+        let masterWithDifferentCodecs = """
+        #EXTM3U
+        #EXT-X-VERSION:4
+        #EXT-X-STREAM-INF:BANDWIDTH=6000000,RESOLUTION=1920x1080,CODECS="avc1.640028"
+        1080p_avc.m3u8
+        #EXT-X-STREAM-INF:BANDWIDTH=4000000,RESOLUTION=1920x1080,CODECS="hvc1.2.4.L153.B0"
+        1080p_hevc.m3u8
+        """
+
+        let options = try StreamQualityInspector.inspectHLS(
+            manifestText: masterWithDifferentCodecs,
+            baseURL: masterURL
+        )
+
+        XCTAssertEqual(options.count, 2)
+        XCTAssertNotEqual(options[0].label, options[1].label, "Variants sharing resolution must have disambiguated labels")
+        XCTAssertTrue(options[0].label.contains("H.264") || options[0].label.contains("6.0 Mbps"))
+        XCTAssertTrue(options[1].label.contains("HEVC") || options[1].label.contains("4.0 Mbps"))
+    }
 }
 

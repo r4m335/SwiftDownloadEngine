@@ -321,11 +321,17 @@ public actor StreamManifestResourceExpander {
 
         var variants: [WebpageResource] = []
         var items: [HLSVariantStreamItem] = []
+        var seenFilenames = Set<String>()
 
         for option in options {
             let variantID = "\(masterResource.id)-variant-\(option.id)"
             let qualityLabel = option.qualityBadge
-            let filename = "\(baseStem)-\(qualityLabel).mp4"
+            var filename = "\(baseStem)-\(qualityLabel).mp4"
+            if seenFilenames.contains(filename.lowercased()) {
+                let disambiguator = option.bitrateText.replacingOccurrences(of: " ", with: "")
+                filename = "\(baseStem)-\(qualityLabel)-\(disambiguator).mp4"
+            }
+            seenFilenames.insert(filename.lowercased())
             let resText = option.resolutionText ?? option.resolution.map { "\($0.width) × \($0.height)" }
             let bitrateText = option.bitrateText
 

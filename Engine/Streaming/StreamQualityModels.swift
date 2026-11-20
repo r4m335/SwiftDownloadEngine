@@ -190,7 +190,9 @@ public struct StreamQualityOption: Identifiable, Sendable, Equatable, Hashable {
         let estBytes: Int64? = durationSeconds.flatMap { estimateSize(bandwidth: Int64(variant.bandwidth), durationSeconds: $0) }
         let estText = estBytes.map { "~\(formatByteSize($0))" } ?? "Size unavailable"
 
-        let id = "hls-\(variant.bandwidth)-\(height ?? 0)-\(variant.uri.lastPathComponent)"
+        let filename = variant.uri.lastPathComponent.isEmpty ? "stream" : variant.uri.lastPathComponent
+        let uriHash = String(EngineSHA256.hash(data: Data(variant.uri.absoluteString.utf8)).prefix(8))
+        let id = "hls-\(variant.bandwidth)-\(height ?? 0)-\(filename)-\(uriHash)"
 
         return StreamQualityOption(
             id: id,
@@ -228,9 +230,10 @@ public struct StreamQualityOption: Identifiable, Sendable, Equatable, Hashable {
         let estText = estBytes.map { "~\(formatByteSize($0))" } ?? "Size unavailable"
         let targetURI = rendition.uri ?? masterURL
         let langSuffix = rendition.language.map { " (\($0.uppercased()))" } ?? ""
+        let uriHash = String(EngineSHA256.hash(data: Data(targetURI.absoluteString.utf8)).prefix(8))
 
         return StreamQualityOption(
-            id: "hls-audio-\(rendition.groupID)-\(rendition.name)",
+            id: "hls-audio-\(rendition.groupID)-\(rendition.name)-\(uriHash)",
             label: "Audio Only\(langSuffix)",
             qualityBadge: "AUDIO",
             resolution: nil,
@@ -294,8 +297,9 @@ public struct StreamQualityOption: Identifiable, Sendable, Equatable, Hashable {
         let estBytes = durationSeconds.flatMap { estimateSize(bandwidth: bw, durationSeconds: $0) }
         let estText = estBytes.map { "~\(formatByteSize($0))" } ?? "Size unavailable"
 
-        let repID = rep.id ?? "dash-rep-\(bw)"
         let targetURL = rep.baseURL ?? baseURL
+        let uriHash = String(EngineSHA256.hash(data: Data(targetURL.absoluteString.utf8)).prefix(8))
+        let repID = rep.id ?? "\(bw)-\(height ?? 0)-\(uriHash)"
 
         return StreamQualityOption(
             id: "dash-\(repID)",

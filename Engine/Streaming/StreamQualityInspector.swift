@@ -94,9 +94,10 @@ public enum StreamQualityInspector {
             return [StreamQualityOption.defaultMedia(url: baseURL, mimeType: "application/vnd.apple.mpegurl", kind: .hls, isLive: isLive)]
         }
 
-        // Rank variants highest to lowest
+        // Rank variants highest to lowest and deduplicate redundant quality tiers
         let ranked = try HLSVariantSelector.rank(from: manifest)
-        var options: [StreamQualityOption] = ranked.map { variant in
+        let deduplicated = HLSVariantSelector.deduplicate(ranked)
+        var options: [StreamQualityOption] = deduplicated.map { variant in
             let selectedAudio = HLSVariantSelector.selectAudioRendition(for: variant, master: manifest)
             return StreamQualityOption.from(
                 variant: variant,
@@ -106,6 +107,50 @@ public enum StreamQualityInspector {
                 durationSeconds: durationSeconds,
                 isLive: isLive
             )
+        }
+
+        // Disambiguate duplicate labels if multiple distinct variants share the same label
+        var labelCounts: [String: Int] = [:]
+        for opt in options {
+            labelCounts[opt.label, default: 0] += 1
+        }
+        if labelCounts.values.contains(where: { $0 > 1 }) {
+            options = options.map { opt in
+                guard labelCounts[opt.label, default: 0] > 1 else { return opt }
+                var tags: [String] = []
+                if let fps = opt.frameRate {
+                    tags.append("\(Int(fps.rounded()))fps")
+                }
+                if let vCodec = opt.videoCodec {
+                    tags.append(vCodec)
+                }
+                tags.append(opt.bitrateText)
+                let disambiguated = "\(opt.label) (\(tags.joined(separator: ", ")))"
+                return StreamQualityOption(
+                    id: opt.id,
+                    label: disambiguated,
+                    qualityBadge: opt.qualityBadge,
+                    resolution: opt.resolution,
+                    resolutionText: opt.resolutionText,
+                    bandwidth: opt.bandwidth,
+                    bitrateText: opt.bitrateText,
+                    codecs: opt.codecs,
+                    videoCodec: opt.videoCodec,
+                    audioCodec: opt.audioCodec,
+                    frameRate: opt.frameRate,
+                    hasAudio: opt.hasAudio,
+                    hasVideo: opt.hasVideo,
+                    isAudioOnly: opt.isAudioOnly,
+                    estimatedSizeBytes: opt.estimatedSizeBytes,
+                    estimatedSizeText: opt.estimatedSizeText,
+                    uri: opt.uri,
+                    manifestKind: opt.manifestKind,
+                    hlsVariant: opt.hlsVariant,
+                    dashVideoRepresentationID: opt.dashVideoRepresentationID,
+                    dashAudioRepresentationID: opt.dashAudioRepresentationID,
+                    isLive: opt.isLive
+                )
+            }
         }
 
         // Discover separate audio-only renditions if present
@@ -159,8 +204,13 @@ public enum StreamQualityInspector {
             }
         }
 
-        // Sort video reps highest to lowest bandwidth
+        // Sort video reps highest to lowest bandwidth and deduplicate identical quality tiers
         videoReps.sort { ($0.bandwidth ?? 0) > ($1.bandwidth ?? 0) }
+        var seenVideoKeys = Set<String>()
+        videoReps = videoReps.filter { rep in
+            let key = "\(rep.width ?? 0)x\(rep.height ?? 0)-\(rep.bandwidth ?? 0)-\(rep.codecs ?? "")"
+            return seenVideoKeys.insert(key).inserted
+        }
         let defaultAudio = audioReps.first
 
         var options: [StreamQualityOption] = videoReps.map { rep in
@@ -178,9 +228,11 @@ public enum StreamQualityInspector {
             let audioBw = audio.bandwidth ?? 128_000
             let estBytes = durationSeconds.flatMap { StreamQualityOption.estimateSize(bandwidth: audioBw, durationSeconds: $0) }
             let estText = estBytes.map { "~\(StreamQualityOption.formatByteSize($0))" }
+            let audioURI = audio.baseURL ?? baseURL
+            let uriHash = String(EngineSHA256.hash(data: Data(audioURI.absoluteString.utf8)).prefix(8))
 
             let audioOption = StreamQualityOption(
-                id: "dash-audio-\(audio.id ?? "default")",
+                id: "dash-audio-\(audio.id ?? "default")-\(uriHash)",
                 label: "Audio Only",
                 qualityBadge: "AUDIO",
                 resolution: nil,

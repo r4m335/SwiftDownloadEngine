@@ -47,7 +47,8 @@ public enum HLSVariantSelector {
     /// Returns all eligible variants matching the user preferences, ranked from highest to lowest quality.
     public static func rank(
         from master: HLSManifest,
-        preferences: HLSVariantSelectionPreferences = HLSVariantSelectionPreferences()
+        preferences: HLSVariantSelectionPreferences = HLSVariantSelectionPreferences(),
+        deduplicate: Bool = false
     ) throws -> [HLSVariant] {
         guard master.playlistType == .master, !master.variants.isEmpty else {
             throw HLSVariantSelectionError.noVariants
@@ -115,7 +116,7 @@ public enum HLSVariantSelector {
             throw HLSVariantSelectionError.noVariantMatchesPreferences
         }
 
-        return finalMatching.sorted { lhs, rhs in
+        let sorted = finalMatching.sorted { lhs, rhs in
             let lhsBandwidth = lhs.averageBandwidth ?? lhs.bandwidth
             let rhsBandwidth = rhs.averageBandwidth ?? rhs.bandwidth
             if lhsBandwidth != rhsBandwidth { return lhsBandwidth > rhsBandwidth }
@@ -124,6 +125,54 @@ public enum HLSVariantSelector {
             if lhsPixels != rhsPixels { return lhsPixels > rhsPixels }
             return lhs.uri.absoluteString < rhs.uri.absoluteString
         }
+
+        return deduplicate ? Self.deduplicate(sorted) : sorted
+    }
+
+    /// Deduplicates variants that represent the same media quality tier.
+    ///
+    /// Preserves the highest-quality / first ranked variant when multiple variants share
+    /// the same resolution (and codec family, if specified) or identical bandwidth/URI,
+    /// preventing duplicate quality options in the UI and grabber lists.
+    public static func deduplicate(_ variants: [HLSVariant]) -> [HLSVariant] {
+        var seenKeys = Set<String>()
+        var seenURIs = Set<String>()
+        var deduplicated: [HLSVariant] = []
+
+        for variant in variants {
+            let normalizedURI = variant.uri.absoluteString.lowercased()
+            if seenURIs.contains(normalizedURI) {
+                continue
+            }
+
+            let vCodec = extractVideoCodecFamily(variant.codecs)
+            let fpsKey = variant.frameRate.map { "\(Int($0.rounded()))fps" } ?? "anyfps"
+            let qualityKey: String
+            if let res = variant.resolution {
+                qualityKey = "res:\(res.width)x\(res.height):\(vCodec ?? "any"):\(fpsKey)"
+            } else {
+                qualityKey = "bw:\(variant.bandwidth):\(vCodec ?? "any"):\(fpsKey)"
+            }
+
+            if seenKeys.contains(qualityKey) {
+                continue
+            }
+
+            seenKeys.insert(qualityKey)
+            seenURIs.insert(normalizedURI)
+            deduplicated.append(variant)
+        }
+
+        return deduplicated
+    }
+
+    public static func extractVideoCodecFamily(_ codecs: String?) -> String? {
+        guard let codecs = codecs?.lowercased() else { return nil }
+        if codecs.contains("avc1") || codecs.contains("h264") { return "h264" }
+        if codecs.contains("hvc1") || codecs.contains("hev1") || codecs.contains("h265") { return "hevc" }
+        if codecs.contains("av01") { return "av1" }
+        if codecs.contains("vp9") { return "vp9" }
+        return nil
     }
 
     public static func select(

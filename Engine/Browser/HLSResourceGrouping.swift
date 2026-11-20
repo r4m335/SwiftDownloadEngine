@@ -83,10 +83,31 @@ public enum HLSResourceGrouping {
         guard let text = resource.manifestText,
               let manifest = cachedParse(text: text, baseURL: resource.url),
               manifest.playlistType == .master else { return nil }
-        let qualities = manifest.variants.compactMap { $0.resolution?.height }
-            .sorted()
-            .map { "\($0)p" }
-        return qualities.isEmpty ? nil : qualities.joined(separator: " · ")
+        let deduplicated = HLSVariantSelector.deduplicate(manifest.variants)
+        var seenHeights = Set<Int>()
+        var seenBadges = Set<String>()
+        var qualityBadges: [String] = []
+
+        let sorted = deduplicated.sorted { lhs, rhs in
+            let lRes = (lhs.resolution?.width ?? 0) * (lhs.resolution?.height ?? 0)
+            let rRes = (rhs.resolution?.width ?? 0) * (rhs.resolution?.height ?? 0)
+            if lRes != rRes { return lRes < rRes }
+            return lhs.bandwidth < rhs.bandwidth
+        }
+
+        for variant in sorted {
+            if let h = variant.resolution?.height {
+                if seenHeights.insert(h).inserted {
+                    qualityBadges.append("\(h)p")
+                }
+            } else {
+                let badge = formatBandwidthAsQuality(variant.bandwidth)
+                if seenBadges.insert(badge).inserted {
+                    qualityBadges.append(badge)
+                }
+            }
+        }
+        return qualityBadges.isEmpty ? nil : qualityBadges.joined(separator: " · ")
     }
 
     /// Extracts rich metadata for every variant in a master playlist.
@@ -100,7 +121,18 @@ public enum HLSResourceGrouping {
             $0.type.uppercased() == "SUBTITLES" || $0.type.uppercased() == "CLOSED-CAPTIONS"
         }
 
-        return manifest.variants.map { variant in
+        let sorted = manifest.variants.sorted { lhs, rhs in
+            let lhsBandwidth = lhs.averageBandwidth ?? lhs.bandwidth
+            let rhsBandwidth = rhs.averageBandwidth ?? rhs.bandwidth
+            if lhsBandwidth != rhsBandwidth { return lhsBandwidth > rhsBandwidth }
+            let lhsPixels = (lhs.resolution?.width ?? 0) * (lhs.resolution?.height ?? 0)
+            let rhsPixels = (rhs.resolution?.width ?? 0) * (rhs.resolution?.height ?? 0)
+            if lhsPixels != rhsPixels { return lhsPixels > rhsPixels }
+            return lhs.uri.absoluteString < rhs.uri.absoluteString
+        }
+        let deduplicated = HLSVariantSelector.deduplicate(sorted)
+
+        return deduplicated.map { variant in
             let height = variant.resolution?.height
             let qualityLabel = height.map { "\($0)p" } ?? formatBandwidthAsQuality(variant.bandwidth)
             let resText = variant.resolution.map { "\($0.width)x\($0.height)" }
@@ -123,7 +155,8 @@ public enum HLSResourceGrouping {
             }()
 
             let vCodec = extractVideoCodecName(variant.codecs)
-            let id = "\(resource.id)-variant-\(variant.bandwidth)-\(height ?? 0)"
+            let uriHash = String(EngineSHA256.hash(data: Data(variant.uri.absoluteString.utf8)).prefix(8))
+            let id = "\(resource.id)-variant-\(variant.bandwidth)-\(height ?? 0)-\(uriHash)"
 
             return HLSVariantStreamItem(
                 id: id,
@@ -141,11 +174,6 @@ public enum HLSResourceGrouping {
                 codecs: variant.codecs,
                 videoCodec: vCodec
             )
-        }.sorted { lhs, rhs in
-            if lhs.bandwidth != rhs.bandwidth { return lhs.bandwidth > rhs.bandwidth }
-            let lPixels = (lhs.resolution?.width ?? 0) * (lhs.resolution?.height ?? 0)
-            let rPixels = (rhs.resolution?.width ?? 0) * (rhs.resolution?.height ?? 0)
-            return lPixels > rPixels
         }
     }
 
@@ -154,10 +182,17 @@ public enum HLSResourceGrouping {
         let items = extractVariantStreamItems(for: masterResource)
         guard !items.isEmpty else { return [masterResource] }
 
+        var seenFilenames = Set<String>()
         return items.map { item in
             let baseFilename = (masterResource.suggestedFilename as NSString).deletingPathExtension
-            let filename = "\(baseFilename)-\(item.qualityLabel).mp4"
-            let title = "HLS \(item.qualityLabel)"
+            var filename = "\(baseFilename)-\(item.qualityLabel).mp4"
+            var title = "HLS \(item.qualityLabel)"
+            if seenFilenames.contains(filename.lowercased()) {
+                let disambiguator = item.bitrateText.replacingOccurrences(of: " ", with: "")
+                filename = "\(baseFilename)-\(item.qualityLabel)-\(disambiguator).mp4"
+                title = "HLS \(item.qualityLabel) (\(item.bitrateText))"
+            }
+            seenFilenames.insert(filename.lowercased())
 
             let preferences = HLSVariantSelectionPreferences(
                 maximumBandwidth: item.bandwidth,

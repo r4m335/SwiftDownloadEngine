@@ -138,4 +138,74 @@ final class HLSResourceGroupingTests: XCTestCase {
         XCTAssertFalse(item360.hasAudio, "Video-only variant must not inherit hasAudio=true from master audio renditions")
         XCTAssertNil(item360.audioText)
     }
+
+    func testQualitySummaryAndVariantItemsDeduplicateMirrorVariants() {
+        let masterURL = URL(string: "https://media.example.com/master.m3u8")!
+        let master = WebpageResource(
+            id: "master-mirrors",
+            url: masterURL,
+            title: "Mirrored Streams",
+            suggestedFilename: "video.m3u8",
+            resourceType: .video,
+            mimeType: "application/vnd.apple.mpegurl",
+            manifestText: """
+            #EXTM3U
+            #EXT-X-STREAM-INF:BANDWIDTH=5000000,RESOLUTION=1920x1080
+            https://cdn1.example.com/1080p.m3u8
+            #EXT-X-STREAM-INF:BANDWIDTH=5000000,RESOLUTION=1920x1080
+            https://cdn2.example.com/1080p.m3u8
+            #EXT-X-STREAM-INF:BANDWIDTH=2500000,RESOLUTION=1280x720
+            https://cdn1.example.com/720p.m3u8
+            #EXT-X-STREAM-INF:BANDWIDTH=2500000,RESOLUTION=1280x720
+            https://cdn2.example.com/720p.m3u8
+            """
+        )
+
+        // 1. qualitySummary must not repeat "1080p · 1080p"
+        let summary = HLSResourceGrouping.qualitySummary(for: master)
+        XCTAssertEqual(summary, "720p · 1080p")
+
+        // 2. extractVariantStreamItems must deduplicate redundant variants
+        let items = HLSResourceGrouping.extractVariantStreamItems(for: master)
+        XCTAssertEqual(items.count, 2)
+        XCTAssertEqual(items[0].qualityLabel, "1080p")
+        XCTAssertEqual(items[1].qualityLabel, "720p")
+
+        // 3. IDs must be unique
+        XCTAssertNotEqual(items[0].id, items[1].id)
+
+        // 4. extractVariantResources must produce unique resources
+        let resources = HLSResourceGrouping.extractVariantResources(from: master)
+        XCTAssertEqual(resources.count, 2)
+        XCTAssertNotEqual(resources[0].id, resources[1].id)
+        XCTAssertNotEqual(resources[0].suggestedFilename, resources[1].suggestedFilename)
+    }
+
+    func testVariantIDsDoNotCollideForIdenticalBandwidthAndResolution() {
+        let masterURL = URL(string: "https://media.example.com/master.m3u8")!
+        let master = WebpageResource(
+            id: "master-distinct-codecs",
+            url: masterURL,
+            title: "Multi Codec",
+            suggestedFilename: "video.m3u8",
+            resourceType: .video,
+            mimeType: "application/vnd.apple.mpegurl",
+            manifestText: """
+            #EXTM3U
+            #EXT-X-STREAM-INF:BANDWIDTH=5000000,RESOLUTION=1920x1080,CODECS="avc1.640028"
+            avc/1080p.m3u8
+            #EXT-X-STREAM-INF:BANDWIDTH=5000000,RESOLUTION=1920x1080,CODECS="hvc1.2.4.L153.B0"
+            hevc/1080p.m3u8
+            """
+        )
+
+        let items = HLSResourceGrouping.extractVariantStreamItems(for: master)
+        XCTAssertEqual(items.count, 2)
+        XCTAssertNotEqual(items[0].id, items[1].id, "Variant IDs must not collide even when bandwidth and resolution are identical")
+
+        let resources = HLSResourceGrouping.extractVariantResources(from: master)
+        XCTAssertEqual(resources.count, 2)
+        XCTAssertNotEqual(resources[0].id, resources[1].id)
+        XCTAssertNotEqual(resources[0].suggestedFilename, resources[1].suggestedFilename, "Filenames must be disambiguated when sharing quality label")
+    }
 }
