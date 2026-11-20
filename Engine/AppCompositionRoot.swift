@@ -10,7 +10,8 @@ import WebKit
 /// Owns the unified runtime dependency graph, guarantees deterministic initialization order,
 /// eliminates hidden global singletons, and allows tests to run fully isolated in custom or
 /// temporary sandbox directories.
-public final class AppCompositionRoot: @unchecked Sendable {
+@MainActor
+public final class AppCompositionRoot {
 
     // MARK: - Core Directories & Settings
     public let baseStorageDirectory: URL
@@ -422,9 +423,7 @@ public final class AppCompositionRoot: @unchecked Sendable {
             persistenceStore: persistence,
             requestBudget: budget,
             globalBandwidthLimiter: limiter,
-            backgroundSessionManager: nil,
-            connectivityGate: connectivityGate,
-            keychain: keychain
+            backgroundSessionManager: nil
         )
 
         let queueManager = DownloadQueueManager(
