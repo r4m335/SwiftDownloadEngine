@@ -272,4 +272,125 @@ final class HLSTransferPlannerTests: XCTestCase {
         XCTAssertEqual(plan.resources[2].kind, .mediaSegment)
         XCTAssertTrue(plan.resources[2].url.absoluteString.hasPrefix("https://stream_yk.goplay.su/stream/segment_002.ts"))
     }
+
+    // MARK: - Implicit HLS Byte-Range Continuation Tests
+
+    func testImplicitHLSByteRangeOffsetsContinuation() throws {
+        let playlist = """
+        #EXTM3U
+        #EXT-X-VERSION:4
+        #EXT-X-PLAYLIST-TYPE:VOD
+        #EXT-X-TARGETDURATION:10
+        #EXT-X-BYTERANGE:500
+        #EXTINF:10.0,
+        main.mp4
+        #EXT-X-BYTERANGE:300
+        #EXTINF:10.0,
+        main.mp4
+        #EXT-X-BYTERANGE:200
+        #EXTINF:10.0,
+        main.mp4
+        #EXT-X-BYTERANGE:400@2000
+        #EXTINF:10.0,
+        main.mp4
+        #EXT-X-BYTERANGE:100
+        #EXTINF:10.0,
+        main.mp4
+        #EXT-X-ENDLIST
+        """
+
+        let manifest = try HLSManifestParser.parse(playlist, baseURL: manifestURL)
+        XCTAssertEqual(manifest.segments.count, 5)
+
+        // 1. First segment without @offset starts at 0
+        XCTAssertEqual(manifest.segments[0].byteRange, HLSByteRange(length: 500, offset: 0))
+
+        // 2. Second segment without @offset continues after first (0 + 500 = 500)
+        XCTAssertEqual(manifest.segments[1].byteRange, HLSByteRange(length: 300, offset: 500))
+
+        // 3. Third segment without @offset continues after second (500 + 300 = 800)
+        XCTAssertEqual(manifest.segments[2].byteRange, HLSByteRange(length: 200, offset: 800))
+
+        // 4. Fourth segment with explicit @offset (2000)
+        XCTAssertEqual(manifest.segments[3].byteRange, HLSByteRange(length: 400, offset: 2000))
+
+        // 5. Fifth segment without @offset continues after fourth (2000 + 400 = 2400)
+        XCTAssertEqual(manifest.segments[4].byteRange, HLSByteRange(length: 100, offset: 2400))
+
+        // Verify planned transfer resources in HLSTransferPlanner
+        let plan = try HLSTransferPlanner.makeVODPlan(from: manifest)
+        XCTAssertEqual(plan.resources.count, 5)
+        XCTAssertEqual(plan.resources[0].byteRange, HLSByteRange(length: 500, offset: 0))
+        XCTAssertEqual(plan.resources[1].byteRange, HLSByteRange(length: 300, offset: 500))
+        XCTAssertEqual(plan.resources[2].byteRange, HLSByteRange(length: 200, offset: 800))
+        XCTAssertEqual(plan.resources[3].byteRange, HLSByteRange(length: 400, offset: 2000))
+        XCTAssertEqual(plan.resources[4].byteRange, HLSByteRange(length: 100, offset: 2400))
+        XCTAssertEqual(plan.estimatedTransferBytes, 1500)
+    }
+
+    func testImplicitHLSByteRangeResetsOnResourceURIChangeOrNonByteRange() throws {
+        let playlist = """
+        #EXTM3U
+        #EXT-X-VERSION:4
+        #EXT-X-PLAYLIST-TYPE:VOD
+        #EXT-X-TARGETDURATION:10
+        #EXT-X-BYTERANGE:500
+        #EXTINF:10.0,
+        fileA.ts
+        #EXT-X-BYTERANGE:300
+        #EXTINF:10.0,
+        fileB.ts
+        #EXTINF:10.0,
+        fileB.ts
+        #EXT-X-BYTERANGE:200
+        #EXTINF:10.0,
+        fileB.ts
+        #EXT-X-ENDLIST
+        """
+
+        let manifest = try HLSManifestParser.parse(playlist, baseURL: manifestURL)
+        XCTAssertEqual(manifest.segments.count, 4)
+
+        // Segment 0: fileA.ts starts at 0
+        XCTAssertEqual(manifest.segments[0].byteRange, HLSByteRange(length: 500, offset: 0))
+
+        // Segment 1: fileB.ts (different URI) resets to 0
+        XCTAssertEqual(manifest.segments[1].byteRange, HLSByteRange(length: 300, offset: 0))
+
+        // Segment 2: fileB.ts has no byte range tag
+        XCTAssertNil(manifest.segments[2].byteRange)
+
+        // Segment 3: fileB.ts following a non-byte-range segment resets to 0
+        XCTAssertEqual(manifest.segments[3].byteRange, HLSByteRange(length: 200, offset: 0))
+
+        let plan = try HLSTransferPlanner.makeVODPlan(from: manifest)
+        XCTAssertEqual(plan.resources[0].byteRange, HLSByteRange(length: 500, offset: 0))
+        XCTAssertEqual(plan.resources[1].byteRange, HLSByteRange(length: 300, offset: 0))
+        XCTAssertNil(plan.resources[2].byteRange)
+        XCTAssertEqual(plan.resources[3].byteRange, HLSByteRange(length: 200, offset: 0))
+    }
+
+    func testImplicitHLSByteRangeForInitializationMapWithoutOffset() throws {
+        let playlist = """
+        #EXTM3U
+        #EXT-X-VERSION:4
+        #EXT-X-PLAYLIST-TYPE:VOD
+        #EXT-X-MAP:URI="init.mp4",BYTERANGE="720"
+        #EXT-X-BYTERANGE:1000
+        #EXTINF:10.0,
+        main.mp4
+        #EXT-X-ENDLIST
+        """
+
+        let manifest = try HLSManifestParser.parse(playlist, baseURL: manifestURL)
+        // Init map without @offset must default to offset 0 per RFC 8216 Section 4.3.2.5
+        XCTAssertEqual(manifest.segments[0].initializationMap?.byteRange, HLSByteRange(length: 720, offset: 0))
+        XCTAssertEqual(manifest.segments[0].byteRange, HLSByteRange(length: 1000, offset: 0))
+
+        let plan = try HLSTransferPlanner.makeVODPlan(from: manifest)
+        XCTAssertEqual(plan.resources[0].kind, .initializationMap)
+        XCTAssertEqual(plan.resources[0].byteRange, HLSByteRange(length: 720, offset: 0))
+        XCTAssertEqual(plan.resources[1].kind, .mediaSegment)
+        XCTAssertEqual(plan.resources[1].byteRange, HLSByteRange(length: 1000, offset: 0))
+    }
 }

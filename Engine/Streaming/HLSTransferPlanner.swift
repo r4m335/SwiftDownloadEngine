@@ -166,13 +166,16 @@ public enum HLSTransferPlanner {
                         order: resources.count,
                         kind: .initializationMap,
                         url: mapURL,
-                        byteRange: try validatedByteRange(map.byteRange)
+                        byteRange: try validatedByteRange(map.byteRange, defaultOffset: 0)
                     ),
                     to: &resources,
                     seen: &seenResources
                 )
             }
         }
+
+        var lastSegmentURL: URL?
+        var lastSegmentByteRange: HLSByteRange?
 
         for segment in manifest.segments {
             guard segment.duration.isFinite, segment.duration >= 0 else {
@@ -203,12 +206,41 @@ public enum HLSTransferPlanner {
                 )
             }
 
+            let resolvedByteRange: HLSByteRange?
+            if let range = segment.byteRange {
+                let offset: Int64
+                if let explicit = range.offset {
+                    offset = explicit
+                } else if let lastRange = lastSegmentByteRange,
+                          let lastOffset = lastRange.offset,
+                          let lastURL = lastSegmentURL,
+                          lastURL == segmentURL {
+                    guard lastOffset <= Int64.max - lastRange.length else {
+                        throw HLSVODTransferPlanError.invalidByteRange
+                    }
+                    offset = lastOffset + lastRange.length
+                } else {
+                    offset = 0
+                }
+                guard range.length > 0, offset >= 0 else {
+                    throw HLSVODTransferPlanError.invalidByteRange
+                }
+                let valid = HLSByteRange(length: range.length, offset: offset)
+                resolvedByteRange = valid
+                lastSegmentByteRange = valid
+                lastSegmentURL = segmentURL
+            } else {
+                resolvedByteRange = nil
+                lastSegmentByteRange = nil
+                lastSegmentURL = segmentURL
+            }
+
             resources.append(
                 HLSPlannedResource(
                     order: resources.count,
                     kind: .mediaSegment,
                     url: segmentURL,
-                    byteRange: try validatedByteRange(segment.byteRange),
+                    byteRange: resolvedByteRange,
                     sequenceNumber: segment.sequenceNumber,
                     duration: segment.duration,
                     encryption: encryption
@@ -278,12 +310,13 @@ public enum HLSTransferPlanner {
         }
     }
 
-    private static func validatedByteRange(_ range: HLSByteRange?) throws -> HLSByteRange? {
+    private static func validatedByteRange(_ range: HLSByteRange?, defaultOffset: Int64? = nil) throws -> HLSByteRange? {
         guard let range else { return nil }
-        guard range.length > 0, (range.offset ?? 0) >= 0 else {
+        let effectiveOffset = range.offset ?? defaultOffset
+        guard range.length > 0, (effectiveOffset ?? 0) >= 0 else {
             throw HLSVODTransferPlanError.invalidByteRange
         }
-        return range
+        return HLSByteRange(length: range.length, offset: effectiveOffset)
     }
 
     private static func extractHost(from url: URL) -> String? {

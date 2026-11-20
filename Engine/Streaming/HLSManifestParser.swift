@@ -84,6 +84,8 @@ public enum HLSManifestParser {
         var variants: [HLSVariant] = []
         var renditions: [HLSRendition] = []
         var segments: [HLSMediaSegment] = []
+        var lastSegmentURI: URL?
+        var lastSegmentByteRange: HLSByteRange?
 
         for (index, rawLine) in lines.enumerated() {
             guard Date() <= deadline else { throw ManifestParserError.parsingTimedOut }
@@ -153,12 +155,39 @@ public enum HLSManifestParser {
                 guard let uri = try resolveSegmentURL(line, against: baseURL) else {
                     throw ManifestParserError.invalidURL
                 }
+
+                let resolvedByteRange: HLSByteRange?
+                if let pbr = pendingByteRange {
+                    let offset: Int64
+                    if let explicitOffset = pbr.offset {
+                        offset = explicitOffset
+                    } else if let lastRange = lastSegmentByteRange,
+                              let lastOffset = lastRange.offset,
+                              let lastURI = lastSegmentURI,
+                              lastURI == uri {
+                        guard lastOffset <= Int64.max - lastRange.length else {
+                            throw ManifestParserError.malformed(reason: "Byte range offset overflow.")
+                        }
+                        offset = lastOffset + lastRange.length
+                    } else {
+                        offset = 0
+                    }
+                    let resolved = HLSByteRange(length: pbr.length, offset: offset)
+                    resolvedByteRange = resolved
+                    lastSegmentByteRange = resolved
+                    lastSegmentURI = uri
+                } else {
+                    resolvedByteRange = nil
+                    lastSegmentByteRange = nil
+                    lastSegmentURI = uri
+                }
+
                 segments.append(HLSMediaSegment(
                     sequenceNumber: mediaSequence + Int64(segments.count),
                     uri: uri,
                     duration: segment.duration,
                     title: segment.title,
-                    byteRange: pendingByteRange,
+                    byteRange: resolvedByteRange,
                     initializationMap: currentMap,
                     encryption: currentEncryption,
                     isDiscontinuity: pendingDiscontinuity,
@@ -338,7 +367,7 @@ public enum HLSManifestParser {
         return HLSResolution(width: width, height: height)
     }
 
-    private static func parseByteRange(_ value: String) throws -> HLSByteRange {
+    private static func parseByteRange(_ value: String, defaultOffset: Int64? = nil) throws -> HLSByteRange {
         let parts = value.split(separator: "@", maxSplits: 1, omittingEmptySubsequences: false)
         guard let length = Int64(parts[0]), length > 0 else {
             throw ManifestParserError.malformed(reason: "BYTERANGE length must be positive.")
@@ -350,14 +379,14 @@ public enum HLSManifestParser {
             }
             offset = parsed
         } else {
-            offset = nil
+            offset = defaultOffset
         }
         return HLSByteRange(length: length, offset: offset)
     }
 
     private static func optionalByteRange(_ value: String?) throws -> HLSByteRange? {
         guard let value else { return nil }
-        return try parseByteRange(value)
+        return try parseByteRange(value, defaultOffset: 0)
     }
 
     private static func resolveURL(_ value: String, against baseURL: URL) throws -> URL? {
