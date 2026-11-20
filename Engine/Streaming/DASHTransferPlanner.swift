@@ -1103,23 +1103,17 @@ public enum DASHTransferPlanner {
             throw DASHVODTransferPlanError.invalidResourceURL
         }
 
-        var cleaned = finalResolved
-        if cleaned.fragment != nil {
-            let str = cleaned.absoluteString
+        if finalResolved.fragment != nil {
+            let str = finalResolved.absoluteString
             if let hashIndex = str.firstIndex(of: "#") {
                 let stripped = String(str[..<hashIndex])
                 if let sanitized = URL(string: stripped) {
-                    cleaned = sanitized
+                    return sanitized
                 }
             }
         }
 
-        let isSameHost = cleaned.host?.lowercased() == baseURL.host?.lowercased()
-        if isSameHost, let baseQuery = baseURL.query, !baseQuery.isEmpty {
-            cleaned = cleaned.mergingParentQuery(baseQuery)
-        }
-
-        return cleaned
+        return finalResolved
     }
 
     private static func adding(_ lhs: Int64, _ rhs: Int64) throws -> Int64 {

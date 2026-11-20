@@ -391,8 +391,7 @@ public enum HLSManifestParser {
     private static func resolveSegmentURL(_ value: String, against baseURL: URL) throws -> URL? {
         guard let resolved = try resolveURL(value, against: baseURL) else { return nil }
         let isRelative = !value.hasPrefix("http://") && !value.hasPrefix("https://") && !value.hasPrefix("//")
-        let isSameHost = resolved.host?.lowercased() == baseURL.host?.lowercased()
-        if (isRelative || isSameHost), let baseQuery = baseURL.query, !baseQuery.isEmpty {
+        if isRelative, let baseQuery = baseURL.query, !baseQuery.isEmpty {
             return resolved.mergingParentQuery(baseQuery)
         }
         return resolved
@@ -410,8 +409,7 @@ public enum HLSManifestParser {
             throw ManifestParserError.invalidURL
         }
         let isRelative = !value.hasPrefix("http://") && !value.hasPrefix("https://") && !value.hasPrefix("//")
-        let isSameHost = resolved.host?.lowercased() == baseURL.host?.lowercased()
-        if (isRelative || isSameHost), let baseQuery = baseURL.query, !baseQuery.isEmpty {
+        if isRelative, let baseQuery = baseURL.query, !baseQuery.isEmpty {
             resolved = resolved.mergingParentQuery(baseQuery)
         }
         if method.uppercased() == "AES-128" && !isHTTPURL(resolved) {

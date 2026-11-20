@@ -210,7 +210,8 @@ final class HLSTransferPlannerTests: XCTestCase {
         #EXT-X-ENDLIST
         """
 
-        let manifest = try HLSManifestParser.parse(playlist, baseURL: manifestURL)
+        let cleanBaseURL = URL(string: "https://video.example/path/index.m3u8")!
+        let manifest = try HLSManifestParser.parse(playlist, baseURL: cleanBaseURL)
         let plan = try HLSTransferPlanner.makeVODPlan(from: manifest)
 
         XCTAssertEqual(plan.resources.count, 3)
