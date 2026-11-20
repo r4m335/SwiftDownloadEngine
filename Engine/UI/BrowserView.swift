@@ -2361,19 +2361,48 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                                 }
                             }
                             let isMasterLive = expanded.first?.isLive == true || res.isLive
-                            let livePrefix = (isMasterLive && !res.title.hasPrefix("[LIVE]")) ? "[LIVE] " : ""
+                            let isMasterDRM = res.isDRMProtected || expanded.contains(where: { $0.isDRMProtected })
+                            let drmType = res.drmProtectionType ?? expanded.first(where: { $0.isDRMProtected })?.drmProtectionType
+                            let isSupported = !isMasterDRM && !isMasterLive
+                            let unsupportedReason: String? = {
+                                if isMasterDRM {
+                                    if let resReason = res.unsupportedReason, res.isDRMProtected {
+                                        return resReason
+                                    }
+                                    if let varReason = expanded.first(where: { $0.isDRMProtected })?.unsupportedReason {
+                                        return varReason
+                                    }
+                                    if let drmType = drmType {
+                                        return "This media stream is encrypted with Digital Rights Management (\(drmType)) and cannot be downloaded"
+                                    }
+                                    return "This media stream is encrypted with Digital Rights Management and cannot be downloaded"
+                                }
+                                if isMasterLive {
+                                    return "Live stream recording required; VOD download unsupported for live/event manifests"
+                                }
+                                return "Parent master manifest containing \(expanded.count) quality variants"
+                            }()
+                            let cleanTitle = res.title.replacingOccurrences(of: " (Master Playlist)", with: "")
+                            let baseTitle = "\(cleanTitle) (Master Playlist)"
+                            let parentTitle = (isMasterLive && !baseTitle.hasPrefix("[LIVE]")) ? "[LIVE] \(baseTitle)" : baseTitle
                             let parent = WebpageResource(
                                 id: res.id,
                                 url: res.url,
-                                title: "\(livePrefix)\(res.title) (Master Playlist)",
+                                title: parentTitle,
                                 suggestedFilename: res.suggestedFilename,
                                 resourceType: res.resourceType,
                                 mimeType: res.mimeType,
                                 estimatedSize: isMasterLive ? nil : res.estimatedSize,
-                                isSupported: !isMasterLive,
-                                unsupportedReason: isMasterLive ? "Live stream recording required; VOD download unsupported for live/event manifests" : "Parent master manifest containing \(expanded.count) quality variants",
+                                isSupported: isSupported,
+                                unsupportedReason: unsupportedReason,
                                 requestContext: res.requestContext,
                                 manifestText: expanded.first?.manifestText ?? res.manifestText,
+                                hlsVariantPreferences: res.hlsVariantPreferences,
+                                dashVideoRepresentationID: res.dashVideoRepresentationID,
+                                dashAudioRepresentationID: res.dashAudioRepresentationID,
+                                isDRMProtected: isMasterDRM,
+                                drmProtectionType: drmType,
+                                discoveredAt: res.discoveredAt,
                                 isLive: isMasterLive
                             )
                             updated.append(parent)
@@ -3110,7 +3139,14 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                         isSupported: existing.isSupported,
                         unsupportedReason: existing.unsupportedReason,
                         requestContext: existing.requestContext,
-                        manifestText: prefix
+                        manifestText: prefix,
+                        hlsVariantPreferences: existing.hlsVariantPreferences,
+                        dashVideoRepresentationID: existing.dashVideoRepresentationID,
+                        dashAudioRepresentationID: existing.dashAudioRepresentationID,
+                        isDRMProtected: existing.isDRMProtected,
+                        drmProtectionType: existing.drmProtectionType,
+                        discoveredAt: existing.discoveredAt,
+                        isLive: existing.isLive
                     )
                     discoveredResources[existingIndex] = updated
                     PipelineLogger.shared.log("[BrowserView] Attached captured manifestText (\(prefix.count) chars) to existing discovered resource: \(existing.url.absoluteString)")
@@ -3147,7 +3183,15 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                 estimatedSize: observation.contentLength ?? resource.estimatedSize,
                 isSupported: false,
                 unsupportedReason: "Streaming playlist manifest. Prepare a manifest-aware transfer to continue.",
-                manifestText: prefix
+                requestContext: resource.requestContext,
+                manifestText: prefix,
+                hlsVariantPreferences: resource.hlsVariantPreferences,
+                dashVideoRepresentationID: resource.dashVideoRepresentationID,
+                dashAudioRepresentationID: resource.dashAudioRepresentationID,
+                isDRMProtected: resource.isDRMProtected,
+                drmProtectionType: resource.drmProtectionType,
+                discoveredAt: resource.discoveredAt,
+                isLive: resource.isLive
             )
         } else if resource.manifestText == nil, let prefix = observation.manifestPrefix {
             let dynamicTitle: String
@@ -3169,7 +3213,14 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                 isSupported: resource.isSupported,
                 unsupportedReason: resource.unsupportedReason,
                 requestContext: resource.requestContext,
-                manifestText: prefix
+                manifestText: prefix,
+                hlsVariantPreferences: resource.hlsVariantPreferences,
+                dashVideoRepresentationID: resource.dashVideoRepresentationID,
+                dashAudioRepresentationID: resource.dashAudioRepresentationID,
+                isDRMProtected: resource.isDRMProtected,
+                drmProtectionType: resource.drmProtectionType,
+                discoveredAt: resource.discoveredAt,
+                isLive: resource.isLive
             )
         }
 
@@ -3193,7 +3244,14 @@ public final class BrowserViewModel: NSObject, ObservableObject {
             isSupported: resource.isSupported,
             unsupportedReason: resource.unsupportedReason,
             requestContext: resource.requestContext ?? fallbackContext,
-            manifestText: resource.manifestText
+            manifestText: resource.manifestText,
+            hlsVariantPreferences: resource.hlsVariantPreferences,
+            dashVideoRepresentationID: resource.dashVideoRepresentationID,
+            dashAudioRepresentationID: resource.dashAudioRepresentationID,
+            isDRMProtected: resource.isDRMProtected,
+            drmProtectionType: resource.drmProtectionType,
+            discoveredAt: resource.discoveredAt,
+            isLive: resource.isLive
         )
 
         // 1. Immediately insert at top with 0 delay so user sees grabbed link instantly
@@ -3450,7 +3508,11 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                     manifestText: cachedText ?? resource.manifestText,
                     hlsVariantPreferences: resource.hlsVariantPreferences,
                     dashVideoRepresentationID: resource.dashVideoRepresentationID,
-                    dashAudioRepresentationID: resource.dashAudioRepresentationID
+                    dashAudioRepresentationID: resource.dashAudioRepresentationID,
+                    isDRMProtected: resource.isDRMProtected,
+                    drmProtectionType: resource.drmProtectionType,
+                    discoveredAt: resource.discoveredAt,
+                    isLive: resource.isLive
                 )
                 if targets.count == 1 {
                     promptStreamingDownload(for: res, customFilename: effectiveFilename)
@@ -3880,7 +3942,11 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                 manifestText: cachedText,
                 hlsVariantPreferences: activeDownloadResource?.hlsVariantPreferences,
                 dashVideoRepresentationID: activeDownloadResource?.dashVideoRepresentationID,
-                dashAudioRepresentationID: activeDownloadResource?.dashAudioRepresentationID
+                dashAudioRepresentationID: activeDownloadResource?.dashAudioRepresentationID,
+                isDRMProtected: activeDownloadResource?.isDRMProtected ?? false,
+                drmProtectionType: activeDownloadResource?.drmProtectionType,
+                discoveredAt: activeDownloadResource?.discoveredAt ?? Date(),
+                isLive: activeDownloadResource?.isLive ?? false
             )
             promptStreamingDownload(for: res, customFilename: finalFilename)
             return

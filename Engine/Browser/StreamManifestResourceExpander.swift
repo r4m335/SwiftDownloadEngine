@@ -227,6 +227,20 @@ public actor StreamManifestResourceExpander {
                     updatedTitle = manifestResource.title
                 }
 
+                let drmEval = StreamDRMDetector.evaluate(manifestText: effectiveText, url: manifestResource.url)
+                let mediaDRM = manifestResource.isDRMProtected || drmEval.isProtected
+                let drmType = manifestResource.drmProtectionType ?? (mediaDRM ? drmEval.protectionType : nil)
+                let isSupported = !isLive && !mediaDRM
+                let unsupportedReason: String? = {
+                    if mediaDRM {
+                        return manifestResource.unsupportedReason ?? (drmType != nil ? "This media stream is encrypted with Digital Rights Management (\(drmType!)) and cannot be downloaded" : "DRM protected stream")
+                    }
+                    if isLive {
+                        return "Live stream recording required; VOD download unsupported for live/event manifests"
+                    }
+                    return nil
+                }()
+
                 let mediaResource = WebpageResource(
                     id: manifestResource.id,
                     url: manifestResource.url,
@@ -235,10 +249,15 @@ public actor StreamManifestResourceExpander {
                     resourceType: manifestResource.resourceType,
                     mimeType: manifestResource.mimeType,
                     estimatedSize: isLive ? nil : manifestResource.estimatedSize,
-                    isSupported: !isLive,
-                    unsupportedReason: isLive ? "Live stream recording required; VOD download unsupported for live/event manifests" : nil,
+                    isSupported: isSupported,
+                    unsupportedReason: unsupportedReason,
                     requestContext: manifestResource.requestContext,
                     manifestText: effectiveText.isEmpty ? manifestResource.manifestText : effectiveText,
+                    hlsVariantPreferences: manifestResource.hlsVariantPreferences,
+                    dashVideoRepresentationID: manifestResource.dashVideoRepresentationID,
+                    dashAudioRepresentationID: manifestResource.dashAudioRepresentationID,
+                    isDRMProtected: mediaDRM,
+                    drmProtectionType: drmType,
                     discoveredAt: manifestResource.discoveredAt,
                     isLive: isLive
                 )

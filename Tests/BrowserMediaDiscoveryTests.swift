@@ -977,6 +977,55 @@ final class BrowserMediaDiscoveryTests: XCTestCase {
         XCTAssertTrue(titles.contains("HLS 720p"))
         XCTAssertTrue(titles.contains("HLS 480p"))
     }
+
+    @MainActor
+    func testMasterResourceExpansionPreservesDRMAndDiscoveryMetadata() async {
+        let vm = BrowserViewModel()
+        let masterURL = URL(string: "https://cdn.example.com/vod/master.m3u8")!
+        let masterText = """
+        #EXTM3U
+        #EXT-X-STREAM-INF:BANDWIDTH=5000000,RESOLUTION=1920x1080
+        1080p.m3u8
+        #EXT-X-STREAM-INF:BANDWIDTH=2500000,RESOLUTION=1280x720
+        720p.m3u8
+        """
+        let originalDate = Date(timeIntervalSince1970: 1700000000)
+        let masterResource = WebpageResource(
+            id: "master-drm-test",
+            url: masterURL,
+            title: "Protected Stream",
+            suggestedFilename: "master.m3u8",
+            resourceType: .video,
+            mimeType: "application/vnd.apple.mpegurl",
+            isSupported: false,
+            unsupportedReason: "DRM FairPlay encrypted stream",
+            manifestText: masterText,
+            isDRMProtected: true,
+            drmProtectionType: "FairPlay",
+            discoveredAt: originalDate
+        )
+
+        vm.discoveredResources = [masterResource]
+        vm.expandStreamingManifests()
+
+        // Wait for async expansion task to complete
+        for _ in 0..<20 {
+            if vm.discoveredResources.count > 1 { break }
+            try? await Task.sleep(nanoseconds: 50_000_000)
+        }
+
+        guard let reconstructedMaster = vm.discoveredResources.first(where: { $0.id == masterResource.id }) else {
+            XCTFail("Reconstructed master must exist in discoveredResources")
+            return
+        }
+
+        XCTAssertTrue(reconstructedMaster.isDRMProtected, "Master must retain isDRMProtected after expansion")
+        XCTAssertEqual(reconstructedMaster.drmProtectionType, "FairPlay", "Master must retain drmProtectionType")
+        XCTAssertFalse(reconstructedMaster.isSupported, "DRM master must remain unsupported for download")
+        XCTAssertEqual(reconstructedMaster.discoveredAt, originalDate, "Master must retain original discoveredAt timestamp")
+        XCTAssertTrue(reconstructedMaster.title.contains("(Master Playlist)"), "Master title should be annotated")
+        XCTAssertFalse(reconstructedMaster.title.contains("(Master Playlist) (Master Playlist)"), "Master Playlist annotation must not be duplicated")
+    }
     #endif
 }
 
