@@ -5,7 +5,7 @@ import Combine
 import WebKit
 #endif
 
-/// Central composition root providing complete dependency injection across SwiftDownloadEngine.
+/// Central composition root providing complete dependency injection across DownloadEngineKit.
 ///
 /// Owns the unified runtime dependency graph, guarantees deterministic initialization order,
 /// eliminates hidden global singletons, and allows tests to run fully isolated in custom or

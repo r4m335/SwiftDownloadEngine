@@ -2,7 +2,7 @@ import XCTest
 #if canImport(SwiftUI)
 import SwiftUI
 #endif
-@testable import SwiftDownloadEngine
+@testable import DownloadEngineKit
 
 final class LIDPlayerSettingsTests: XCTestCase {
 

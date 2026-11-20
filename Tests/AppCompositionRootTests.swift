@@ -1,5 +1,5 @@
 import XCTest
-@testable import SwiftDownloadEngine
+@testable import DownloadEngineKit
 
 @MainActor
 final class AppCompositionRootTests: XCTestCase {

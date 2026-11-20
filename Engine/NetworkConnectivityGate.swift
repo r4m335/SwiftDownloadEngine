@@ -12,7 +12,7 @@ public actor NetworkConnectivityGate {
 
 #if canImport(Network)
     private let monitor: NWPathMonitor
-    private let monitorQueue = DispatchQueue(label: "SwiftDownloadEngine.network-path")
+    private let monitorQueue = DispatchQueue(label: "DownloadEngineKit.network-path")
     private var latestPath: NWPath?
     private var waiters: [UUID: (allowsCellular: Bool, continuation: CheckedContinuation<Void, Error>)] = [:]
 

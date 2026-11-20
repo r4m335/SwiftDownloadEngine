@@ -118,7 +118,7 @@ public enum QuickAccessMoveDirection: Sendable {
 @MainActor
 public final class QuickAccessStore {
     public static let shared = QuickAccessStore()
-    public static let userDefaultsKey = "com.r4m335.SwiftDownloadEngine.QuickAccessShortcuts"
+    public static let userDefaultsKey = "com.r4m335.DownloadEngineKit.QuickAccessShortcuts"
 
     private let defaults: UserDefaults
     private let storageURL: URL?

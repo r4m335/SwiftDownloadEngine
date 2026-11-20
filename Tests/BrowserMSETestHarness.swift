@@ -1,6 +1,6 @@
 import Foundation
 import XCTest
-@testable import SwiftDownloadEngine
+@testable import DownloadEngineKit
 
 /// Self-contained ISO-BMFF test generator and in-browser MediaSource test harness.
 ///

@@ -674,7 +674,7 @@ public struct BackgroundReconciliationReport: Equatable, Sendable {
 /// Standalone manager for system-managed out-of-process background HTTP transfers.
 ///
 /// Design Guarantees (Milestone 6A.1):
-/// 1. Uses `"com.r4m335.SwiftDownloadEngine.background-http"` consistently.
+/// 1. Uses `"com.r4m335.DownloadEngineKit.background-http"` consistently.
 /// 2. Scopes persistent task mappings by composite `(sessionIdentifier, taskIdentifier)`.
 /// 3. Correctly accounts for segment progress relative to `SegmentRecord.length` (never absolute file offsets).
 /// 4. Validates HTTP 206 Partial Content, Content-Range headers, and expected total file size.
@@ -682,7 +682,7 @@ public struct BackgroundReconciliationReport: Equatable, Sendable {
 /// 6. Feeds completed segment progress directly into `DownloadPersistenceStore` (no competing truth).
 public final class BackgroundDownloadSessionManager: NSObject, @unchecked Sendable {
 
-    public static let defaultSessionIdentifier = "com.r4m335.SwiftDownloadEngine.background-http"
+    public static let defaultSessionIdentifier = "com.r4m335.DownloadEngineKit.background-http"
 
     public let sessionIdentifier: String
     public let mappingStore: BackgroundDownloadTaskMappingStore

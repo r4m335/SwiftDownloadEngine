@@ -1,6 +1,6 @@
 import Foundation
 import XCTest
-@testable import SwiftDownloadEngine
+@testable import DownloadEngineKit
 
 // MARK: - FileTypeDetectorTests
 

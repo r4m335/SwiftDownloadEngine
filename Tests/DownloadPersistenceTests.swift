@@ -1,6 +1,6 @@
 import XCTest
 import Foundation
-@testable import SwiftDownloadEngine
+@testable import DownloadEngineKit
 
 final class DownloadPersistenceTests: XCTestCase {
     private var tempStorageURL: URL!

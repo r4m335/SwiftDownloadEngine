@@ -3,7 +3,7 @@ import Foundation
 import FoundationNetworking
 #endif
 import XCTest
-@testable import SwiftDownloadEngine
+@testable import DownloadEngineKit
 
 @MainActor
 final class BrowserAuthenticationTests: XCTestCase {

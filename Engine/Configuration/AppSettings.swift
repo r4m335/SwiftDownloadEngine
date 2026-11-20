@@ -86,7 +86,7 @@ public enum BrowserReaderFontFamily: String, CaseIterable, Identifiable, Codable
 /// Features a `version` field for seamless migrations across app updates.
 public struct AppSettings: Codable, Sendable, Equatable {
     public static let currentVersion: Int = 8
-    public static let userDefaultsKey = "com.r4m335.SwiftDownloadEngine.AppSettings"
+    public static let userDefaultsKey = "com.r4m335.DownloadEngineKit.AppSettings"
 
     public var version: Int
     public var maxConcurrentDownloads: Int

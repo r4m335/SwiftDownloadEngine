@@ -1,6 +1,6 @@
 import Foundation
 import XCTest
-@testable import SwiftDownloadEngine
+@testable import DownloadEngineKit
 
 final class ScheduleCoordinatorTests: XCTestCase {
     private var tempDir: URL!

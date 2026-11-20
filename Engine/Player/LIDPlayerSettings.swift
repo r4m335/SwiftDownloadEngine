@@ -34,10 +34,10 @@ public enum LIDPlayerOrientationPreference: String, CaseIterable, Identifiable, 
 }
 
 /// Persistent user-facing preferences for the LID Media Player.
-/// Stored independently in UserDefaults under key `SwiftDownloadEngine.LIDPlayerSettings`.
+/// Stored independently in UserDefaults under key `DownloadEngineKit.LIDPlayerSettings`.
 public struct LIDPlayerSettings: Codable, Sendable, Equatable {
     public static let currentVersion: Int = 1
-    public static let userDefaultsKey = "SwiftDownloadEngine.LIDPlayerSettings"
+    public static let userDefaultsKey = "DownloadEngineKit.LIDPlayerSettings"
 
     public var version: Int
 

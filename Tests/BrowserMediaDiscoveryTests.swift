@@ -3,7 +3,7 @@ import XCTest
 #if canImport(WebKit)
 import WebKit
 #endif
-@testable import SwiftDownloadEngine
+@testable import DownloadEngineKit
 
 @MainActor
 final class BrowserMediaDiscoveryTests: XCTestCase {

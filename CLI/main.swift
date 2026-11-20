@@ -1,5 +1,5 @@
 import Foundation
-import SwiftDownloadEngine
+import DownloadEngineKit
 
 @main
 struct InterruptionCLI {

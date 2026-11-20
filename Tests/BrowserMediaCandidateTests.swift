@@ -1,6 +1,6 @@
 import Foundation
 import XCTest
-@testable import SwiftDownloadEngine
+@testable import DownloadEngineKit
 
 final class BrowserMediaCandidateTests: XCTestCase {
     private let pageURL = URL(string: "https://video.example/watch")!

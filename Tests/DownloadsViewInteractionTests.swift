@@ -5,7 +5,7 @@ import Foundation
 import SwiftUI
 #endif
 
-@testable import SwiftDownloadEngine
+@testable import DownloadEngineKit
 
 final class DownloadsViewInteractionTests: XCTestCase {
 #if canImport(SwiftUI)

@@ -332,14 +332,14 @@ public final class DownloadManagerViewModel: ObservableObject {
     private let userDefaults: UserDefaults
 
     public enum SettingsKeys {
-        public static let maxConcurrentDownloads = "SwiftDownloadEngine.maxConcurrentDownloads"
-        public static let maxGlobalRequests = "SwiftDownloadEngine.maxGlobalRequests"
-        public static let globalBandwidthLimit = "SwiftDownloadEngine.globalBandwidthLimit"
-        public static let maxConcurrentTorrents = "SwiftDownloadEngine.maxConcurrentTorrents"
-        public static let defaultTorrentPriority = "SwiftDownloadEngine.defaultTorrentPriority"
-        public static let defaultSeedingMode = "SwiftDownloadEngine.defaultSeedingMode"
-        public static let defaultSeedingRatio = "SwiftDownloadEngine.defaultSeedingRatio"
-        public static let defaultSeedingDuration = "SwiftDownloadEngine.defaultSeedingDuration"
+        public static let maxConcurrentDownloads = "DownloadEngineKit.maxConcurrentDownloads"
+        public static let maxGlobalRequests = "DownloadEngineKit.maxGlobalRequests"
+        public static let globalBandwidthLimit = "DownloadEngineKit.globalBandwidthLimit"
+        public static let maxConcurrentTorrents = "DownloadEngineKit.maxConcurrentTorrents"
+        public static let defaultTorrentPriority = "DownloadEngineKit.defaultTorrentPriority"
+        public static let defaultSeedingMode = "DownloadEngineKit.defaultSeedingMode"
+        public static let defaultSeedingRatio = "DownloadEngineKit.defaultSeedingRatio"
+        public static let defaultSeedingDuration = "DownloadEngineKit.defaultSeedingDuration"
     }
 
     // HTTP-specific published properties (backward compatible)

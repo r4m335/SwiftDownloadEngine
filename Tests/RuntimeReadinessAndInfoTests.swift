@@ -1,5 +1,5 @@
 import XCTest
-@testable import SwiftDownloadEngine
+@testable import DownloadEngineKit
 
 #if canImport(AVFoundation)
 import AVFoundation

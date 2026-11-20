@@ -15,8 +15,8 @@ import BackgroundTasks
 /// cancels this foreground-originated task.
 @MainActor
 public final class ContinuedProcessingTaskCoordinator {
-    private static let taskIdentifier = "com.r4m335.SwiftDownloadEngine.continued-download"
-    private static let pendingIDsKey = "SwiftDownloadEngine.continuedProcessingDownloadIDs"
+    private static let taskIdentifier = "com.r4m335.DownloadEngineKit.continued-download"
+    private static let pendingIDsKey = "DownloadEngineKit.continuedProcessingDownloadIDs"
     private static var didRegister = false
     private static var didSubmit = false
 
@@ -447,7 +447,7 @@ public struct SwiftDownloadEngineApp: App {
             case .background:
                 #if canImport(UIKit) && !os(watchOS)
                 var bgTaskID: UIBackgroundTaskIdentifier = .invalid
-                bgTaskID = UIApplication.shared.beginBackgroundTask(withName: "SwiftDownloadEngine.saveState") {
+                bgTaskID = UIApplication.shared.beginBackgroundTask(withName: "DownloadEngineKit.saveState") {
                     if bgTaskID != .invalid {
                         UIApplication.shared.endBackgroundTask(bgTaskID)
                         bgTaskID = .invalid

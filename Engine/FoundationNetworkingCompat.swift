@@ -38,7 +38,7 @@ public struct AsyncBytes: AsyncSequence, Sendable {
 }
 
 public extension URLSession {
-    typealias AsyncBytes = SwiftDownloadEngine.AsyncBytes
+    typealias AsyncBytes = DownloadEngineKit.AsyncBytes
 
     func bytes(
         for request: URLRequest,

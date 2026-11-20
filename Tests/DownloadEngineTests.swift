@@ -11,7 +11,7 @@ import Glibc
 import Darwin
 #endif
 
-@testable import SwiftDownloadEngine
+@testable import DownloadEngineKit
 
 /// Thread-safe event collector for AsyncStream<DownloadEvent> consumption.
 private actor EventCollector {

@@ -1,6 +1,6 @@
 import Foundation
 import XCTest
-@testable import SwiftDownloadEngine
+@testable import DownloadEngineKit
 
 final class HLSVODReconstructionTests: XCTestCase {
     private let manifestURL = URL(string: "https://video.example/vod/index.m3u8?sig=manifest")!

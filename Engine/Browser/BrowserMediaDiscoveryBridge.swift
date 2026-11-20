@@ -1635,7 +1635,7 @@ public struct BrowserSnifferFilter: Codable, Sendable, Equatable {
         "application/x-zip-compressed", "application/pdf"
     ]
 
-    public static let userDefaultsKey = "SwiftDownloadEngine.BrowserSnifferFilter"
+    public static let userDefaultsKey = "DownloadEngineKit.BrowserSnifferFilter"
 
     public init(
         allowedExtensions: [String] = BrowserSnifferFilter.defaultExtensions,

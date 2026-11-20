@@ -1,6 +1,6 @@
 import Foundation
 import XCTest
-@testable import SwiftDownloadEngine
+@testable import DownloadEngineKit
 
 final class MediaAssemblerTests: XCTestCase {
     private let outputURL = URL(fileURLWithPath: "/tmp/media-assembly/output.mp4")

@@ -1,6 +1,6 @@
 import Foundation
 import XCTest
-@testable import SwiftDownloadEngine
+@testable import DownloadEngineKit
 
 // MARK: - Production Blob Export Service Tests (7H.3P)
 //

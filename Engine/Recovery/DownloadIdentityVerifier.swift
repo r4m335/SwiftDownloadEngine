@@ -162,7 +162,7 @@ public struct DownloadIdentityVerifier: Sendable {
         return .compatible(reasons: reasons)
     }
 
-    /// Internal overload accepting internal HTTPRangeProbeResult from SwiftDownloadEngine.
+    /// Internal overload accepting internal HTTPRangeProbeResult from DownloadEngineKit.
     func verify(
         record: DownloadRecord,
         probe: HTTPRangeProbeResult,

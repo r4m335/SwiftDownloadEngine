@@ -5,7 +5,7 @@ import Foundation
 import FoundationNetworking
 #endif
 
-@testable import SwiftDownloadEngine
+@testable import DownloadEngineKit
 
 final class BackgroundCoordinatorIntegrationTests: XCTestCase {
 
@@ -27,7 +27,7 @@ final class BackgroundCoordinatorIntegrationTests: XCTestCase {
         persistenceStore = try DownloadPersistenceStore(storageDirectoryURL: storageDirectory)
         let bgDir = storageDirectory.appendingPathComponent("BackgroundTransport", isDirectory: true)
         bgSessionManager = try BackgroundDownloadSessionManager(
-            sessionIdentifier: "com.r4m335.SwiftDownloadEngine.test-bg-\(UUID().uuidString.prefix(6))",
+            sessionIdentifier: "com.r4m335.DownloadEngineKit.test-bg-\(UUID().uuidString.prefix(6))",
             storageDirectoryURL: bgDir,
             persistenceStore: persistenceStore
         )

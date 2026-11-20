@@ -9,7 +9,7 @@ import FoundationNetworking
 import UIKit
 #endif
 
-@testable import SwiftDownloadEngine
+@testable import DownloadEngineKit
 
 final class BackgroundHTTPTransportTests: XCTestCase {
 
@@ -40,7 +40,7 @@ final class BackgroundHTTPTransportTests: XCTestCase {
     // MARK: - 1. Background Session Identifier & Scoped Identity Tests
 
     func testDefaultSessionIdentifierMatchesSpecification() throws {
-        let expectedID = "com.r4m335.SwiftDownloadEngine.background-http"
+        let expectedID = "com.r4m335.DownloadEngineKit.background-http"
         XCTAssertEqual(BackgroundDownloadSessionManager.defaultSessionIdentifier, expectedID)
 
         let manager = try BackgroundDownloadSessionManager(
@@ -116,7 +116,7 @@ final class BackgroundHTTPTransportTests: XCTestCase {
 
     func testSystemTaskDescriptionParsingWithSessionScope() {
         let rec = BackgroundDownloadTaskRecord(
-            sessionIdentifier: "com.r4m335.SwiftDownloadEngine.background-http",
+            sessionIdentifier: "com.r4m335.DownloadEngineKit.background-http",
             taskIdentifier: 42,
             downloadID: "download_12345",
             segmentID: 3,
@@ -130,11 +130,11 @@ final class BackgroundHTTPTransportTests: XCTestCase {
         )
 
         let desc = rec.systemTaskDescription
-        XCTAssertEqual(desc, "SDE_BG:com.r4m335.SwiftDownloadEngine.background-http:download_12345:3")
+        XCTAssertEqual(desc, "SDE_BG:com.r4m335.DownloadEngineKit.background-http:download_12345:3")
 
         let parsed = BackgroundDownloadTaskRecord.parseSystemTaskDescription(desc)
         XCTAssertNotNil(parsed)
-        XCTAssertEqual(parsed?.sessionIdentifier, "com.r4m335.SwiftDownloadEngine.background-http")
+        XCTAssertEqual(parsed?.sessionIdentifier, "com.r4m335.DownloadEngineKit.background-http")
         XCTAssertEqual(parsed?.downloadID, "download_12345")
         XCTAssertEqual(parsed?.segmentID, 3)
 

@@ -1,5 +1,5 @@
 import Foundation
-@testable import SwiftDownloadEngine
+@testable import DownloadEngineKit
 
 #if canImport(Glibc)
 import Glibc

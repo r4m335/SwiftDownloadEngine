@@ -11,7 +11,7 @@ import Glibc
 import Darwin
 #endif
 
-@testable import SwiftDownloadEngine
+@testable import DownloadEngineKit
 
 final class PauseResumeAndRecoveryTests: XCTestCase {
     private var server: LocalHTTPRangeServer!

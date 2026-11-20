@@ -11,7 +11,7 @@ import Glibc
 import Darwin
 #endif
 
-@testable import SwiftDownloadEngine
+@testable import DownloadEngineKit
 
 final class DownloadSortOrderTests: XCTestCase {
 

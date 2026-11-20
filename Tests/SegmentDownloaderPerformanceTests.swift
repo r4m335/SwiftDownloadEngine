@@ -1,6 +1,6 @@
 import Foundation
 import XCTest
-@testable import SwiftDownloadEngine
+@testable import DownloadEngineKit
 
 #if canImport(Darwin)
 #if canImport(FoundationNetworking)

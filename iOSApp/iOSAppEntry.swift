@@ -1,6 +1,6 @@
 #if canImport(SwiftUI)
 import SwiftUI
-import SwiftDownloadEngine
+import DownloadEngineKit
 
 /// Production entry point for the launchable iOS application target.
 ///

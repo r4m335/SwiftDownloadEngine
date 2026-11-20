@@ -2,7 +2,7 @@ import XCTest
 #if canImport(FoundationNetworking)
 import FoundationNetworking
 #endif
-@testable import SwiftDownloadEngine
+@testable import DownloadEngineKit
 
 final class DownloadRequestEnricherTests: XCTestCase {
 

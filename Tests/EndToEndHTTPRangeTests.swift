@@ -5,7 +5,7 @@ import Foundation
 import FoundationNetworking
 #endif
 
-@testable import SwiftDownloadEngine
+@testable import DownloadEngineKit
 
 final class EndToEndHTTPRangeTests: XCTestCase {
     private var server: LocalHTTPRangeServer!

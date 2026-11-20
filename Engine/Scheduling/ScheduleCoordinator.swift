@@ -31,7 +31,7 @@ public final class ScheduleCoordinator: ObservableObject {
     @Published public private(set) var lastReconciledAt: Date? = nil
 
     private var timeChangeObservers: [NSObjectProtocol] = []
-    private let notificationPermissionKey = "SwiftDownloadEngine.scheduleNotificationPermissionRequested"
+    private let notificationPermissionKey = "DownloadEngineKit.scheduleNotificationPermissionRequested"
 
     public init(
         engine: DownloadEngine? = nil,

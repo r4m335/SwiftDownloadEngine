@@ -2118,7 +2118,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         }
         #if canImport(UIKit) && !os(watchOS)
         var bgTaskID: UIBackgroundTaskIdentifier = .invalid
-        bgTaskID = UIApplication.shared.beginBackgroundTask(withName: "SwiftDownloadEngine.streamingDownload") {
+        bgTaskID = UIApplication.shared.beginBackgroundTask(withName: "DownloadEngineKit.streamingDownload") {
             if bgTaskID != .invalid {
                 UIApplication.shared.endBackgroundTask(bgTaskID)
                 bgTaskID = .invalid

@@ -11,7 +11,7 @@ import Glibc
 import Darwin
 #endif
 
-@testable import SwiftDownloadEngine
+@testable import DownloadEngineKit
 
 /// Thread-safe test helper avoiding captured var mutations in Swift 6 concurrency mode.
 private final class TestStateAccumulator: @unchecked Sendable {

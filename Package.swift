@@ -18,18 +18,18 @@ if hasVLCKit {
 
 var packageTargets: [Target] = [
     .target(
-        name: "SwiftDownloadEngine",
+        name: "DownloadEngineKit",
         dependencies: engineDependencies,
         path: "Engine"
     ),
     .executableTarget(
         name: "DownloadInterruptionCLI",
-        dependencies: ["SwiftDownloadEngine"],
+        dependencies: ["DownloadEngineKit"],
         path: "CLI"
     ),
     .testTarget(
-        name: "SwiftDownloadEngineTests",
-        dependencies: ["SwiftDownloadEngine"],
+        name: "DownloadEngineKitTests",
+        dependencies: ["DownloadEngineKit"],
         path: "Tests"
     ),
 ]
@@ -60,8 +60,8 @@ let package = Package(
     ],
     products: [
         .library(
-            name: "SwiftDownloadEngine",
-            targets: ["SwiftDownloadEngine"]
+            name: "DownloadEngineKit",
+            targets: ["DownloadEngineKit"]
         ),
     ],
     dependencies: [],

@@ -1,6 +1,6 @@
 import XCTest
 import Foundation
-@testable import SwiftDownloadEngine
+@testable import DownloadEngineKit
 
 /// Milestone 6.2 Regression Suite: Verifies that an explicit user pause on a BitTorrent transfer
 /// is an absolute invariant and NEVER automatically resumes across:
