@@ -396,6 +396,32 @@ final class StreamManifestResourceExpanderTests: XCTestCase {
         XCTAssertTrue(vm.discoveredResources.count >= 5)
         XCTAssertTrue(vm.discoveredResources.contains(where: { $0.title == "HLS 1080p" }))
         XCTAssertTrue(vm.discoveredResources.contains(where: { $0.title == "HLS 720p" }))
+        // Master should remain selected, NOT silently replaced with highest-ranked variant
+        XCTAssertTrue(vm.selectedResourceIDs.contains(master.id))
+        if let highest = expanded.first {
+            XCTAssertFalse(vm.selectedResourceIDs.contains(highest.id))
+        }
+    }
+
+    func testManifestExpansionDoesNotAutoSelectHighestQualityVariant() async {
+        let master = makeMasterResource()
+        let vm = BrowserViewModel()
+        vm.discoveredResources = [master]
+        vm.selectedResourceIDs = [master.id]
+
+        await StreamManifestResourceExpander.shared.clearCache()
+        let expanded = await StreamManifestResourceExpander.shared.expand(manifestResource: master)
+        guard let highest = expanded.first else {
+            XCTFail("Expected expanded variants")
+            return
+        }
+
+        vm.expandStreamingManifests()
+        try? await Task.sleep(nanoseconds: 100_000_000)
+
+        // Master must remain selected, NOT automatically replaced by highest-ranked (1080p/4K) variant
+        XCTAssertTrue(vm.selectedResourceIDs.contains(master.id))
+        XCTAssertFalse(vm.selectedResourceIDs.contains(highest.id))
     }
     #endif
 }

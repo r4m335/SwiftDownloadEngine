@@ -2298,13 +2298,10 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                     }
                 }
 
-                let wasManifestSelected = self.selectedResourceIDs.contains(manifest.id)
-                if wasManifestSelected {
-                    self.selectedResourceIDs.remove(manifest.id)
-                    if let highest = expanded.first {
-                        self.selectedResourceIDs.insert(highest.id)
-                    }
-                }
+                // Do not automatically replace a selected master manifest with expanded.first (highest quality).
+                // Doing so silently forces 1080p/4K on the user without their explicit consent.
+                // Keep the master manifest selected so the user can either choose a specific variant
+                // or have the quality picker presented when initiating the download.
 
                 var updated: [WebpageResource] = []
                 var inserted = false
