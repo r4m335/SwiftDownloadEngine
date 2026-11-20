@@ -148,7 +148,7 @@ public struct StreamQualityOption: Identifiable, Sendable, Equatable, Hashable {
         let height = variant.resolution?.height
         let baseBadge: String = {
             if let h = height { return "\(h)p" }
-            return formatBandwidthAsBadge(Int64(variant.bandwidth))
+            return formatBandwidth(Int64(variant.bandwidth))
         }()
         let qualityBadge = variant.isIFrameOnly ? "\(baseBadge) (I-Frame)" : baseBadge
 
@@ -295,7 +295,7 @@ public struct StreamQualityOption: Identifiable, Sendable, Equatable, Hashable {
 
         let qualityBadge: String = {
             if let h = height { return "\(h)p" }
-            return formatBandwidthAsBadge(bw)
+            return formatBandwidth(bw)
         }()
 
         let label: String = {
@@ -382,11 +382,7 @@ public struct StreamQualityOption: Identifiable, Sendable, Equatable, Hashable {
     // MARK: - Private Codec & Badge Helpers
 
     private static func formatBandwidthAsBadge(_ bandwidth: Int64) -> String {
-        if bandwidth >= 6_000_000 { return "1080p" }
-        if bandwidth >= 3_000_000 { return "720p" }
-        if bandwidth >= 1_500_000 { return "480p" }
-        if bandwidth >= 800_000 { return "360p" }
-        return "240p"
+        formatBandwidth(bandwidth)
     }
 
     private static func extractVideoCodec(_ codecs: String?) -> String? {

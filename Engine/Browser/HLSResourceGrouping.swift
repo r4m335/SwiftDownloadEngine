@@ -120,7 +120,7 @@ public enum HLSResourceGrouping {
                     qualityBadges.append(badge)
                 }
             } else {
-                let baseBadge = formatBandwidthAsQuality(variant.bandwidth)
+                let baseBadge = formatBandwidth(variant.bandwidth)
                 let badge = variant.isIFrameOnly ? "\(baseBadge) (I-Frame)" : baseBadge
                 if seenBadges.insert(badge).inserted {
                     qualityBadges.append(badge)
@@ -159,7 +159,7 @@ public enum HLSResourceGrouping {
 
         return deduplicated.map { variant in
             let height = variant.resolution?.height
-            let baseLabel = height.map { "\($0)p" } ?? formatBandwidthAsQuality(variant.bandwidth)
+            let baseLabel = height.map { "\($0)p" } ?? formatBandwidth(variant.bandwidth)
             let qualityLabel = variant.isIFrameOnly ? "\(baseLabel) (I-Frame)" : baseLabel
             let resText = variant.resolution.map { "\($0.width)x\($0.height)" }
             let bwText = formatBandwidth(variant.bandwidth)
@@ -307,11 +307,7 @@ public enum HLSResourceGrouping {
     }
 
     public static func formatBandwidthAsQuality(_ bandwidth: Int) -> String {
-        if bandwidth >= 6_000_000 { return "1080p" }
-        if bandwidth >= 3_000_000 { return "720p" }
-        if bandwidth >= 1_500_000 { return "480p" }
-        if bandwidth >= 800_000 { return "360p" }
-        return "240p"
+        formatBandwidth(bandwidth)
     }
 
     public static func isAudioInCodecs(_ codecs: String?) -> Bool {

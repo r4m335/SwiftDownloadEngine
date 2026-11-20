@@ -579,5 +579,80 @@ final class StreamQualityPickerTests: XCTestCase {
         XCTAssertFalse(options[1].hasAudio)
         XCTAssertTrue(options[1].id.contains("iframe"))
     }
+
+    func testBandwidthOnlyVariantsRetainBitrateBadgeWithoutInferredResolution() throws {
+        let masterBandwidthOnly = """
+        #EXTM3U
+        #EXT-X-VERSION:4
+        #EXT-X-STREAM-INF:BANDWIDTH=6000000,CODECS="avc1.640028,mp4a.40.2"
+        high.m3u8
+        #EXT-X-STREAM-INF:BANDWIDTH=800000,CODECS="avc1.4d401e,mp4a.40.2"
+        low.m3u8
+        """
+
+        let options = try StreamQualityInspector.inspectHLS(
+            manifestText: masterBandwidthOnly,
+            baseURL: masterURL
+        )
+
+        XCTAssertEqual(options.count, 2)
+
+        // 1. 6 Mbps variant must NOT be assigned fake "1080p"
+        let first = options[0]
+        XCTAssertEqual(first.bandwidth, 6_000_000)
+        XCTAssertEqual(first.qualityBadge, "6.0 Mbps")
+        XCTAssertEqual(first.label, "6.0 Mbps Stream")
+        XCTAssertNil(first.resolution)
+        XCTAssertNil(first.resolutionText)
+        XCTAssertFalse(first.label.contains("1080p"))
+        XCTAssertFalse(first.qualityBadge.contains("1080p"))
+
+        // 2. 800 Kbps variant must NOT be assigned fake "360p"
+        let second = options[1]
+        XCTAssertEqual(second.bandwidth, 800_000)
+        XCTAssertEqual(second.qualityBadge, "800 Kbps")
+        XCTAssertEqual(second.label, "800 Kbps Stream")
+        XCTAssertNil(second.resolution)
+        XCTAssertNil(second.resolutionText)
+        XCTAssertFalse(second.label.contains("360p"))
+        XCTAssertFalse(second.qualityBadge.contains("360p"))
+    }
+
+    func testUnusualBitrateHierarchyDoesNotConflateBitrateWithResolution() throws {
+        // High bitrate 720p (8 Mbps) and low bitrate 1080p (1.5 Mbps) plus resolution-less 4 Mbps
+        let unusualMaster = """
+        #EXTM3U
+        #EXT-X-VERSION:4
+        #EXT-X-STREAM-INF:BANDWIDTH=8000000,RESOLUTION=1280x720,CODECS="avc1.640028,mp4a.40.2"
+        720p_high.m3u8
+        #EXT-X-STREAM-INF:BANDWIDTH=4000000,CODECS="avc1.4d401f,mp4a.40.2"
+        unrated_mid.m3u8
+        #EXT-X-STREAM-INF:BANDWIDTH=1500000,RESOLUTION=1920x1080,CODECS="av01.0.08M.08,mp4a.40.2"
+        1080p_av1.m3u8
+        """
+
+        let options = try StreamQualityInspector.inspectHLS(
+            manifestText: unusualMaster,
+            baseURL: masterURL
+        )
+
+        XCTAssertEqual(options.count, 3)
+
+        // 1. Highest bandwidth: 8 Mbps 720p
+        XCTAssertEqual(options[0].bandwidth, 8_000_000)
+        XCTAssertEqual(options[0].qualityBadge, "720p")
+        XCTAssertEqual(options[0].resolution?.height, 720)
+
+        // 2. Middle bandwidth: 4 Mbps without resolution -> badge "4.0 Mbps", NOT "720p"
+        XCTAssertEqual(options[1].bandwidth, 4_000_000)
+        XCTAssertEqual(options[1].qualityBadge, "4.0 Mbps")
+        XCTAssertEqual(options[1].label, "4.0 Mbps Stream")
+        XCTAssertNil(options[1].resolution)
+
+        // 3. Lowest bandwidth: 1.5 Mbps 1080p
+        XCTAssertEqual(options[2].bandwidth, 1_500_000)
+        XCTAssertEqual(options[2].qualityBadge, "1080p")
+        XCTAssertEqual(options[2].resolution?.height, 1080)
+    }
 }
 

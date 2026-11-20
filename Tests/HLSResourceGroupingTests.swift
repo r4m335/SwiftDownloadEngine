@@ -352,4 +352,62 @@ final class HLSResourceGroupingTests: XCTestCase {
         XCTAssertEqual(items[2].qualityLabel, "1080p (I-Frame)")
         XCTAssertFalse(items[2].hasAudio)
     }
+
+    func testBandwidthOnlyVariantsDoNotIncurInferredResolutionLabels() {
+        let masterURL = URL(string: "https://media.example.com/bandwidth_only.m3u8")!
+        let master = WebpageResource(
+            id: "bw-only-master",
+            url: masterURL,
+            title: "Bitrate Only Feeds",
+            suggestedFilename: "video.m3u8",
+            resourceType: .video,
+            mimeType: "application/vnd.apple.mpegurl",
+            manifestText: """
+            #EXTM3U
+            #EXT-X-VERSION:4
+            #EXT-X-STREAM-INF:BANDWIDTH=8000000
+            8m.m3u8
+            #EXT-X-STREAM-INF:BANDWIDTH=2500000,RESOLUTION=1280x720
+            720p.m3u8
+            #EXT-X-STREAM-INF:BANDWIDTH=600000
+            600k.m3u8
+            """
+        )
+
+        // Quality summary must use bitrate for variants without resolution, NOT 1080p/240p
+        let summary = HLSResourceGrouping.qualitySummary(for: master)
+        XCTAssertNotNil(summary)
+        XCTAssertTrue(summary?.contains("8.0 Mbps") == true)
+        XCTAssertTrue(summary?.contains("720p") == true)
+        XCTAssertTrue(summary?.contains("600 Kbps") == true)
+        XCTAssertFalse(summary?.contains("1080p") == true, "Must not infer 1080p for 8 Mbps variant without resolution")
+        XCTAssertFalse(summary?.contains("240p") == true, "Must not infer 240p for 600 Kbps variant without resolution")
+
+        // Items
+        let items = HLSResourceGrouping.extractVariantStreamItems(for: master)
+        XCTAssertEqual(items.count, 3)
+
+        // 8 Mbps
+        XCTAssertEqual(items[0].qualityLabel, "8.0 Mbps")
+        XCTAssertNil(items[0].resolution)
+        XCTAssertNil(items[0].resolutionText)
+
+        // 720p
+        XCTAssertEqual(items[1].qualityLabel, "720p")
+        XCTAssertEqual(items[1].resolutionText, "1280x720")
+
+        // 600 Kbps
+        XCTAssertEqual(items[2].qualityLabel, "600 Kbps")
+        XCTAssertNil(items[2].resolution)
+
+        // Resources
+        let resources = HLSResourceGrouping.extractVariantResources(from: master)
+        XCTAssertEqual(resources.count, 3)
+        XCTAssertEqual(resources[0].title, "HLS 8.0 Mbps")
+        XCTAssertEqual(resources[0].suggestedFilename, "video-8.0-Mbps.mp4")
+        XCTAssertEqual(resources[1].title, "HLS 720p")
+        XCTAssertEqual(resources[1].suggestedFilename, "video-720p.mp4")
+        XCTAssertEqual(resources[2].title, "HLS 600 Kbps")
+        XCTAssertEqual(resources[2].suggestedFilename, "video-600-Kbps.mp4")
+    }
 }
