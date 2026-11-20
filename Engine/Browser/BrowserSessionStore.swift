@@ -36,11 +36,11 @@ public struct BrowserSavedSession: Codable, Sendable, Equatable, SchemaVersioned
 }
 
 /// Thread-safe storage managing tab session serialization and restoration.
-public final class BrowserSessionStore: @unchecked Sendable {
+@MainActor
+public final class BrowserSessionStore {
     public static let shared = BrowserSessionStore()
 
     private let fileURL: URL
-    private let lock = NSLock()
 
     public init(fileURL: URL? = nil) {
         if let fileURL {
@@ -54,9 +54,6 @@ public final class BrowserSessionStore: @unchecked Sendable {
 
     /// Persists the active tabs to disk, strictly filtering out any incognito/ephemeral tabs.
     public func saveSession(tabs: [BrowserTabState], activeTabID: UUID?) {
-        lock.lock()
-        defer { lock.unlock() }
-
         // Enforce privacy invariant: private tabs must never be written to persistent storage.
         let nonIncognito = tabs.filter { !$0.isIncognito }
         let effectiveActiveID = (activeTabID != nil && nonIncognito.contains(where: { $0.id == activeTabID }))
@@ -81,9 +78,6 @@ public final class BrowserSessionStore: @unchecked Sendable {
 
     /// Loads the previously saved session from disk.
     public func loadSession() -> BrowserSavedSession? {
-        lock.lock()
-        defer { lock.unlock() }
-
         guard FileManager.default.fileExists(atPath: fileURL.path) else {
             return nil
         }
@@ -128,9 +122,6 @@ public final class BrowserSessionStore: @unchecked Sendable {
 
     /// Clears the saved session file from disk.
     public func clearSession() {
-        lock.lock()
-        defer { lock.unlock() }
-
         do {
             if FileManager.default.fileExists(atPath: fileURL.path) {
                 try FileManager.default.removeItem(at: fileURL)

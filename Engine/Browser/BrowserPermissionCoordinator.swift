@@ -23,7 +23,8 @@ public protocol BrowserPermissionProviding: AnyObject, Sendable {
     )
 }
 
-public final class BrowserPermissionCoordinator: @unchecked Sendable {
+@MainActor
+public final class BrowserPermissionCoordinator {
     public static let shared = BrowserPermissionCoordinator()
 
     public weak var provider: BrowserPermissionProviding?

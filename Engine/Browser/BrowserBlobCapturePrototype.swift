@@ -691,7 +691,8 @@ public actor BrowserBlobCapturePrototypeService {
 /// responsible for JavaScript acknowledgement while the actor owns all file
 /// writes and protocol validation.
 @available(*, deprecated, message: "Use BlobCaptureWebKitHandler in BrowserBlobCaptureService.swift instead")
-public final class BrowserBlobCapturePrototypeWebKitHandler: NSObject, WKScriptMessageHandler, @unchecked Sendable {
+@MainActor
+public final class BrowserBlobCapturePrototypeWebKitHandler: NSObject, WKScriptMessageHandler {
     public let receiver: BrowserBlobCapturePrototypeReceiver
     public var acknowledgementHandler: ((BrowserBlobCapturePrototypeAck) -> Void)?
 

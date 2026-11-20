@@ -1409,7 +1409,8 @@ public actor BrowserMSECaptureService {
 }
 
 #if canImport(WebKit)
-public final class BrowserMSECapturePrototypeWebKitHandler: NSObject, WKScriptMessageHandler, @unchecked Sendable {
+@MainActor
+public final class BrowserMSECapturePrototypeWebKitHandler: NSObject, WKScriptMessageHandler {
     public let receiver: BrowserMSECapturePrototypeReceiver
     public var acknowledgementHandler: ((BrowserMSECapturePrototypeAck) -> Void)?
 

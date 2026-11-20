@@ -3491,10 +3491,47 @@ public enum FileHasher {
         let digest = hasher.finalize()
         return digest.map { String(format: "%02x", $0) }.joined()
     }
+
+    public static func computeSHA256(for url: URL, progress: (@Sendable (Double) -> Void)? = nil) async throws -> String {
+        let fileHandle = try FileHandle(forReadingFrom: url)
+        defer {
+            do {
+                try fileHandle.close()
+            } catch {
+                PipelineLogger.shared.log(stage: .coordinator, message: "Failed to close fileHandle in sha256: \(error)")
+            }
+        }
+        let totalSize: Int64 = FileManager.default.fileSize(atPath: url.path) ?? 0
+        var hasher = SHA256()
+        let bufferSize = 256 * 1024
+        var processed: Int64 = 0
+
+        while true {
+            try Task.checkCancellation()
+            let data = fileHandle.readData(ofLength: bufferSize)
+            if data.isEmpty { break }
+            hasher.update(data: data)
+            processed += Int64(data.count)
+            if totalSize > 0, let progress = progress {
+                let frac = min(1.0, max(0.0, Double(processed) / Double(totalSize)))
+                progress(frac)
+            }
+            await Task.yield()
+        }
+        let digest = hasher.finalize()
+        return digest.map { String(format: "%02x", $0) }.joined()
+    }
 }
 #else
 public enum FileHasher {
     public static func sha256(for url: URL, progress: (@Sendable (Double) -> Void)? = nil) throws -> String {
+        let data = try Data(contentsOf: url)
+        progress?(1.0)
+        return EngineSHA256.hash(data: data)
+    }
+
+    public static func computeSHA256(for url: URL, progress: (@Sendable (Double) -> Void)? = nil) async throws -> String {
+        try Task.checkCancellation()
         let data = try Data(contentsOf: url)
         progress?(1.0)
         return EngineSHA256.hash(data: data)

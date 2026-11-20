@@ -1050,22 +1050,18 @@ public struct DownloadDetailsView: View {
         hashError = nil
         let url = download.destinationURL
 
-        Task.detached(priority: .userInitiated) {
+        Task(priority: .userInitiated) {
             do {
-                let hash = try FileHasher.sha256(for: url) { progress in
+                let hash = try await FileHasher.computeSHA256(for: url) { progress in
                     Task { @MainActor in
                         self.hashProgress = progress
                     }
                 }
-                await MainActor.run {
-                    self.calculatedHash = hash
-                    self.isCalculatingHash = false
-                }
+                self.calculatedHash = hash
+                self.isCalculatingHash = false
             } catch {
-                await MainActor.run {
-                    self.hashError = "Verification error: \(error.localizedDescription)"
-                    self.isCalculatingHash = false
-                }
+                self.hashError = "Verification error: \(error.localizedDescription)"
+                self.isCalculatingHash = false
             }
         }
     }

@@ -325,7 +325,7 @@ public enum DownloadsDirectoryManager: Sendable {
 /// - Configurable Settings & Persistence: Manages concurrency limits, request budgets, and bandwidth throttling, persisted via `UserDefaults`.
 /// - Robust Edge-Case Handling: Validates input domains, sanitizes limits, manages stream lifecycle restarts, and surfaces user-facing errors.
 @MainActor
-public final class DownloadManagerViewModel: ObservableObject, @unchecked Sendable {
+public final class DownloadManagerViewModel: ObservableObject {
     public let engine: DownloadEngine
     public let torrentEngine: TorrentEngine?
     public let downloadsDirectoryURL: URL

@@ -1,6 +1,7 @@
 import XCTest
 @testable import DM_Reverse_engineering
 
+@MainActor
 final class CloudflareVerificationDiagnosticTests: XCTestCase {
 
     override func setUp() {

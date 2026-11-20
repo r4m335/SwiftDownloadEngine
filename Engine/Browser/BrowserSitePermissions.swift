@@ -22,10 +22,10 @@ public struct BrowserSitePermissionEntry: Identifiable, Codable, Sendable, Equat
 }
 
 /// Thread-safe, persistent store managing per-site hardware permissions (Camera, Microphone, Geolocation, Device Motion).
-public final class BrowserSitePermissionsStore: @unchecked Sendable {
+@MainActor
+public final class BrowserSitePermissionsStore {
     public static let shared = BrowserSitePermissionsStore()
 
-    private let lock = NSLock()
     private var entries: [String: BrowserSitePermissionEntry] = [:]
     private let persistenceURL: URL
 
@@ -49,9 +49,6 @@ public final class BrowserSitePermissionsStore: @unchecked Sendable {
     public func permission(for hostOrURL: String, type: BrowserPermissionType) -> BrowserPermissionDecisionResult? {
         let domain = BrowserDomainMatcher.normalizeDomain(hostOrURL)
         guard !domain.isEmpty else { return nil }
-
-        lock.lock()
-        defer { lock.unlock() }
 
         let key = "\(domain)_\(type.rawValue)"
         if let entry = entries[key] {
@@ -77,7 +74,6 @@ public final class BrowserSitePermissionsStore: @unchecked Sendable {
         let domain = BrowserDomainMatcher.normalizeDomain(hostOrURL)
         guard !domain.isEmpty else { return }
 
-        lock.lock()
         let entry = BrowserSitePermissionEntry(
             domain: domain,
             permissionType: type,
@@ -85,41 +81,32 @@ public final class BrowserSitePermissionsStore: @unchecked Sendable {
             updatedAt: Date()
         )
         entries[entry.id] = entry
-        saveToDiskLocked()
-        lock.unlock()
+        saveToDisk()
     }
 
     public func removePermission(for hostOrURL: String, type: BrowserPermissionType) {
         let domain = BrowserDomainMatcher.normalizeDomain(hostOrURL)
         guard !domain.isEmpty else { return }
 
-        lock.lock()
         let key = "\(domain)_\(type.rawValue)"
         entries.removeValue(forKey: key)
-        saveToDiskLocked()
-        lock.unlock()
+        saveToDisk()
     }
 
     public func removeAllPermissions(for hostOrURL: String) {
         let domain = BrowserDomainMatcher.normalizeDomain(hostOrURL)
         guard !domain.isEmpty else { return }
 
-        lock.lock()
         entries = entries.filter { $0.value.domain != domain }
-        saveToDiskLocked()
-        lock.unlock()
+        saveToDisk()
     }
 
     public func clearAll() {
-        lock.lock()
         entries.removeAll()
-        saveToDiskLocked()
-        lock.unlock()
+        saveToDisk()
     }
 
     public var allEntries: [BrowserSitePermissionEntry] {
-        lock.lock()
-        defer { lock.unlock() }
         return Array(entries.values).sorted { $0.domain < $1.domain }
     }
 
@@ -127,8 +114,6 @@ public final class BrowserSitePermissionsStore: @unchecked Sendable {
         let domain = BrowserDomainMatcher.normalizeDomain(hostOrURL)
         guard !domain.isEmpty else { return [] }
 
-        lock.lock()
-        defer { lock.unlock() }
         return entries.values.filter { $0.domain == domain }
     }
 
@@ -159,9 +144,6 @@ public final class BrowserSitePermissionsStore: @unchecked Sendable {
     }
 
     private func loadFromDisk() {
-        lock.lock()
-        defer { lock.unlock() }
-
         guard FileManager.default.fileExists(atPath: persistenceURL.path) else { return }
 
         do {
@@ -180,7 +162,7 @@ public final class BrowserSitePermissionsStore: @unchecked Sendable {
         }
     }
 
-    private func saveToDiskLocked() {
+    private func saveToDisk() {
         let payload = BrowserSitePermissionsPayload(entries: Array(entries.values))
         do {
             let data = try JSONEncoder().encode(payload)

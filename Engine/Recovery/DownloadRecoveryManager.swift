@@ -24,7 +24,8 @@ public struct LinkRefreshSession: Equatable, Sendable {
 }
 
 /// Central coordinator for download recovery, manual link updates, and browser-driven reconnection.
-public final class DownloadRecoveryManager: ObservableObject, @unchecked Sendable {
+@MainActor
+public final class DownloadRecoveryManager: ObservableObject {
     public let linkRefresher: DownloadLinkRefresher
     public let hlsRecoveryCoordinator: HLSRecoveryCoordinator
     public let matcher: BrowserDownloadMatcher

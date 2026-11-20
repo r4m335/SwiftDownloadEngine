@@ -22,7 +22,8 @@ public protocol BrowserAuthenticationProviding: AnyObject, Sendable {
     )
 }
 
-public final class BrowserAuthenticationHandler: @unchecked Sendable {
+@MainActor
+public final class BrowserAuthenticationHandler {
     public static let shared = BrowserAuthenticationHandler()
 
     public weak var promptProvider: BrowserAuthenticationProviding?

@@ -1,6 +1,7 @@
 import XCTest
 @testable import DM_Reverse_engineering
 
+@MainActor
 final class BrowserPrivacyAndSecurityTests: XCTestCase {
 
     // MARK: - 1. Content Blocker Multi-List Compilation Tests

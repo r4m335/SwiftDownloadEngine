@@ -3954,7 +3954,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
     }
 }
 
-extension BrowserViewModel: @unchecked Sendable, BrowserMediaURLResolver, BrowserPermissionProviding {
+extension BrowserViewModel: BrowserMediaURLResolver, BrowserPermissionProviding {
     public func requestPermission(
         type: BrowserPermissionType,
         originHost: String,

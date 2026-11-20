@@ -132,10 +132,10 @@ public final class ContinuedProcessingTaskCoordinator {
 #endif
 
 #if canImport(UIKit) && !os(watchOS)
+@MainActor
 public final class AppDelegate: NSObject, UIApplicationDelegate {
     public static var backgroundSessionManager: BackgroundDownloadSessionManager?
     private static var retainedCompletionHandlers: [String: () -> Void] = [:]
-    private static let lock = NSLock()
 
     public func application(
         _ application: UIApplication,
@@ -147,9 +147,6 @@ public final class AppDelegate: NSObject, UIApplicationDelegate {
             completionHandler()
             return
         }
-
-        Self.lock.lock()
-        defer { Self.lock.unlock() }
 
         if let manager = Self.backgroundSessionManager {
             manager.setEventsCompletionHandler(completionHandler)
@@ -171,8 +168,6 @@ public final class AppDelegate: NSObject, UIApplicationDelegate {
     }
 
     public static func attach(manager: BackgroundDownloadSessionManager) {
-        lock.lock()
-        defer { lock.unlock() }
         self.backgroundSessionManager = manager
         if let pending = retainedCompletionHandlers.removeValue(forKey: manager.sessionIdentifier) {
             manager.setEventsCompletionHandler(pending)
@@ -180,14 +175,10 @@ public final class AppDelegate: NSObject, UIApplicationDelegate {
     }
 
     public static func retainedHandlerCount() -> Int {
-        lock.lock()
-        defer { lock.unlock() }
         return retainedCompletionHandlers.count
     }
 
     public static func reset() {
-        lock.lock()
-        defer { lock.unlock() }
         backgroundSessionManager = nil
         retainedCompletionHandlers.removeAll()
     }

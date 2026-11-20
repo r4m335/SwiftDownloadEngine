@@ -43,9 +43,9 @@ public struct BrowserDownloadHandoff: Equatable, Sendable {
 
 /// Pure Swift coordinator that manages download interception policies,
 /// filename resolution hierarchy, duplicate prompt prevention, and error discrimination.
-public final class BrowserDownloadInterceptionManager: @unchecked Sendable {
+@MainActor
+public final class BrowserDownloadInterceptionManager {
 
-    private let lock = NSLock()
     private var lastInterceptedURL: URL?
     private var lastInterceptedTimestamp: Date?
     public var cooldownSeconds: TimeInterval
@@ -56,9 +56,6 @@ public final class BrowserDownloadInterceptionManager: @unchecked Sendable {
 
     /// Determines whether an intercepted URL should be suppressed due to a recent prompt.
     public func shouldSuppressDuplicate(for url: URL, isSheetPresented: Bool = false) -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-
         if isSheetPresented { return true }
 
         if let lastURL = lastInterceptedURL, lastURL == url,
@@ -73,8 +70,6 @@ public final class BrowserDownloadInterceptionManager: @unchecked Sendable {
 
     /// Records that an interception prompt has been presented to prevent rapid duplicate sheets.
     public func recordInterception(for url: URL) {
-        lock.lock()
-        defer { lock.unlock() }
         lastInterceptedURL = url
         lastInterceptedTimestamp = Date()
     }

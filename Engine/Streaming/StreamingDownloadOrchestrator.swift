@@ -113,7 +113,7 @@ extension BrowserMediaURLResolver {
 
 /// URLSession-backed manifest loader. Redirects are followed only after applying
 /// the existing cross-origin credential stripping policy.
-public final class URLSessionStreamingManifestLoader: StreamingManifestLoader, @unchecked Sendable {
+public final class URLSessionStreamingManifestLoader: StreamingManifestLoader, Sendable {
     public static let sharedSession: URLSession = ForegroundURLSession.make()
     private let session: URLSession
 
@@ -395,10 +395,9 @@ public protocol StreamingSegmentExecutor: Sendable {
 /// Adapter that submits every planned resource to the existing coordinator.
 /// Browser credentials are runtime-only and are explicitly excluded from durable
 /// coordinator records.
-public final class DownloadCoordinatorSegmentExecutor: StreamingSegmentExecutor, @unchecked Sendable {
+public actor DownloadCoordinatorSegmentExecutor: StreamingSegmentExecutor {
     private let coordinator: DownloadCoordinator
     private let retryCount: Int
-    private let lock = NSLock()
     private var activeRequestIDs: [String: Set<String>] = [:]
 
     public init(coordinator: DownloadCoordinator, retryCount: Int = 2) {
@@ -407,14 +406,10 @@ public final class DownloadCoordinatorSegmentExecutor: StreamingSegmentExecutor,
     }
 
     private func registerActiveRequest(transferID: String, requestID: String) {
-        lock.lock()
-        defer { lock.unlock() }
         activeRequestIDs[transferID, default: []].insert(requestID)
     }
 
     private func unregisterActiveRequest(transferID: String, requestID: String) {
-        lock.lock()
-        defer { lock.unlock() }
         activeRequestIDs[transferID]?.remove(requestID)
         if activeRequestIDs[transferID]?.isEmpty == true {
             activeRequestIDs.removeValue(forKey: transferID)
@@ -422,8 +417,6 @@ public final class DownloadCoordinatorSegmentExecutor: StreamingSegmentExecutor,
     }
 
     private func getActiveRequestIDs(for transferID: String) -> Set<String> {
-        lock.lock()
-        defer { lock.unlock() }
         return activeRequestIDs[transferID] ?? []
     }
 
@@ -498,11 +491,10 @@ public final class DownloadCoordinatorSegmentExecutor: StreamingSegmentExecutor,
 }
 
 /// Standalone segment executor using URLSession for environments where DownloadCoordinator is not yet injected.
-public final class URLSessionStreamingSegmentExecutor: StreamingSegmentExecutor, @unchecked Sendable {
+public actor URLSessionStreamingSegmentExecutor: StreamingSegmentExecutor {
     public static let sharedSession: URLSession = ForegroundURLSession.make()
 
     private let session: URLSession
-    private let lock = NSLock()
     private var activeTasks: [String: Set<URLSessionDownloadTask>] = [:]
 
     public init(session: URLSession? = nil) {
@@ -510,14 +502,10 @@ public final class URLSessionStreamingSegmentExecutor: StreamingSegmentExecutor,
     }
 
     private func registerActiveTask(transferID: String, task: URLSessionDownloadTask) {
-        lock.lock()
-        defer { lock.unlock() }
         activeTasks[transferID, default: []].insert(task)
     }
 
     private func unregisterActiveTask(transferID: String, task: URLSessionDownloadTask) {
-        lock.lock()
-        defer { lock.unlock() }
         activeTasks[transferID]?.remove(task)
         if activeTasks[transferID]?.isEmpty == true {
             activeTasks.removeValue(forKey: transferID)
@@ -525,8 +513,6 @@ public final class URLSessionStreamingSegmentExecutor: StreamingSegmentExecutor,
     }
 
     private func takeActiveTasks(for transferID: String) -> Set<URLSessionDownloadTask> {
-        lock.lock()
-        defer { lock.unlock() }
         return activeTasks.removeValue(forKey: transferID) ?? []
     }
 

@@ -10,10 +10,10 @@ import UIKit
 /// - Incognito tab previews are strictly ephemeral: stored only in memory while the tab
 ///   is open and NEVER written to persistent disk storage.
 /// - When an incognito tab is closed, its memory cache is purged immediately.
-public final class BrowserTabPreviewCache: @unchecked Sendable {
+@MainActor
+public final class BrowserTabPreviewCache {
     public static let shared = BrowserTabPreviewCache()
 
-    private let lock = NSLock()
     private var memoryCache: [UUID: Data] = [:]
     private let fileManager = FileManager.default
     private let cacheDirectoryURL: URL?
@@ -38,9 +38,6 @@ public final class BrowserTabPreviewCache: @unchecked Sendable {
     ///   - tabID: The unique identifier of the tab.
     ///   - isIncognito: If true, preview is strictly kept in memory and never written to disk.
     public func setPreview(_ data: Data, for tabID: UUID, isIncognito: Bool) {
-        lock.lock()
-        defer { lock.unlock() }
-
         memoryCache[tabID] = data
 
         guard !isIncognito, let dir = cacheDirectoryURL else { return }
@@ -54,9 +51,6 @@ public final class BrowserTabPreviewCache: @unchecked Sendable {
 
     /// Retrieves thumbnail preview data for a tab.
     public func preview(for tabID: UUID) -> Data? {
-        lock.lock()
-        defer { lock.unlock() }
-
         if let cached = memoryCache[tabID] {
             return cached
         }
@@ -72,9 +66,6 @@ public final class BrowserTabPreviewCache: @unchecked Sendable {
 
     /// Removes preview data from both memory and disk when a tab is closed.
     public func removePreview(for tabID: UUID) {
-        lock.lock()
-        defer { lock.unlock() }
-
         memoryCache.removeValue(forKey: tabID)
 
         if let dir = cacheDirectoryURL {
@@ -91,9 +82,6 @@ public final class BrowserTabPreviewCache: @unchecked Sendable {
 
     /// Purges all previews (e.g. when clearing browsing data or app reset).
     public func clearAllPreviews() {
-        lock.lock()
-        defer { lock.unlock() }
-
         memoryCache.removeAll()
 
         if let dir = cacheDirectoryURL {

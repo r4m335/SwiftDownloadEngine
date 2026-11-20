@@ -1621,7 +1621,8 @@ public actor BrowserBlobCaptureService {
 // MARK: - WebKit Handler (Production)
 
 #if canImport(WebKit)
-public final class BlobCaptureWebKitHandler: NSObject, WKScriptMessageHandler, @unchecked Sendable {
+@MainActor
+public final class BlobCaptureWebKitHandler: NSObject, WKScriptMessageHandler {
     public let receiver: BrowserBlobCaptureReceiver
     public var acknowledgementHandler: ((BlobCaptureAck) -> Void)?
 

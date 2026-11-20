@@ -53,13 +53,13 @@ public struct BrowserDiagnosticEvent: Identifiable, Codable, Sendable, Equatable
 /// Records navigation transitions, redirects, challenge page lifecycle,
 /// WebKit process termination, and observable page JavaScript errors without
 /// logging sensitive request payloads or authentication tokens.
-public final class BrowserDiagnosticLogger: @unchecked Sendable {
+@MainActor
+public final class BrowserDiagnosticLogger {
     public static let shared = BrowserDiagnosticLogger()
 
     public static let messageName = "browserDiagnostics"
     public static let maximumEventCount = 500
 
-    private let lock = NSLock()
     private var events: [BrowserDiagnosticEvent] = []
     public var onEventLogged: ((BrowserDiagnosticEvent) -> Void)?
 
@@ -80,13 +80,11 @@ public final class BrowserDiagnosticLogger: @unchecked Sendable {
             url: url,
             details: details
         )
-        lock.lock()
         events.append(event)
         if events.count > Self.maximumEventCount {
             events.removeFirst(events.count - Self.maximumEventCount)
         }
         let callback = onEventLogged
-        lock.unlock()
 
         callback?(event)
     }
@@ -97,9 +95,6 @@ public final class BrowserDiagnosticLogger: @unchecked Sendable {
         tabID: UUID? = nil,
         limit: Int = 100
     ) -> [BrowserDiagnosticEvent] {
-        lock.lock()
-        defer { lock.unlock() }
-
         var filtered = events
         if let category {
             filtered = filtered.filter { $0.category == category }
@@ -115,9 +110,7 @@ public final class BrowserDiagnosticLogger: @unchecked Sendable {
 
     /// Clears the event buffer.
     public func clear() {
-        lock.lock()
         events.removeAll(keepingCapacity: true)
-        lock.unlock()
     }
 
     /// User script injected into pages to report unhandled JavaScript errors,
@@ -361,7 +354,8 @@ public struct BrowserDiagnosticLogView: View {
 
 #if canImport(WebKit)
 /// WebKit script message handler that receives diagnostic events from `diagnosticScript`.
-public final class BrowserDiagnosticWebKitHandler: NSObject, WKScriptMessageHandler, @unchecked Sendable {
+@MainActor
+public final class BrowserDiagnosticWebKitHandler: NSObject, WKScriptMessageHandler {
     public let logger: BrowserDiagnosticLogger
     public let tabID: UUID?
 

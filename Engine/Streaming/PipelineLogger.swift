@@ -169,7 +169,7 @@ public final class PipelineLogger: @unchecked Sendable, ObservableObject {
         appendToFile(formattedLine)
         print(formattedLine)
 
-        DispatchQueue.main.async { [weak self] in
+        Task { @MainActor [weak self] in
             self?.entries = snapshot
         }
     }
@@ -205,7 +205,7 @@ public final class PipelineLogger: @unchecked Sendable, ObservableObject {
         }
         lock.unlock()
 
-        DispatchQueue.main.async { [weak self] in
+        Task { @MainActor [weak self] in
             self?.entries = []
         }
     }

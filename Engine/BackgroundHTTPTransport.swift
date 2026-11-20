@@ -1480,7 +1480,7 @@ extension BackgroundDownloadSessionManager: URLSessionDownloadDelegate {
             guard let self = self else { return }
             // Await all in-flight file operations, validations, and persistence writes before calling completionHandler
             await self.waitForInFlightEvents()
-            DispatchQueue.main.async {
+            await MainActor.run {
                 self.backgroundEventsCompletionHandler?()
                 self.backgroundEventsCompletionHandler = nil
             }

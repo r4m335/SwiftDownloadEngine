@@ -1,6 +1,7 @@
 import XCTest
 @testable import DM_Reverse_engineering
 
+@MainActor
 final class BrowserTests: XCTestCase {
 
     // MARK: - 1. URL Normalization: Direct URLs

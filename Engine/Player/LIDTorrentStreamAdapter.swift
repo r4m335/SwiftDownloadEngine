@@ -41,7 +41,6 @@ public final class LIDTorrentStreamAdapter: NSObject, Sendable {
     public let dispatchQueue = DispatchQueue(label: "com.r4m335.LIDTorrentStreamAdapter", qos: .userInitiated)
 
     private let torrentEngine: TorrentEngine?
-    private let pollTimerLock = NSLock()
 
     #if canImport(AVFoundation)
     private var pendingRequests: [AVAssetResourceLoadingRequest] = []

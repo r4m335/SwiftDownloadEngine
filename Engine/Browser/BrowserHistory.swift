@@ -22,11 +22,11 @@ public struct BrowserHistoryEntry: Identifiable, Codable, Equatable, Sendable {
     }
 }
 
-public final class BrowserHistoryStore: @unchecked Sendable {
+@MainActor
+public final class BrowserHistoryStore {
     public static let shared = BrowserHistoryStore()
     public static let didChangeNotification = Notification.Name("BrowserHistoryStoreDidChangeNotification")
 
-    private let lock = NSLock()
     private var entries: [BrowserHistoryEntry] = []
     private let storageURL: URL?
 
@@ -69,9 +69,6 @@ public final class BrowserHistoryStore: @unchecked Sendable {
     }
 
     public func load() {
-        lock.lock()
-        defer { lock.unlock() }
-
         guard let storageURL else { return }
         guard FileManager.default.fileExists(atPath: storageURL.path) else { return }
 
@@ -92,9 +89,7 @@ public final class BrowserHistoryStore: @unchecked Sendable {
     }
 
     public func save() {
-        lock.lock()
         guard let storageURL else {
-            lock.unlock()
             return
         }
         let payload = BrowserHistoryPayload(entries: entries)
@@ -104,11 +99,8 @@ public final class BrowserHistoryStore: @unchecked Sendable {
         } catch {
             PipelineLogger.shared.log(stage: .browser, message: "Failed to persist history: \(error)")
         }
-        lock.unlock()
 
-        DispatchQueue.main.async {
-            NotificationCenter.default.post(name: Self.didChangeNotification, object: self)
-        }
+        NotificationCenter.default.post(name: Self.didChangeNotification, object: self)
     }
 
     /// Records a page visit into persistent history.
@@ -123,7 +115,6 @@ public final class BrowserHistoryStore: @unchecked Sendable {
             ? (url.host ?? clean)
             : title
 
-        lock.lock()
         let calendar = Calendar.current
         let now = Date()
 
@@ -151,15 +142,12 @@ public final class BrowserHistoryStore: @unchecked Sendable {
         if entries.count > 1000 {
             entries = Array(entries.prefix(1000))
         }
-        lock.unlock()
 
         save()
     }
 
     public func deleteEntry(id: UUID) {
-        lock.lock()
         entries.removeAll(where: { $0.id == id })
-        lock.unlock()
         save()
     }
 
@@ -168,13 +156,11 @@ public final class BrowserHistoryStore: @unchecked Sendable {
     }
 
     public func clearHistory(since date: Date? = nil) {
-        lock.lock()
         if let date {
             entries.removeAll(where: { $0.visitDate >= date })
         } else {
             entries.removeAll()
         }
-        lock.unlock()
         save()
     }
 
@@ -182,16 +168,12 @@ public final class BrowserHistoryStore: @unchecked Sendable {
         let q = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !q.isEmpty else { return allEntries }
 
-        lock.lock()
-        defer { lock.unlock() }
         return entries.filter {
             $0.title.lowercased().contains(q) || $0.url.absoluteString.lowercased().contains(q)
         }
     }
 
     public var allEntries: [BrowserHistoryEntry] {
-        lock.lock()
-        defer { lock.unlock() }
         return entries
     }
 

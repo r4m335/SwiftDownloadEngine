@@ -5,6 +5,7 @@ import WebKit
 #endif
 @testable import DM_Reverse_engineering
 
+@MainActor
 final class BrowserMediaDiscoveryTests: XCTestCase {
     private let pageURL = URL(string: "https://video.example/watch?id=private")!
 

@@ -66,11 +66,11 @@ public enum BrowserBookmarkError: LocalizedError, Equatable, Sendable {
     }
 }
 
-public final class BrowserBookmarkStore: @unchecked Sendable {
+@MainActor
+public final class BrowserBookmarkStore {
     public static let shared = BrowserBookmarkStore()
     public static let didChangeNotification = Notification.Name("BrowserBookmarkStoreDidChangeNotification")
 
-    private let lock = NSLock()
     private var folders: [BrowserBookmarkFolder] = []
     private var bookmarks: [BrowserBookmarkItem] = []
     private let storageURL: URL?
@@ -118,9 +118,6 @@ public final class BrowserBookmarkStore: @unchecked Sendable {
     }
 
     public func load() {
-        lock.lock()
-        defer { lock.unlock() }
-
         guard let storageURL else {
             setDefaultBookmarksIfNeeded()
             return
@@ -170,9 +167,7 @@ public final class BrowserBookmarkStore: @unchecked Sendable {
     }
 
     public func save() {
-        lock.lock()
         guard let storageURL else {
-            lock.unlock()
             return
         }
         let payload = BookmarkStoragePayload(folders: folders, bookmarks: bookmarks)
@@ -182,11 +177,8 @@ public final class BrowserBookmarkStore: @unchecked Sendable {
         } catch {
             PipelineLogger.shared.log(stage: .browser, message: "Failed to persist bookmarks: \(error)")
         }
-        lock.unlock()
 
-        DispatchQueue.main.async {
-            NotificationCenter.default.post(name: Self.didChangeNotification, object: self)
-        }
+        NotificationCenter.default.post(name: Self.didChangeNotification, object: self)
     }
 
     // MARK: - Bookmark CRUD
@@ -198,44 +190,34 @@ public final class BrowserBookmarkStore: @unchecked Sendable {
         folderID: UUID? = nil,
         dateAdded: Date = Date()
     ) -> BrowserBookmarkItem {
-        lock.lock()
         let item = BrowserBookmarkItem(title: title, url: url, folderID: folderID, dateAdded: dateAdded)
         bookmarks.append(item)
-        lock.unlock()
         save()
         return item
     }
 
     public func updateBookmark(id: UUID, title: String, url: URL, folderID: UUID?) {
-        lock.lock()
         if let index = bookmarks.firstIndex(where: { $0.id == id }) {
             bookmarks[index].title = title
             bookmarks[index].url = url
             bookmarks[index].folderID = folderID
         }
-        lock.unlock()
         save()
     }
 
     public func moveBookmark(id: UUID, toFolderID: UUID?) {
-        lock.lock()
         if let index = bookmarks.firstIndex(where: { $0.id == id }) {
             bookmarks[index].folderID = toFolderID
         }
-        lock.unlock()
         save()
     }
 
     public func deleteBookmark(id: UUID) {
-        lock.lock()
         bookmarks.removeAll(where: { $0.id == id })
-        lock.unlock()
         save()
     }
 
     public func findDuplicate(for url: URL) -> BrowserBookmarkItem? {
-        lock.lock()
-        defer { lock.unlock() }
         let target = BookmarkURLNormalizer.normalize(url)
         return bookmarks.first {
             BookmarkURLNormalizer.normalize($0.url) == target
@@ -243,8 +225,6 @@ public final class BrowserBookmarkStore: @unchecked Sendable {
     }
 
     public func isBookmarked(url: URL) -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
         let target = BookmarkURLNormalizer.normalize(url)
         return bookmarks.contains {
             BookmarkURLNormalizer.normalize($0.url) == target
@@ -252,8 +232,6 @@ public final class BrowserBookmarkStore: @unchecked Sendable {
     }
 
     public func bookmark(for url: URL) -> BrowserBookmarkItem? {
-        lock.lock()
-        defer { lock.unlock() }
         let target = BookmarkURLNormalizer.normalize(url)
         return bookmarks.first {
             BookmarkURLNormalizer.normalize($0.url) == target
@@ -264,10 +242,8 @@ public final class BrowserBookmarkStore: @unchecked Sendable {
 
     @discardableResult
     public func createFolder(title: String, parentFolderID: UUID? = nil) -> BrowserBookmarkFolder {
-        lock.lock()
         let folder = BrowserBookmarkFolder(title: title, parentFolderID: parentFolderID)
         folders.append(folder)
-        lock.unlock()
         save()
         return folder
     }
@@ -275,27 +251,21 @@ public final class BrowserBookmarkStore: @unchecked Sendable {
     public func renameFolder(id: UUID, newTitle: String) {
         let clean = newTitle.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !clean.isEmpty else { return }
-        lock.lock()
         if let index = folders.firstIndex(where: { $0.id == id }) {
             folders[index].title = clean
         }
-        lock.unlock()
         save()
     }
 
     public func updateFolder(id: UUID, title: String, parentFolderID: UUID?) {
-        lock.lock()
         if let index = folders.firstIndex(where: { $0.id == id }) {
             folders[index].title = title
             folders[index].parentFolderID = parentFolderID
         }
-        lock.unlock()
         save()
     }
 
     public func canMoveFolder(id: UUID, toParentID targetParentID: UUID?) -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
         guard let targetParentID else { return true }
         if id == targetParentID { return false }
 
@@ -314,16 +284,13 @@ public final class BrowserBookmarkStore: @unchecked Sendable {
         guard canMoveFolder(id: id, toParentID: targetParentID) else {
             throw BrowserBookmarkError.circularFolderReference
         }
-        lock.lock()
         if let index = folders.firstIndex(where: { $0.id == id }) {
             folders[index].parentFolderID = targetParentID
         }
-        lock.unlock()
         save()
     }
 
     public func deleteFolder(id: UUID) {
-        lock.lock()
         // Collect all descendants recursively
         var toDelete: Set<UUID> = [id]
         var addedNew = true
@@ -342,21 +309,16 @@ public final class BrowserBookmarkStore: @unchecked Sendable {
             guard let f = $0.folderID else { return false }
             return toDelete.contains(f)
         })
-        lock.unlock()
         save()
     }
 
     // MARK: - Query & Search
 
     public func bookmarks(in folderID: UUID?) -> [BrowserBookmarkItem] {
-        lock.lock()
-        defer { lock.unlock() }
         return bookmarks.filter { $0.folderID == folderID }
     }
 
     public func subfolders(in parentFolderID: UUID?) -> [BrowserBookmarkFolder] {
-        lock.lock()
-        defer { lock.unlock() }
         return folders.filter { $0.parentFolderID == parentFolderID }
     }
 
@@ -378,22 +340,16 @@ public final class BrowserBookmarkStore: @unchecked Sendable {
         let q = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !q.isEmpty else { return [] }
 
-        lock.lock()
-        defer { lock.unlock() }
         return bookmarks.filter {
             $0.title.lowercased().contains(q) || $0.url.absoluteString.lowercased().contains(q)
         }
     }
 
     public var allBookmarks: [BrowserBookmarkItem] {
-        lock.lock()
-        defer { lock.unlock() }
         return bookmarks
     }
 
     public var allFolders: [BrowserBookmarkFolder] {
-        lock.lock()
-        defer { lock.unlock() }
         return folders
     }
 }

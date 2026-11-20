@@ -821,7 +821,7 @@ public struct DownloadsView: View {
         #if canImport(UIKit)
         if #available(iOS 14.0, *) {
             UIPasteboard.general.detectPatterns(for: [.probableWebURL]) { result in
-                DispatchQueue.main.async {
+                Task { @MainActor in
                     switch result {
                     case .success(let patterns):
                         if patterns.contains(.probableWebURL),
@@ -899,25 +899,21 @@ public struct DownloadsView: View {
         let outcome = download.checksumOutcome
         viewModel.showNotification("Calculating SHA-256 for \(url.lastPathComponent)...")
 
-        Task.detached(priority: .userInitiated) {
+        Task(priority: .userInitiated) {
             do {
-                let sha = try FileHasher.sha256(for: url)
+                let sha = try await FileHasher.computeSHA256(for: url)
                 let attr = try? FileManager.default.attributesOfItem(atPath: url.path)
                 let size = (attr?[.size] as? NSNumber)?.int64Value ?? 0
-                await MainActor.run {
-                    self.activeAlert = .integrity(
-                        IntegrityReport(
-                            filename: url.lastPathComponent,
-                            fileSize: size,
-                            sha256: sha,
-                            outcome: outcome
-                        )
+                self.activeAlert = .integrity(
+                    IntegrityReport(
+                        filename: url.lastPathComponent,
+                        fileSize: size,
+                        sha256: sha,
+                        outcome: outcome
                     )
-                }
+                )
             } catch {
-                await MainActor.run {
-                    self.viewModel.errorMessage = "Checksum verification failed: \(error.localizedDescription)"
-                }
+                self.viewModel.errorMessage = "Checksum verification failed: \(error.localizedDescription)"
             }
         }
     }

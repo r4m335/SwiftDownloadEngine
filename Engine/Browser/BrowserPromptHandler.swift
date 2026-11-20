@@ -9,7 +9,8 @@ public protocol BrowserPromptProviding: AnyObject, Sendable {
     )
 }
 
-public final class BrowserPromptHandler: @unchecked Sendable {
+@MainActor
+public final class BrowserPromptHandler {
     public static let shared = BrowserPromptHandler()
 
     public weak var provider: BrowserPromptProviding?

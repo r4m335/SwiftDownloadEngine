@@ -115,11 +115,11 @@ public enum QuickAccessMoveDirection: Sendable {
 /// Thread-safe persistent storage manager for Quick Access shortcuts.
 ///
 /// Designed to be completely independent from BrowserBookmarkStore and BrowserHistoryStore.
-public final class QuickAccessStore: @unchecked Sendable {
+@MainActor
+public final class QuickAccessStore {
     public static let shared = QuickAccessStore()
     public static let userDefaultsKey = "com.r4m335.SwiftDownloadEngine.QuickAccessShortcuts"
 
-    private let lock = NSLock()
     private let defaults: UserDefaults
     private let storageURL: URL?
 
@@ -191,9 +191,6 @@ public final class QuickAccessStore: @unchecked Sendable {
 
     /// Loads shortcuts sorted by their display order. If none exist, returns default shortcuts.
     public func load() -> [QuickAccessShortcut] {
-        lock.lock()
-        defer { lock.unlock() }
-
         if let storageURL {
             do {
                 if let payload = try DurableStorage.load(
@@ -223,9 +220,6 @@ public final class QuickAccessStore: @unchecked Sendable {
 
     /// Saves shortcuts atomically to persistent storage.
     public func save(_ shortcuts: [QuickAccessShortcut]) {
-        lock.lock()
-        defer { lock.unlock() }
-
         // Normalize display orders sequentially
         var normalized: [QuickAccessShortcut] = []
         for (index, item) in shortcuts.enumerated() {
@@ -309,7 +303,8 @@ public final class QuickAccessStore: @unchecked Sendable {
 }
 
 /// Lightweight, resilient service for fetching and caching website favicons.
-public final class FaviconService: @unchecked Sendable {
+@MainActor
+public final class FaviconService {
     public static let shared = FaviconService()
 
     private let cache = NSCache<NSString, NSData>()

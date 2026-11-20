@@ -653,7 +653,8 @@ public struct LIDPlayerView: View {
                                     category: "PlayerGesture",
                                     message: "Brightness drag ended -> \(Int(brightnessLevel * 100))%"
                                 )
-                                DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                                Task { @MainActor in
+                                    try? await Task.sleep(nanoseconds: 1_000_000_000)
                                     showBrightnessHUD = false
                                 }
                                 resetControlsTimer()
@@ -743,7 +744,8 @@ public struct LIDPlayerView: View {
                                 let duration = engine.durationSeconds > 0 ? engine.durationSeconds : 600.0
                                 let target = max(0.0, min(duration, seekGestureStartPosition + seekGestureOffset))
                                 engine.seek(to: target)
-                                DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                                Task { @MainActor in
+                                    try? await Task.sleep(nanoseconds: 1_000_000_000)
                                     showSeekHUD = false
                                 }
                                 resetControlsTimer()
@@ -791,7 +793,8 @@ public struct LIDPlayerView: View {
                                     category: "PlayerGesture",
                                     message: "Volume drag ended -> \(Int(volumeLevel * 100))%"
                                 )
-                                DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                                Task { @MainActor in
+                                    try? await Task.sleep(nanoseconds: 1_000_000_000)
                                     showVolumeHUD = false
                                 }
                                 resetControlsTimer()
@@ -1677,7 +1680,8 @@ public struct LIDPlayerView: View {
     private func showTemporaryHUD(_ text: String) {
         seekHUDText = text
         showSeekHUD = true
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 1_200_000_000)
             showSeekHUD = false
         }
     }

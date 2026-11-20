@@ -7,8 +7,8 @@ import WebKit
 // MARK: - 1. Redirect Loop Detection
 
 /// Detects infinite or malicious redirect loops within provisional browser navigations.
-public final class BrowserRedirectLoopDetector: @unchecked Sendable {
-    private let lock = NSLock()
+@MainActor
+public final class BrowserRedirectLoopDetector {
     private var history: [(url: URL, timestamp: Date)] = []
     public let maxHops: Int
     public let timeWindowSeconds: TimeInterval
@@ -20,9 +20,6 @@ public final class BrowserRedirectLoopDetector: @unchecked Sendable {
 
     /// Records a navigation attempt. Returns `(isLoopDetected: Bool, reason: String?)`.
     public func recordNavigation(url: URL) -> (isLoopDetected: Bool, reason: String?) {
-        lock.lock()
-        defer { lock.unlock() }
-
         let now = Date()
         history.append((url: url, timestamp: now))
 
@@ -57,8 +54,6 @@ public final class BrowserRedirectLoopDetector: @unchecked Sendable {
 
     /// Clears the navigation history on successful user-initiated navigation or committed load.
     public func reset() {
-        lock.lock()
-        defer { lock.unlock() }
         history.removeAll()
     }
 }
@@ -139,10 +134,10 @@ public enum BrowserDownloadSecurityInspector {
 // MARK: - 3. HTTPS Certificate Error & Session Decision Store
 
 /// Thread-safe session store of user-approved HTTPS certificate overrides.
-public final class BrowserCertificateDecisionStore: @unchecked Sendable {
+@MainActor
+public final class BrowserCertificateDecisionStore {
     public static let shared = BrowserCertificateDecisionStore()
 
-    private let lock = NSLock()
     private var allowedHostsForSession: Set<String> = []
 
     public init() {}
@@ -151,8 +146,6 @@ public final class BrowserCertificateDecisionStore: @unchecked Sendable {
         let domain = BrowserDomainMatcher.normalizeDomain(hostOrURL)
         guard !domain.isEmpty else { return }
 
-        lock.lock()
-        defer { lock.unlock() }
         allowedHostsForSession.insert(domain)
     }
 
@@ -160,8 +153,6 @@ public final class BrowserCertificateDecisionStore: @unchecked Sendable {
         let domain = BrowserDomainMatcher.normalizeDomain(hostOrURL)
         guard !domain.isEmpty else { return false }
 
-        lock.lock()
-        defer { lock.unlock() }
         return allowedHostsForSession.contains(domain)
     }
 
@@ -169,14 +160,10 @@ public final class BrowserCertificateDecisionStore: @unchecked Sendable {
         let domain = BrowserDomainMatcher.normalizeDomain(hostOrURL)
         guard !domain.isEmpty else { return }
 
-        lock.lock()
-        defer { lock.unlock() }
         allowedHostsForSession.remove(domain)
     }
 
     public func clearAllSessionOverrides() {
-        lock.lock()
-        defer { lock.unlock() }
         allowedHostsForSession.removeAll()
     }
 }

@@ -173,13 +173,15 @@ public enum BrowserMediaDiscoveryBridgeError: Error, LocalizedError, Equatable, 
 /// The bridge never receives cookies or headers. Browser credentials may only be
 /// captured later for a same-origin observation; cross-origin and cross-frame
 /// observations are forwarded without credential inheritance.
-public final class BrowserMediaDiscoveryBridge: NSObject, @unchecked Sendable {
+@MainActor
+public final class BrowserMediaDiscoveryBridge: NSObject {
     public typealias UserScript = BrowserUserScript
     public typealias UserScriptInjectionTime = BrowserUserScriptInjectionTime
 
     /// Generic User Script Manager capable of loading custom JavaScript strings
     /// and injecting them into WKWebView at .atDocumentStart or .atDocumentEnd.
-    public final class UserScriptManager: @unchecked Sendable {
+    @MainActor
+    public final class UserScriptManager {
         public static let defaultURLResolutionScriptID = "defaultPlayerURLResolutionScript"
 
         /// Default user script loaded at .atDocumentStart to intercept and resolve
@@ -341,7 +343,6 @@ public final class BrowserMediaDiscoveryBridge: NSObject, @unchecked Sendable {
         })();
         """#
 
-        private let lock = NSLock()
         private var scripts: [BrowserUserScript] = []
 
         public init(loadDefaultScript: Bool = true) {
@@ -365,9 +366,7 @@ public final class BrowserMediaDiscoveryBridge: NSObject, @unchecked Sendable {
         }
 
         public func resetToDefaults() {
-            lock.lock()
             scripts.removeAll()
-            lock.unlock()
             loadDefaultURLResolutionScript()
         }
 
@@ -378,8 +377,6 @@ public final class BrowserMediaDiscoveryBridge: NSObject, @unchecked Sendable {
             injectionTime: BrowserUserScriptInjectionTime = .atDocumentStart,
             forMainFrameOnly: Bool = false
         ) -> BrowserUserScript {
-            lock.lock()
-            defer { lock.unlock() }
             let script = BrowserUserScript(
                 id: id,
                 source: source,
@@ -397,16 +394,12 @@ public final class BrowserMediaDiscoveryBridge: NSObject, @unchecked Sendable {
         }
 
         public func registerScript(_ script: BrowserUserScript) {
-            lock.lock()
-            defer { lock.unlock() }
             scripts.removeAll { $0.id == script.id }
             scripts.append(script)
         }
 
         @discardableResult
         public func unregisterScript(id: String) -> BrowserUserScript? {
-            lock.lock()
-            defer { lock.unlock() }
             guard let idx = scripts.firstIndex(where: { $0.id == id }) else { return nil }
             return scripts.remove(at: idx)
         }
@@ -417,32 +410,22 @@ public final class BrowserMediaDiscoveryBridge: NSObject, @unchecked Sendable {
         }
 
         public func removeAllScripts() {
-            lock.lock()
-            defer { lock.unlock() }
             scripts.removeAll()
         }
 
         public func allScripts() -> [BrowserUserScript] {
-            lock.lock()
-            defer { lock.unlock() }
             return scripts
         }
 
         public func script(withID id: String) -> BrowserUserScript? {
-            lock.lock()
-            defer { lock.unlock() }
             return scripts.first(where: { $0.id == id })
         }
 
         public func hasScript(id: String) -> Bool {
-            lock.lock()
-            defer { lock.unlock() }
             return scripts.contains(where: { $0.id == id })
         }
 
         public var count: Int {
-            lock.lock()
-            defer { lock.unlock() }
             return scripts.count
         }
 
@@ -1042,7 +1025,6 @@ public final class BrowserMediaDiscoveryBridge: NSObject, @unchecked Sendable {
     public var errorHandler: ((BrowserMediaDiscoveryBridgeError) -> Void)?
     public let userScriptManager: UserScriptManager
 
-    private let lock = NSLock()
     private var seenKeys: Set<String> = []
     private var seenKeysWithPrefix: Set<String> = []
 
@@ -1056,10 +1038,8 @@ public final class BrowserMediaDiscoveryBridge: NSObject, @unchecked Sendable {
     }
 
     public func reset() {
-        lock.lock()
         seenKeys.removeAll(keepingCapacity: true)
         seenKeysWithPrefix.removeAll(keepingCapacity: true)
-        lock.unlock()
     }
 
     /// Decodes and validates a message body without requiring WebKit. This is
@@ -1194,7 +1174,6 @@ public final class BrowserMediaDiscoveryBridge: NSObject, @unchecked Sendable {
         let key = dedupeKey.lowercased()
         let hasPrefix = message.manifestPrefix != nil && !message.manifestPrefix!.isEmpty
 
-        lock.lock()
         let isAlreadySeen = seenKeys.contains(key)
         let isAlreadySeenWithPrefix = seenKeysWithPrefix.contains(key)
         let shouldAccept: Bool
@@ -1214,7 +1193,6 @@ public final class BrowserMediaDiscoveryBridge: NSObject, @unchecked Sendable {
                 shouldAccept = true
             }
         }
-        lock.unlock()
 
         guard shouldAccept else { return nil }
 

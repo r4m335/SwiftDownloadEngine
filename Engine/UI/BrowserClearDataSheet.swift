@@ -133,7 +133,7 @@ public struct BrowserClearDataSheet: View {
             let dataTypes = WKWebsiteDataStore.allWebsiteDataTypes()
             let date = cutoff ?? Date.distantPast
             WKWebsiteDataStore.default().removeData(ofTypes: dataTypes, modifiedSince: date) {
-                DispatchQueue.main.async {
+                Task { @MainActor in
                     self.isClearing = false
                     self.presentationMode.wrappedValue.dismiss()
                 }
