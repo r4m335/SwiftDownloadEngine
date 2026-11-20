@@ -2560,6 +2560,95 @@ final class StreamingDownloadOrchestratorTests: XCTestCase {
         XCTAssertTrue(requested.contains(lowURL))
     }
 
+    func testGenericMasterFetchFallsBackWhenVariantAudioLayoutInvalid() async throws {
+        let masterURL = URL(string: "https://video.example/master.m3u8")!
+        let highURL = URL(string: "https://video.example/1080p.m3u8")!
+        let lowURL = URL(string: "https://video.example/720p.m3u8")!
+
+        let masterPlaylist = """
+        #EXTM3U
+        #EXT-X-STREAM-INF:BANDWIDTH=5000000,RESOLUTION=1920x1080,CODECS="avc1.640028",AUDIO="missing-audio"
+        1080p.m3u8
+        #EXT-X-STREAM-INF:BANDWIDTH=2500000,RESOLUTION=1280x720,CODECS="avc1.4d401f,mp4a.40.2"
+        720p.m3u8
+        """
+
+        let lowPlaylist = """
+        #EXTM3U
+        #EXT-X-PLAYLIST-TYPE:VOD
+        #EXTINF:2.0,
+        segment-720.ts
+        #EXT-X-ENDLIST
+        """
+
+        let loader = VariantManifestLoader(
+            responses: [
+                masterURL: StreamingManifestResponse(data: Data(masterPlaylist.utf8), finalURL: masterURL, mimeType: "application/vnd.apple.mpegurl"),
+                lowURL: StreamingManifestResponse(data: Data(lowPlaylist.utf8), finalURL: lowURL, mimeType: "application/vnd.apple.mpegurl")
+            ]
+        )
+
+        let orchestrator = StreamingDownloadOrchestrator(manifestLoader: loader, segmentExecutor: RecordingSegmentExecutor())
+        let candidate = try StreamingManifestCandidate(url: masterURL)
+        let proposal = try await orchestrator.prepare(candidate: candidate)
+
+        // Verifies fallback skipped 1080p (due to missing audio rendition) and selected 720p
+        XCTAssertEqual(proposal.resources.first?.url, URL(string: "https://video.example/segment-720.ts")!)
+        let requested = await loader.requestedURLs
+        XCTAssertFalse(requested.contains(highURL), "1080p child playlist should not be fetched if audio layout validation fails upfront")
+        XCTAssertTrue(requested.contains(lowURL))
+    }
+
+    func testExplicitVariantSelectionFailsImmediatelyWhenAudioLayoutInvalid() async throws {
+        let masterURL = URL(string: "https://video.example/master.m3u8")!
+        let highURL = URL(string: "https://video.example/1080p.m3u8")!
+        let lowURL = URL(string: "https://video.example/720p.m3u8")!
+
+        let masterPlaylist = """
+        #EXTM3U
+        #EXT-X-STREAM-INF:BANDWIDTH=5000000,RESOLUTION=1920x1080,CODECS="avc1.640028",AUDIO="missing-audio"
+        1080p.m3u8
+        #EXT-X-STREAM-INF:BANDWIDTH=2500000,RESOLUTION=1280x720,CODECS="avc1.4d401f,mp4a.40.2"
+        720p.m3u8
+        """
+
+        let lowPlaylist = """
+        #EXTM3U
+        #EXT-X-PLAYLIST-TYPE:VOD
+        #EXTINF:2.0,
+        segment-720.ts
+        #EXT-X-ENDLIST
+        """
+
+        let loader = VariantManifestLoader(
+            responses: [
+                masterURL: StreamingManifestResponse(data: Data(masterPlaylist.utf8), finalURL: masterURL, mimeType: "application/vnd.apple.mpegurl"),
+                lowURL: StreamingManifestResponse(data: Data(lowPlaylist.utf8), finalURL: lowURL, mimeType: "application/vnd.apple.mpegurl")
+            ]
+        )
+
+        let orchestrator = StreamingDownloadOrchestrator(manifestLoader: loader, segmentExecutor: RecordingSegmentExecutor())
+        let candidate = try StreamingManifestCandidate(
+            url: masterURL,
+            hlsVariantPreferences: HLSVariantSelectionPreferences(exactURI: highURL)
+        )
+
+        do {
+            _ = try await orchestrator.prepare(candidate: candidate)
+            XCTFail("Expected hlsVariantSelectionFailed error when explicitly selected variant has missing audio rendition")
+        } catch let error as StreamingDownloadOrchestratorError {
+            if case .hlsVariantSelectionFailed(let selectionError) = error {
+                XCTAssertEqual(selectionError, .missingAudioRendition(groupID: "missing-audio"))
+            } else {
+                XCTFail("Expected .hlsVariantSelectionFailed with .missingAudioRendition, got \(error)")
+            }
+        }
+
+        let requested = await loader.requestedURLs
+        XCTAssertFalse(requested.contains(highURL))
+        XCTAssertFalse(requested.contains(lowURL))
+    }
+
     func testUserBandwidthPreferenceExcludesHighestVariant() async throws {
         let masterURL = URL(string: "https://video.example/master.m3u8")!
         let highURL = URL(string: "https://video.example/1080p.m3u8")!

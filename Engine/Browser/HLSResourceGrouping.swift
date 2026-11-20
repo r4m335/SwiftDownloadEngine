@@ -99,7 +99,6 @@ public enum HLSResourceGrouping {
         let hasMasterSubtitles = manifest.renditions.contains {
             $0.type.uppercased() == "SUBTITLES" || $0.type.uppercased() == "CLOSED-CAPTIONS"
         }
-        let hasMasterAudio = manifest.renditions.contains { $0.type.uppercased() == "AUDIO" }
 
         return manifest.variants.map { variant in
             let height = variant.resolution?.height
@@ -107,7 +106,22 @@ public enum HLSResourceGrouping {
             let resText = variant.resolution.map { "\($0.width)x\($0.height)" }
             let bwText = formatBandwidth(variant.bandwidth)
             let hasSub = variant.subtitlesGroup != nil || hasMasterSubtitles
-            let hasAud = variant.audioGroup != nil || hasMasterAudio || isAudioInCodecs(variant.codecs)
+
+            let selectedAudio = HLSVariantSelector.selectAudioRendition(for: variant, master: manifest)
+            let muxedInCodecs = isAudioInCodecs(variant.codecs)
+            let legacyMuxed = (variant.codecs == nil && variant.audioGroup == nil)
+            let hasInStreamAudioRendition = (variant.codecs == nil) && manifest.renditions.contains {
+                $0.type.uppercased() == "AUDIO" && $0.groupID == variant.audioGroup && $0.uri == nil
+            }
+            let hasAud = (selectedAudio != nil) || muxedInCodecs || legacyMuxed || hasInStreamAudioRendition
+            let audioText: String? = {
+                if !hasAud { return nil }
+                if let audioName = selectedAudio?.name, !audioName.isEmpty {
+                    return audioName
+                }
+                return "Audio"
+            }()
+
             let vCodec = extractVideoCodecName(variant.codecs)
             let id = "\(resource.id)-variant-\(variant.bandwidth)-\(height ?? 0)"
 
@@ -121,7 +135,7 @@ public enum HLSResourceGrouping {
                 resolutionText: resText,
                 bitrateText: bwText,
                 hasAudio: hasAud,
-                audioText: hasAud ? "Audio" : nil,
+                audioText: audioText,
                 hasSubtitles: hasSub,
                 subtitleText: hasSub ? "Subtitles" : nil,
                 codecs: variant.codecs,
@@ -185,8 +199,7 @@ public enum HLSResourceGrouping {
     }
 
     public static func isAudioInCodecs(_ codecs: String?) -> Bool {
-        guard let codecs = codecs?.lowercased() else { return true }
-        return codecs.contains("mp4a") || codecs.contains("aac") || codecs.contains("ac-3") || codecs.contains("ec-3")
+        HLSVariantSelector.isAudioInCodecs(codecs)
     }
 
     public static func extractVideoCodecName(_ codecs: String?) -> String? {

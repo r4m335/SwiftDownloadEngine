@@ -138,6 +138,36 @@ final class HLSAndDASHProductionValidationTests: XCTestCase {
         XCTAssertEqual(spanishAudio?.language, "es")
     }
 
+    func testValidateAudioLayout() throws {
+        let masterContent = """
+        #EXTM3U
+        #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="audio-aac",NAME="English",DEFAULT=YES,URI="audio/en.m3u8"
+        #EXT-X-STREAM-INF:BANDWIDTH=2000000,RESOLUTION=1280x720,CODECS="avc1.640028",AUDIO="audio-aac"
+        video/720p.m3u8
+        #EXT-X-STREAM-INF:BANDWIDTH=1000000,RESOLUTION=640x360,CODECS="avc1.4d401f",AUDIO="missing-group"
+        video/360p.m3u8
+        #EXT-X-STREAM-INF:BANDWIDTH=500000,RESOLUTION=426x240,CODECS="avc1.42e00a,mp4a.40.2"
+        video/240p.m3u8
+        #EXT-X-STREAM-INF:BANDWIDTH=300000
+        video/legacy.m3u8
+        """
+        let manifest = try HLSManifestParser.parse(masterContent, baseURL: manifestURL)
+
+        // 1. Variant with valid audio group passes
+        XCTAssertNoThrow(try HLSVariantSelector.validateAudioLayout(selectedVariant: manifest.variants[0], master: manifest))
+
+        // 2. Variant with missing audio group throws missingAudioRendition
+        XCTAssertThrowsError(try HLSVariantSelector.validateAudioLayout(selectedVariant: manifest.variants[1], master: manifest)) { error in
+            XCTAssertEqual(error as? HLSVariantSelectionError, .missingAudioRendition(groupID: "missing-group"))
+        }
+
+        // 3. Variant with muxed audio in codecs passes
+        XCTAssertNoThrow(try HLSVariantSelector.validateAudioLayout(selectedVariant: manifest.variants[2], master: manifest))
+
+        // 4. Legacy TS variant without codecs or audioGroup passes
+        XCTAssertNoThrow(try HLSVariantSelector.validateAudioLayout(selectedVariant: manifest.variants[3], master: manifest))
+    }
+
     func testSignedQueryParamsPreservedAcrossChildPlaylists() throws {
         let masterContent = """
         #EXTM3U

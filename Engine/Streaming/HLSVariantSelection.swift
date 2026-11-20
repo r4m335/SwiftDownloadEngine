@@ -27,6 +27,7 @@ public enum HLSVariantSelectionError: Error, LocalizedError, Sendable, Equatable
     case noVariants
     case noVariantMatchesPreferences
     case separateAudioNotSupported
+    case missingAudioRendition(groupID: String)
 
     public var errorDescription: String? {
         switch self {
@@ -36,6 +37,8 @@ public enum HLSVariantSelectionError: Error, LocalizedError, Sendable, Equatable
             return "No HLS variant matches the requested media preferences."
         case .separateAudioNotSupported:
             return "This HLS reconstruction path does not yet mux a separate audio rendition."
+        case .missingAudioRendition(let groupID):
+            return "The audio group '\(groupID)' referenced by the selected HLS variant has no accessible audio rendition."
         }
     }
 }
@@ -134,11 +137,40 @@ public enum HLSVariantSelector {
         return selected
     }
 
+    public static func isAudioInCodecs(_ codecs: String?) -> Bool {
+        guard let codecs = codecs?.lowercased() else { return false }
+        return codecs.contains("mp4a") ||
+               codecs.contains("aac") ||
+               codecs.contains("ac-3") ||
+               codecs.contains("ac3") ||
+               codecs.contains("ec-3") ||
+               codecs.contains("eac3") ||
+               codecs.contains("opus") ||
+               codecs.contains("mp3") ||
+               codecs.contains("flac") ||
+               codecs.contains("alac") ||
+               codecs.contains("vorbis")
+    }
+
     public static func validateAudioLayout(
         selectedVariant: HLSVariant,
         master: HLSManifest
     ) throws {
-        // Multi-track assembly is now supported for variants with separate audio renditions.
+        guard let groupID = selectedVariant.audioGroup else { return }
+        let candidates = master.renditions.filter {
+            $0.type.uppercased() == "AUDIO" && $0.groupID == groupID
+        }
+        guard !candidates.isEmpty else {
+            throw HLSVariantSelectionError.missingAudioRendition(groupID: groupID)
+        }
+        let hasSelectable = candidates.contains { $0.uri != nil }
+        let hasMuxed = isAudioInCodecs(selectedVariant.codecs)
+        if !hasSelectable && !hasMuxed {
+            if selectedVariant.codecs == nil && candidates.contains(where: { $0.uri == nil }) {
+                return
+            }
+            throw HLSVariantSelectionError.missingAudioRendition(groupID: groupID)
+        }
     }
 
     public static func selectAudioRendition(

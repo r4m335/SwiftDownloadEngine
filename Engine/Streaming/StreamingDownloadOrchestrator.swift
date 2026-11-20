@@ -1783,6 +1783,16 @@ public actor StreamingDownloadOrchestrator {
                 )
             } catch {
                 PipelineLogger.shared.log("[HLS Pipeline] Audio layout validation failed for \(variantDesc): \(error.localizedDescription)")
+                let failureError: Error
+                if let selectionError = error as? HLSVariantSelectionError {
+                    failureError = StreamingDownloadOrchestratorError.hlsVariantSelectionFailed(selectionError)
+                } else {
+                    failureError = error
+                }
+                if isExplicitVariantSelection {
+                    throw failureError
+                }
+                lastPlanningError = failureError
                 continue
             }
 

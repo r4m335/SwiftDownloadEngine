@@ -96,6 +96,27 @@ final class StreamQualityPickerTests: XCTestCase {
         XCTAssertEqual(audioOption.uri, URL(string: "https://cdn.example.com/stream/audio/eng.m3u8")!)
     }
 
+    func testHLSVariantWithMissingAudioGroupHasAudioFalseAndNilAudioCodec() throws {
+        let masterWithMissingAudio = """
+        #EXTM3U
+        #EXT-X-VERSION:4
+        #EXT-X-STREAM-INF:BANDWIDTH=3000000,RESOLUTION=1280x720,CODECS="avc1.640028",AUDIO="nonexistent-group"
+        video/720p.m3u8
+        """
+
+        let options = try StreamQualityInspector.inspectHLS(
+            manifestText: masterWithMissingAudio,
+            baseURL: masterURL
+        )
+
+        XCTAssertEqual(options.count, 1)
+        let option = options[0]
+        XCTAssertEqual(option.qualityBadge, "720p")
+        XCTAssertEqual(option.videoCodec, "H.264")
+        XCTAssertFalse(option.hasAudio, "Variant referencing nonexistent audio group must not be marked hasAudio=true")
+        XCTAssertNil(option.audioCodec, "Variant with unresolvable audio group must have nil audioCodec")
+    }
+
     // MARK: - DASH MPD Quality Inspection
 
     func testDASHQualityInspectionDiscoversVideoAndAudioReps() throws {

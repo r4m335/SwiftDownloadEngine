@@ -131,6 +131,8 @@ public struct StreamQualityOption: Identifiable, Sendable, Equatable, Hashable {
     /// Creates a quality option from an HLS variant in a master playlist.
     public static func from(
         variant: HLSVariant,
+        master: HLSManifest? = nil,
+        selectedAudioRendition: HLSRendition? = nil,
         masterURL: URL,
         durationSeconds: Double? = nil,
         isLive: Bool = false
@@ -157,7 +159,33 @@ public struct StreamQualityOption: Identifiable, Sendable, Equatable, Hashable {
         let bwText = formatBandwidth(Int64(variant.bandwidth))
         let vCodec = extractVideoCodec(variant.codecs)
         let aCodec = extractAudioCodec(variant.codecs)
-        let hasAudio = variant.audioGroup != nil || aCodec != nil
+
+        let resolvedAudioRendition = selectedAudioRendition ?? master.flatMap {
+            HLSVariantSelector.selectAudioRendition(for: variant, master: $0)
+        }
+
+        let hasMuxedAudio: Bool
+        if let codecs = variant.codecs {
+            hasMuxedAudio = aCodec != nil || HLSVariantSelector.isAudioInCodecs(codecs)
+        } else {
+            hasMuxedAudio = (variant.audioGroup == nil)
+        }
+
+        let hasAudio: Bool
+        if let _ = master {
+            hasAudio = (resolvedAudioRendition != nil) || hasMuxedAudio
+        } else if let _ = selectedAudioRendition {
+            hasAudio = true
+        } else {
+            hasAudio = (variant.audioGroup != nil) || hasMuxedAudio
+        }
+
+        let effectiveAudioCodec: String? = {
+            if !hasAudio { return nil }
+            if let aCodec = aCodec { return aCodec }
+            if let name = resolvedAudioRendition?.name, !name.isEmpty { return name }
+            return (hasMuxedAudio && variant.codecs == nil) ? "Audio" : nil
+        }()
 
         let estBytes: Int64? = durationSeconds.flatMap { estimateSize(bandwidth: Int64(variant.bandwidth), durationSeconds: $0) }
         let estText = estBytes.map { "~\(formatByteSize($0))" } ?? "Size unavailable"
@@ -174,7 +202,7 @@ public struct StreamQualityOption: Identifiable, Sendable, Equatable, Hashable {
             bitrateText: bwText,
             codecs: variant.codecs,
             videoCodec: vCodec,
-            audioCodec: aCodec,
+            audioCodec: effectiveAudioCodec,
             frameRate: variant.frameRate,
             hasAudio: hasAudio,
             hasVideo: true,
@@ -346,11 +374,14 @@ public struct StreamQualityOption: Identifiable, Sendable, Equatable, Hashable {
 
     private static func extractAudioCodec(_ codecs: String?) -> String? {
         guard let codecs = codecs?.lowercased() else { return nil }
-        if codecs.contains("mp4a.40.2") || codecs.contains("aac") { return "AAC" }
+        if codecs.contains("mp4a") || codecs.contains("aac") { return "AAC" }
         if codecs.contains("ac-3") || codecs.contains("ac3") { return "AC-3" }
         if codecs.contains("ec-3") || codecs.contains("eac3") { return "E-AC-3" }
         if codecs.contains("opus") { return "Opus" }
         if codecs.contains("mp3") { return "MP3" }
+        if codecs.contains("flac") { return "FLAC" }
+        if codecs.contains("alac") { return "ALAC" }
+        if codecs.contains("vorbis") { return "Vorbis" }
         return nil
     }
 }

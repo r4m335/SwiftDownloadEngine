@@ -97,8 +97,11 @@ public enum StreamQualityInspector {
         // Rank variants highest to lowest
         let ranked = try HLSVariantSelector.rank(from: manifest)
         var options: [StreamQualityOption] = ranked.map { variant in
-            StreamQualityOption.from(
+            let selectedAudio = HLSVariantSelector.selectAudioRendition(for: variant, master: manifest)
+            return StreamQualityOption.from(
                 variant: variant,
+                master: manifest,
+                selectedAudioRendition: selectedAudio,
                 masterURL: baseURL,
                 durationSeconds: durationSeconds,
                 isLive: isLive

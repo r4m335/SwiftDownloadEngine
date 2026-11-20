@@ -95,4 +95,47 @@ final class HLSResourceGroupingTests: XCTestCase {
         XCTAssertEqual(resources[1].suggestedFilename, "sintel-720p.mp4")
         XCTAssertEqual(resources[1].hlsVariantPreferences?.maximumHeight, 720)
     }
+
+    func testExtractVariantStreamItemsWithMissingOrUnrelatedAudio() {
+        let masterURL = URL(string: "https://media.example.com/master.m3u8")!
+        let master = WebpageResource(
+            id: "master-test-audio",
+            url: masterURL,
+            title: "Test Audio Validation",
+            suggestedFilename: "test.m3u8",
+            resourceType: .video,
+            mimeType: "application/vnd.apple.mpegurl",
+            manifestText: """
+            #EXTM3U
+            #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="audio-valid",NAME="English",DEFAULT=YES,URI="audio/en.m3u8"
+            #EXT-X-STREAM-INF:BANDWIDTH=5000000,RESOLUTION=1920x1080,CODECS="avc1.640028",AUDIO="audio-valid"
+            1080p.m3u8
+            #EXT-X-STREAM-INF:BANDWIDTH=2500000,RESOLUTION=1280x720,CODECS="avc1.4d401f",AUDIO="audio-ghost"
+            720p.m3u8
+            #EXT-X-STREAM-INF:BANDWIDTH=800000,RESOLUTION=640x360,CODECS="avc1.42e00a"
+            360p.m3u8
+            """
+        )
+
+        let items = HLSResourceGrouping.extractVariantStreamItems(for: master)
+        XCTAssertEqual(items.count, 3)
+
+        // 1080p: points to audio-valid which exists with URI
+        let item1080 = items[0]
+        XCTAssertEqual(item1080.qualityLabel, "1080p")
+        XCTAssertTrue(item1080.hasAudio)
+        XCTAssertEqual(item1080.audioText, "English")
+
+        // 720p: points to audio-ghost which does not exist in master renditions
+        let item720 = items[1]
+        XCTAssertEqual(item720.qualityLabel, "720p")
+        XCTAssertFalse(item720.hasAudio, "Ghost audio group must not be marked hasAudio=true")
+        XCTAssertNil(item720.audioText, "Ghost audio group must have nil audioText")
+
+        // 360p: video-only codec without audioGroup, must NOT inherit audio from unrelated audio renditions in master
+        let item360 = items[2]
+        XCTAssertEqual(item360.qualityLabel, "360p")
+        XCTAssertFalse(item360.hasAudio, "Video-only variant must not inherit hasAudio=true from master audio renditions")
+        XCTAssertNil(item360.audioText)
+    }
 }
