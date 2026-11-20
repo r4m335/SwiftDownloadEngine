@@ -499,8 +499,16 @@ public final class LiveStreamRecorder: ObservableObject {
 
             for seg in recordedSegments {
                 guard FileManager.default.fileExists(atPath: seg.localFileURL.path) else { continue }
-                let segData = try Data(contentsOf: seg.localFileURL)
-                outHandle.write(segData)
+                do {
+                    let segHandle = try FileHandle(forReadingFrom: seg.localFileURL)
+                    defer { try? segHandle.close() }
+                    let bufferSize = 64 * 1024
+                    while true {
+                        let chunk = segHandle.readData(ofLength: bufferSize)
+                        if chunk.isEmpty { break }
+                        outHandle.write(chunk)
+                    }
+                }
             }
             try outHandle.synchronize()
         } catch {

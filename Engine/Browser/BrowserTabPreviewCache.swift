@@ -57,11 +57,13 @@ public final class BrowserTabPreviewCache {
 
         guard let dir = cacheDirectoryURL else { return nil }
         let fileURL = dir.appendingPathComponent("\(tabID.uuidString).jpg")
-        if let diskData = try? Data(contentsOf: fileURL) {
+        do {
+            let diskData = try Data(contentsOf: fileURL, options: .alwaysMapped)
             memoryCache[tabID] = diskData
             return diskData
+        } catch {
+            return nil
         }
-        return nil
     }
 
     /// Removes preview data from both memory and disk when a tab is closed.

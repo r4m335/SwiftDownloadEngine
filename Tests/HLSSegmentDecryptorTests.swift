@@ -93,6 +93,32 @@ final class HLSSegmentDecryptorTests: XCTestCase {
         #endif
     }
 
+    func testMultiChunkFileDecryptionRoundTrip() throws {
+        #if canImport(CommonCrypto)
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let key = Data((0..<16).map { UInt8($0 + 42) })
+        let iv = HLSSegmentDecryptor.ivForSequenceNumber(99)
+        // 200 KB test payload to cross multiple 64KB chunk boundaries
+        var clearData = Data(count: 200 * 1024)
+        for i in 0..<clearData.count {
+            clearData[i] = UInt8(i % 251)
+        }
+
+        let cipherData = try HLSSegmentDecryptor.encrypt(data: clearData, key: key, iv: iv)
+        let encryptedFile = tempDir.appendingPathComponent("multi_encrypted.ts")
+        let decryptedFile = tempDir.appendingPathComponent("multi_decrypted.ts")
+
+        try cipherData.write(to: encryptedFile)
+        try HLSSegmentDecryptor.decryptFile(at: encryptedFile, to: decryptedFile, key: key, iv: iv)
+
+        let recovered = try Data(contentsOf: decryptedFile)
+        XCTAssertEqual(recovered, clearData)
+        #endif
+    }
+
     func testInvalidKeyOrIVLengthThrows() {
         #if canImport(CommonCrypto)
         let shortKey = Data([1, 2, 3])

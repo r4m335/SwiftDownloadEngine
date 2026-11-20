@@ -1278,7 +1278,8 @@ public struct AddDownloadView: View {
     }
 
     private func processSelectedTorrentFile(url: URL) {
-        guard let data = try? Data(contentsOf: url) else { return }
+        if let size = FileManager.default.fileSize(atPath: url.path), size > 20 * 1024 * 1024 { return }
+        guard let data = try? Data(contentsOf: url, options: .alwaysMapped) else { return }
         if let parsed = TorrentMetadataParser.extractBencodedInfo(from: data) {
             let candidateName = parsed.name ?? url.deletingPathExtension().lastPathComponent
             isMultiFileTorrent = parsed.isMultiFile

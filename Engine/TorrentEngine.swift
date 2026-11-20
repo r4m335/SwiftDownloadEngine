@@ -1025,7 +1025,10 @@ public actor TorrentEngine {
         isExplicitlyPaused: Bool = false,
         isSequential: Bool = false
     ) async throws -> TorrentTask {
-        let data = try Data(contentsOf: fileURL)
+        if let size = FileManager.default.fileSize(atPath: fileURL.path), size > 20 * 1024 * 1024 {
+            throw TorrentEngineError.invalidTorrentFile("Torrent file exceeds 20MB: \(size) bytes")
+        }
+        let data = try Data(contentsOf: fileURL, options: .alwaysMapped)
         var resolvedName = name ?? fileURL.deletingPathExtension().lastPathComponent
         if name == nil, let parsed = Self.extractBencodedInfo(from: data), let parsedName = parsed.name {
             resolvedName = parsedName

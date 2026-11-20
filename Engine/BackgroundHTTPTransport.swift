@@ -157,7 +157,13 @@ public actor BackgroundDownloadTaskMappingStore {
         var initialCache: [String: BackgroundDownloadTaskRecord] = [:]
         if FileManager.default.fileExists(atPath: self.storeFileURL.path) {
             do {
-                let data = try Data(contentsOf: self.storeFileURL)
+                if let size = FileManager.default.fileSize(atPath: self.storeFileURL.path), size > 50 * 1024 * 1024 {
+                    throw BackgroundTransportError.corruptedMappingStore(
+                        path: self.storeFileURL.path,
+                        underlyingError: "Store file exceeds maximum allowed size (50MB): \(size) bytes"
+                    )
+                }
+                let data = try Data(contentsOf: self.storeFileURL, options: .alwaysMapped)
                 let records = try jsonDecoder.decode([BackgroundDownloadTaskRecord].self, from: data)
                 for r in records {
                     initialCache[r.id] = r

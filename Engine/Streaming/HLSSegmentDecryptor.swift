@@ -132,27 +132,200 @@ public enum HLSSegmentDecryptor {
         #endif
     }
 
-    /// Decrypts a file on disk and writes the clear plaintext to destinationURL.
+    /// Decrypts a file on disk and writes the clear plaintext to destinationURL using chunked streaming
+    /// to avoid reading entire segments into memory.
     public static func decryptFile(
         at sourceURL: URL,
         to destinationURL: URL,
         key: Data,
         iv: Data
     ) throws {
-        let ciphertext: Data
+        #if canImport(CommonCrypto)
+        guard key.count == kCCKeySizeAES128 else {
+            throw HLSSegmentDecryptionError.invalidKeyLength(expected: kCCKeySizeAES128, actual: key.count)
+        }
+        guard iv.count == kCCBlockSizeAES128 else {
+            throw HLSSegmentDecryptionError.invalidIVLength(expected: kCCBlockSizeAES128, actual: iv.count)
+        }
+
+        let parentDir = destinationURL.deletingLastPathComponent()
         do {
-            ciphertext = try Data(contentsOf: sourceURL)
+            try FileManager.default.createDirectory(at: parentDir, withIntermediateDirectories: true)
         } catch {
+            throw HLSSegmentDecryptionError.fileWriteError(parentDir.path)
+        }
+
+        let tempURL = destinationURL.appendingPathExtension("decrypted.tmp-\(UUID().uuidString)")
+        if FileManager.default.fileExists(atPath: tempURL.path) {
+            try? FileManager.default.removeItem(at: tempURL)
+        }
+
+        guard FileManager.default.createFile(atPath: tempURL.path, contents: nil) else {
+            throw HLSSegmentDecryptionError.fileWriteError(tempURL.path)
+        }
+
+        let readFileHandle: FileHandle
+        do {
+            readFileHandle = try FileHandle(forReadingFrom: sourceURL)
+        } catch {
+            try? FileManager.default.removeItem(at: tempURL)
             throw HLSSegmentDecryptionError.fileReadError("\(sourceURL.path): \(error.localizedDescription)")
         }
-        let cleartext = try decrypt(data: ciphertext, key: key, iv: iv)
-        let parentDir = destinationURL.deletingLastPathComponent()
-        try? FileManager.default.createDirectory(at: parentDir, withIntermediateDirectories: true)
-        do {
-            try cleartext.write(to: destinationURL, options: .atomic)
-        } catch {
-            throw HLSSegmentDecryptionError.fileWriteError(destinationURL.path)
+        defer {
+            try? readFileHandle.close()
         }
+
+        let writeFileHandle: FileHandle
+        do {
+            writeFileHandle = try FileHandle(forWritingTo: tempURL)
+        } catch {
+            try? FileManager.default.removeItem(at: tempURL)
+            throw HLSSegmentDecryptionError.fileWriteError(tempURL.path)
+        }
+        defer {
+            try? writeFileHandle.close()
+        }
+
+        var cryptor: CCCryptorRef?
+        let createStatus = key.withUnsafeBytes { keyBytes in
+            iv.withUnsafeBytes { ivBytes in
+                CCCryptorCreate(
+                    CCOperation(kCCDecrypt),
+                    CCAlgorithm(kCCAlgorithmAES),
+                    CCOptions(kCCOptionPKCS7Padding),
+                    keyBytes.baseAddress,
+                    kCCKeySizeAES128,
+                    ivBytes.baseAddress,
+                    &cryptor
+                )
+            }
+        }
+
+        guard createStatus == kCCSuccess, let cryptor = cryptor else {
+            try? FileManager.default.removeItem(at: tempURL)
+            throw HLSSegmentDecryptionError.cryptorError(status: createStatus)
+        }
+        defer {
+            CCCryptorRelease(cryptor)
+        }
+
+        let chunkSize = 64 * 1024
+        var outBuffer = [UInt8](repeating: 0, count: chunkSize + kCCBlockSizeAES128)
+
+        while true {
+            let chunk: Data
+            #if swift(>=5.2)
+            if #available(macOS 10.15.4, iOS 13.4, tvOS 13.4, watchOS 6.2, *) {
+                do {
+                    guard let data = try readFileHandle.read(upToCount: chunkSize), !data.isEmpty else {
+                        break
+                    }
+                    chunk = data
+                } catch {
+                    try? FileManager.default.removeItem(at: tempURL)
+                    throw HLSSegmentDecryptionError.fileReadError("\(sourceURL.path): \(error.localizedDescription)")
+                }
+            } else {
+                chunk = readFileHandle.readData(ofLength: chunkSize)
+                if chunk.isEmpty { break }
+            }
+            #else
+            chunk = readFileHandle.readData(ofLength: chunkSize)
+            if chunk.isEmpty { break }
+            #endif
+
+            var bytesUpdated: size_t = 0
+            let updateStatus = chunk.withUnsafeBytes { inBytes in
+                CCCryptorUpdate(
+                    cryptor,
+                    inBytes.baseAddress,
+                    chunk.count,
+                    &outBuffer,
+                    outBuffer.count,
+                    &bytesUpdated
+                )
+            }
+
+            guard updateStatus == kCCSuccess else {
+                try? FileManager.default.removeItem(at: tempURL)
+                throw HLSSegmentDecryptionError.cryptorError(status: updateStatus)
+            }
+
+            if bytesUpdated > 0 {
+                let writeData = Data(bytes: outBuffer, count: bytesUpdated)
+                #if swift(>=5.2)
+                if #available(macOS 10.15.4, iOS 13.4, tvOS 13.4, watchOS 6.2, *) {
+                    do {
+                        try writeFileHandle.write(contentsOf: writeData)
+                    } catch {
+                        try? FileManager.default.removeItem(at: tempURL)
+                        throw HLSSegmentDecryptionError.fileWriteError(tempURL.path)
+                    }
+                } else {
+                    writeFileHandle.write(writeData)
+                }
+                #else
+                writeFileHandle.write(writeData)
+                #endif
+            }
+        }
+
+        var bytesFinal: size_t = 0
+        let finalStatus = CCCryptorFinal(
+            cryptor,
+            &outBuffer,
+            outBuffer.count,
+            &bytesFinal
+        )
+
+        guard finalStatus == kCCSuccess else {
+            try? FileManager.default.removeItem(at: tempURL)
+            throw HLSSegmentDecryptionError.cryptorError(status: finalStatus)
+        }
+
+        if bytesFinal > 0 {
+            let writeData = Data(bytes: outBuffer, count: bytesFinal)
+            #if swift(>=5.2)
+            if #available(macOS 10.15.4, iOS 13.4, tvOS 13.4, watchOS 6.2, *) {
+                do {
+                    try writeFileHandle.write(contentsOf: writeData)
+                } catch {
+                    try? FileManager.default.removeItem(at: tempURL)
+                    throw HLSSegmentDecryptionError.fileWriteError(tempURL.path)
+                }
+            } else {
+                writeFileHandle.write(writeData)
+            }
+            #else
+            writeFileHandle.write(writeData)
+            #endif
+        }
+
+        try? writeFileHandle.close()
+
+        if FileManager.default.fileExists(atPath: destinationURL.path) {
+            do {
+                _ = try FileManager.default.replaceItemAt(destinationURL, withItemAt: tempURL)
+            } catch {
+                do {
+                    try FileManager.default.removeItem(at: destinationURL)
+                    try FileManager.default.moveItem(at: tempURL, to: destinationURL)
+                } catch {
+                    try? FileManager.default.removeItem(at: tempURL)
+                    throw HLSSegmentDecryptionError.fileWriteError(destinationURL.path)
+                }
+            }
+        } else {
+            do {
+                try FileManager.default.moveItem(at: tempURL, to: destinationURL)
+            } catch {
+                try? FileManager.default.removeItem(at: tempURL)
+                throw HLSSegmentDecryptionError.fileWriteError(destinationURL.path)
+            }
+        }
+        #else
+        throw HLSSegmentDecryptionError.commonCryptoUnavailable
+        #endif
     }
 
     #if canImport(CommonCrypto)

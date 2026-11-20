@@ -141,7 +141,13 @@ public enum DurableStorage {
 
         let data: Data
         do {
-            data = try Data(contentsOf: url)
+            if let fileSize = fileManager.fileSize(atPath: url.path), fileSize > 100 * 1024 * 1024 {
+                throw PersistenceStorageError.corruptedData(
+                    url: url,
+                    underlyingError: "Persistence file exceeds maximum supported size (100MB): \(fileSize) bytes"
+                )
+            }
+            data = try Data(contentsOf: url, options: .alwaysMapped)
         } catch {
             PipelineLogger.shared.log(
                 stage: .persistence,

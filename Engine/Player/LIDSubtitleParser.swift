@@ -27,7 +27,10 @@ public final class LIDSubtitleParser: Sendable {
 
     /// Parse subtitles from file URL with encoding autodetection.
     public func parse(fileURL: URL) throws -> [LIDSubtitleCue] {
-        let data = try Data(contentsOf: fileURL)
+        if let size = FileManager.default.fileSize(atPath: fileURL.path), size > 10 * 1024 * 1024 {
+            return []
+        }
+        let data = try Data(contentsOf: fileURL, options: .alwaysMapped)
         return parse(data: data)
     }
 

@@ -156,7 +156,11 @@ public actor TorrentPersistenceStore {
             return nil
         }
         do {
-            return try Data(contentsOf: fileURL)
+            if let size = fileManager.fileSize(atPath: fileURL.path), size > 20 * 1024 * 1024 {
+                PipelineLogger.shared.log(stage: .persistence, message: "[TorrentPersistenceStore] Resume data at \(fileURL.path) exceeds 20MB: \(size)")
+                return nil
+            }
+            return try Data(contentsOf: fileURL, options: .alwaysMapped)
         } catch {
             PipelineLogger.shared.log(stage: .persistence, message: "[TorrentPersistenceStore] Failed to read resume data at \(fileURL.path): \(error.localizedDescription)")
             return nil
@@ -208,7 +212,10 @@ public actor TorrentPersistenceStore {
         }
 
         do {
-            let data = try Data(contentsOf: manifestFileURL)
+            if let size = fileManager.fileSize(atPath: manifestFileURL.path), size > 50 * 1024 * 1024 {
+                throw TorrentEngineError.invalidTorrentFile("Manifest file exceeds 50MB: \(size)")
+            }
+            let data = try Data(contentsOf: manifestFileURL, options: .alwaysMapped)
             let manifest = try decoder.decode(TorrentQueueManifest.self, from: data)
             if manifest.schemaVersion > TorrentQueueManifest.currentSchemaVersion {
                 throw TorrentEngineError.unsupportedSchemaVersion(manifest.schemaVersion)
