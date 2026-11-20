@@ -492,13 +492,13 @@ final class StreamQualityPickerTests: XCTestCase {
         #EXTM3U
         #EXT-X-VERSION:4
         #EXT-X-STREAM-INF:BANDWIDTH=5000000,RESOLUTION=1920x1080
-        https://cdn-primary.example.com/1080p.m3u8
+        https://cdn-1.example.com/1080p.m3u8
         #EXT-X-STREAM-INF:BANDWIDTH=5000000,RESOLUTION=1920x1080
-        https://cdn-backup.example.com/1080p.m3u8
+        https://cdn-2.example.com/1080p.m3u8
         #EXT-X-STREAM-INF:BANDWIDTH=2500000,RESOLUTION=1280x720
-        https://cdn-primary.example.com/720p.m3u8
+        https://cdn-1.example.com/720p.m3u8
         #EXT-X-STREAM-INF:BANDWIDTH=2500000,RESOLUTION=1280x720
-        https://cdn-backup.example.com/720p.m3u8
+        https://cdn-2.example.com/720p.m3u8
         """
 
         let options = try StreamQualityInspector.inspectHLS(
@@ -509,9 +509,9 @@ final class StreamQualityPickerTests: XCTestCase {
         // Deduplication must collapse the 4 variants into 2 distinct quality tiers
         XCTAssertEqual(options.count, 2)
         XCTAssertEqual(options[0].qualityBadge, "1080p")
-        XCTAssertEqual(options[0].uri, URL(string: "https://cdn-primary.example.com/1080p.m3u8")!)
+        XCTAssertEqual(options[0].uri, URL(string: "https://cdn-1.example.com/1080p.m3u8")!)
         XCTAssertEqual(options[1].qualityBadge, "720p")
-        XCTAssertEqual(options[1].uri, URL(string: "https://cdn-primary.example.com/720p.m3u8")!)
+        XCTAssertEqual(options[1].uri, URL(string: "https://cdn-1.example.com/720p.m3u8")!)
     }
 
     func testVariantIDsDoNotCollideWhenFilenameBandwidthAndResolutionMatch() throws {
