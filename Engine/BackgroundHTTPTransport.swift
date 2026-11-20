@@ -381,21 +381,6 @@ public enum BackgroundResponseValidator {
     }
 }
 
-private extension HTTPURLResponse {
-    func value(forCaseInsensitiveField field: String) -> String? {
-        if #available(iOS 13.0, macOS 10.15, *) {
-            return value(forHTTPHeaderField: field)
-        } else {
-            let lower = field.lowercased()
-            for (key, val) in allHeaderFields {
-                if let k = key as? String, k.lowercased() == lower, let v = val as? String {
-                    return v
-                }
-            }
-            return nil
-        }
-    }
-}
 
 // MARK: - Crash-Safe File Handler
 

@@ -520,7 +520,7 @@ public actor URLSessionStreamingSegmentExecutor: StreamingSegmentExecutor {
         _ request: StreamingSegmentTransferRequest,
         progress: (@Sendable (Double) -> Void)? = nil
     ) async throws {
-        let rangeTuple = request.byteRange.map { ($0.offset, $0.offset + $0.length - 1) }
+        let rangeTuple = request.byteRange.map { ($0.start, $0.end) }
         let urlRequest = HTTPTransportValidator.normalizeRequest(
             url: request.url,
             headers: request.headers,
@@ -616,7 +616,6 @@ public actor URLSessionStreamingSegmentExecutor: StreamingSegmentExecutor {
                 try fileManager.moveItem(at: tempURL, to: request.destinationURL)
             }
         }
-    }
         progress?(1.0)
     }
 
