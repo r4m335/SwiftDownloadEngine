@@ -514,9 +514,11 @@ public struct BrowserHeaderFilter {
             lhsHost == rhsHost &&
             effectivePort(for: lhs, scheme: lhsScheme) == effectivePort(for: rhs, scheme: rhsScheme)
     }
+}
 
-    // MARK: - Manifest Cache Key Discriminator
+// MARK: - Manifest Cache Key Discriminator
 
+extension BrowserRequestContext {
     /// Computes a deterministic cache key for a media manifest URL and its associated browser context.
     /// Incorporates cookies, headers, page origin, and user agent to prevent cross-tab, cross-user,
     /// or private-browsing cache pollution for signed or authenticated streaming manifests.
