@@ -125,7 +125,7 @@ public enum HLSManifestParser {
                 do {
                     pendingVariantAttributes = try parseAttributes(String(line.dropFirst("#EXT-X-STREAM-INF:".count)))
                 } catch {
-                    PipelineLogger.shared.log("Skipping malformed EXT-X-STREAM-INF tag: \(error)", level: .warning)
+                    PipelineLogger.shared.log("Skipping malformed EXT-X-STREAM-INF tag: \(error)")
                     lastMalformedVariantError = error
                     skippingMalformedVariantURI = true
                 }
@@ -164,7 +164,7 @@ public enum HLSManifestParser {
                         isIFrameOnly: true
                     ))
                 } catch {
-                    PipelineLogger.shared.log("Skipping malformed EXT-X-I-FRAME-STREAM-INF: \(error)", level: .warning)
+                    PipelineLogger.shared.log("Skipping malformed EXT-X-I-FRAME-STREAM-INF: \(error)")
                     lastMalformedVariantError = error
                 }
                 continue
@@ -190,7 +190,7 @@ public enum HLSManifestParser {
                         isAutoSelect: attributes["AUTOSELECT"]?.uppercased() == "YES"
                     ))
                 } catch {
-                    PipelineLogger.shared.log("Skipping malformed EXT-X-MEDIA: \(error)", level: .warning)
+                    PipelineLogger.shared.log("Skipping malformed EXT-X-MEDIA: \(error)")
                     lastMalformedVariantError = error
                 }
                 continue
@@ -221,7 +221,7 @@ public enum HLSManifestParser {
                         subtitlesGroup: attributes["SUBTITLES"]
                     ))
                 } catch {
-                    PipelineLogger.shared.log("Skipping malformed variant URI '\(line)': \(error)", level: .warning)
+                    PipelineLogger.shared.log("Skipping malformed variant URI '\(line)': \(error)")
                     lastMalformedVariantError = error
                 }
                 continue
