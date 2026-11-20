@@ -143,29 +143,79 @@ final class HLSAndDASHProductionValidationTests: XCTestCase {
         #EXTM3U
         #EXT-X-STREAM-INF:BANDWIDTH=2000000,RESOLUTION=1280x720
         variant.m3u8
+        #EXT-X-STREAM-INF:BANDWIDTH=5000000,RESOLUTION=1920x1080
+        variant1080.m3u8?track=video&res=1080
+        #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="audio",NAME="English",URI="audio.m3u8?lang=en"
         """
         let manifest = try HLSManifestParser.parse(masterContent, baseURL: manifestURL)
-        let variant = manifest.variants[0]
 
-        // Candidate has signed query tokens on the parent manifest URL
-        let candidate = try StreamingManifestCandidate(
-            url: manifestURL,
-            mimeType: "application/vnd.apple.mpegurl"
-        )
+        // Variant without its own query receives master query parameters
+        let variant0 = manifest.variants[0]
+        XCTAssertTrue(variant0.uri.absoluteString.contains("token=secure123"))
+        XCTAssertTrue(variant0.uri.absoluteString.contains("exp=999999"))
 
-        // Child playlist URI must inherit query tokens when child URI lacks its own query
-        let childURI: URL
-        if (variant.uri.query == nil || variant.uri.query?.isEmpty == true),
-           let parentQuery = manifestURL.query ?? candidate.url.query, !parentQuery.isEmpty,
-           var components = URLComponents(url: variant.uri, resolvingAgainstBaseURL: false) {
-            components.query = parentQuery
-            childURI = components.url ?? variant.uri
-        } else {
-            childURI = variant.uri
-        }
+        // Variant WITH its own query preserves them AND receives master query parameters
+        let variant1 = manifest.variants[1]
+        XCTAssertTrue(variant1.uri.absoluteString.contains("track=video"))
+        XCTAssertTrue(variant1.uri.absoluteString.contains("res=1080"))
+        XCTAssertTrue(variant1.uri.absoluteString.contains("token=secure123"))
+        XCTAssertTrue(variant1.uri.absoluteString.contains("exp=999999"))
 
-        XCTAssertTrue(childURI.absoluteString.contains("token=secure123"))
-        XCTAssertTrue(childURI.absoluteString.contains("exp=999999"))
+        // Audio rendition inherits master query parameters as well
+        let audio = try XCTUnwrap(manifest.renditions.first)
+        XCTAssertTrue(audio.uri?.absoluteString.contains("lang=en") == true)
+        XCTAssertTrue(audio.uri?.absoluteString.contains("token=secure123") == true)
+        XCTAssertTrue(audio.uri?.absoluteString.contains("exp=999999") == true)
+    }
+
+    func testParentQueryPropagationToRelativeSegmentsAndMaps() throws {
+        let playlist = """
+        #EXTM3U
+        #EXT-X-VERSION:7
+        #EXT-X-TARGETDURATION:6
+        #EXT-X-PLAYLIST-TYPE:VOD
+        #EXT-X-MAP:URI="init.mp4",BYTERANGE="720@0"
+        #EXTINF:6.0,
+        segment1.ts
+        #EXTINF:6.0,
+        segment2.ts?chunk=2
+        #EXT-X-KEY:METHOD=AES-128,URI="keys/key.bin?id=1"
+        #EXTINF:6.0,
+        segment3.ts
+        #EXTINF:6.0,
+        https://external-cdn.other.com/media/ad.ts?ad=1
+        #EXT-X-ENDLIST
+        """
+
+        let manifest = try HLSManifestParser.parse(playlist, baseURL: manifestURL)
+        let plan = try HLSTransferPlanner.makeVODPlan(from: manifest)
+
+        // Init map inherits query
+        XCTAssertEqual(plan.resources[0].kind, .initializationMap)
+        XCTAssertTrue(plan.resources[0].url.absoluteString.contains("token=secure123"))
+        XCTAssertTrue(plan.resources[0].url.absoluteString.contains("exp=999999"))
+
+        // Segment 1 (no query) inherits query
+        XCTAssertTrue(plan.resources[1].url.absoluteString.contains("segment1.ts?token=secure123&exp=999999"))
+
+        // Segment 2 (with its own query) preserves its query and merges parent query
+        XCTAssertTrue(plan.resources[2].url.absoluteString.contains("chunk=2"))
+        XCTAssertTrue(plan.resources[2].url.absoluteString.contains("token=secure123"))
+        XCTAssertTrue(plan.resources[2].url.absoluteString.contains("exp=999999"))
+
+        // Key with its own query preserves its query and merges parent query
+        XCTAssertEqual(plan.resources[3].kind, .encryptionKey)
+        XCTAssertTrue(plan.resources[3].url.absoluteString.contains("id=1"))
+        XCTAssertTrue(plan.resources[3].url.absoluteString.contains("token=secure123"))
+
+        // Segment 3 inherits query
+        XCTAssertTrue(plan.resources[4].url.absoluteString.contains("segment3.ts?token=secure123&exp=999999"))
+
+        // Cross-origin segment does NOT leak parent query token
+        let crossOrigin = plan.resources.first { $0.url.host == "external-cdn.other.com" }
+        XCTAssertNotNil(crossOrigin)
+        XCTAssertEqual(crossOrigin?.url.absoluteString, "https://external-cdn.other.com/media/ad.ts?ad=1")
+        XCTAssertFalse(crossOrigin?.url.absoluteString.contains("token=secure123") == true)
     }
 
     func testUnsupportedEncryptionExplicitlyRejected() throws {

@@ -111,7 +111,7 @@ public enum HLSManifestParser {
                       let name = attributes["NAME"] else {
                     throw ManifestParserError.malformed(reason: "EXT-X-MEDIA requires TYPE, GROUP-ID, and NAME.")
                 }
-                let uri = try optionalURL(attributes["URI"], baseURL: baseURL)
+                let uri = try resolveRenditionURL(attributes["URI"], baseURL: baseURL)
                 renditions.append(HLSRendition(
                     type: type,
                     groupID: groupID,
@@ -150,7 +150,7 @@ public enum HLSManifestParser {
             }
 
             if let segment = pendingSegment, !line.hasPrefix("#") {
-                guard let uri = try resolveURL(line, against: baseURL) else {
+                guard let uri = try resolveSegmentURL(line, against: baseURL) else {
                     throw ManifestParserError.invalidURL
                 }
                 segments.append(HLSMediaSegment(
@@ -211,7 +211,7 @@ public enum HLSManifestParser {
                 sawMediaTag = true
             } else if line.hasPrefix("#EXT-X-MAP:") {
                 let attributes = try parseAttributes(String(line.dropFirst("#EXT-X-MAP:".count)))
-                guard let uriValue = attributes["URI"], let uri = try resolveURL(uriValue, against: baseURL) else {
+                guard let uriValue = attributes["URI"], let uri = try resolveSegmentURL(uriValue, against: baseURL) else {
                     throw ManifestParserError.malformed(reason: "EXT-X-MAP requires a valid URI.")
                 }
                 currentMap = HLSInitializationMap(uri: uri, byteRange: try optionalByteRange(attributes["BYTERANGE"]))
@@ -372,25 +372,28 @@ public enum HLSManifestParser {
     }
 
     private static func resolveVariantURL(_ value: String, against baseURL: URL) throws -> URL? {
-        guard !value.isEmpty else { throw ManifestParserError.invalidURL }
-        let resolved: URL
-        if let direct = URL(string: value, relativeTo: baseURL)?.absoluteURL, isHTTPURL(direct) {
-            resolved = direct
-        } else if let encoded = value.addingPercentEncoding(withAllowedCharacters: .urlFragmentAllowed.union(.urlQueryAllowed).union(.urlPathAllowed)),
-                  let encResolved = URL(string: encoded, relativeTo: baseURL)?.absoluteURL, isHTTPURL(encResolved) {
-            resolved = encResolved
-        } else {
-            throw ManifestParserError.invalidURL
+        guard let resolved = try resolveURL(value, against: baseURL) else { return nil }
+        if let baseQuery = baseURL.query, !baseQuery.isEmpty {
+            return resolved.mergingParentQuery(baseQuery)
         }
+        return resolved
+    }
 
-        // If the child variant URL has no query parameters, but the master manifest URL carried query parameters
-        // (such as signed CDN tokens, HMAC, session auth, or expiration timestamps),
-        // preserve the master URL's query parameters so child variants do not lose authorization.
-        if resolved.query == nil, let baseQuery = baseURL.query, !baseQuery.isEmpty {
-            let sep = resolved.absoluteString.contains("?") ? "&" : "?"
-            if let withQuery = URL(string: "\(resolved.absoluteString)\(sep)\(baseQuery)") {
-                return withQuery
-            }
+    private static func resolveRenditionURL(_ value: String?, baseURL: URL) throws -> URL? {
+        guard let value else { return nil }
+        guard let resolved = try resolveURL(value, against: baseURL) else { return nil }
+        if let baseQuery = baseURL.query, !baseQuery.isEmpty {
+            return resolved.mergingParentQuery(baseQuery)
+        }
+        return resolved
+    }
+
+    private static func resolveSegmentURL(_ value: String, against baseURL: URL) throws -> URL? {
+        guard let resolved = try resolveURL(value, against: baseURL) else { return nil }
+        let isRelative = !value.hasPrefix("http://") && !value.hasPrefix("https://") && !value.hasPrefix("//")
+        let isSameHost = resolved.host?.lowercased() == baseURL.host?.lowercased()
+        if (isRelative || isSameHost), let baseQuery = baseURL.query, !baseQuery.isEmpty {
+            return resolved.mergingParentQuery(baseQuery)
         }
         return resolved
     }
@@ -406,11 +409,10 @@ public enum HLSManifestParser {
               let scheme = resolved.scheme?.lowercased(), !scheme.isEmpty else {
             throw ManifestParserError.invalidURL
         }
-        if resolved.query == nil, let baseQuery = baseURL.query, !baseQuery.isEmpty {
-            let sep = resolved.absoluteString.contains("?") ? "&" : "?"
-            if let withQuery = URL(string: "\(resolved.absoluteString)\(sep)\(baseQuery)") {
-                resolved = withQuery
-            }
+        let isRelative = !value.hasPrefix("http://") && !value.hasPrefix("https://") && !value.hasPrefix("//")
+        let isSameHost = resolved.host?.lowercased() == baseURL.host?.lowercased()
+        if (isRelative || isSameHost), let baseQuery = baseURL.query, !baseQuery.isEmpty {
+            resolved = resolved.mergingParentQuery(baseQuery)
         }
         if method.uppercased() == "AES-128" && !isHTTPURL(resolved) {
             throw ManifestParserError.invalidURL
@@ -494,5 +496,54 @@ public enum HLSManifestParser {
     ) throws -> [HLSRendition] {
         let manifest = try parse(data, baseURL: baseURL, limits: limits)
         return manifest.subtitleRenditions
+    }
+}
+
+extension URL {
+    /// Merges missing parent query parameters into this URL while preserving existing query parameters,
+    /// order, and fragments without mutating percent-encoding of path/userinfo.
+    public func mergingParentQuery(_ parentQuery: String?) -> URL {
+        guard let rawParent = parentQuery?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !rawParent.isEmpty else {
+            return self
+        }
+        let cleanParent = rawParent.hasPrefix("?") ? String(rawParent.dropFirst()) : rawParent
+        guard !cleanParent.isEmpty else { return self }
+
+        let urlString = self.absoluteString
+        let hashIndex = urlString.firstIndex(of: "#")
+        let urlWithoutHash = hashIndex != nil ? String(urlString[..<hashIndex!]) : urlString
+        let fragment = hashIndex != nil ? String(urlString[hashIndex!...]) : ""
+
+        if let questionIndex = urlWithoutHash.firstIndex(of: "?") {
+            let existingQuery = String(urlWithoutHash[urlWithoutHash.index(after: questionIndex)...])
+            let existingKeys: Set<String> = Set(existingQuery.split(separator: "&").compactMap { param in
+                let key = param.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false).first ?? ""
+                let trimmed = String(key).trimmingCharacters(in: .whitespaces)
+                return trimmed.isEmpty ? nil : trimmed
+            })
+
+            let parentParams = cleanParent.split(separator: "&")
+            var paramsToAppend: [String] = []
+            for param in parentParams {
+                let trimmed = param.trimmingCharacters(in: .whitespaces)
+                guard !trimmed.isEmpty else { continue }
+                let key = String(trimmed.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false).first ?? "").trimmingCharacters(in: .whitespaces)
+                if !existingKeys.contains(key) {
+                    paramsToAppend.append(trimmed)
+                }
+            }
+
+            if paramsToAppend.isEmpty {
+                return self
+            }
+            let mergedParams = paramsToAppend.joined(separator: "&")
+            let sep = existingQuery.isEmpty ? "" : "&"
+            let newURLString = "\(urlWithoutHash)\(sep)\(mergedParams)\(fragment)"
+            return URL(string: newURLString) ?? self
+        } else {
+            let newURLString = "\(urlWithoutHash)?\(cleanParent)\(fragment)"
+            return URL(string: newURLString) ?? self
+        }
     }
 }

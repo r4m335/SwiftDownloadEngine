@@ -1693,14 +1693,8 @@ public actor StreamingDownloadOrchestrator {
                $0.type.uppercased() == "AUDIO" && ($0.uri == exactURI || $0.uri?.absoluteString == exactURI.absoluteString || ($0.uri != nil && $0.uri?.path == exactURI.path))
            }), let audioURI = matchedAudio.uri {
             PipelineLogger.shared.log("[HLS Pipeline] Direct audio rendition match found: \(audioURI.absoluteString)")
-            let effectiveAudioURI: URL
-            if (audioURI.query == nil || audioURI.query?.isEmpty == true),
-               let parentQuery = baseURL.query ?? candidate.url.query, !parentQuery.isEmpty {
-                let sep = audioURI.absoluteString.contains("?") ? "&" : "?"
-                effectiveAudioURI = URL(string: "\(audioURI.absoluteString)\(sep)\(parentQuery)") ?? audioURI
-            } else {
-                effectiveAudioURI = audioURI
-            }
+            let parentQuery = baseURL.query ?? candidate.url.query
+            let effectiveAudioURI = audioURI.mergingParentQuery(parentQuery)
 
             let audioCachedText = validCachedManifestText(
                 for: effectiveAudioURI,
@@ -1808,20 +1802,8 @@ public actor StreamingDownloadOrchestrator {
                 }
             }
 
-            let variantURI: URL
-            if (variant.uri.query == nil || variant.uri.query?.isEmpty == true),
-               let parentQuery = baseURL.query ?? candidate.url.query, !parentQuery.isEmpty {
-                if var components = URLComponents(url: variant.uri, resolvingAgainstBaseURL: false) {
-                    components.query = parentQuery
-                    variantURI = components.url ?? URL(string: "\(variant.uri.absoluteString)?\(parentQuery)") ?? variant.uri
-                } else if let fallback = URL(string: "\(variant.uri.absoluteString)?\(parentQuery)") {
-                    variantURI = fallback
-                } else {
-                    variantURI = variant.uri
-                }
-            } else {
-                variantURI = variant.uri
-            }
+            let parentQuery = baseURL.query ?? candidate.url.query
+            let variantURI = variant.uri.mergingParentQuery(parentQuery)
 
             let variantCachedText = validCachedManifestText(
                 for: variantURI,
@@ -1972,14 +1954,8 @@ public actor StreamingDownloadOrchestrator {
             var audioFailedUnsupported = false
             if let audioURI = selectedAudioRendition?.uri {
                 PipelineLogger.shared.log("[HLS Pipeline] Separate audio rendition detected for \(variantDesc): \(audioURI.absoluteString). Fetching audio manifest...")
-                let audioFinalURI: URL
-                if (audioURI.query == nil || audioURI.query?.isEmpty == true),
-                   let parentQuery = subResponse.finalURL.query ?? candidate.url.query, !parentQuery.isEmpty {
-                    let sep = audioURI.absoluteString.contains("?") ? "&" : "?"
-                    audioFinalURI = URL(string: "\(audioURI.absoluteString)\(sep)\(parentQuery)") ?? audioURI
-                } else {
-                    audioFinalURI = audioURI
-                }
+                let parentQuery = subResponse.finalURL.query ?? candidate.url.query
+                let audioFinalURI = audioURI.mergingParentQuery(parentQuery)
                 let audioCandidate = try StreamingManifestCandidate(
                     url: audioFinalURI,
                     mimeType: "application/vnd.apple.mpegurl",
@@ -2172,12 +2148,8 @@ public actor StreamingDownloadOrchestrator {
 
             var resolvedSubtitleURL: URL? = resolved.selectedSubtitleRendition?.uri
             if let subURI = resolvedSubtitleURL {
-                if (subURI.query == nil || subURI.query?.isEmpty == true),
-                   let parentQuery = resolved.mediaURL.query ?? candidate.url.query, !parentQuery.isEmpty,
-                   var components = URLComponents(url: subURI, resolvingAgainstBaseURL: false) {
-                    components.query = parentQuery
-                    resolvedSubtitleURL = components.url ?? subURI
-                }
+                let parentQuery = resolved.mediaURL.query ?? candidate.url.query
+                resolvedSubtitleURL = subURI.mergingParentQuery(parentQuery)
                 PipelineLogger.shared.log("[HLS Pipeline] Subtitle stream detected: \(resolvedSubtitleURL?.absoluteString ?? "")")
             }
 

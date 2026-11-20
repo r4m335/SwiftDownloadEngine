@@ -63,8 +63,9 @@ final class StreamingManifestTests: XCTestCase {
         XCTAssertEqual(manifest.variants.count, 2)
         XCTAssertEqual(manifest.variants[0].bandwidth, 2_800_000)
         XCTAssertEqual(manifest.variants[0].resolution, HLSResolution(width: 1280, height: 720))
-        XCTAssertEqual(manifest.variants[0].uri.absoluteString, "https://example.com/video/variants/720p.m3u8?token=private")
-        XCTAssertEqual(manifest.renditions.first?.uri?.absoluteString, "https://example.com/video/audio/index.m3u8?lang=en")
+        XCTAssertEqual(manifest.variants[0].uri.absoluteString, "https://example.com/video/variants/720p.m3u8?token=private&session=redacted")
+        XCTAssertEqual(manifest.variants[1].uri.absoluteString, "https://example.com/video/variants/360p.m3u8?session=redacted")
+        XCTAssertEqual(manifest.renditions.first?.uri?.absoluteString, "https://example.com/video/audio/index.m3u8?lang=en&session=redacted")
     }
 
     func testHLSMediaPlaylistParsesVODSegmentsMapAndEncryption() throws {
@@ -89,7 +90,10 @@ final class StreamingManifestTests: XCTestCase {
         XCTAssertEqual(manifest.lifecycle, .vod)
         XCTAssertEqual(manifest.segments.map(\.sequenceNumber), [10, 11])
         XCTAssertEqual(manifest.segments[0].duration, 5.5, accuracy: 0.001)
-        XCTAssertEqual(manifest.segments[0].initializationMap?.uri.absoluteString, "https://example.com/video/init.mp4")
+        XCTAssertEqual(manifest.segments[0].initializationMap?.uri.absoluteString, "https://example.com/video/init.mp4?session=redacted")
+        XCTAssertEqual(manifest.segments[0].uri.absoluteString, "https://example.com/video/segment-10.m4s?part=1&session=redacted")
+        XCTAssertEqual(manifest.segments[1].uri.absoluteString, "https://example.com/video/segment-11.m4s?session=redacted")
+        XCTAssertEqual(manifest.segments[1].encryption?.keyURL?.absoluteString, "https://example.com/video/keys/key.bin?session=redacted")
         XCTAssertEqual(manifest.segments[0].byteRange, HLSByteRange(length: 1200, offset: 720))
         XCTAssertEqual(manifest.segments[1].encryption?.classification, .aes128)
         XCTAssertEqual(manifest.encryption, .aes128)
