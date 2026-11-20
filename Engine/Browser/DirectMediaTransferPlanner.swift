@@ -164,8 +164,7 @@ public enum DirectMediaTransferPlanner {
             throw DirectMediaTransferPlanError.insufficientEvidence
         }
 
-        let filenameResolver = BrowserDownloadInterceptionManager()
-        let responseFilename = filenameResolver.resolveFilename(
+        let responseFilename = BrowserDownloadInterceptionManager.resolveFilename(
             serverSuggested: response?.suggestedFilename,
             contentDisposition: response?.contentDisposition,
             url: transferURL,

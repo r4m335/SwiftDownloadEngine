@@ -360,10 +360,15 @@ public final class BrowserDiagnosticWebKitHandler: NSObject, WKScriptMessageHand
     public let tabID: UUID?
 
     @MainActor
-    public init(logger: BrowserDiagnosticLogger = .shared, tabID: UUID? = nil) {
+    public init(logger: BrowserDiagnosticLogger, tabID: UUID? = nil) {
         self.logger = logger
         self.tabID = tabID
         super.init()
+    }
+
+    @MainActor
+    public convenience init(tabID: UUID? = nil) {
+        self.init(logger: .shared, tabID: tabID)
     }
 
     public func install(on configuration: WKWebViewConfiguration) {

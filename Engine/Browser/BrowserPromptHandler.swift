@@ -5,7 +5,7 @@ public protocol BrowserPromptProviding: AnyObject, Sendable {
         message: String,
         defaultText: String?,
         frameURL: URL?,
-        completionHandler: @escaping @Sendable (String?) -> Void
+        completionHandler: @escaping (String?) -> Void
     )
 }
 
@@ -23,7 +23,7 @@ public final class BrowserPromptHandler {
         prompt: String,
         defaultText: String?,
         frameURL: URL?,
-        completionHandler: @escaping @Sendable (String?) -> Void
+        completionHandler: @escaping (String?) -> Void
     ) {
         guard let provider else {
             // Default must strictly be cancellation (nil). Never silently submit prompt text.

@@ -18,7 +18,7 @@ public protocol BrowserAuthenticationProviding: AnyObject, Sendable {
     func promptForCredentials(
         host: String,
         realm: String?,
-        completionHandler: @escaping @Sendable (String?, String?) -> Void
+        completionHandler: @escaping (String?, String?) -> Void
     )
 }
 
@@ -38,7 +38,7 @@ public final class BrowserAuthenticationHandler {
     public func handleChallenge(
         _ challenge: URLAuthenticationChallenge,
         targetPageURL: URL? = nil,
-        completionHandler: @escaping @Sendable (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
+        completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
     ) {
         let space = challenge.protectionSpace
         let authMethod = space.authenticationMethod

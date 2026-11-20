@@ -80,7 +80,7 @@ public final class BrowserDownloadInterceptionManager {
     /// 3. URL last path component
     /// 4. MIME-type fallback
     /// 5. Host-based fallback
-    public func resolveFilename(
+    public static func resolveFilename(
         serverSuggested: String?,
         contentDisposition: String?,
         url: URL,
@@ -106,8 +106,22 @@ public final class BrowserDownloadInterceptionManager {
         return BrowserDownloadClassifier.suggestedFilenameFromURL(url, mimeType: mimeType)
     }
 
+    public nonisolated func resolveFilename(
+        serverSuggested: String?,
+        contentDisposition: String?,
+        url: URL,
+        mimeType: String?
+    ) -> String {
+        Self.resolveFilename(
+            serverSuggested: serverSuggested,
+            contentDisposition: contentDisposition,
+            url: url,
+            mimeType: mimeType
+        )
+    }
+
     /// Prepares a validated `BrowserDownloadHandoff` payload for engine admission.
-    public func prepareHandoff(
+    public static func prepareHandoff(
         originalURL: URL,
         finalURL: URL? = nil,
         serverSuggestedFilename: String? = nil,
@@ -157,6 +171,28 @@ public final class BrowserDownloadInterceptionManager {
             expectedContentLength: expectedLength,
             source: source,
             requestContext: safeContext
+        )
+    }
+
+    public nonisolated func prepareHandoff(
+        originalURL: URL,
+        finalURL: URL? = nil,
+        serverSuggestedFilename: String? = nil,
+        contentDisposition: String? = nil,
+        mimeType: String? = nil,
+        expectedLength: Int64? = nil,
+        source: BrowserDownloadHandoffSource = .nativeWebKitDownload,
+        requestContext: BrowserRequestContext? = nil
+    ) -> BrowserDownloadHandoff? {
+        Self.prepareHandoff(
+            originalURL: originalURL,
+            finalURL: finalURL,
+            serverSuggestedFilename: serverSuggestedFilename,
+            contentDisposition: contentDisposition,
+            mimeType: mimeType,
+            expectedLength: expectedLength,
+            source: source,
+            requestContext: requestContext
         )
     }
 
