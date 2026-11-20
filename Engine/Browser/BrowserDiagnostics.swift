@@ -359,6 +359,7 @@ public final class BrowserDiagnosticWebKitHandler: NSObject, WKScriptMessageHand
     public let logger: BrowserDiagnosticLogger
     public let tabID: UUID?
 
+    @MainActor
     public init(logger: BrowserDiagnosticLogger = .shared, tabID: UUID? = nil) {
         self.logger = logger
         self.tabID = tabID

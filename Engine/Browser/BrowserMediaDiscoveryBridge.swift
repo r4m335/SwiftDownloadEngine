@@ -1028,11 +1028,13 @@ public final class BrowserMediaDiscoveryBridge: NSObject {
     private var seenKeys: Set<String> = []
     private var seenKeysWithPrefix: Set<String> = []
 
+    @MainActor
     public init(userScriptManager: UserScriptManager = UserScriptManager()) {
         self.userScriptManager = userScriptManager
         super.init()
     }
 
+    @MainActor
     public override convenience init() {
         self.init(userScriptManager: UserScriptManager())
     }

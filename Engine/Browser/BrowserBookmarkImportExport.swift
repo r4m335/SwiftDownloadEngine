@@ -44,6 +44,7 @@ public enum BookmarkURLNormalizer {
 }
 
 /// Standard Netscape Bookmark File Format HTML Exporter.
+@MainActor
 public enum BrowserBookmarkExporter {
 
     /// Exports all bookmarks and nested folders in standard Netscape Bookmark HTML format.
@@ -106,6 +107,7 @@ public enum BrowserBookmarkExporter {
 }
 
 /// Standard Netscape Bookmark File Format HTML Importer.
+@MainActor
 public enum BrowserBookmarkImporter {
 
     public static func unescapeHTML(_ string: String) -> String {
