@@ -141,7 +141,7 @@ public enum DASHVODReconstructionPlanner {
         }
 
         let initialization = completed.filter { $0.resource.kind == .initialization }
-        guard initialization.count == 1 else {
+        guard !initialization.isEmpty else {
             throw DASHVODReconstructionError.missingInitialization
         }
         let media = completed.filter { $0.resource.kind == .mediaSegment }
@@ -156,19 +156,23 @@ public enum DASHVODReconstructionPlanner {
             timescale: timescale,
             duration: representation.estimatedDurationSeconds
         )
-        let initializationSegment = initialization.first.map {
-            MediaAssemblySegment(
-                fileURL: $0.fileURL,
-                role: .initialization,
-                order: 0,
-                expectedByteCount: $0.resource.byteRange?.length,
-                actualByteCount: fileSize($0.fileURL)
-            )
-        }
-        let mediaSegments = media.enumerated().map { index, item in
-            MediaAssemblySegment(
+
+        let firstInitIndex = completed.firstIndex(where: { $0.resource.kind == .initialization }) ?? 0
+        let initializationSegment = MediaAssemblySegment(
+            fileURL: completed[firstInitIndex].fileURL,
+            role: .initialization,
+            order: 0,
+            expectedByteCount: completed[firstInitIndex].resource.byteRange?.length,
+            actualByteCount: fileSize(completed[firstInitIndex].fileURL)
+        )
+
+        let remainingCompleted = completed.enumerated().filter { $0.offset != firstInitIndex }
+        let mediaSegments = remainingCompleted.enumerated().map { index, element in
+            let item = element.element
+            let role: MediaAssemblySegmentRole = item.resource.kind == .initialization ? .initialization : .media
+            return MediaAssemblySegment(
                 fileURL: item.fileURL,
-                role: .media,
+                role: role,
                 order: index,
                 expectedByteCount: item.resource.byteRange?.length,
                 actualByteCount: fileSize(item.fileURL)

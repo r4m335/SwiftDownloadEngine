@@ -434,6 +434,21 @@ public enum DASHTransferPlanner {
                 if allVideoResources.isEmpty {
                     allVideoResources.append(contentsOf: periodPlan.resources)
                 } else {
+                    let lastInit = allVideoResources.last { $0.kind == .initialization }
+                    if let periodInit = periodPlan.resources.first(where: { $0.kind == .initialization }),
+                       lastInit == nil || periodInit.url != lastInit?.url || periodInit.byteRange != lastInit?.byteRange {
+                        allVideoResources.append(DASHPlannedResource(
+                            order: allVideoResources.count,
+                            mediaType: periodInit.mediaType,
+                            kind: periodInit.kind,
+                            url: periodInit.url,
+                            byteRange: periodInit.byteRange,
+                            segmentNumber: periodInit.segmentNumber,
+                            segmentTime: periodInit.segmentTime,
+                            duration: periodInit.duration,
+                            timescale: periodInit.timescale
+                        ))
+                    }
                     let media = periodPlan.resources.filter { $0.kind == .mediaSegment }
                     for m in media {
                         allVideoResources.append(DASHPlannedResource(
@@ -472,6 +487,21 @@ public enum DASHTransferPlanner {
                 if allAudioResources.isEmpty {
                     allAudioResources.append(contentsOf: periodPlan.resources)
                 } else {
+                    let lastInit = allAudioResources.last { $0.kind == .initialization }
+                    if let periodInit = periodPlan.resources.first(where: { $0.kind == .initialization }),
+                       lastInit == nil || periodInit.url != lastInit?.url || periodInit.byteRange != lastInit?.byteRange {
+                        allAudioResources.append(DASHPlannedResource(
+                            order: allAudioResources.count,
+                            mediaType: periodInit.mediaType,
+                            kind: periodInit.kind,
+                            url: periodInit.url,
+                            byteRange: periodInit.byteRange,
+                            segmentNumber: periodInit.segmentNumber,
+                            segmentTime: periodInit.segmentTime,
+                            duration: periodInit.duration,
+                            timescale: periodInit.timescale
+                        ))
+                    }
                     let media = periodPlan.resources.filter { $0.kind == .mediaSegment }
                     for m in media {
                         allAudioResources.append(DASHPlannedResource(
@@ -510,6 +540,21 @@ public enum DASHTransferPlanner {
                 if allTextResources.isEmpty {
                     allTextResources.append(contentsOf: periodPlan.resources)
                 } else {
+                    let lastInit = allTextResources.last { $0.kind == .initialization }
+                    if let periodInit = periodPlan.resources.first(where: { $0.kind == .initialization }),
+                       lastInit == nil || periodInit.url != lastInit?.url || periodInit.byteRange != lastInit?.byteRange {
+                        allTextResources.append(DASHPlannedResource(
+                            order: allTextResources.count,
+                            mediaType: periodInit.mediaType,
+                            kind: periodInit.kind,
+                            url: periodInit.url,
+                            byteRange: periodInit.byteRange,
+                            segmentNumber: periodInit.segmentNumber,
+                            segmentTime: periodInit.segmentTime,
+                            duration: periodInit.duration,
+                            timescale: periodInit.timescale
+                        ))
+                    }
                     let media = periodPlan.resources.filter { $0.kind == .mediaSegment }
                     for m in media {
                         allTextResources.append(DASHPlannedResource(

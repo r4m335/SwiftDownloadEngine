@@ -434,16 +434,18 @@ final class DASHMultiPeriodAndSegmentBaseTests: XCTestCase {
         XCTAssertEqual(videoPlan.representationID, "v_1080p")
         XCTAssertEqual(videoPlan.bandwidth, 5000000)
 
-        // Period 0 (4s / 2s = 2 segs) + Period 1 (6s / 2s = 3 segs) + 1 init = 6 total resources
+        // Period 0 (4s / 2s = 2 segs) + Period 1 (6s / 2s = 3 segs) + 2 inits = 7 total resources
         let videoResources = videoPlan.resources
-        XCTAssertEqual(videoResources.count, 6)
+        XCTAssertEqual(videoResources.count, 7)
         XCTAssertEqual(videoResources[0].kind, .initialization)
         XCTAssertEqual(videoResources[0].url.lastPathComponent, "init-intro.mp4")
         XCTAssertEqual(videoResources[1].url.lastPathComponent, "intro-1.m4s")
         XCTAssertEqual(videoResources[2].url.lastPathComponent, "intro-2.m4s")
-        XCTAssertEqual(videoResources[3].url.lastPathComponent, "p1-1080-1.m4s")
-        XCTAssertEqual(videoResources[4].url.lastPathComponent, "p1-1080-2.m4s")
-        XCTAssertEqual(videoResources[5].url.lastPathComponent, "p1-1080-3.m4s")
+        XCTAssertEqual(videoResources[3].kind, .initialization)
+        XCTAssertEqual(videoResources[3].url.lastPathComponent, "init-1080.mp4")
+        XCTAssertEqual(videoResources[4].url.lastPathComponent, "p1-1080-1.m4s")
+        XCTAssertEqual(videoResources[5].url.lastPathComponent, "p1-1080-2.m4s")
+        XCTAssertEqual(videoResources[6].url.lastPathComponent, "p1-1080-3.m4s")
     }
 
     func testMultiPeriodRequestedAudioRepresentationAbsentFromPeriod0SucceedsWithFallback() throws {
@@ -491,15 +493,18 @@ final class DASHMultiPeriodAndSegmentBaseTests: XCTestCase {
         XCTAssertEqual(audioPlan.representationID, "a_es")
         XCTAssertEqual(audioPlan.bandwidth, 128000)
 
-        // Period 0 falls back to a_en_ad (2 media segments), Period 1 uses requested a_es (3 media segments)
+        // Period 0 falls back to a_en_ad (1 init + 2 media segments), Period 1 uses requested a_es (1 init + 3 media segments) = 7
         let audioResources = audioPlan.resources
-        XCTAssertEqual(audioResources.count, 6)
+        XCTAssertEqual(audioResources.count, 7)
         XCTAssertEqual(audioResources[0].kind, .initialization)
+        XCTAssertEqual(audioResources[0].url.lastPathComponent, "init-a-en.mp4")
         XCTAssertEqual(audioResources[1].url.lastPathComponent, "p0-a-1.m4s")
         XCTAssertEqual(audioResources[2].url.lastPathComponent, "p0-a-2.m4s")
-        XCTAssertEqual(audioResources[3].url.lastPathComponent, "p1-a-es-1.m4s")
-        XCTAssertEqual(audioResources[4].url.lastPathComponent, "p1-a-es-2.m4s")
-        XCTAssertEqual(audioResources[5].url.lastPathComponent, "p1-a-es-3.m4s")
+        XCTAssertEqual(audioResources[3].kind, .initialization)
+        XCTAssertEqual(audioResources[3].url.lastPathComponent, "init-a-es.mp4")
+        XCTAssertEqual(audioResources[4].url.lastPathComponent, "p1-a-es-1.m4s")
+        XCTAssertEqual(audioResources[5].url.lastPathComponent, "p1-a-es-2.m4s")
+        XCTAssertEqual(audioResources[6].url.lastPathComponent, "p1-a-es-3.m4s")
     }
 
     func testMultiPeriodRequestedTextRepresentationAbsentFromPeriod0Succeeds() throws {
@@ -602,6 +607,93 @@ final class DASHMultiPeriodAndSegmentBaseTests: XCTestCase {
         XCTAssertEqual(videoPlan.resources.first?.kind, .initialization)
         XCTAssertEqual(videoPlan.resources.first?.url.lastPathComponent, "init-v1.mp4")
         XCTAssertEqual(videoPlan.resources.count, 4) // 1 init + 3 segments (6s / 2s = 3)
+    }
+
+    func testMultiPeriodReconstructionWithDifferentInitializationSegmentsBuildsOrderedAssemblyTrack() throws {
+        let multiPeriodMPD = """
+        <MPD type="static" mediaPresentationDuration="PT4S">
+          <Period id="p1" duration="PT2S">
+            <AdaptationSet contentType="video" mimeType="video/mp4" codecs="avc1">
+              <Representation id="v1" bandwidth="1000">
+                <SegmentTemplate timescale="1" duration="1" initialization="init-p1.mp4" media="p1-s$Number$.m4s"/>
+              </Representation>
+            </AdaptationSet>
+          </Period>
+          <Period id="p2" duration="PT2S">
+            <AdaptationSet contentType="video" mimeType="video/mp4" codecs="avc1">
+              <Representation id="v2" bandwidth="2000">
+                <SegmentTemplate timescale="1" duration="1" initialization="init-p2.mp4" media="p2-s$Number$.m4s"/>
+              </Representation>
+            </AdaptationSet>
+          </Period>
+        </MPD>
+        """
+
+        let manifest = try DASHManifestParser.parse(multiPeriodMPD, baseURL: manifestURL)
+        let transferPlan = try DASHTransferPlanner.makeVODPlan(from: manifest)
+
+        let videoResources = try XCTUnwrap(transferPlan.video?.resources)
+        // Period 1 (init-p1 + 2 segs) + Period 2 (init-p2 + 2 segs) = 6 resources
+        XCTAssertEqual(videoResources.count, 6)
+        XCTAssertEqual(videoResources[0].kind, .initialization)
+        XCTAssertEqual(videoResources[0].url.lastPathComponent, "init-p1.mp4")
+        XCTAssertEqual(videoResources[1].kind, .mediaSegment)
+        XCTAssertEqual(videoResources[1].url.lastPathComponent, "p1-s1.m4s")
+        XCTAssertEqual(videoResources[2].kind, .mediaSegment)
+        XCTAssertEqual(videoResources[2].url.lastPathComponent, "p1-s2.m4s")
+        XCTAssertEqual(videoResources[3].kind, .initialization)
+        XCTAssertEqual(videoResources[3].url.lastPathComponent, "init-p2.mp4")
+        XCTAssertEqual(videoResources[4].kind, .mediaSegment)
+        XCTAssertEqual(videoResources[4].url.lastPathComponent, "p2-s1.m4s")
+        XCTAssertEqual(videoResources[5].kind, .mediaSegment)
+        XCTAssertEqual(videoResources[5].url.lastPathComponent, "p2-s2.m4s")
+
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("dash-multiperiod-diff-inits-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        // Populate mock completed resources
+        let completed = try transferPlan.resources.enumerated().map { index, resource in
+            let fileURL = directory.appendingPathComponent("res-\(index).bin")
+            let data: Data
+            if resource.kind == .initialization {
+                data = isoBox("ftyp", payload: Data([0, 0, 0, UInt8(index + 1)])) + isoBox("moov", payload: Data([0, 0, 0, UInt8(index + 2)]))
+            } else {
+                data = isoBox("moof", payload: Data([UInt8(index)])) + isoBox("mdat", payload: Data([UInt8(index)]))
+            }
+            try data.write(to: fileURL)
+            return DASHCompletedResource(resource: resource, fileURL: fileURL)
+        }
+
+        let outputURL = directory.appendingPathComponent("assembled-diff-inits.mp4")
+        let reconPlan = try DASHVODReconstructionPlanner.makePlan(
+            from: transferPlan,
+            completedResources: completed,
+            destinationURL: outputURL
+        )
+
+        XCTAssertEqual(reconPlan.assemblyRequest.container, .fragmentedMP4)
+        XCTAssertEqual(reconPlan.assemblyRequest.tracks.count, 1)
+
+        let track = reconPlan.assemblyRequest.tracks[0]
+        // Primary initializationSegment is init-p1.mp4
+        XCTAssertEqual(track.initializationSegment?.fileURL.lastPathComponent, "res-0.bin")
+        XCTAssertEqual(track.initializationSegment?.role, .initialization)
+
+        // mediaSegments contains: p1-s1, p1-s2, init-p2.mp4 (role: .initialization), p2-s1, p2-s2
+        XCTAssertEqual(track.mediaSegments.count, 5)
+        XCTAssertEqual(track.mediaSegments.map(\.order), [0, 1, 2, 3, 4])
+        XCTAssertEqual(track.mediaSegments[0].role, .media)
+        XCTAssertEqual(track.mediaSegments[0].fileURL.lastPathComponent, "res-1.bin")
+        XCTAssertEqual(track.mediaSegments[1].role, .media)
+        XCTAssertEqual(track.mediaSegments[1].fileURL.lastPathComponent, "res-2.bin")
+        XCTAssertEqual(track.mediaSegments[2].role, .initialization)
+        XCTAssertEqual(track.mediaSegments[2].fileURL.lastPathComponent, "res-3.bin")
+        XCTAssertEqual(track.mediaSegments[3].role, .media)
+        XCTAssertEqual(track.mediaSegments[3].fileURL.lastPathComponent, "res-4.bin")
+        XCTAssertEqual(track.mediaSegments[4].role, .media)
+        XCTAssertEqual(track.mediaSegments[4].fileURL.lastPathComponent, "res-5.bin")
     }
 
     private func isoBox(_ type: String, payload: Data) -> Data {

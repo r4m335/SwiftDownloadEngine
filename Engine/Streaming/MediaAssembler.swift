@@ -115,7 +115,7 @@ public enum MediaAssembler {
                 try validateSegment(
                     segment,
                     for: track.kind,
-                    expectedRole: .media,
+                    expectedRole: segment.role,
                     expectedOrder: expectedOrder
                 )
                 mediaSegmentCount += 1
@@ -1713,11 +1713,13 @@ public enum MediaAssembler {
     private static func validateSegment(
         _ segment: MediaAssemblySegment,
         for kind: MediaAssemblyTrackKind,
-        expectedRole: MediaAssemblySegmentRole,
+        expectedRole: MediaAssemblySegmentRole?,
         expectedOrder: Int?
     ) throws {
-        guard segment.role == expectedRole else {
-            throw MediaAssemblyError.invalidSegmentRole(kind)
+        if let expectedRole {
+            guard segment.role == expectedRole else {
+                throw MediaAssemblyError.invalidSegmentRole(kind)
+            }
         }
         guard segment.fileURL.isFileURL, !segment.fileURL.path.isEmpty else {
             throw MediaAssemblyError.invalidSegmentFileURL(kind, order: segment.order)
