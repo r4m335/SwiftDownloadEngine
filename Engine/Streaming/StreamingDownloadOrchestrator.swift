@@ -75,12 +75,20 @@ public struct StreamingManifestResponse: Sendable {
     public let finalURL: URL
     public let mimeType: String?
     public let statusCode: Int
+    public let redirectResolvedContext: BrowserRequestContext?
 
-    public init(data: Data, finalURL: URL, mimeType: String? = nil, statusCode: Int = 200) {
+    public init(
+        data: Data,
+        finalURL: URL,
+        mimeType: String? = nil,
+        statusCode: Int = 200,
+        redirectResolvedContext: BrowserRequestContext? = nil
+    ) {
         self.data = data
         self.finalURL = finalURL
         self.mimeType = mimeType
         self.statusCode = statusCode
+        self.redirectResolvedContext = redirectResolvedContext
     }
 }
 
@@ -218,11 +226,13 @@ public final class URLSessionStreamingManifestLoader: StreamingManifestLoader, S
             .split(separator: ";", maxSplits: 1)
             .first
             .map(String.init)
+        let redirectContext = candidate.browserRequestContext?.redirectResolved(to: finalURL)
         return StreamingManifestResponse(
             data: data,
             finalURL: finalURL,
             mimeType: mimeType,
-            statusCode: httpResponse.statusCode
+            statusCode: httpResponse.statusCode,
+            redirectResolvedContext: redirectContext
         )
     }
 }
@@ -1369,7 +1379,8 @@ public actor StreamingDownloadOrchestrator {
                         data: data,
                         finalURL: candidate.url,
                         mimeType: candidate.mimeType,
-                        statusCode: 200
+                        statusCode: 200,
+                        redirectResolvedContext: candidate.browserRequestContext?.redirectResolved(to: candidate.url)
                     )
                 }
             }
@@ -1426,7 +1437,8 @@ public actor StreamingDownloadOrchestrator {
                         data: data,
                         finalURL: candidate.url,
                         mimeType: candidate.mimeType,
-                        statusCode: 200
+                        statusCode: 200,
+                        redirectResolvedContext: candidate.browserRequestContext?.redirectResolved(to: candidate.url)
                     )
                 } catch is CancellationError {
                     throw CancellationError()
@@ -1593,7 +1605,8 @@ public actor StreamingDownloadOrchestrator {
                     finalURL: response.finalURL,
                     mimeType: response.mimeType ?? candidate.mimeType,
                     candidate: candidate,
-                    classification: classification
+                    classification: classification,
+                    redirectResolvedContext: response.redirectResolvedContext
                 )
                 parsedManifest = manifest
                 manifestData = response.data
@@ -1658,18 +1671,20 @@ public actor StreamingDownloadOrchestrator {
         manifest: HLSManifest,
         baseURL: URL,
         candidate: StreamingManifestCandidate,
+        effectiveContext: BrowserRequestContext? = nil,
         depth: Int = 0
     ) async throws -> ResolvedHLSSelection {
         guard depth < 5 else {
             throw StreamingDownloadOrchestratorError.playlistRequiresVariantSelection
         }
+        let currentContext = effectiveContext ?? candidate.browserRequestContext?.redirectResolved(to: baseURL)
         guard manifest.playlistType == .master else {
             // Already a media playlist: validate directly
             let videoPlan: HLSVODTransferPlan
             do {
                 videoPlan = try HLSTransferPlanner.makeVODPlan(
                     from: manifest,
-                    browserRequestContext: candidate.browserRequestContext
+                    browserRequestContext: currentContext
                 )
             } catch let error as HLSVODTransferPlanError {
                 if case .unsupportedEncryption = error {
@@ -1699,13 +1714,13 @@ public actor StreamingDownloadOrchestrator {
 
             let audioCachedText = validCachedManifestText(
                 for: effectiveAudioURI,
-                requestContext: candidate.browserRequestContext,
+                requestContext: currentContext,
                 browserSessionSnapshot: candidate.browserSessionSnapshot
             )
             let audioCandidate = try StreamingManifestCandidate(
                 url: effectiveAudioURI,
                 mimeType: "application/vnd.apple.mpegurl",
-                browserRequestContext: candidate.browserRequestContext,
+                browserRequestContext: currentContext?.redirectResolved(to: effectiveAudioURI) ?? candidate.browserRequestContext,
                 browserSessionSnapshot: candidate.browserSessionSnapshot,
                 hlsVariantPreferences: candidate.hlsVariantPreferences,
                 cachedManifestText: audioCachedText
@@ -1721,9 +1736,10 @@ public actor StreamingDownloadOrchestrator {
                     limits: parsingLimits
                 )
                 if parsedAudio.playlistType == .media {
+                    let audioContext = audioSubResponse.redirectResolvedContext ?? currentContext?.redirectResolved(to: audioSubResponse.finalURL)
                     let audioPlan = try HLSTransferPlanner.makeVODPlan(
                         from: parsedAudio,
-                        browserRequestContext: candidate.browserRequestContext
+                        browserRequestContext: audioContext
                     )
                     PipelineLogger.shared.log("[HLS Pipeline] Successfully resolved audio-only HLS plan with \(audioPlan.resources.count) segments.")
                     return ResolvedHLSSelection(
@@ -1818,13 +1834,13 @@ public actor StreamingDownloadOrchestrator {
 
             let variantCachedText = validCachedManifestText(
                 for: variantURI,
-                requestContext: candidate.browserRequestContext,
+                requestContext: currentContext,
                 browserSessionSnapshot: candidate.browserSessionSnapshot
             )
             let variantCandidate = try StreamingManifestCandidate(
                 url: variantURI,
                 mimeType: "application/vnd.apple.mpegurl",
-                browserRequestContext: candidate.browserRequestContext,
+                browserRequestContext: currentContext?.redirectResolved(to: variantURI) ?? candidate.browserRequestContext,
                 browserSessionSnapshot: candidate.browserSessionSnapshot,
                 hlsVariantPreferences: candidate.hlsVariantPreferences,
                 cachedManifestText: variantCachedText
@@ -1884,10 +1900,12 @@ public actor StreamingDownloadOrchestrator {
             if parsedChild.playlistType == .master {
                 // Nested master playlist: recursively evaluate compatible variant
                 do {
+                    let nestedContext = subResponse.redirectResolvedContext ?? currentContext?.redirectResolved(to: subResponse.finalURL)
                     let nestedSelection = try await resolveCompatibleHLSVariant(
                         manifest: parsedChild,
                         baseURL: subResponse.finalURL,
                         candidate: variantCandidate,
+                        effectiveContext: nestedContext,
                         depth: depth + 1
                     )
                     let isNestedSampleAES = nestedSelection.mediaPlaylist.segments.contains { $0.encryption?.classification == .sampleEncrypted }
@@ -1930,11 +1948,12 @@ public actor StreamingDownloadOrchestrator {
             }
 
             // Evaluate download compatibility with HLSTransferPlanner
+            let childContext = subResponse.redirectResolvedContext ?? currentContext?.redirectResolved(to: subResponse.finalURL)
             let videoPlan: HLSVODTransferPlan
             do {
                 videoPlan = try HLSTransferPlanner.makeVODPlan(
                     from: parsedChild,
-                    browserRequestContext: candidate.browserRequestContext
+                    browserRequestContext: childContext
                 )
             } catch let error as HLSVODTransferPlanError {
                 if case .unsupportedEncryption(let classification) = error {
@@ -1970,7 +1989,7 @@ public actor StreamingDownloadOrchestrator {
                 let audioCandidate = try StreamingManifestCandidate(
                     url: audioFinalURI,
                     mimeType: "application/vnd.apple.mpegurl",
-                    browserRequestContext: candidate.browserRequestContext,
+                    browserRequestContext: childContext?.redirectResolved(to: audioFinalURI) ?? currentContext?.redirectResolved(to: audioFinalURI) ?? candidate.browserRequestContext,
                     browserSessionSnapshot: candidate.browserSessionSnapshot,
                     hlsVariantPreferences: candidate.hlsVariantPreferences
                 )
@@ -2031,9 +2050,10 @@ public actor StreamingDownloadOrchestrator {
                 }
 
                 do {
+                    let audioPlanContext = audioResponse.redirectResolvedContext ?? childContext?.redirectResolved(to: audioResponse.finalURL) ?? currentContext?.redirectResolved(to: audioResponse.finalURL)
                     let parsedAudioPlan = try HLSTransferPlanner.makeVODPlan(
                         from: parsedAudio,
-                        browserRequestContext: candidate.browserRequestContext
+                        browserRequestContext: audioPlanContext
                     )
                     audioPlan = parsedAudioPlan.resources
                 } catch let error as HLSVODTransferPlanError {
@@ -2125,8 +2145,10 @@ public actor StreamingDownloadOrchestrator {
         finalURL: URL,
         mimeType: String?,
         candidate: StreamingManifestCandidate,
-        classification: StreamingManifestClassification
+        classification: StreamingManifestClassification,
+        redirectResolvedContext: BrowserRequestContext? = nil
     ) async throws -> StreamingTransferManifest {
+        let effectiveContext = redirectResolvedContext ?? candidate.browserRequestContext?.redirectResolved(to: finalURL)
         switch classification.kind {
         case .hls:
             PipelineLogger.shared.log("[HLS Pipeline] 1. Manifest fetched from \(finalURL.absoluteString) (\(data.count) bytes). Parsing with HLSManifestParser...")
@@ -2140,7 +2162,8 @@ public actor StreamingDownloadOrchestrator {
             let resolved = try await resolveCompatibleHLSVariant(
                 manifest: initialParsed,
                 baseURL: finalURL,
-                candidate: candidate
+                candidate: candidate,
+                effectiveContext: effectiveContext
             )
 
             let totalEstimatedBytes: Int64?
@@ -2167,7 +2190,7 @@ public actor StreamingDownloadOrchestrator {
             let plan = HLSVODTransferPlan(
                 manifestURL: resolved.videoPlan.manifestURL,
                 resources: resolved.videoPlan.resources,
-                browserRequestContext: candidate.browserRequestContext,
+                browserRequestContext: resolved.videoPlan.browserRequestContext ?? effectiveContext,
                 estimatedTransferBytes: totalEstimatedBytes,
                 audioPlan: resolved.audioPlan,
                 subtitleURL: resolvedSubtitleURL
@@ -2200,7 +2223,7 @@ public actor StreamingDownloadOrchestrator {
                     from: parsed,
                     videoRepresentationID: candidate.dashVideoRepresentationID,
                     audioRepresentationID: candidate.dashAudioRepresentationID,
-                    browserRequestContext: candidate.browserRequestContext,
+                    browserRequestContext: effectiveContext,
                     sidxDataByRepresentationID: sidxDataMap
                 )
             } catch let error as DASHVODTransferPlanError {

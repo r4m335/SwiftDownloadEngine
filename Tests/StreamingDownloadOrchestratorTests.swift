@@ -1338,6 +1338,90 @@ final class StreamingDownloadOrchestratorTests: XCTestCase {
         XCTAssertEqual(loadedCount, 2)
     }
 
+    func testStreamingDownloadOrchestrator_ManifestRedirectResolvesContextForSegmentRequests() async throws {
+        let originalMasterURL = URL(string: "https://auth-gateway.example.com/api/v1/master.m3u8")!
+        let redirectedMasterURL = URL(string: "https://cdn.partner-stream.net/live/master.m3u8")!
+        let variantURL = URL(string: "https://cdn.partner-stream.net/live/720p.m3u8")!
+
+        let masterData = """
+        #EXTM3U
+        #EXT-X-STREAM-INF:BANDWIDTH=2000000,RESOLUTION=1280x720
+        720p.m3u8
+        """.data(using: .utf8)!
+
+        let mediaData = """
+        #EXTM3U
+        #EXT-X-VERSION:3
+        #EXT-X-TARGETDURATION:4
+        #EXT-X-MEDIA-SEQUENCE:0
+        #EXTINF:4.0,
+        seg0.ts
+        #EXT-X-ENDLIST
+        """.data(using: .utf8)!
+
+        let context = BrowserRequestContext(
+            url: originalMasterURL,
+            pageURL: URL(string: "https://example.com/watch")!,
+            userAgent: "OrchestratorTestUA/1.0",
+            cookies: [
+                BrowserCookie(name: "auth_token", value: "token-val", domain: "auth-gateway.example.com", isSecure: true)
+            ],
+            customHeaders: [
+                "Authorization": "Bearer master-jwt-token",
+                "X-Api-Key": "api-key-999"
+            ],
+            allowedCredentialOrigins: ["*.partner-stream.net"]
+        )
+
+        let redirectedContext = context.redirectResolved(to: redirectedMasterURL)
+        let loader = VariantManifestLoader(responses: [
+            originalMasterURL: StreamingManifestResponse(
+                data: masterData,
+                finalURL: redirectedMasterURL,
+                mimeType: "application/vnd.apple.mpegurl",
+                redirectResolvedContext: redirectedContext
+            ),
+            variantURL: StreamingManifestResponse(
+                data: mediaData,
+                finalURL: variantURL,
+                mimeType: "application/vnd.apple.mpegurl"
+            )
+        ])
+
+        let executor = RecordingSegmentExecutor()
+        let orchestrator = StreamingDownloadOrchestrator(
+            manifestLoader: loader,
+            segmentExecutor: executor
+        )
+
+        let candidate = try StreamingManifestCandidate(
+            url: originalMasterURL,
+            browserRequestContext: context
+        )
+
+        let proposal = try await orchestrator.prepare(candidate: candidate)
+        guard case .hls(let plan) = proposal.manifest else {
+            XCTFail("Expected HLS plan")
+            return
+        }
+
+        XCTAssertEqual(plan.browserRequestContext?.url, variantURL)
+
+        let targetDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        _ = try await orchestrator.execute(proposal, approved: true, targetDirectory: targetDir)
+
+        let recordedRequests = await executor.requests
+        XCTAssertEqual(recordedRequests.count, 1)
+        let segRequest = try XCTUnwrap(recordedRequests.first)
+
+        XCTAssertEqual(segRequest.headers["Authorization"], "Bearer master-jwt-token")
+        XCTAssertEqual(segRequest.headers["Cookie"], "auth_token=token-val")
+        XCTAssertEqual(segRequest.headers["X-Api-Key"], "api-key-999")
+        XCTAssertEqual(segRequest.headers["User-Agent"], "OrchestratorTestUA/1.0")
+
+        try? FileManager.default.removeItem(at: targetDir)
+    }
+
     func testStreamingDownloadOrchestrator_URLSessionReturnsHTML_TriggersJSFallback() async throws {
         PipelineLogger.shared.clear()
         let manifestURL = URL(string: "https://dash.akamaized.net/akamai/bbb_30fps/bbb_30fps.mpd")!

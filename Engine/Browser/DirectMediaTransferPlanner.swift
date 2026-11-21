@@ -197,7 +197,7 @@ public enum DirectMediaTransferPlanner {
            (sameOrigin(originalURL, transferURL) ||
             BrowserHeaderFilter.isSameSiteOrSubdomain(originalURL, transferURL) ||
             context.cookies.contains(where: { $0.matches(url: transferURL) })) {
-            safeContext = context
+            safeContext = context.redirectResolved(to: transferURL)
         } else {
             safeContext = nil
         }

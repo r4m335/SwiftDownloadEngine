@@ -451,7 +451,7 @@ public enum DASHTransferPlanner {
             periodID: manifest.periods.first?.id,
             video: videoPlan,
             audio: audioPlan,
-            browserRequestContext: browserRequestContext,
+            browserRequestContext: browserRequestContext?.redirectResolved(to: manifestURL),
             estimatedTransferBytes: estimatedBytes
         )
     }

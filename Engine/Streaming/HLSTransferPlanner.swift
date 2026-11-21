@@ -275,10 +275,11 @@ public enum HLSTransferPlanner {
             )
         }
 
+        let resolvedContext = browserRequestContext?.redirectResolved(to: resolvedManifestURL)
         return HLSVODTransferPlan(
             manifestURL: resolvedManifestURL,
             resources: orderedResources,
-            browserRequestContext: browserRequestContext,
+            browserRequestContext: resolvedContext,
             estimatedTransferBytes: estimatedBytes
         )
     }

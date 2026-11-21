@@ -280,6 +280,45 @@ public struct BrowserRequestContext: Sendable, Codable, Hashable {
         return BrowserHeaderFilter.isOriginAllowed(targetURL, allowedOrigins: allowedCredentialOrigins)
     }
 
+    /// Returns a new `BrowserRequestContext` resolved after an HTTP redirect to `targetURL`,
+    /// updating `url` to `targetURL` and sanitizing credentials, headers, and cookies
+    /// according to cross-origin redirect and allowlist rules.
+    public func redirectResolved(to targetURL: URL) -> BrowserRequestContext {
+        guard targetURL != url else { return self }
+
+        let isSameOrigin = BrowserHeaderFilter.sameOrigin(url, targetURL)
+        let isSamePageOrigin = pageURL.map { BrowserHeaderFilter.sameOrigin($0, targetURL) } ?? false
+        let isAllowed = BrowserHeaderFilter.isOriginAllowed(targetURL, allowedOrigins: allowedCredentialOrigins)
+        let isDowngrade = (url.scheme?.lowercased() == "https") && (targetURL.scheme?.lowercased() == "http")
+
+        let strippedHeaders = BrowserHeaderFilter.stripCredentialsOnRedirect(
+            headers: customHeaders,
+            from: url,
+            to: targetURL,
+            allowedOrigins: allowedCredentialOrigins
+        )
+
+        let safeCookies: [BrowserCookie]
+        if isDowngrade {
+            safeCookies = []
+        } else if isSameOrigin || isSamePageOrigin || isAllowed {
+            safeCookies = cookies
+        } else {
+            safeCookies = cookies.filter { $0.matches(url: targetURL) }
+        }
+
+        return BrowserRequestContext(
+            url: targetURL,
+            pageURL: pageURL,
+            userAgent: userAgent,
+            cookies: safeCookies,
+            customHeaders: strippedHeaders,
+            captureDate: captureDate,
+            source: source,
+            allowedCredentialOrigins: allowedCredentialOrigins
+        )
+    }
+
     /// Computes the valid `Referer` header value according to RFC 7231 / Referrer-Policy.
     public var referer: String? {
         guard let page = pageURL else { return nil }

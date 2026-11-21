@@ -188,6 +188,42 @@ final class HLSTransferPlannerTests: XCTestCase {
         XCTAssertEqual(headers["Authorization"], "Bearer header-secret")
     }
 
+    func testRedirectedManifestResolvesContextForSegmentRequests() throws {
+        let initialMasterURL = URL(string: "https://auth.example.com/stream/master.m3u8")!
+        let redirectedMediaURL = URL(string: "https://edge.cdn-streaming.net/hls/720p.m3u8")!
+        let playlist = """
+        #EXTM3U
+        #EXT-X-PLAYLIST-TYPE:VOD
+        #EXTINF:4,
+        seg0.ts
+        #EXT-X-ENDLIST
+        """
+        let context = BrowserRequestContext(
+            url: initialMasterURL,
+            pageURL: URL(string: "https://example.com/watch")!,
+            userAgent: "BrowserTest/1.0",
+            cookies: [
+                BrowserCookie(name: "master_auth", value: "master-val", domain: "auth.example.com", isSecure: true)
+            ],
+            customHeaders: [
+                "Authorization": "Bearer master-token",
+                "X-Trace-ID": "trace-seg"
+            ],
+            allowedCredentialOrigins: ["*.cdn-streaming.net"]
+        )
+
+        let manifest = try HLSManifestParser.parse(playlist, baseURL: redirectedMediaURL)
+        let plan = try HLSTransferPlanner.makeVODPlan(from: manifest, browserRequestContext: context)
+
+        XCTAssertEqual(plan.browserRequestContext?.url, redirectedMediaURL)
+
+        let segment = try XCTUnwrap(plan.resources.first)
+        let headers = plan.requestHeaders(for: segment)
+        XCTAssertEqual(headers["Authorization"], "Bearer master-token")
+        XCTAssertEqual(headers["Cookie"], "master_auth=master-val")
+        XCTAssertEqual(headers["X-Trace-ID"], "trace-seg")
+    }
+
     func testPlannerRequiresASelectedMediaPlaylist() throws {
         let master = HLSManifest(
             url: manifestURL,

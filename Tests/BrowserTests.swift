@@ -442,6 +442,63 @@ final class BrowserTests: XCTestCase {
         XCTAssertEqual(subdomainStripped["X-Trace-ID"], "trace-downgrade")
     }
 
+    func testBrowserRequestContextRedirectResolved() {
+        let originalURL = URL(string: "https://video.example.com/master.m3u8")!
+        let pageURL = URL(string: "https://video.example.com/watch")!
+        let context = BrowserRequestContext(
+            url: originalURL,
+            pageURL: pageURL,
+            userAgent: "TestAgent/1.0",
+            cookies: [
+                BrowserCookie(name: "session", value: "secret-cookie", domain: "video.example.com", isSecure: true),
+                BrowserCookie(name: "cdn_token", value: "cdn-val", domain: ".cdn-stream.com", isSecure: true)
+            ],
+            customHeaders: [
+                "Authorization": "Bearer jwt-token",
+                "X-Api-Key": "key-123",
+                "X-Trace-ID": "trace-456"
+            ],
+            allowedCredentialOrigins: ["cdn-stream.com"]
+        )
+
+        // 1. Same-origin redirect preserves credentials, cookies, and updates url
+        let sameOriginURL = URL(string: "https://video.example.com/cdn/final_master.m3u8")!
+        let sameOriginResolved = context.redirectResolved(to: sameOriginURL)
+        XCTAssertEqual(sameOriginResolved.url, sameOriginURL)
+        XCTAssertEqual(sameOriginResolved.pageURL, pageURL)
+        XCTAssertEqual(sameOriginResolved.customHeaders["Authorization"], "Bearer jwt-token")
+        XCTAssertEqual(sameOriginResolved.customHeaders["X-Api-Key"], "key-123")
+        XCTAssertEqual(sameOriginResolved.customHeaders["X-Trace-ID"], "trace-456")
+        XCTAssertEqual(sameOriginResolved.cookies.count, 2)
+
+        // 2. Allowlisted cross-origin redirect preserves credentials and updates url
+        let allowlistedURL = URL(string: "https://cdn-stream.com/live/variant.m3u8")!
+        let allowlistedResolved = context.redirectResolved(to: allowlistedURL)
+        XCTAssertEqual(allowlistedResolved.url, allowlistedURL)
+        XCTAssertEqual(allowlistedResolved.customHeaders["Authorization"], "Bearer jwt-token")
+        XCTAssertEqual(allowlistedResolved.customHeaders["X-Api-Key"], "key-123")
+        XCTAssertEqual(allowlistedResolved.customHeaders["X-Trace-ID"], "trace-456")
+        XCTAssertEqual(allowlistedResolved.cookies.count, 2)
+
+        // 3. Untrusted cross-origin redirect strips sensitive credentials and domain cookies
+        let untrustedURL = URL(string: "https://untrusted-host.com/stream.m3u8")!
+        let untrustedResolved = context.redirectResolved(to: untrustedURL)
+        XCTAssertEqual(untrustedResolved.url, untrustedURL)
+        XCTAssertNil(untrustedResolved.customHeaders["Authorization"])
+        XCTAssertNil(untrustedResolved.customHeaders["X-Api-Key"])
+        XCTAssertEqual(untrustedResolved.customHeaders["X-Trace-ID"], "trace-456")
+        XCTAssertEqual(untrustedResolved.cookies.count, 0)
+
+        // 4. Insecure HTTP downgrade strips credentials and cookies completely
+        let downgradeURL = URL(string: "http://cdn-stream.com/stream.m3u8")!
+        let downgradeResolved = context.redirectResolved(to: downgradeURL)
+        XCTAssertEqual(downgradeResolved.url, downgradeURL)
+        XCTAssertNil(downgradeResolved.customHeaders["Authorization"])
+        XCTAssertNil(downgradeResolved.customHeaders["X-Api-Key"])
+        XCTAssertNil(downgradeResolved.customHeaders["Cookie"])
+        XCTAssertEqual(downgradeResolved.cookies.count, 0)
+    }
+
     func testPublicSuffixAndSchemefulSameSiteRedirectSecurity() {
         // 1. site1.co.uk → site2.co.uk: unrelated (ccTLD multi-part public suffix)
         let coUkSite1 = URL(string: "https://site1.co.uk/media")!
