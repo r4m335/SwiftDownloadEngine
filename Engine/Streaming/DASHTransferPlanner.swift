@@ -259,6 +259,39 @@ public enum DASHTransferPlanner {
         var totalAudioDuration: Double = 0
         var totalTextDuration: Double = 0
 
+        if !isTextOnlyPlan, let reqVideo = videoRepresentationID {
+            let exists = manifest.periods.contains { period in
+                period.adaptationSets.contains { set in
+                    inferredMediaType(set) == .video && set.representations.contains { $0.id == reqVideo }
+                }
+            }
+            if !exists {
+                throw DASHVODTransferPlanError.representationNotFound
+            }
+        }
+
+        if !isTextOnlyPlan, let reqAudio = audioRepresentationID {
+            let exists = manifest.periods.contains { period in
+                period.adaptationSets.contains { set in
+                    inferredMediaType(set) == .audio && set.representations.contains { $0.id == reqAudio }
+                }
+            }
+            if !exists {
+                throw DASHVODTransferPlanError.representationNotFound
+            }
+        }
+
+        if let reqText = textRepresentationID {
+            let exists = manifest.periods.contains { period in
+                period.adaptationSets.contains { set in
+                    inferredMediaType(set) == .text && set.representations.contains { $0.id == reqText }
+                }
+            }
+            if !exists {
+                throw DASHVODTransferPlanError.representationNotFound
+            }
+        }
+
         var selectedVideoRepID = videoRepresentationID
         var selectedAudioRepID = audioRepresentationID
         var selectedTextRepID = textRepresentationID
@@ -289,22 +322,19 @@ public enum DASHTransferPlanner {
             if isTextOnlyPlan {
                 videoSelection = nil
             } else {
+                let targetID = videoRepresentationID ?? selectedVideoRepID
                 do {
                     videoSelection = try select(
                         mediaType: .video,
-                        requestedID: selectedVideoRepID,
+                        requestedID: targetID,
                         from: period.adaptationSets
                     )
                 } catch DASHVODTransferPlanError.representationNotFound {
-                    if periodIndex > 0 {
-                        videoSelection = try select(
-                            mediaType: .video,
-                            requestedID: nil,
-                            from: period.adaptationSets
-                        )
-                    } else {
-                        throw DASHVODTransferPlanError.representationNotFound
-                    }
+                    videoSelection = try select(
+                        mediaType: .video,
+                        requestedID: nil,
+                        from: period.adaptationSets
+                    )
                 }
             }
 
@@ -313,68 +343,77 @@ public enum DASHTransferPlanner {
             if isTextOnlyPlan {
                 audioSelection = nil
             } else {
+                let targetID = audioRepresentationID ?? selectedAudioRepID
                 do {
                     audioSelection = try select(
                         mediaType: .audio,
-                        requestedID: selectedAudioRepID,
+                        requestedID: targetID,
                         from: period.adaptationSets
                     )
                 } catch DASHVODTransferPlanError.representationNotFound {
-                    if periodIndex > 0 {
-                        audioSelection = try select(
-                            mediaType: .audio,
-                            requestedID: nil,
-                            from: period.adaptationSets
-                        )
-                    } else {
-                        throw DASHVODTransferPlanError.representationNotFound
-                    }
+                    audioSelection = try select(
+                        mediaType: .audio,
+                        requestedID: nil,
+                        from: period.adaptationSets
+                    )
                 }
             }
 
             // Select text (if requested)
             let textSelection: Selection?
-            if selectedTextRepID != nil {
+            if textRepresentationID != nil || selectedTextRepID != nil {
+                let targetID = textRepresentationID ?? selectedTextRepID
                 do {
                     textSelection = try select(
                         mediaType: .text,
-                        requestedID: selectedTextRepID,
+                        requestedID: targetID,
                         from: period.adaptationSets
                     )
                 } catch DASHVODTransferPlanError.representationNotFound {
-                    if periodIndex > 0 {
-                        textSelection = try select(
-                            mediaType: .text,
-                            requestedID: nil,
-                            from: period.adaptationSets
-                        )
-                    } else {
-                        throw DASHVODTransferPlanError.representationNotFound
-                    }
+                    textSelection = try select(
+                        mediaType: .text,
+                        requestedID: nil,
+                        from: period.adaptationSets
+                    )
                 }
             } else {
                 textSelection = nil
             }
 
-            if periodIndex == 0 {
-                guard videoSelection != nil || audioSelection != nil || textSelection != nil else {
-                    throw DASHVODTransferPlanError.noSupportedRepresentation
+            if let videoSel = videoSelection {
+                if selectedVideoRepID == nil {
+                    selectedVideoRepID = videoSel.representation.id
                 }
-                selectedVideoRepID = videoSelection?.representation.id
-                selectedAudioRepID = audioSelection?.representation.id
-                selectedTextRepID = textSelection?.representation.id
-                firstVideoAdaptationSetID = videoSelection?.adaptationSet.id
-                firstVideoRepresentationID = videoSelection?.representation.id
-                firstVideoBandwidth = videoSelection?.representation.bandwidth
-                firstVideoCodecs = videoSelection?.representation.codecs ?? videoSelection?.adaptationSet.codecs
-                firstAudioAdaptationSetID = audioSelection?.adaptationSet.id
-                firstAudioRepresentationID = audioSelection?.representation.id
-                firstAudioBandwidth = audioSelection?.representation.bandwidth
-                firstAudioCodecs = audioSelection?.representation.codecs ?? audioSelection?.adaptationSet.codecs
-                firstTextAdaptationSetID = textSelection?.adaptationSet.id
-                firstTextRepresentationID = textSelection?.representation.id
-                firstTextBandwidth = textSelection?.representation.bandwidth
-                firstTextCodecs = textSelection?.representation.codecs ?? textSelection?.adaptationSet.codecs
+                if firstVideoRepresentationID == nil || videoSel.representation.id == videoRepresentationID {
+                    firstVideoAdaptationSetID = videoSel.adaptationSet.id
+                    firstVideoRepresentationID = videoSel.representation.id
+                    firstVideoBandwidth = videoSel.representation.bandwidth
+                    firstVideoCodecs = videoSel.representation.codecs ?? videoSel.adaptationSet.codecs
+                }
+            }
+
+            if let audioSel = audioSelection {
+                if selectedAudioRepID == nil {
+                    selectedAudioRepID = audioSel.representation.id
+                }
+                if firstAudioRepresentationID == nil || audioSel.representation.id == audioRepresentationID {
+                    firstAudioAdaptationSetID = audioSel.adaptationSet.id
+                    firstAudioRepresentationID = audioSel.representation.id
+                    firstAudioBandwidth = audioSel.representation.bandwidth
+                    firstAudioCodecs = audioSel.representation.codecs ?? audioSel.adaptationSet.codecs
+                }
+            }
+
+            if let textSel = textSelection {
+                if selectedTextRepID == nil {
+                    selectedTextRepID = textSel.representation.id
+                }
+                if firstTextRepresentationID == nil || textSel.representation.id == textRepresentationID {
+                    firstTextAdaptationSetID = textSel.adaptationSet.id
+                    firstTextRepresentationID = textSel.representation.id
+                    firstTextBandwidth = textSel.representation.bandwidth
+                    firstTextCodecs = textSel.representation.codecs ?? textSel.adaptationSet.codecs
+                }
             }
 
             // Build video plan for this period
@@ -392,7 +431,7 @@ public enum DASHTransferPlanner {
                     totalSegments: &totalSegments,
                     sidxData: sidx
                 )
-                if periodIndex == 0 {
+                if allVideoResources.isEmpty {
                     allVideoResources.append(contentsOf: periodPlan.resources)
                 } else {
                     let media = periodPlan.resources.filter { $0.kind == .mediaSegment }
@@ -430,7 +469,7 @@ public enum DASHTransferPlanner {
                     totalSegments: &totalSegments,
                     sidxData: sidx
                 )
-                if periodIndex == 0 {
+                if allAudioResources.isEmpty {
                     allAudioResources.append(contentsOf: periodPlan.resources)
                 } else {
                     let media = periodPlan.resources.filter { $0.kind == .mediaSegment }
@@ -468,7 +507,7 @@ public enum DASHTransferPlanner {
                     totalSegments: &totalSegments,
                     sidxData: sidx
                 )
-                if periodIndex == 0 {
+                if allTextResources.isEmpty {
                     allTextResources.append(contentsOf: periodPlan.resources)
                 } else {
                     let media = periodPlan.resources.filter { $0.kind == .mediaSegment }
@@ -490,6 +529,10 @@ public enum DASHTransferPlanner {
                     totalTextDuration += dur
                 }
             }
+        }
+
+        guard !allVideoResources.isEmpty || !allAudioResources.isEmpty || !allTextResources.isEmpty else {
+            throw DASHVODTransferPlanError.noSupportedRepresentation
         }
 
         let videoPlan: DASHRepresentationTransferPlan?

@@ -389,6 +389,221 @@ final class DASHMultiPeriodAndSegmentBaseTests: XCTestCase {
         XCTAssertEqual(reconPlan.assemblyRequest.tracks[0].mediaSegments.map(\.order), [0, 1, 2, 3])
     }
 
+    // MARK: - Multi-Period Differing Representations Tests
+
+    func testMultiPeriodRequestedVideoRepresentationAbsentFromPeriod0SucceedsWithFallback() throws {
+        let multiPeriodMPD = """
+        <MPD type="static" mediaPresentationDuration="PT10S">
+          <Period id="p0-ad" duration="PT4S">
+            <AdaptationSet id="v-ad" contentType="video" mimeType="video/mp4" codecs="avc1">
+              <Representation id="v_intro" bandwidth="500000">
+                <SegmentTemplate timescale="1" duration="2" initialization="init-intro.mp4" media="intro-$Number$.m4s"/>
+              </Representation>
+            </AdaptationSet>
+            <AdaptationSet id="a-ad" contentType="audio" mimeType="audio/mp4" codecs="mp4a">
+              <Representation id="a_intro" bandwidth="64000">
+                <SegmentTemplate timescale="1" duration="2" initialization="init-a-intro.mp4" media="intro-audio-$Number$.m4s"/>
+              </Representation>
+            </AdaptationSet>
+          </Period>
+          <Period id="p1-main" duration="PT6S">
+            <AdaptationSet id="v-main" contentType="video" mimeType="video/mp4" codecs="avc1">
+              <Representation id="v_720p" bandwidth="2000000">
+                <SegmentTemplate timescale="1" duration="2" initialization="init-720.mp4" media="p1-720-$Number$.m4s"/>
+              </Representation>
+              <Representation id="v_1080p" bandwidth="5000000">
+                <SegmentTemplate timescale="1" duration="2" initialization="init-1080.mp4" media="p1-1080-$Number$.m4s"/>
+              </Representation>
+            </AdaptationSet>
+            <AdaptationSet id="a-main" contentType="audio" mimeType="audio/mp4" codecs="mp4a">
+              <Representation id="a_main" bandwidth="128000">
+                <SegmentTemplate timescale="1" duration="2" initialization="init-main-a.mp4" media="p1-audio-$Number$.m4s"/>
+              </Representation>
+            </AdaptationSet>
+          </Period>
+        </MPD>
+        """
+
+        let manifest = try DASHManifestParser.parse(multiPeriodMPD, baseURL: manifestURL)
+        let plan = try DASHTransferPlanner.makeVODPlan(
+            from: manifest,
+            videoRepresentationID: "v_1080p"
+        )
+
+        let videoPlan = try XCTUnwrap(plan.video)
+        XCTAssertEqual(videoPlan.representationID, "v_1080p")
+        XCTAssertEqual(videoPlan.bandwidth, 5000000)
+
+        // Period 0 (4s / 2s = 2 segs) + Period 1 (6s / 2s = 3 segs) + 1 init = 6 total resources
+        let videoResources = videoPlan.resources
+        XCTAssertEqual(videoResources.count, 6)
+        XCTAssertEqual(videoResources[0].kind, .initialization)
+        XCTAssertEqual(videoResources[0].url.lastPathComponent, "init-intro.mp4")
+        XCTAssertEqual(videoResources[1].url.lastPathComponent, "intro-1.m4s")
+        XCTAssertEqual(videoResources[2].url.lastPathComponent, "intro-2.m4s")
+        XCTAssertEqual(videoResources[3].url.lastPathComponent, "p1-1080-1.m4s")
+        XCTAssertEqual(videoResources[4].url.lastPathComponent, "p1-1080-2.m4s")
+        XCTAssertEqual(videoResources[5].url.lastPathComponent, "p1-1080-3.m4s")
+    }
+
+    func testMultiPeriodRequestedAudioRepresentationAbsentFromPeriod0SucceedsWithFallback() throws {
+        let multiPeriodMPD = """
+        <MPD type="static" mediaPresentationDuration="PT10S">
+          <Period id="p0-ad" duration="PT4S">
+            <AdaptationSet id="v-ad" contentType="video" mimeType="video/mp4" codecs="avc1">
+              <Representation id="v1" bandwidth="1000000">
+                <SegmentTemplate timescale="1" duration="2" initialization="init-v.mp4" media="p0-v-$Number$.m4s"/>
+              </Representation>
+            </AdaptationSet>
+            <AdaptationSet id="a-ad" contentType="audio" mimeType="audio/mp4" codecs="mp4a" lang="en">
+              <Representation id="a_en_ad" bandwidth="64000">
+                <SegmentTemplate timescale="1" duration="2" initialization="init-a-en.mp4" media="p0-a-$Number$.m4s"/>
+              </Representation>
+            </AdaptationSet>
+          </Period>
+          <Period id="p1-main" duration="PT6S">
+            <AdaptationSet id="v-main" contentType="video" mimeType="video/mp4" codecs="avc1">
+              <Representation id="v1" bandwidth="1000000">
+                <SegmentTemplate timescale="1" duration="2" initialization="init-v.mp4" media="p1-v-$Number$.m4s"/>
+              </Representation>
+            </AdaptationSet>
+            <AdaptationSet id="a-en" contentType="audio" mimeType="audio/mp4" codecs="mp4a" lang="en">
+              <Representation id="a_en" bandwidth="128000">
+                <SegmentTemplate timescale="1" duration="2" initialization="init-a-en.mp4" media="p1-a-en-$Number$.m4s"/>
+              </Representation>
+            </AdaptationSet>
+            <AdaptationSet id="a-es" contentType="audio" mimeType="audio/mp4" codecs="mp4a" lang="es">
+              <Representation id="a_es" bandwidth="128000">
+                <SegmentTemplate timescale="1" duration="2" initialization="init-a-es.mp4" media="p1-a-es-$Number$.m4s"/>
+              </Representation>
+            </AdaptationSet>
+          </Period>
+        </MPD>
+        """
+
+        let manifest = try DASHManifestParser.parse(multiPeriodMPD, baseURL: manifestURL)
+        let plan = try DASHTransferPlanner.makeVODPlan(
+            from: manifest,
+            audioRepresentationID: "a_es"
+        )
+
+        let audioPlan = try XCTUnwrap(plan.audio)
+        XCTAssertEqual(audioPlan.representationID, "a_es")
+        XCTAssertEqual(audioPlan.bandwidth, 128000)
+
+        // Period 0 falls back to a_en_ad (2 media segments), Period 1 uses requested a_es (3 media segments)
+        let audioResources = audioPlan.resources
+        XCTAssertEqual(audioResources.count, 6)
+        XCTAssertEqual(audioResources[0].kind, .initialization)
+        XCTAssertEqual(audioResources[1].url.lastPathComponent, "p0-a-1.m4s")
+        XCTAssertEqual(audioResources[2].url.lastPathComponent, "p0-a-2.m4s")
+        XCTAssertEqual(audioResources[3].url.lastPathComponent, "p1-a-es-1.m4s")
+        XCTAssertEqual(audioResources[4].url.lastPathComponent, "p1-a-es-2.m4s")
+        XCTAssertEqual(audioResources[5].url.lastPathComponent, "p1-a-es-3.m4s")
+    }
+
+    func testMultiPeriodRequestedTextRepresentationAbsentFromPeriod0Succeeds() throws {
+        let multiPeriodMPD = """
+        <MPD type="static" mediaPresentationDuration="PT10S">
+          <Period id="p0-ad" duration="PT4S">
+            <AdaptationSet id="v-ad" contentType="video" mimeType="video/mp4" codecs="avc1">
+              <Representation id="v1" bandwidth="1000000">
+                <SegmentTemplate timescale="1" duration="2" initialization="init-v.mp4" media="p0-v-$Number$.m4s"/>
+              </Representation>
+            </AdaptationSet>
+          </Period>
+          <Period id="p1-main" duration="PT6S">
+            <AdaptationSet id="v-main" contentType="video" mimeType="video/mp4" codecs="avc1">
+              <Representation id="v1" bandwidth="1000000">
+                <SegmentTemplate timescale="1" duration="2" initialization="init-v.mp4" media="p1-v-$Number$.m4s"/>
+              </Representation>
+            </AdaptationSet>
+            <AdaptationSet id="t-main" contentType="text" mimeType="text/vtt" lang="es">
+              <Representation id="sub_es" bandwidth="500">
+                <SegmentTemplate timescale="1" duration="2" media="p1-sub-es-$Number$.vtt"/>
+              </Representation>
+            </AdaptationSet>
+          </Period>
+        </MPD>
+        """
+
+        let manifest = try DASHManifestParser.parse(multiPeriodMPD, baseURL: manifestURL)
+        let plan = try DASHTransferPlanner.makeVODPlan(
+            from: manifest,
+            textRepresentationID: "sub_es"
+        )
+
+        let textPlan = try XCTUnwrap(plan.text)
+        XCTAssertEqual(textPlan.representationID, "sub_es")
+        XCTAssertEqual(textPlan.bandwidth, 500)
+        // Period 0 has no text, Period 1 has 3 segments (6s / 2s = 3)
+        XCTAssertEqual(textPlan.resources.count, 3)
+        XCTAssertEqual(textPlan.resources[0].url.lastPathComponent, "p1-sub-es-1.vtt")
+        XCTAssertEqual(textPlan.resources[1].url.lastPathComponent, "p1-sub-es-2.vtt")
+        XCTAssertEqual(textPlan.resources[2].url.lastPathComponent, "p1-sub-es-3.vtt")
+    }
+
+    func testMultiPeriodRequestedRepresentationAbsentFromAllPeriodsThrows() throws {
+        let multiPeriodMPD = """
+        <MPD type="static" mediaPresentationDuration="PT6S">
+          <Period id="p1" duration="PT6S">
+            <AdaptationSet contentType="video" mimeType="video/mp4" codecs="avc1">
+              <Representation id="v1" bandwidth="1000000">
+                <SegmentTemplate timescale="1" duration="2" initialization="init.mp4" media="seg-$Number$.m4s"/>
+              </Representation>
+            </AdaptationSet>
+          </Period>
+        </MPD>
+        """
+
+        let manifest = try DASHManifestParser.parse(multiPeriodMPD, baseURL: manifestURL)
+        XCTAssertThrowsError(try DASHTransferPlanner.makeVODPlan(from: manifest, videoRepresentationID: "v_missing")) { error in
+            XCTAssertEqual(error as? DASHVODTransferPlanError, .representationNotFound)
+        }
+        XCTAssertThrowsError(try DASHTransferPlanner.makeVODPlan(from: manifest, audioRepresentationID: "a_missing")) { error in
+            XCTAssertEqual(error as? DASHVODTransferPlanError, .representationNotFound)
+        }
+        XCTAssertThrowsError(try DASHTransferPlanner.makeVODPlan(from: manifest, textRepresentationID: "sub_missing")) { error in
+            XCTAssertEqual(error as? DASHVODTransferPlanError, .representationNotFound)
+        }
+    }
+
+    func testMultiPeriodMediaStartingInLaterPeriodIncludesInitializationSegment() throws {
+        let multiPeriodMPD = """
+        <MPD type="static" mediaPresentationDuration="PT10S">
+          <Period id="p0-audio-only" duration="PT4S">
+            <AdaptationSet id="a0" contentType="audio" mimeType="audio/mp4" codecs="mp4a">
+              <Representation id="a0" bandwidth="64000">
+                <SegmentTemplate timescale="1" duration="2" initialization="init-a0.mp4" media="a0-$Number$.m4s"/>
+              </Representation>
+            </AdaptationSet>
+          </Period>
+          <Period id="p1-av" duration="PT6S">
+            <AdaptationSet id="v1" contentType="video" mimeType="video/mp4" codecs="avc1">
+              <Representation id="v1" bandwidth="2000000">
+                <SegmentTemplate timescale="1" duration="2" initialization="init-v1.mp4" media="v1-$Number$.m4s"/>
+              </Representation>
+            </AdaptationSet>
+            <AdaptationSet id="a1" contentType="audio" mimeType="audio/mp4" codecs="mp4a">
+              <Representation id="a1" bandwidth="128000">
+                <SegmentTemplate timescale="1" duration="2" initialization="init-a1.mp4" media="a1-$Number$.m4s"/>
+              </Representation>
+            </AdaptationSet>
+          </Period>
+        </MPD>
+        """
+
+        let manifest = try DASHManifestParser.parse(multiPeriodMPD, baseURL: manifestURL)
+        let plan = try DASHTransferPlanner.makeVODPlan(from: manifest)
+
+        let videoPlan = try XCTUnwrap(plan.video)
+        XCTAssertEqual(videoPlan.representationID, "v1")
+        // Video only started in Period 1, so its initialization segment must be present!
+        XCTAssertEqual(videoPlan.resources.first?.kind, .initialization)
+        XCTAssertEqual(videoPlan.resources.first?.url.lastPathComponent, "init-v1.mp4")
+        XCTAssertEqual(videoPlan.resources.count, 4) // 1 init + 3 segments (6s / 2s = 3)
+    }
+
     private func isoBox(_ type: String, payload: Data) -> Data {
         let size = UInt32(8 + payload.count).bigEndian
         var data = Data()
