@@ -90,7 +90,8 @@ public enum BrowserDownloadDecisionPipeline {
         }
 
         // 1b. Unsupported candidate (e.g. I-frame trick-play thumbnails, unsupported formats)
-        if candidate.availability == .unsupported {
+        // Skip MediaSource candidates here so MSE classifier evaluates format-specific support (e.g. WebM)
+        if candidate.availability == .unsupported && candidate.kind != .mediaSource && candidate.blobKind != .mediaSource {
             let reason = candidate.evidence.first ?? "Resource is unsupported for full download"
             return BrowserDownloadDecision(
                 action: .unsupported(reason: reason),

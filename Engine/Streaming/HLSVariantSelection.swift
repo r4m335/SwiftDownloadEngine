@@ -51,7 +51,8 @@ public enum HLSVariantSelector {
     public static func rank(
         from master: HLSManifest,
         preferences: HLSVariantSelectionPreferences = HLSVariantSelectionPreferences(),
-        deduplicate: Bool = false
+        deduplicate: Bool = false,
+        includeIFrameVariants: Bool = false
     ) throws -> [HLSVariant] {
         guard master.playlistType == .master, !master.variants.isEmpty else {
             throw HLSVariantSelectionError.noVariants
@@ -65,7 +66,7 @@ public enum HLSVariantSelector {
                 if !matches {
                     return false
                 }
-            } else if hasPrimary && variant.isIFrameOnly {
+            } else if !includeIFrameVariants && hasPrimary && variant.isIFrameOnly {
                 return false
             }
             if let maximumBandwidth = preferences.maximumBandwidth, variant.bandwidth > maximumBandwidth {
