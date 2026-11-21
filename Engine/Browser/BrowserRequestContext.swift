@@ -364,7 +364,8 @@ public struct BrowserRequestContext: Sendable, Codable, Hashable {
         // 1. Origin-matched Cookie header
         let isSameOrigin = BrowserHeaderFilter.sameOrigin(url, dest)
         let isPageOrigin = pageURL.map { BrowserHeaderFilter.sameOrigin($0, dest) } ?? false
-        let isAllowedOrigin = BrowserHeaderFilter.isOriginAllowed(dest, allowedOrigins: allowedCredentialOrigins)
+        let isDestAllowedOrigin = BrowserHeaderFilter.isOriginAllowed(dest, allowedOrigins: allowedCredentialOrigins)
+        let isContextAllowedOrigin = BrowserHeaderFilter.isOriginAllowed(url, allowedOrigins: allowedCredentialOrigins)
         let isDowngrade: Bool = {
             let srcHTTPS = (url.scheme?.lowercased() == "https") || (pageURL?.scheme?.lowercased() == "https")
             return srcHTTPS && (dest.scheme?.lowercased() == "http")
@@ -378,7 +379,13 @@ public struct BrowserRequestContext: Sendable, Codable, Hashable {
                     return true
                 }
                 // 2. Verified allowlist cross-origin match: Forward cookies belonging to this context
-                if isAllowedOrigin && (cookie.matches(url: self.url) || (self.pageURL != nil && cookie.matches(url: self.pageURL!))) {
+                if isDestAllowedOrigin && (cookie.matches(url: self.url) || (self.pageURL != nil && cookie.matches(url: self.pageURL!))) {
+                    if let exp = cookie.expiresDate, exp < Date() { return false }
+                    if cookie.isSecure && (dest.scheme?.lowercased() ?? "") != "https" { return false }
+                    return true
+                }
+                // 3. Redirect-resolved allowlisted context: Context is on an allowlisted origin, forward to same-origin or allowlisted dest
+                if isContextAllowedOrigin && (isSameOrigin || isDestAllowedOrigin) {
                     if let exp = cookie.expiresDate, exp < Date() { return false }
                     if cookie.isSecure && (dest.scheme?.lowercased() ?? "") != "https" { return false }
                     return true
@@ -429,7 +436,7 @@ public struct BrowserRequestContext: Sendable, Codable, Hashable {
 
         // 4. Approved custom headers (filtered against forbidden names)
         let isDestHTTP = dest.scheme?.lowercased() == "http"
-        let canForwardCredentials = includeCredentials && !isDowngrade && (isSameOrigin || isPageOrigin || isAllowedOrigin)
+        let canForwardCredentials = includeCredentials && !isDowngrade && (isSameOrigin || isPageOrigin || isDestAllowedOrigin || isContextAllowedOrigin)
         for (k, v) in customHeaders {
             let lowerName = k.trimmingCharacters(in: .whitespaces).lowercased()
             if !BrowserHeaderFilter.isForbiddenHeader(k) &&
