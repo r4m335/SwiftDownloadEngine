@@ -2333,6 +2333,95 @@ final class StreamingDownloadOrchestratorTests: XCTestCase {
         XCTAssertTrue(savedContent.contains("Second Cue"))
     }
 
+    func testDownloadAndSaveSubtitle_ShiftsCuesUsingTimestampMapAndPlaylistDurations() async throws {
+        let playlistURL = URL(string: "https://video.example.com/subtitles/playlist.m3u8")!
+        let seg1URL = URL(string: "https://video.example.com/subtitles/seg1.vtt")!
+        let seg2URL = URL(string: "https://video.example.com/subtitles/seg2.vtt")!
+
+        let m3u8Playlist = """
+        #EXTM3U
+        #EXT-X-TARGETDURATION:10
+        #EXTINF:10.0,
+        seg1.vtt
+        #EXTINF:10.0,
+        seg2.vtt
+        """
+
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [MockURLProtocol.self]
+        let mockSession = URLSession(configuration: config)
+        MockURLProtocol.reset()
+        defer { MockURLProtocol.reset() }
+
+        MockURLProtocol.setHandler(for: playlistURL) { _ in
+            let res = HTTPURLResponse(url: playlistURL, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: ["Content-Type": "application/x-mpegURL"])!
+            return (res, Data(m3u8Playlist.utf8))
+        }
+
+        MockURLProtocol.setHandler(for: seg1URL) { _ in
+            let body = """
+            WEBVTT
+            X-TIMESTAMP-MAP=MPEGTS:900000,LOCAL:00:00:00.000
+
+            00:00:01.000 --> 00:00:05.000
+            First subtitle cue
+
+            00:00:08.000 --> 00:00:12.000
+            Spanning cue
+            """
+            let res = HTTPURLResponse(url: seg1URL, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: ["Content-Type": "text/vtt"])!
+            return (res, Data(body.utf8))
+        }
+
+        MockURLProtocol.setHandler(for: seg2URL) { _ in
+            let body = """
+            WEBVTT
+            X-TIMESTAMP-MAP=MPEGTS:1800000,LOCAL:00:00:00.000
+
+            00:00:00.000 --> 00:00:02.000
+            Spanning cue
+
+            00:00:03.000 --> 00:00:07.000
+            Second segment cue
+            """
+            let res = HTTPURLResponse(url: seg2URL, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: ["Content-Type": "text/vtt"])!
+            return (res, Data(body.utf8))
+        }
+
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent("sub-map-test-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let finalVideoURL = tempDir.appendingPathComponent("movie.mp4")
+        let destinationVTT = tempDir.appendingPathComponent("movie.vtt")
+
+        let orchestrator = StreamingDownloadOrchestrator(
+            manifestLoader: RecordingManifestLoader(data: Data(), finalURL: playlistURL, mimeType: nil),
+            segmentExecutor: RecordingSegmentExecutor()
+        )
+
+        await orchestrator.downloadAndSaveSubtitle(
+            from: playlistURL,
+            candidate: nil,
+            finalOutputURL: finalVideoURL,
+            customSession: mockSession
+        )
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: destinationVTT.path))
+        let savedContent = try String(contentsOf: destinationVTT, encoding: .utf8)
+        XCTAssertTrue(savedContent.contains("WEBVTT"))
+        XCTAssertTrue(savedContent.contains("00:00:01.000 --> 00:00:05.000"))
+        XCTAssertTrue(savedContent.contains("First subtitle cue"))
+
+        // Segment 2 cue must be shifted by +10s to 00:00:13.000 --> 00:00:17.000
+        XCTAssertTrue(savedContent.contains("00:00:13.000 --> 00:00:17.000"))
+        XCTAssertTrue(savedContent.contains("Second segment cue"))
+
+        // Spanning cue must be merged into 00:00:08.000 --> 00:00:12.000
+        XCTAssertTrue(savedContent.contains("00:00:08.000 --> 00:00:12.000"))
+        let occurrences = savedContent.components(separatedBy: "Spanning cue").count - 1
+        XCTAssertEqual(occurrences, 1, "Spanning cue must not be duplicated")
+
     func testDownloadAndSaveSubtitle_RejectsHTMLResponsesAndAvoidsWritingBrokenVTT() async throws {
         let errorURL = URL(string: "https://auth.example.com/subtitles/error.vtt")!
         let config = URLSessionConfiguration.ephemeral

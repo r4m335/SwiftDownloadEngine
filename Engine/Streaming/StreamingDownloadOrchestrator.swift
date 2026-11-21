@@ -3866,27 +3866,58 @@ public actor StreamingDownloadOrchestrator {
             let contentString = String(decoding: data, as: UTF8.self)
 
             if contentString.contains("WEBVTT") {
-                try data.write(to: destinationVTT, options: Data.WritingOptions.atomic)
+                let singleInput = WebVTTSegmentInput(text: contentString, playlistStartTime: 0.0, duration: 0.0)
+                let assembledVTT = HLSWebVTTAssembler.assemble(segments: [singleInput])
+                try Data(assembledVTT.utf8).write(to: destinationVTT, options: Data.WritingOptions.atomic)
                 PipelineLogger.shared.log("[HLS Pipeline] Subtitle (.vtt) saved successfully to: \(destinationVTT.path)")
                 return
             }
 
             if contentString.contains("#EXTM3U") {
+                struct SubtitleSegmentDescriptor {
+                    let url: URL
+                    let playlistStartTime: Double
+                    let duration: Double
+                }
+
+                var descriptors: [SubtitleSegmentDescriptor] = []
                 let lines = contentString.components(separatedBy: "\n")
-                var segmentURLs: [URL] = []
+                var currentDuration: Double = 10.0
+                var targetDuration: Double? = nil
+                var cumulativeTime: Double = 0.0
+
                 for line in lines {
-                    let trimmed = line.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
-                    if !trimmed.isEmpty && !trimmed.hasPrefix("#") {
+                    let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if trimmed.hasPrefix("#EXT-X-TARGETDURATION:") {
+                        let valStr = trimmed.replacingOccurrences(of: "#EXT-X-TARGETDURATION:", with: "").trimmingCharacters(in: .whitespaces)
+                        if let td = Double(valStr) {
+                            targetDuration = td
+                            currentDuration = td
+                        }
+                    } else if trimmed.hasPrefix("#EXTINF:") {
+                        let valStr = trimmed.replacingOccurrences(of: "#EXTINF:", with: "").trimmingCharacters(in: .whitespaces)
+                        let commaIndex = valStr.firstIndex(of: ",") ?? valStr.endIndex
+                        let durStr = String(valStr[..<commaIndex]).trimmingCharacters(in: .whitespaces)
+                        if let dur = Double(durStr) {
+                            currentDuration = dur
+                        }
+                    } else if !trimmed.isEmpty && !trimmed.hasPrefix("#") {
                         if let segURL = URL(string: trimmed, relativeTo: subtitleURL)?.absoluteURL {
-                            segmentURLs.append(segURL)
+                            descriptors.append(SubtitleSegmentDescriptor(
+                                url: segURL,
+                                playlistStartTime: cumulativeTime,
+                                duration: currentDuration
+                            ))
+                            cumulativeTime += currentDuration
+                            currentDuration = targetDuration ?? 10.0
                         }
                     }
                 }
-                if !segmentURLs.isEmpty {
-                    var combinedVTT = "WEBVTT\n\n"
-                    var downloadedCount = 0
-                    for segURL in segmentURLs {
-                        var segReq = URLRequest(url: segURL)
+
+                if !descriptors.isEmpty {
+                    var downloadedSegments: [WebVTTSegmentInput] = []
+                    for desc in descriptors {
+                        var segReq = URLRequest(url: desc.url)
                         segReq.httpMethod = "GET"
                         segReq.timeoutInterval = 30
                         segReq = DownloadRequestEnricher.enrich(segReq, snapshot: effectiveSnapshot, context: candidate?.browserRequestContext)
@@ -3896,7 +3927,7 @@ public actor StreamingDownloadOrchestrator {
                         }
                         if segReq.value(forHTTPHeaderField: "Referer") == nil {
                             let ref = candidate?.browserRequestContext?.referer ?? candidate?.browserRequestContext?.pageURL?.absoluteString ?? subtitleURL.absoluteString
-                            let isDowngrade = segURL.scheme?.lowercased() == "http" && (URL(string: ref)?.scheme?.lowercased() == "https")
+                            let isDowngrade = desc.url.scheme?.lowercased() == "http" && (URL(string: ref)?.scheme?.lowercased() == "https")
                             if !isDowngrade {
                                 segReq.setValue(ref, forHTTPHeaderField: "Referer")
                             }
@@ -3904,24 +3935,28 @@ public actor StreamingDownloadOrchestrator {
                         do {
                             let (segData, segResponse) = try await subtitleSession.data(for: segReq)
                             guard let segHTTP = segResponse as? HTTPURLResponse, (200...299).contains(segHTTP.statusCode) else {
-                                PipelineLogger.shared.log("[HLS Pipeline] Subtitle segment HTTP failed: \(segURL.absoluteString)")
+                                PipelineLogger.shared.log("[HLS Pipeline] Subtitle segment HTTP failed: \(desc.url.absoluteString)")
                                 continue
                             }
                             let segText = String(decoding: segData, as: UTF8.self)
-                            let cleanText = segText.replacingOccurrences(of: "WEBVTT\n", with: "")
-                                .replacingOccurrences(of: "WEBVTT\r\n", with: "")
-                            combinedVTT += cleanText + "\n"
-                            downloadedCount += 1
+                            downloadedSegments.append(WebVTTSegmentInput(
+                                text: segText,
+                                playlistStartTime: desc.playlistStartTime,
+                                duration: desc.duration
+                            ))
                         } catch {
                             PipelineLogger.shared.log("[HLS Pipeline] Subtitle segment fetch error: \(error.localizedDescription)")
                         }
                     }
-                    guard downloadedCount > 0 else {
+
+                    guard !downloadedSegments.isEmpty else {
                         PipelineLogger.shared.log("[HLS Pipeline] All subtitle segments failed to download for: \(subtitleURL.absoluteString)")
                         return
                     }
+
+                    let combinedVTT = HLSWebVTTAssembler.assemble(segments: downloadedSegments)
                     try Data(combinedVTT.utf8).write(to: destinationVTT, options: Data.WritingOptions.atomic)
-                    PipelineLogger.shared.log("[HLS Pipeline] Assembled \(downloadedCount)/\(segmentURLs.count) subtitle segments into: \(destinationVTT.path)")
+                    PipelineLogger.shared.log("[HLS Pipeline] Assembled \(downloadedSegments.count)/\(descriptors.count) subtitle segments into: \(destinationVTT.path)")
                     return
                 }
             }
