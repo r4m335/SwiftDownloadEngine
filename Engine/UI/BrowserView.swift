@@ -2449,7 +2449,8 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                         childURLs.insert(HLSResourceGrouping.urlWithoutQuery(exact))
                     }
                 }
-                if let manifestObj = try? HLSManifestParser.parse(result.manifestText, baseURL: manifest.url) {
+                if let text = manifest.manifestText ?? expanded.first?.manifestText,
+                   let manifestObj = try? HLSManifestParser.parse(text, baseURL: manifest.url) {
                     for v in manifestObj.variants {
                         childURLs.insert(v.uri.absoluteString)
                         childURLs.insert(v.uri.absoluteString.lowercased())
