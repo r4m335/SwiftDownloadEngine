@@ -1408,7 +1408,7 @@ final class StreamingDownloadOrchestratorTests: XCTestCase {
         XCTAssertEqual(plan.browserRequestContext?.url, variantURL)
 
         let targetDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        _ = try await orchestrator.execute(proposal, approved: true, targetDirectory: targetDir)
+        _ = try await orchestrator.execute(proposal, approved: true, destinationDirectory: targetDir)
 
         let recordedRequests = await executor.requests
         XCTAssertEqual(recordedRequests.count, 1)
