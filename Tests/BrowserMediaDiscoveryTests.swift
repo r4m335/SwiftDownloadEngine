@@ -1056,7 +1056,7 @@ final class BrowserMediaDiscoveryTests: XCTestCase {
             rawURL: newURL.absoluteString,
             kind: .directMedia,
             suggestedFilename: "video.mp4",
-            availability: .ready,
+            availability: .downloadable,
             requestContext: initialContext
         )
 
@@ -1115,7 +1115,7 @@ final class BrowserMediaDiscoveryTests: XCTestCase {
             rawURL: variantNewURL.absoluteString,
             kind: .hlsManifest,
             suggestedFilename: "720p.m3u8",
-            availability: .ready
+            availability: .downloadable
         )
 
         let masterCandidate = BrowserMediaCandidate(
@@ -1124,7 +1124,7 @@ final class BrowserMediaDiscoveryTests: XCTestCase {
             rawURL: masterNewURL.absoluteString,
             kind: .hlsManifest,
             suggestedFilename: "master.m3u8",
-            availability: .ready
+            availability: .downloadable
         )
 
         vm.discoveredResources = [variantResource]
@@ -1168,7 +1168,7 @@ final class BrowserMediaDiscoveryTests: XCTestCase {
             rawURL: masterNewURL.absoluteString,
             kind: .hlsManifest,
             suggestedFilename: "master.m3u8",
-            availability: .ready
+            availability: .downloadable
         )
 
         vm.discoveredResources = [variantResource]
