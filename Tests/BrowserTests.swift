@@ -978,6 +978,53 @@ final class BrowserTests: XCTestCase {
         XCTAssertNil(handoff?.requestContext, "Cross-origin redirection without matching cookies must strip requestContext")
     }
 
+    // MARK: - 7.5. Browser Request Context Manifest Cache Key Tests
+
+    func testManifestCacheKeyPreservesCaseSensitivePathAndQueryTokens() {
+        let urlA = URL(string: "https://cdn.example.com/Streams/VOD_Alpha/master.m3u8?token=AbCdEf123&Expires=1700000000")!
+        let urlB = URL(string: "https://cdn.example.com/Streams/vod_alpha/master.m3u8?token=AbCdEf123&Expires=1700000000")!
+        let urlC = URL(string: "https://cdn.example.com/Streams/VOD_Alpha/master.m3u8?token=abcdef123&Expires=1700000000")!
+        let urlUpperCaseHost = URL(string: "HTTPS://CDN.EXAMPLE.COM/Streams/VOD_Alpha/master.m3u8?token=AbCdEf123&Expires=1700000000")!
+
+        let keyA = BrowserRequestContext.manifestCacheKey(for: urlA)
+        let keyB = BrowserRequestContext.manifestCacheKey(for: urlB)
+        let keyC = BrowserRequestContext.manifestCacheKey(for: urlC)
+        let keyUpper = BrowserRequestContext.manifestCacheKey(for: urlUpperCaseHost)
+
+        // Case-sensitive paths must yield different cache keys
+        XCTAssertNotEqual(keyA, keyB, "Case-sensitive path difference must yield distinct manifest cache keys")
+
+        // Case-sensitive query signatures/tokens must yield different cache keys
+        XCTAssertNotEqual(keyA, keyC, "Case-sensitive query difference must yield distinct manifest cache keys")
+        XCTAssertNotEqual(keyB, keyC)
+
+        // Scheme and host are case-insensitive per RFC 3986 and must yield identical cache keys
+        XCTAssertEqual(keyA, keyUpper, "Scheme and host case differences must normalize to identical cache key")
+
+        // Keys must not lowercase the path or query
+        XCTAssertTrue(keyA.contains("/Streams/VOD_Alpha/"), "Cache key must preserve path casing")
+        XCTAssertTrue(keyA.contains("token=AbCdEf123"), "Cache key must preserve query token casing")
+    }
+
+    func testManifestCacheKeyWithContextPreservesCaseSensitivity() {
+        let url1 = URL(string: "https://cdn.example.com/hls/Variant_A/index.m3u8?sig=SECRET_TOKEN")!
+        let url2 = URL(string: "https://cdn.example.com/hls/Variant_A/index.m3u8?sig=secret_token")!
+
+        let context = BrowserRequestContext(
+            url: url1,
+            pageURL: URL(string: "https://example.com/watch?v=VIDEO_ID")!,
+            userAgent: "TestBrowser/1.0",
+            cookies: [BrowserCookie(name: "SessionID", value: "Token_XYZ", domain: "cdn.example.com")]
+        )
+
+        let key1 = BrowserRequestContext.manifestCacheKey(for: url1, requestContext: context)
+        let key2 = BrowserRequestContext.manifestCacheKey(for: url2, requestContext: context)
+
+        XCTAssertNotEqual(key1, key2, "Case-sensitive query token differences with context must yield distinct cache keys")
+        XCTAssertTrue(key1.contains("sig=SECRET_TOKEN"))
+        XCTAssertTrue(key2.contains("sig=secret_token"))
+    }
+
     // MARK: - 8. Browser Navigation State & Quick Links
 
     func testBrowserNavigationStateDefaults() {

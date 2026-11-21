@@ -864,20 +864,46 @@ public struct BrowserHeaderFilter {
 // MARK: - Manifest Cache Key Discriminator
 
 extension BrowserRequestContext {
+    /// Normalizes a URL for caching purposes per RFC 3986 by lowercasing only
+    /// the scheme and host (which are case-insensitive) while strictly preserving
+    /// the case of the path, query string, and fragment (which are case-sensitive).
+    public static func canonicalURLString(for url: URL) -> String {
+        if var components = URLComponents(url: url, resolvingAgainstBaseURL: true) {
+            components.scheme = components.scheme?.lowercased()
+            components.host = components.host?.lowercased()
+            if let string = components.string {
+                return string
+            }
+        }
+
+        // Robust fallback if URLComponents fails to reconstruct string
+        let raw = url.absoluteString
+        guard let schemeSeparator = raw.range(of: "://") else {
+            return raw
+        }
+        let scheme = raw[..<schemeSeparator.lowerBound].lowercased()
+        let rest = raw[schemeSeparator.upperBound...]
+        let pathStart = rest.firstIndex(where: { $0 == "/" || $0 == "?" || $0 == "#" }) ?? rest.endIndex
+        let hostAndPort = rest[..<pathStart].lowercased()
+        let remainder = rest[pathStart...]
+        return "\(scheme)://\(hostAndPort)\(remainder)"
+    }
+
     /// Computes a deterministic cache key for a media manifest URL and its associated browser context.
     /// Incorporates cookies, headers, page origin, and user agent to prevent cross-tab, cross-user,
     /// or private-browsing cache pollution for signed or authenticated streaming manifests.
+    /// Preserves case-sensitivity of signed paths and query tokens according to RFC 3986.
     public static func manifestCacheKey(
         for url: URL,
         requestContext: BrowserRequestContext? = nil,
         browserSessionSnapshot: BrowserSessionSnapshot? = nil
     ) -> String {
-        let normalizedURL = url.absoluteString.lowercased()
+        let normalizedURL = canonicalURLString(for: url)
         var components: [String] = [normalizedURL]
 
         if let context = requestContext {
-            if let page = context.pageURL?.absoluteString.lowercased() {
-                components.append("page:\(page)")
+            if let page = context.pageURL {
+                components.append("page:\(canonicalURLString(for: page))")
             }
             if let ua = context.userAgent, !ua.isEmpty {
                 components.append("ua:\(ua)")
@@ -886,7 +912,7 @@ extension BrowserRequestContext {
             let targetCookies = matchingCookies.isEmpty ? context.cookies : matchingCookies
             if !targetCookies.isEmpty {
                 let cookieStr = targetCookies
-                    .map { "\($0.name)=\($0.value)@\($0.domain)\($0.path)" }
+                    .map { "\($0.name)=\($0.value)@\($0.domain.lowercased())\($0.path)" }
                     .sorted()
                     .joined(separator: ";")
                 components.append("cookies:\(cookieStr)")
@@ -901,8 +927,8 @@ extension BrowserRequestContext {
         }
 
         if let snapshot = browserSessionSnapshot {
-            if let page = snapshot.pageURL?.absoluteString.lowercased() {
-                components.append("snapshot_page:\(page)")
+            if let page = snapshot.pageURL {
+                components.append("snapshot_page:\(canonicalURLString(for: page))")
             }
             if !snapshot.userAgent.isEmpty {
                 components.append("snapshot_ua:\(snapshot.userAgent)")
@@ -917,7 +943,7 @@ extension BrowserRequestContext {
             let targetCookies = matching.isEmpty ? snapshot.allCookies : matching
             if !targetCookies.isEmpty {
                 let cookieStr = targetCookies
-                    .map { "\($0.name)=\($0.value)@\($0.domain)\($0.path)" }
+                    .map { "\($0.name)=\($0.value)@\($0.domain.lowercased())\($0.path)" }
                     .sorted()
                     .joined(separator: ";")
                 components.append("snapshot_cookies:\(cookieStr)")

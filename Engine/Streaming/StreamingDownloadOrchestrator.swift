@@ -860,8 +860,9 @@ public actor StreamingDownloadOrchestrator {
         )
         cachedManifestTextsByURL[key] = entry
         if requestContext == nil && browserSessionSnapshot == nil {
+            let canonical = BrowserRequestContext.canonicalURLString(for: url)
+            cachedManifestTextsByURL[canonical] = entry
             cachedManifestTextsByURL[url.absoluteString] = entry
-            cachedManifestTextsByURL[url.absoluteString.lowercased()] = entry
         }
     }
 
@@ -878,8 +879,9 @@ public actor StreamingDownloadOrchestrator {
             )
             cachedManifestTextsByURL.removeValue(forKey: key)
             if requestContext == nil && browserSessionSnapshot == nil {
+                let canonical = BrowserRequestContext.canonicalURLString(for: url)
+                cachedManifestTextsByURL.removeValue(forKey: canonical)
                 cachedManifestTextsByURL.removeValue(forKey: url.absoluteString)
-                cachedManifestTextsByURL.removeValue(forKey: url.absoluteString.lowercased())
             }
         } else {
             cachedManifestTextsByURL.removeAll()
@@ -904,7 +906,8 @@ public actor StreamingDownloadOrchestrator {
             return entry.text
         }
         if requestContext == nil && browserSessionSnapshot == nil {
-            for fallbackKey in [url.absoluteString, url.absoluteString.lowercased()] {
+            let canonical = BrowserRequestContext.canonicalURLString(for: url)
+            for fallbackKey in [canonical, url.absoluteString] {
                 if let entry = cachedManifestTextsByURL[fallbackKey] {
                     if entry.isExpired() || DirectMediaTransferPlanner.isURLExpired(url) {
                         cachedManifestTextsByURL.removeValue(forKey: fallbackKey)

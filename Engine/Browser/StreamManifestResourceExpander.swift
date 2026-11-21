@@ -80,7 +80,7 @@ public actor StreamManifestResourceExpander {
                 task.cancel()
             }
             if requestContext == nil {
-                let bare = url.absoluteString.lowercased()
+                let bare = BrowserRequestContext.canonicalURLString(for: url)
                 cache.removeValue(forKey: bare)
                 if let task = inFlight.removeValue(forKey: bare) {
                     task.cancel()
@@ -119,7 +119,7 @@ public actor StreamManifestResourceExpander {
             return direct
         }
         if requestContext == nil {
-            let bareKey = url.absoluteString.lowercased()
+            let bareKey = BrowserRequestContext.canonicalURLString(for: url)
             if let bare = cache[bareKey] {
                 if bare.isExpired() || DirectMediaTransferPlanner.isURLExpired(url) {
                     cache.removeValue(forKey: bareKey)

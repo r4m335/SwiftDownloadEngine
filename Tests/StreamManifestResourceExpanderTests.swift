@@ -564,6 +564,66 @@ final class StreamManifestResourceExpanderTests: XCTestCase {
         XCTAssertEqual(cachedB?.variants.count, 1)
     }
 
+    func testManifestCachePreservesIsolationForCaseSensitiveURLs() async {
+        let expander = StreamManifestResourceExpander()
+
+        let urlUpper = URL(string: "https://cdn.example.com/hls/Stream_ABC/master.m3u8?Signature=Token123")!
+        let urlLower = URL(string: "https://cdn.example.com/hls/Stream_abc/master.m3u8?Signature=token123")!
+
+        let manifestUpper = """
+        #EXTM3U
+        #EXT-X-VERSION:3
+        #EXT-X-STREAM-INF:BANDWIDTH=5000000,RESOLUTION=1920x1080
+        1080p.m3u8
+        """
+
+        let manifestLower = """
+        #EXTM3U
+        #EXT-X-VERSION:3
+        #EXT-X-STREAM-INF:BANDWIDTH=2500000,RESOLUTION=1280x720
+        720p.m3u8
+        """
+
+        let resourceUpper = WebpageResource(
+            url: urlUpper,
+            title: "Upper Stream",
+            suggestedFilename: "master.m3u8",
+            resourceType: .video,
+            mimeType: "application/vnd.apple.mpegurl",
+            manifestText: manifestUpper
+        )
+
+        let resourceLower = WebpageResource(
+            url: urlLower,
+            title: "Lower Stream",
+            suggestedFilename: "master.m3u8",
+            resourceType: .video,
+            mimeType: "application/vnd.apple.mpegurl",
+            manifestText: manifestLower
+        )
+
+        // Expand upper stream
+        let variantsUpper = await expander.expand(manifestResource: resourceUpper)
+        XCTAssertEqual(variantsUpper.count, 1)
+        XCTAssertTrue(variantsUpper.contains(where: { $0.title.contains("1080p") }))
+
+        // Cache lookup for lower stream must be nil (must not collide with upper stream)
+        let cachedLowerBefore = await expander.cachedResult(for: urlLower)
+        XCTAssertNil(cachedLowerBefore, "Case-sensitive CDN URL must not reuse cached result of differently cased URL")
+
+        // Expand lower stream
+        let variantsLower = await expander.expand(manifestResource: resourceLower)
+        XCTAssertEqual(variantsLower.count, 1)
+        XCTAssertTrue(variantsLower.contains(where: { $0.title.contains("720p") }))
+
+        // Both must remain independently cached
+        let cachedUpper = await expander.cachedResult(for: urlUpper)
+        XCTAssertEqual(cachedUpper?.variants.first?.title.contains("1080p"), true)
+
+        let cachedLower = await expander.cachedResult(for: urlLower)
+        XCTAssertEqual(cachedLower?.variants.first?.title.contains("720p"), true)
+    }
+
     // MARK: - 15. Manifest Cache Expiration & In-Flight Cancellation Tests
 
     func testManifestCacheExpirationWithSignedURLAndTTL() async {
