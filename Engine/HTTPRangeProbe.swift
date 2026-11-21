@@ -28,18 +28,23 @@ struct HTTPRangeProbeConfiguration: Sendable {
     /// Whether to allow requests over cellular networks.
     let allowsCellularAccess: Bool
 
+    /// Allowed origins/wildcards permitted to receive credentials across redirects.
+    let allowedCredentialOrigins: Set<String>
+
     init(
         url: URL,
         customHeaders: [String: String] = [:],
         probeMethod: ProbeMethod = .rangeGet,
         timeoutInterval: TimeInterval = 45.0,
-        allowsCellularAccess: Bool = true
+        allowsCellularAccess: Bool = true,
+        allowedCredentialOrigins: Set<String> = []
     ) {
         self.url = url
         self.customHeaders = customHeaders
         self.probeMethod = probeMethod
         self.timeoutInterval = timeoutInterval
         self.allowsCellularAccess = allowsCellularAccess
+        self.allowedCredentialOrigins = allowedCredentialOrigins
     }
 }
 
@@ -177,7 +182,7 @@ final class HTTPRangeProbe: Sendable {
 
         request = DownloadRequestEnricher.enrich(request)
 
-        let redirectCaptureDelegate = RedirectCaptureDelegate()
+        let redirectCaptureDelegate = RedirectCaptureDelegate(allowedOrigins: configuration.allowedCredentialOrigins)
 
         let response: URLResponse
         do {
@@ -473,6 +478,11 @@ final class HTTPRangeProbe: Sendable {
 private final class RedirectCaptureDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
     private let lock = NSLock()
     private var _resolvedFinalURL: URL?
+    private let allowedOrigins: Set<String>
+
+    init(allowedOrigins: Set<String> = []) {
+        self.allowedOrigins = allowedOrigins
+    }
 
     var resolvedFinalURL: URL? {
         lock.lock()
@@ -494,7 +504,8 @@ private final class RedirectCaptureDelegate: NSObject, URLSessionTaskDelegate, @
         let safeRequest = DownloadRequestEnricher.handleRedirect(
             task: task,
             response: response,
-            newRequest: request
+            newRequest: request,
+            allowedOrigins: allowedOrigins
         )
         completionHandler(safeRequest)
     }

@@ -528,7 +528,8 @@ public struct BrowserRequestContext: Sendable, Codable, Hashable {
 
         // 4. Approved custom headers (filtered against forbidden names)
         let isDestHTTP = dest.scheme?.lowercased() == "http"
-        let canForwardCredentials = includeCredentials && !isDowngrade && (isSameOrigin || isPageOrigin || isDestAllowedOrigin || isContextAllowedOrigin)
+        let isSameSite = BrowserHeaderFilter.isSchemefulSameSite(url, dest) || (pageURL != nil && BrowserHeaderFilter.isSchemefulSameSite(pageURL!, dest))
+        let canForwardCredentials = includeCredentials && !isDowngrade && (isSameOrigin || isPageOrigin || isDestAllowedOrigin || isContextAllowedOrigin || isSameSite)
         for (k, v) in customHeaders {
             let lowerName = k.trimmingCharacters(in: .whitespaces).lowercased()
             if !BrowserHeaderFilter.isForbiddenHeader(k) &&
@@ -613,13 +614,37 @@ public struct BrowserHeaderFilter {
         forbiddenHeaders.contains(name.trimmingCharacters(in: .whitespaces).lowercased())
     }
 
+    /// Evaluates whether a header is a custom authorization header or credential token
+    /// commonly used in CDN or API authentication contracts (e.g. X-Custom-Auth, X-Access-Token, X-Signature).
+    public static func isCustomAuthorizationHeader(_ name: String) -> Bool {
+        let lower = name.trimmingCharacters(in: .whitespaces).lowercased()
+        if lower == "authorization" || lower == "proxy-authorization" {
+            return true
+        }
+        if lower.hasPrefix("x-") {
+            return lower.contains("auth") ||
+                lower.contains("token") ||
+                lower.contains("key") ||
+                lower.contains("secret") ||
+                lower.contains("sig") ||
+                lower.contains("cred") ||
+                lower.contains("session") ||
+                lower.contains("bearer") ||
+                lower.contains("pass")
+        }
+        return false
+    }
+
     public static func isApprovedForwardedHeader(_ name: String) -> Bool {
-        approvedForwardedHeaders.contains(name.trimmingCharacters(in: .whitespaces).lowercased())
+        let lower = name.trimmingCharacters(in: .whitespaces).lowercased()
+        if approvedForwardedHeaders.contains(lower) { return true }
+        return isCustomAuthorizationHeader(lower)
     }
 
     public static func isSensitiveHeader(_ name: String) -> Bool {
         let lower = name.trimmingCharacters(in: .whitespaces).lowercased()
         if sensitiveHeaderNames.contains(lower) { return true }
+        if isCustomAuthorizationHeader(lower) { return true }
         return lower.contains("token") ||
             lower.contains("secret") ||
             lower.contains("api-key") ||
@@ -755,9 +780,9 @@ public struct BrowserHeaderFilter {
                 }
                 continue
             }
-            // 3. Sensitive custom tokens / secrets are stripped across origins unless allowlisted
+            // 3. Custom authorization headers & sensitive tokens: preserved across same-site subdomains (CDN contract on same site) or verified allowlisted CDN origins without downgrade
             if !isSameOrigin && isSensitiveHeader(lower) {
-                if isAllowedOrigin && !isDowngrade {
+                if (isSameSite || isAllowedOrigin) && !isDowngrade {
                     stripped[k] = v
                 }
                 continue

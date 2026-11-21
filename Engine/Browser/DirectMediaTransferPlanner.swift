@@ -112,7 +112,8 @@ public struct DirectMediaTransferPlan: Sendable, Equatable {
             headers: requestHeaders,
             persistSensitiveHeaders: false,
             configuredThreadCount: max(1, min(32, threadCount)),
-            speedLimitBytesPerSecond: speedLimitBytesPerSecond
+            speedLimitBytesPerSecond: speedLimitBytesPerSecond,
+            allowedCredentialOrigins: requestContext?.allowedCredentialOrigins ?? []
         )
     }
 }

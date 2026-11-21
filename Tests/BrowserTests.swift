@@ -799,6 +799,125 @@ final class BrowserTests: XCTestCase {
         XCTAssertEqual(secureHeaders["Origin"], "https://example.com")
     }
 
+    func testCustomAuthorizationHeaderDetection() {
+        XCTAssertTrue(BrowserHeaderFilter.isCustomAuthorizationHeader("Authorization"))
+        XCTAssertTrue(BrowserHeaderFilter.isCustomAuthorizationHeader("Proxy-Authorization"))
+        XCTAssertTrue(BrowserHeaderFilter.isCustomAuthorizationHeader("X-Auth-Token"))
+        XCTAssertTrue(BrowserHeaderFilter.isCustomAuthorizationHeader("X-Custom-Auth"))
+        XCTAssertTrue(BrowserHeaderFilter.isCustomAuthorizationHeader("X-Access-Token"))
+        XCTAssertTrue(BrowserHeaderFilter.isCustomAuthorizationHeader("X-Signature"))
+        XCTAssertTrue(BrowserHeaderFilter.isCustomAuthorizationHeader("X-Media-Token"))
+        XCTAssertTrue(BrowserHeaderFilter.isCustomAuthorizationHeader("X-Playback-Token"))
+        XCTAssertTrue(BrowserHeaderFilter.isCustomAuthorizationHeader("X-CDN-Auth"))
+        XCTAssertTrue(BrowserHeaderFilter.isCustomAuthorizationHeader("X-Api-Key"))
+        XCTAssertTrue(BrowserHeaderFilter.isCustomAuthorizationHeader("x-session-secret"))
+        XCTAssertTrue(BrowserHeaderFilter.isCustomAuthorizationHeader("X-Bearer-Token"))
+
+        XCTAssertFalse(BrowserHeaderFilter.isCustomAuthorizationHeader("Content-Type"))
+        XCTAssertFalse(BrowserHeaderFilter.isCustomAuthorizationHeader("Accept"))
+        XCTAssertFalse(BrowserHeaderFilter.isCustomAuthorizationHeader("User-Agent"))
+
+        // Approved forwarded header should approve custom authorization headers
+        XCTAssertTrue(BrowserHeaderFilter.isApprovedForwardedHeader("X-Custom-Auth"))
+        XCTAssertTrue(BrowserHeaderFilter.isApprovedForwardedHeader("X-Media-Token"))
+        XCTAssertTrue(BrowserHeaderFilter.isApprovedForwardedHeader("X-Playback-Token"))
+    }
+
+    func testBrowserRequestContextCustomAuthHeadersPreservedSameSite() {
+        let pageURL = URL(string: "https://portal.example.com/watch")!
+        let mediaURL = URL(string: "https://portal.example.com/stream/manifest.m3u8")!
+        let cdnURL = URL(string: "https://cdn.example.com/stream/segment.ts")!
+        let untrustedURL = URL(string: "https://malicious.org/segment.ts")!
+        let downgradeURL = URL(string: "http://cdn.example.com/segment.ts")!
+
+        let context = BrowserRequestContext(
+            url: mediaURL,
+            pageURL: pageURL,
+            customHeaders: [
+                "Authorization": "Bearer standard-token",
+                "X-Custom-Auth": "custom-val",
+                "X-Media-Token": "media-val",
+                "X-Api-Key": "key-val"
+            ]
+        )
+
+        // 1. Same-site subdomain gets custom auth headers
+        let cdnHeaders = context.effectiveHeaders(for: cdnURL)
+        XCTAssertEqual(cdnHeaders["X-Custom-Auth"], "custom-val")
+        XCTAssertEqual(cdnHeaders["X-Media-Token"], "media-val")
+        XCTAssertEqual(cdnHeaders["X-Api-Key"], "key-val")
+
+        // 2. Untrusted cross-site gets NO credentials
+        let untrustedHeaders = context.effectiveHeaders(for: untrustedURL)
+        XCTAssertNil(untrustedHeaders["X-Custom-Auth"])
+        XCTAssertNil(untrustedHeaders["X-Media-Token"])
+        XCTAssertNil(untrustedHeaders["X-Api-Key"])
+        XCTAssertNil(untrustedHeaders["Authorization"])
+
+        // 3. Cleartext downgrade gets NO credentials
+        let downgradeHeaders = context.effectiveHeaders(for: downgradeURL)
+        XCTAssertNil(downgradeHeaders["X-Custom-Auth"])
+        XCTAssertNil(downgradeHeaders["X-Media-Token"])
+        XCTAssertNil(downgradeHeaders["Authorization"])
+    }
+
+    func testBrowserHeaderFilterStripCredentialsOnRedirectCustomAuthHeaders() {
+        let originalURL = URL(string: "https://auth.example.com/stream.m3u8")!
+        let sameSiteCDN = URL(string: "https://cdn.example.com/stream.m3u8")!
+        let partnerCDN = URL(string: "https://edge.partnercdn.net/stream.m3u8")!
+        let untrustedCrossSite = URL(string: "https://thirdparty.com/stream.m3u8")!
+        let insecureDowngrade = URL(string: "http://cdn.example.com/stream.m3u8")!
+
+        let headers: [String: String] = [
+            "Authorization": "Bearer token",
+            "X-Custom-Auth": "auth123",
+            "X-Signature": "sig456",
+            "X-Normal-Header": "foo"
+        ]
+
+        // 1. Same-site: standard Authorization stripped (RFC 7235), custom auth preserved
+        let sameSiteResult = BrowserHeaderFilter.stripCredentialsOnRedirect(
+            headers: headers,
+            from: originalURL,
+            to: sameSiteCDN
+        )
+        XCTAssertNil(sameSiteResult["Authorization"])
+        XCTAssertEqual(sameSiteResult["X-Custom-Auth"], "auth123")
+        XCTAssertEqual(sameSiteResult["X-Signature"], "sig456")
+
+        // 2. Allowlisted cross-site: both standard and custom auth preserved
+        let partnerResult = BrowserHeaderFilter.stripCredentialsOnRedirect(
+            headers: headers,
+            from: originalURL,
+            to: partnerCDN,
+            allowedOrigins: ["edge.partnercdn.net"]
+        )
+        XCTAssertEqual(partnerResult["Authorization"], "Bearer token")
+        XCTAssertEqual(partnerResult["X-Custom-Auth"], "auth123")
+        XCTAssertEqual(partnerResult["X-Signature"], "sig456")
+
+        // 3. Untrusted cross-site: all credentials stripped
+        let crossSiteResult = BrowserHeaderFilter.stripCredentialsOnRedirect(
+            headers: headers,
+            from: originalURL,
+            to: untrustedCrossSite
+        )
+        XCTAssertNil(crossSiteResult["Authorization"])
+        XCTAssertNil(crossSiteResult["X-Custom-Auth"])
+        XCTAssertNil(crossSiteResult["X-Signature"])
+
+        // 4. Insecure HTTP downgrade: all credentials stripped
+        let downgradeResult = BrowserHeaderFilter.stripCredentialsOnRedirect(
+            headers: headers,
+            from: originalURL,
+            to: insecureDowngrade,
+            allowedOrigins: ["cdn.example.com"]
+        )
+        XCTAssertNil(downgradeResult["Authorization"])
+        XCTAssertNil(downgradeResult["X-Custom-Auth"])
+        XCTAssertNil(downgradeResult["X-Signature"])
+    }
+
     func testBrowserRequestContextCanBeAttachedToResourceAndHandoff() {
         let url = URL(string: "https://example.com/file.pdf")!
         let context = BrowserRequestContext(url: url, source: .webpageResource)

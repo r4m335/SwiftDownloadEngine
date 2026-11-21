@@ -374,7 +374,8 @@ public enum DownloadRequestEnricher {
         response: HTTPURLResponse,
         newRequest: URLRequest,
         snapshot: BrowserSessionSnapshot? = nil,
-        context: BrowserRequestContext? = nil
+        context: BrowserRequestContext? = nil,
+        allowedOrigins: Set<String> = []
     ) -> URLRequest {
         var req = newRequest
         let sourceURL = response.url ?? task.currentRequest?.url ?? task.originalRequest?.url
@@ -382,13 +383,18 @@ public enum DownloadRequestEnricher {
         if let sourceURL, let targetURL = req.url {
             let isSameOrigin = BrowserHeaderFilter.sameOrigin(sourceURL, targetURL)
             let isSameSite = BrowserHeaderFilter.isSchemefulSameSite(sourceURL, targetURL)
-            let isAllowed = BrowserHeaderFilter.isOriginAllowed(targetURL, allowedOrigins: context?.allowedCredentialOrigins ?? [])
+            let effectiveAllowed = (context?.allowedCredentialOrigins ?? []).union(allowedOrigins)
+            let isAllowed = BrowserHeaderFilter.isOriginAllowed(targetURL, allowedOrigins: effectiveAllowed)
             let isDowngrade = (sourceURL.scheme?.lowercased() == "https") && (targetURL.scheme?.lowercased() == "http")
 
-            // 1. Cross-origin credential stripping (RFC 7235 §2.2 / RFC 9110 §15.4), preserving for allowlisted origins
+            // 1. Cross-origin Authorization stripping (RFC 7235 §2.2 / RFC 9110 §15.4), preserving for allowlisted origins
             if (!isSameOrigin && !isAllowed) || isDowngrade {
                 req.setValue(nil, forHTTPHeaderField: "Authorization")
                 req.setValue(nil, forHTTPHeaderField: "Proxy-Authorization")
+            }
+
+            // 2. Custom authorization headers / sensitive tokens: preserved across same-site subdomains (CDN contract) or allowlisted origins without downgrade
+            if (!isSameSite && !isAllowed) || isDowngrade {
                 if let allHeaders = req.allHTTPHeaderFields {
                     for (k, _) in allHeaders {
                         if BrowserHeaderFilter.isSensitiveHeader(k) {
@@ -396,18 +402,19 @@ public enum DownloadRequestEnricher {
                         }
                     }
                 }
-                // Clear origin-specific raw Cookie header so destination cookies are freshly recalculated per RFC 6265
-                req.setValue(nil, forHTTPHeaderField: "Cookie")
-            } else if (!isSameSite && !isAllowed) || isDowngrade {
+            }
+
+            // 3. Clear origin-specific raw Cookie header so destination cookies are freshly recalculated per RFC 6265
+            if (!isSameSite && !isAllowed) || isDowngrade {
                 req.setValue(nil, forHTTPHeaderField: "Cookie")
             }
 
-            // 2. Referer security: strip on HTTPS -> HTTP downgrade or cross-site redirect (RFC 7231 §5.5.2)
+            // 4. Referer security: strip on HTTPS -> HTTP downgrade or cross-site redirect (RFC 7231 §5.5.2)
             if isDowngrade || (!isSameSite && !isAllowed) {
                 req.setValue(nil, forHTTPHeaderField: "Referer")
             }
 
-            // 3. Origin security: strip on downgrade or cross-site redirect
+            // 5. Origin security: strip on downgrade or cross-site redirect
             if isDowngrade || (!isSameSite && !isAllowed) {
                 req.setValue(nil, forHTTPHeaderField: "Origin")
             }

@@ -3543,6 +3543,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         webView: WKWebView,
         source: BrowserRequestContextSource,
         customHeaders: [String: String] = [:],
+        allowedCredentialOrigins: Set<String> = [],
         completion: @escaping (BrowserRequestContext?) -> Void
     ) {
         let page = pageURL ?? webView.url
@@ -3560,6 +3561,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                         return BrowserHeaderFilter.isApprovedForwardedHeader(key) &&
                             key != "cookie" && key != "referer" && key != "user-agent"
                     },
+                    allowedCredentialOrigins: allowedCredentialOrigins,
                     source: source
                 )
                 DispatchQueue.main.async {
@@ -3597,6 +3599,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                     pageURL: snapshot.pageURL ?? currentURL,
                     userAgent: snapshot.userAgent.isEmpty ? nil : snapshot.userAgent,
                     cookies: matchedCookies,
+                    allowedCredentialOrigins: resource.requestContext?.allowedCredentialOrigins ?? [],
                     source: .webpageResource
                 )
             }

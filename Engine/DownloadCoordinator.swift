@@ -65,6 +65,9 @@ public struct DownloadRequest: Sendable, Equatable, Codable {
     /// An optional exact byte range for a standalone streaming resource.
     /// Ordinary downloads leave this `nil` and use the existing coordinator path.
     public var requestedByteRange: DownloadByteRange?
+    /// Verified allowed origins, hosts, or domain wildcards permitted to receive credentials
+    /// (Authorization and custom authentication headers) across redirects.
+    public var allowedCredentialOrigins: Set<String>
 
     public init(
         id: String = UUID().uuidString,
@@ -83,7 +86,8 @@ public struct DownloadRequest: Sendable, Equatable, Codable {
         resumePolicy: ResumeIntegrityPolicy = .compatibility,
         transportPolicy: HTTPTransportPolicy = .foreground,
         networkPolicy: DownloadNetworkPolicy = .anyNetwork,
-        requestedByteRange: DownloadByteRange? = nil
+        requestedByteRange: DownloadByteRange? = nil,
+        allowedCredentialOrigins: Set<String> = []
     ) {
         self.id = id
         self.url = url
@@ -102,10 +106,11 @@ public struct DownloadRequest: Sendable, Equatable, Codable {
         self.transportPolicy = transportPolicy
         self.networkPolicy = networkPolicy
         self.requestedByteRange = requestedByteRange
+        self.allowedCredentialOrigins = allowedCredentialOrigins
     }
 
     enum CodingKeys: String, CodingKey {
-        case id, url, destinationURL, headers, persistSensitiveHeaders, configuredThreadCount, advancedMode, storageMode, reserveDiskBytes, retryCount, expectedSHA256, maxConcurrentRequests, speedLimitBytesPerSecond, resumePolicy, transportPolicy, networkPolicy, requestedByteRange
+        case id, url, destinationURL, headers, persistSensitiveHeaders, configuredThreadCount, advancedMode, storageMode, reserveDiskBytes, retryCount, expectedSHA256, maxConcurrentRequests, speedLimitBytesPerSecond, resumePolicy, transportPolicy, networkPolicy, requestedByteRange, allowedCredentialOrigins
     }
 
     public init(from decoder: Decoder) throws {
@@ -127,6 +132,7 @@ public struct DownloadRequest: Sendable, Equatable, Codable {
         transportPolicy = try container.decodeIfPresent(HTTPTransportPolicy.self, forKey: .transportPolicy) ?? .foreground
         networkPolicy = try container.decodeIfPresent(DownloadNetworkPolicy.self, forKey: .networkPolicy) ?? .anyNetwork
         requestedByteRange = try container.decodeIfPresent(DownloadByteRange.self, forKey: .requestedByteRange)
+        allowedCredentialOrigins = try container.decodeIfPresent(Set<String>.self, forKey: .allowedCredentialOrigins) ?? []
     }
 }
 
@@ -789,7 +795,8 @@ public actor DownloadCoordinator {
             let probeConfig = HTTPRangeProbeConfiguration(
                 url: request.url,
                 customHeaders: request.headers,
-                allowsCellularAccess: request.networkPolicy.allowsCellularAccess
+                allowsCellularAccess: request.networkPolicy.allowsCellularAccess,
+                allowedCredentialOrigins: request.allowedCredentialOrigins
             )
             var probeResult: HTTPRangeProbeResult!
             var probeAttempt = 0
@@ -961,7 +968,8 @@ public actor DownloadCoordinator {
             executionRequest.headers = BrowserHeaderFilter.stripCredentialsOnRedirect(
                 headers: request.headers,
                 from: request.url,
-                to: probeResult.finalURL
+                to: probeResult.finalURL,
+                allowedOrigins: request.allowedCredentialOrigins
             )
 
             if request.transportPolicy == .background {
@@ -1106,7 +1114,8 @@ public actor DownloadCoordinator {
         let probe = HTTPRangeProbe(session: session)
         let probeResult = try await probe.probe(configuration: HTTPRangeProbeConfiguration(
             url: request.url,
-            customHeaders: request.headers
+            customHeaders: request.headers,
+            allowedCredentialOrigins: request.allowedCredentialOrigins
         ))
         guard probeResult.supportsRange else {
             throw DownloadCoordinatorError.invalidRequest(
@@ -1121,7 +1130,8 @@ public actor DownloadCoordinator {
         let safeHeaders = BrowserHeaderFilter.stripCredentialsOnRedirect(
             headers: request.headers,
             from: request.url,
-            to: probeResult.finalURL
+            to: probeResult.finalURL,
+            allowedOrigins: request.allowedCredentialOrigins
         )
         for (name, value) in BrowserHeaderFilter.sanitizeHeaders(safeHeaders) {
             if name.caseInsensitiveCompare("Range") != .orderedSame &&
@@ -1133,7 +1143,8 @@ public actor DownloadCoordinator {
 
         let redirectDelegate = DownloadResourceRedirectDelegate(
             originalURL: request.url,
-            headers: safeHeaders
+            headers: safeHeaders,
+            allowedOrigins: request.allowedCredentialOrigins
         )
         let temporaryURL = request.destinationURL
             .deletingLastPathComponent()
@@ -1261,7 +1272,8 @@ public actor DownloadCoordinator {
                     probeResult = try await probe.probe(configuration: HTTPRangeProbeConfiguration(
                         url: request.url,
                         customHeaders: request.headers,
-                        allowsCellularAccess: request.networkPolicy.allowsCellularAccess
+                        allowsCellularAccess: request.networkPolicy.allowsCellularAccess,
+                        allowedCredentialOrigins: request.allowedCredentialOrigins
                     ))
                 } catch let probeError as HTTPRangeProbeError {
                     switch probeError {
@@ -1297,7 +1309,8 @@ public actor DownloadCoordinator {
                 let safeHeaders = BrowserHeaderFilter.stripCredentialsOnRedirect(
                     headers: request.headers,
                     from: request.url,
-                    to: probeResult.finalURL
+                    to: probeResult.finalURL,
+                    allowedOrigins: request.allowedCredentialOrigins
                 )
                 for (name, value) in BrowserHeaderFilter.sanitizeHeaders(safeHeaders) {
                     if name.caseInsensitiveCompare("Accept-Encoding") != .orderedSame &&
@@ -1309,7 +1322,8 @@ public actor DownloadCoordinator {
 
                 let redirectDelegate = DownloadResourceRedirectDelegate(
                     originalURL: request.url,
-                    headers: safeHeaders
+                    headers: safeHeaders,
+                    allowedOrigins: request.allowedCredentialOrigins
                 )
 
                 try await requestBudget.acquire(
@@ -3333,10 +3347,12 @@ public actor DownloadCoordinator {
 private final class DownloadResourceRedirectDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
     private let originalURL: URL
     private let headers: [String: String]
+    private let allowedOrigins: Set<String>
 
-    init(originalURL: URL, headers: [String: String]) {
+    init(originalURL: URL, headers: [String: String], allowedOrigins: Set<String> = []) {
         self.originalURL = originalURL
         self.headers = headers
+        self.allowedOrigins = allowedOrigins
     }
 
     func urlSession(
@@ -3349,7 +3365,8 @@ private final class DownloadResourceRedirectDelegate: NSObject, URLSessionTaskDe
         let redirected = DownloadRequestEnricher.handleRedirect(
             task: task,
             response: response,
-            newRequest: request
+            newRequest: request,
+            allowedOrigins: allowedOrigins
         )
         completionHandler(redirected)
     }

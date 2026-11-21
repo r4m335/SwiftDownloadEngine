@@ -396,6 +396,15 @@ public struct StreamingTransferProposal: Sendable, Equatable {
     public let estimatedTransferBytes: Int64?
     public var estimatedTotalBytes: Int64? { estimatedTransferBytes }
 
+    public var browserRequestContext: BrowserRequestContext? {
+        switch manifest {
+        case .hls(let plan):
+            return plan.browserRequestContext
+        case .dash(let plan):
+            return plan.browserRequestContext
+        }
+    }
+
     public init(
         transferID: String,
         manifestID: String,
@@ -417,19 +426,22 @@ public struct StreamingSegmentTransferRequest: Sendable, Equatable {
     public let headers: [String: String]
     public let byteRange: StreamingByteRange?
     public let destinationURL: URL
+    public let allowedCredentialOrigins: Set<String>
 
     public init(
         identity: StreamingSegmentIdentity,
         url: URL,
         headers: [String: String],
         byteRange: StreamingByteRange?,
-        destinationURL: URL
+        destinationURL: URL,
+        allowedCredentialOrigins: Set<String> = []
     ) {
         self.identity = identity
         self.url = url
         self.headers = headers
         self.byteRange = byteRange
         self.destinationURL = destinationURL
+        self.allowedCredentialOrigins = allowedCredentialOrigins
     }
 }
 
@@ -509,7 +521,8 @@ public actor DownloadCoordinatorSegmentExecutor: StreamingSegmentExecutor {
             retryCount: retryCount,
             requestedByteRange: request.byteRange.map {
                 DownloadByteRange(start: $0.start, end: $0.end)
-            }
+            },
+            allowedCredentialOrigins: request.allowedCredentialOrigins
         )
         registerActiveRequest(transferID: request.identity.transferID, requestID: request.identity.value)
         defer {
@@ -2720,7 +2733,8 @@ public actor StreamingDownloadOrchestrator {
             url: targetURL,
             headers: await segmentRequestHeaders(for: resource, manifest: proposal.manifest, transferID: proposal.transferID),
             byteRange: resource.byteRange,
-            destinationURL: destinationURL
+            destinationURL: destinationURL,
+            allowedCredentialOrigins: proposal.browserRequestContext?.allowedCredentialOrigins ?? []
         )
 
         var attempts = 0
@@ -2778,7 +2792,8 @@ public actor StreamingDownloadOrchestrator {
                             url: freshResource.url,
                             headers: freshHeaders,
                             byteRange: freshResource.byteRange,
-                            destinationURL: destinationURL
+                            destinationURL: destinationURL,
+                            allowedCredentialOrigins: freshProposal.browserRequestContext?.allowedCredentialOrigins ?? proposal.browserRequestContext?.allowedCredentialOrigins ?? []
                         )
                         do {
                             try await segmentExecutor.execute(freshRequest, progress: nil)

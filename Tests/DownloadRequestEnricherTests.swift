@@ -464,4 +464,98 @@ final class DownloadRequestEnricherTests: XCTestCase {
         XCTAssertEqual(redirected.value(forHTTPHeaderField: "X-Api-Key"), "my-api-key")
         XCTAssertEqual(redirected.value(forHTTPHeaderField: "Range"), "bytes=0-100")
     }
+
+    func testHandleRedirectPreservesCustomAuthHeadersOnSameSiteRedirect() {
+        let originalURL = URL(string: "https://auth.example.com/stream/start")!
+        let sameSiteTargetURL = URL(string: "https://cdn.example.com/stream/segment.ts")!
+
+        var originalRequest = URLRequest(url: originalURL)
+        originalRequest.setValue("Bearer std_token", forHTTPHeaderField: "Authorization")
+        originalRequest.setValue("custom_auth_123", forHTTPHeaderField: "X-Custom-Auth")
+        originalRequest.setValue("playback_tok_456", forHTTPHeaderField: "X-Playback-Token")
+        originalRequest.setValue("sig_789", forHTTPHeaderField: "X-Signature")
+        originalRequest.setValue("cdn_key_000", forHTTPHeaderField: "X-Api-Key")
+
+        var newRequest = URLRequest(url: sameSiteTargetURL)
+        newRequest.setValue("Bearer std_token", forHTTPHeaderField: "Authorization")
+        newRequest.setValue("custom_auth_123", forHTTPHeaderField: "X-Custom-Auth")
+        newRequest.setValue("playback_tok_456", forHTTPHeaderField: "X-Playback-Token")
+        newRequest.setValue("sig_789", forHTTPHeaderField: "X-Signature")
+        newRequest.setValue("cdn_key_000", forHTTPHeaderField: "X-Api-Key")
+
+        let session = URLSession(configuration: .default)
+        let task = session.dataTask(with: originalRequest)
+        let response = HTTPURLResponse(url: originalURL, statusCode: 302, httpVersion: "HTTP/1.1", headerFields: [:])!
+
+        let redirected = DownloadRequestEnricher.handleRedirect(
+            task: task,
+            response: response,
+            newRequest: newRequest,
+            snapshot: nil
+        )
+
+        // RFC 7235 §2.2 / RFC 9110 §15.4: standard Authorization is stripped across origins
+        XCTAssertNil(redirected.value(forHTTPHeaderField: "Authorization"), "Standard Authorization must be stripped across origins")
+        // Custom authorization headers for CDN contracts must be preserved across same-site subdomains
+        XCTAssertEqual(redirected.value(forHTTPHeaderField: "X-Custom-Auth"), "custom_auth_123")
+        XCTAssertEqual(redirected.value(forHTTPHeaderField: "X-Playback-Token"), "playback_tok_456")
+        XCTAssertEqual(redirected.value(forHTTPHeaderField: "X-Signature"), "sig_789")
+        XCTAssertEqual(redirected.value(forHTTPHeaderField: "X-Api-Key"), "cdn_key_000")
+    }
+
+    func testHandleRedirectPreservesCustomAuthHeadersWithDirectAllowedOrigins() {
+        let originalURL = URL(string: "https://auth.example.com/start")!
+        let partnerCDNURL = URL(string: "https://edge.partnercdn.net/hls/segment.ts")!
+
+        var originalRequest = URLRequest(url: originalURL)
+        originalRequest.setValue("Bearer cdn_bearer", forHTTPHeaderField: "Authorization")
+        originalRequest.setValue("token_xyz", forHTTPHeaderField: "X-Media-Token")
+
+        var newRequest = URLRequest(url: partnerCDNURL)
+        newRequest.setValue("Bearer cdn_bearer", forHTTPHeaderField: "Authorization")
+        newRequest.setValue("token_xyz", forHTTPHeaderField: "X-Media-Token")
+
+        let session = URLSession(configuration: .default)
+        let task = session.dataTask(with: originalRequest)
+        let response = HTTPURLResponse(url: originalURL, statusCode: 302, httpVersion: "HTTP/1.1", headerFields: [:])!
+
+        let redirected = DownloadRequestEnricher.handleRedirect(
+            task: task,
+            response: response,
+            newRequest: newRequest,
+            allowedOrigins: ["*.partnercdn.net"]
+        )
+
+        // With explicit allowlist origin, both standard Authorization and custom headers are preserved
+        XCTAssertEqual(redirected.value(forHTTPHeaderField: "Authorization"), "Bearer cdn_bearer")
+        XCTAssertEqual(redirected.value(forHTTPHeaderField: "X-Media-Token"), "token_xyz")
+    }
+
+    func testHandleRedirectStripsCustomAuthHeadersOnCleartextDowngrade() {
+        let originalURL = URL(string: "https://auth.example.com/start")!
+        let downgradeURL = URL(string: "http://cdn.example.com/segment.ts")!
+
+        var originalRequest = URLRequest(url: originalURL)
+        originalRequest.setValue("Bearer token", forHTTPHeaderField: "Authorization")
+        originalRequest.setValue("secret123", forHTTPHeaderField: "X-Custom-Auth")
+
+        var newRequest = URLRequest(url: downgradeURL)
+        newRequest.setValue("Bearer token", forHTTPHeaderField: "Authorization")
+        newRequest.setValue("secret123", forHTTPHeaderField: "X-Custom-Auth")
+
+        let session = URLSession(configuration: .default)
+        let task = session.dataTask(with: originalRequest)
+        let response = HTTPURLResponse(url: originalURL, statusCode: 302, httpVersion: "HTTP/1.1", headerFields: [:])!
+
+        let redirected = DownloadRequestEnricher.handleRedirect(
+            task: task,
+            response: response,
+            newRequest: newRequest,
+            allowedOrigins: ["cdn.example.com"]
+        )
+
+        // Cleartext downgrade MUST strip ALL credentials regardless of allowlist or same-site
+        XCTAssertNil(redirected.value(forHTTPHeaderField: "Authorization"))
+        XCTAssertNil(redirected.value(forHTTPHeaderField: "X-Custom-Auth"))
+    }
 }
