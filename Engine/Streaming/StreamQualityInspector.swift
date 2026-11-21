@@ -95,7 +95,7 @@ public enum StreamQualityInspector {
         }
 
         // Rank variants highest to lowest and deduplicate redundant quality tiers
-        let ranked = try HLSVariantSelector.rank(from: manifest, includeIFrameVariants: true)
+        let ranked = try HLSVariantSelector.rank(from: manifest)
         let deduplicated = HLSVariantSelector.deduplicate(ranked)
         var options: [StreamQualityOption] = deduplicated.map { variant in
             let selectedAudio = HLSVariantSelector.selectAudioRendition(for: variant, master: manifest)

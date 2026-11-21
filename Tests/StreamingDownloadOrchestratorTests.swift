@@ -3161,25 +3161,31 @@ final class StreamingDownloadOrchestratorTests: XCTestCase {
         XCTAssertEqual(segRequest.headers["Cookie"], "edge_auth=edge_cookie_val")
     }
 
-    func testHLSVariantSelectorRankExcludesIFrameVariantsWhenPrimaryVariantsExist() throws {
+    func testStreamingDownloadOrchestratorRejectsIFrameOnlyMasterPlaylist() async throws {
+        let masterURL = URL(string: "https://video.example/master.m3u8")!
         let masterManifest = """
         #EXTM3U
         #EXT-X-VERSION:4
-        #EXT-X-STREAM-INF:BANDWIDTH=4000000,RESOLUTION=1920x1080,CODECS="avc1.640028,mp4a.40.2"
-        1080p.m3u8
         #EXT-X-I-FRAME-STREAM-INF:BANDWIDTH=800000,RESOLUTION=1920x1080,URI="iframe_1080p.m3u8"
-        #EXT-X-STREAM-INF:BANDWIDTH=2000000,RESOLUTION=1280x720,CODECS="avc1.4d401f,mp4a.40.2"
-        720p.m3u8
+        #EXT-X-I-FRAME-STREAM-INF:BANDWIDTH=400000,RESOLUTION=1280x720,URI="iframe_720p.m3u8"
         """
-        let parsed = try HLSManifestParser.parse(masterManifest, baseURL: URL(string: "https://video.example/master.m3u8")!)
-        let ranked = try HLSVariantSelector.rank(from: parsed)
 
-        // Must ONLY rank primary variants when no exactURI preference is specified
-        XCTAssertEqual(ranked.count, 2)
-        XCTAssertFalse(ranked[0].isIFrameOnly)
-        XCTAssertEqual(ranked[0].resolution?.height, 1080)
-        XCTAssertFalse(ranked[1].isIFrameOnly)
-        XCTAssertEqual(ranked[1].resolution?.height, 720)
+        let loader = RecordingManifestLoader(data: Data(masterManifest.utf8), finalURL: masterURL, mimeType: "application/vnd.apple.mpegurl")
+        let executor = RecordingSegmentExecutor()
+        let orchestrator = StreamingDownloadOrchestrator(manifestLoader: loader, segmentExecutor: executor)
+
+        let candidate = try StreamingManifestCandidate(url: masterURL, mimeType: "application/vnd.apple.mpegurl")
+
+        do {
+            _ = try await orchestrator.prepare(candidate: candidate)
+            XCTFail("Preparing an I-frame-only master manifest must throw unsupportedIFrameVariant")
+        } catch let err as StreamingDownloadOrchestratorError {
+            if case .hlsVariantSelectionFailed(let selectionError) = err {
+                XCTAssertEqual(selectionError, .unsupportedIFrameVariant)
+            } else {
+                XCTFail("Expected hlsVariantSelectionFailed(.unsupportedIFrameVariant) but got \(err)")
+            }
+        }
     }
 
     func testStreamingDownloadOrchestratorRejectsExplicitIFrameVariantSelection() async throws {
