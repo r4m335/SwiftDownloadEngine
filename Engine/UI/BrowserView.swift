@@ -3549,14 +3549,12 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         webView.evaluateJavaScript("navigator.userAgent") { result, _ in
             let userAgent = (result as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
             webView.configuration.websiteDataStore.httpCookieStore.getAllCookies { cookies in
-                let matchingCookies = cookies
-                    .compactMap(BrowserCookie.init(from:))
-                    .filter { $0.matches(url: resourceURL) }
+                let sessionCookies = cookies.compactMap(BrowserCookie.init(from:))
                 let context = BrowserRequestContext(
                     url: resourceURL,
                     pageURL: page,
                     userAgent: userAgent,
-                    cookies: matchingCookies,
+                    cookies: sessionCookies,
                     customHeaders: BrowserHeaderFilter.sanitizeHeaders(customHeaders).filter {
                         let key = $0.key.lowercased()
                         return BrowserHeaderFilter.isApprovedForwardedHeader(key) &&

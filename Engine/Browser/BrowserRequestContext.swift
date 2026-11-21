@@ -89,7 +89,7 @@ public struct BrowserCookie: Sendable, Hashable, Codable {
         return HTTPCookie(properties: properties)
     }
 
-    /// Evaluates if this cookie is eligible to be sent to the target URL per RFC 6265.
+    /// Evaluates if this cookie is eligible to be sent to the target URL per RFC 6265 with WebKit parity.
     public func matches(url: URL, now: Date = Date()) -> Bool {
         // 1. Expiration check
         if let exp = expiresDate, exp < now {
@@ -99,15 +99,27 @@ public struct BrowserCookie: Sendable, Hashable, Codable {
         // 2. Secure flag check
         let scheme = url.scheme?.lowercased() ?? ""
         if isSecure && scheme != "https" {
-            return false
+            // WebKit and modern browser standards permit secure cookies over localhost / loopback
+            let host = url.host?.lowercased() ?? ""
+            let isLocalhost = host == "localhost" || host == "127.0.0.1" || host == "::1" || host == "[::1]"
+            if !isLocalhost {
+                return false
+            }
         }
 
         // 3. Domain matching (RFC 6265 §5.1.3 & §5.3 step 6)
-        guard let host = url.host?.lowercased(), !host.isEmpty else {
+        guard var host = url.host?.lowercased(), !host.isEmpty else {
             return false
         }
+        if host.hasSuffix(".") {
+            host = String(host.dropLast())
+        }
 
-        let cookieDomain = self.domain.hasPrefix(".") ? String(self.domain.dropFirst()) : self.domain
+        var cookieDomain = self.domain.hasPrefix(".") ? String(self.domain.dropFirst()) : self.domain
+        if cookieDomain.hasSuffix(".") {
+            cookieDomain = String(cookieDomain.dropLast())
+        }
+
         if isHostOnly {
             // RFC 6265 §5.3 step 6: A host-only cookie matches if and only if the request host
             // is identical to the cookie's domain (subdomains are strictly rejected).
@@ -122,20 +134,38 @@ public struct BrowserCookie: Sendable, Hashable, Codable {
         }
 
         // 4. Path matching (RFC 6265 §5.1.4)
+        var cookiePath = self.path.isEmpty ? "/" : self.path
+        if !cookiePath.hasPrefix("/") {
+            cookiePath = "/" + cookiePath
+        }
         let requestPath = url.path.isEmpty ? "/" : url.path
-        if self.path == "/" {
+        if cookiePath == "/" || requestPath == cookiePath {
             return true
         }
-        if requestPath == self.path {
-            return true
-        }
-        if requestPath.hasPrefix(self.path) {
-            if self.path.hasSuffix("/") {
+        if requestPath.hasPrefix(cookiePath) {
+            if cookiePath.hasSuffix("/") {
                 return true
             }
-            let nextCharIndex = requestPath.index(requestPath.startIndex, offsetBy: self.path.count)
+            let nextCharIndex = requestPath.index(requestPath.startIndex, offsetBy: cookiePath.count)
             if nextCharIndex < requestPath.endIndex && requestPath[nextCharIndex] == "/" {
                 return true
+            }
+        }
+        // WebKit compatibility: Also evaluate percent-decoded paths
+        if let decodedReq = requestPath.removingPercentEncoding,
+           let decodedCookie = cookiePath.removingPercentEncoding,
+           (decodedReq != requestPath || decodedCookie != cookiePath) {
+            if decodedReq == decodedCookie {
+                return true
+            }
+            if decodedReq.hasPrefix(decodedCookie) {
+                if decodedCookie.hasSuffix("/") {
+                    return true
+                }
+                let nextCharIndex = decodedReq.index(decodedReq.startIndex, offsetBy: decodedCookie.count)
+                if nextCharIndex < decodedReq.endIndex && decodedReq[nextCharIndex] == "/" {
+                    return true
+                }
             }
         }
 
@@ -270,6 +300,55 @@ public struct BrowserRequestContext: Sendable, Codable, Hashable {
             source: source,
             allowedCredentialOrigins: allowedCredentialOrigins.union(origins)
         )
+    }
+
+    /// Returns a new `BrowserRequestContext` with fresh cookies merged in.
+    /// If an updated cookie has matching name, domain, and path, the newer value is used.
+    /// New cookies (including third-party cookies) are appended.
+    public func updatingCookies(with freshCookies: [BrowserCookie]) -> BrowserRequestContext {
+        guard !freshCookies.isEmpty else { return self }
+        var cookieMap: [String: BrowserCookie] = [:]
+        for c in self.cookies {
+            let key = "\(c.name.lowercased())@\(c.domain.lowercased())\(c.path)"
+            cookieMap[key] = c
+        }
+        for c in freshCookies {
+            let key = "\(c.name.lowercased())@\(c.domain.lowercased())\(c.path)"
+            cookieMap[key] = c
+        }
+        var result: [BrowserCookie] = []
+        var seenKeys = Set<String>()
+        for c in self.cookies {
+            let key = "\(c.name.lowercased())@\(c.domain.lowercased())\(c.path)"
+            if !seenKeys.contains(key) {
+                seenKeys.insert(key)
+                result.append(cookieMap[key] ?? c)
+            }
+        }
+        for c in freshCookies {
+            let key = "\(c.name.lowercased())@\(c.domain.lowercased())\(c.path)"
+            if !seenKeys.contains(key) {
+                seenKeys.insert(key)
+                result.append(c)
+            }
+        }
+        return BrowserRequestContext(
+            url: url,
+            pageURL: pageURL,
+            userAgent: userAgent,
+            cookies: result,
+            customHeaders: customHeaders,
+            captureDate: Date(),
+            source: source,
+            allowedCredentialOrigins: allowedCredentialOrigins
+        )
+    }
+
+    /// Returns a new `BrowserRequestContext` updated with cookies from a `BrowserSessionSnapshot`.
+    public func updatingCookies(from snapshot: BrowserSessionSnapshot?) -> BrowserRequestContext {
+        guard let snapshot, !snapshot.allCookies.isEmpty else { return self }
+        let fresh = snapshot.allCookies.compactMap { BrowserCookie(from: $0) }
+        return updatingCookies(with: fresh)
     }
 
     /// Evaluates whether a destination URL is eligible to receive credentials under this context

@@ -9,37 +9,67 @@ import WebKit
 // MARK: - HTTPCookie URL Matching (RFC 6265)
 
 extension HTTPCookie {
-    /// Evaluates whether this cookie should be sent to the target URL based on RFC 6265 domain, path, secure, and expiry rules.
+    /// Evaluates whether this cookie should be sent to the target URL based on RFC 6265 domain, path, secure, and expiry rules with WebKit parity.
     public func matches(url: URL) -> Bool {
-        guard let host = url.host?.lowercased(), !host.isEmpty else { return false }
+        guard var host = url.host?.lowercased(), !host.isEmpty else { return false }
+        if host.hasSuffix(".") {
+            host = String(host.dropLast())
+        }
 
         // Domain matching (RFC 6265 §5.1.3)
         var cookieDomain = domain.lowercased()
         if cookieDomain.hasPrefix(".") {
             cookieDomain = String(cookieDomain.dropFirst())
         }
+        if cookieDomain.hasSuffix(".") {
+            cookieDomain = String(cookieDomain.dropLast())
+        }
         let domainMatches = (host == cookieDomain) || host.hasSuffix("." + cookieDomain)
         guard domainMatches else { return false }
 
-        // Secure matching (RFC 6265 §5.4)
+        // Secure matching (RFC 6265 §5.4 / Secure Contexts)
         if isSecure {
             let scheme = url.scheme?.lowercased() ?? "http"
-            guard scheme == "https" else { return false }
+            let isLocalhost = host == "localhost" || host == "127.0.0.1" || host == "::1" || host == "[::1]"
+            guard scheme == "https" || isLocalhost else { return false }
         }
 
         // Path matching (RFC 6265 §5.1.4)
+        var cookiePath = path.isEmpty ? "/" : path
+        if !cookiePath.hasPrefix("/") {
+            cookiePath = "/" + cookiePath
+        }
         let requestPath = url.path.isEmpty ? "/" : url.path
-        let cookiePath = path.isEmpty ? "/" : path
-        if cookiePath != "/" {
-            if requestPath != cookiePath {
-                guard requestPath.hasPrefix(cookiePath) else { return false }
-                if !cookiePath.hasSuffix("/") {
+        if cookiePath != "/" && requestPath != cookiePath {
+            var matched = false
+            if requestPath.hasPrefix(cookiePath) {
+                if cookiePath.hasSuffix("/") {
+                    matched = true
+                } else {
                     let nextIndex = requestPath.index(requestPath.startIndex, offsetBy: cookiePath.count)
-                    guard nextIndex < requestPath.endIndex && requestPath[nextIndex] == "/" else {
-                        return false
+                    if nextIndex < requestPath.endIndex && requestPath[nextIndex] == "/" {
+                        matched = true
                     }
                 }
             }
+            if !matched,
+               let decodedReq = requestPath.removingPercentEncoding,
+               let decodedCookie = cookiePath.removingPercentEncoding,
+               (decodedReq != requestPath || decodedCookie != cookiePath) {
+                if decodedReq == decodedCookie {
+                    matched = true
+                } else if decodedReq.hasPrefix(decodedCookie) {
+                    if decodedCookie.hasSuffix("/") {
+                        matched = true
+                    } else {
+                        let nextIndex = decodedReq.index(decodedReq.startIndex, offsetBy: decodedCookie.count)
+                        if nextIndex < decodedReq.endIndex && decodedReq[nextIndex] == "/" {
+                            matched = true
+                        }
+                    }
+                }
+            }
+            guard matched else { return false }
         }
 
         // Expiry matching

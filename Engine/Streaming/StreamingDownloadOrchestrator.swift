@@ -53,6 +53,64 @@ public struct StreamingManifestCandidate: Sendable, Equatable {
         self.dashAudioRepresentationID = dashAudioRepresentationID
     }
 
+    /// Returns a copy of this candidate with an updated `browserRequestContext` and optional snapshot.
+    public func updatingContext(
+        browserRequestContext: BrowserRequestContext?,
+        browserSessionSnapshot: BrowserSessionSnapshot? = nil
+    ) -> StreamingManifestCandidate {
+        try! StreamingManifestCandidate(
+            url: url,
+            mimeType: mimeType,
+            browserRequestContext: browserRequestContext,
+            browserSessionSnapshot: browserSessionSnapshot ?? self.browserSessionSnapshot,
+            hlsVariantPreferences: hlsVariantPreferences,
+            cachedManifestText: cachedManifestText,
+            dashVideoRepresentationID: dashVideoRepresentationID,
+            dashAudioRepresentationID: dashAudioRepresentationID
+        )
+    }
+
+    /// Returns a copy of this candidate with cookies refreshed from the latest active session snapshot
+    /// or explicit fresh cookies, enabling later playlist and segment requests to receive fresh session tokens.
+    public func withRefreshedCookies(
+        snapshot: BrowserSessionSnapshot? = nil,
+        freshCookies: [BrowserCookie] = []
+    ) -> StreamingManifestCandidate {
+        let effectiveSnapshot = snapshot ?? browserSessionSnapshot ?? DownloadRequestEnricher.sharedSessionSnapshot.snapshot
+        var updatedContext = browserRequestContext
+        if let effectiveSnapshot {
+            if let ctx = updatedContext {
+                updatedContext = ctx.updatingCookies(from: effectiveSnapshot)
+            } else if let pageURL = effectiveSnapshot.pageURL {
+                let cookies = effectiveSnapshot.allCookies.compactMap { BrowserCookie(from: $0) }
+                updatedContext = BrowserRequestContext(
+                    url: url,
+                    pageURL: pageURL,
+                    userAgent: effectiveSnapshot.userAgent.isEmpty ? nil : effectiveSnapshot.userAgent,
+                    cookies: cookies,
+                    source: .webpageResource
+                )
+            }
+        }
+        if !freshCookies.isEmpty {
+            if let ctx = updatedContext {
+                updatedContext = ctx.updatingCookies(with: freshCookies)
+            } else {
+                updatedContext = BrowserRequestContext(
+                    url: url,
+                    pageURL: effectiveSnapshot?.pageURL,
+                    userAgent: effectiveSnapshot?.userAgent.isEmpty == false ? effectiveSnapshot?.userAgent : nil,
+                    cookies: freshCookies,
+                    source: .webpageResource
+                )
+            }
+        }
+        return updatingContext(
+            browserRequestContext: updatedContext,
+            browserSessionSnapshot: effectiveSnapshot
+        )
+    }
+
     public init(
         resource: WebpageResource,
         browserSessionSnapshot: BrowserSessionSnapshot? = nil
@@ -134,7 +192,8 @@ public final class URLSessionStreamingManifestLoader: StreamingManifestLoader, S
         headers: [String: String],
         limits: ManifestParsingLimits
     ) async throws -> StreamingManifestResponse {
-        var request = URLRequest(url: candidate.url)
+        let refreshedCandidate = candidate.withRefreshedCookies()
+        var request = URLRequest(url: refreshedCandidate.url)
         request.httpMethod = "GET"
         request.timeoutInterval = 45
         request.setValue("identity", forHTTPHeaderField: "Accept-Encoding")
@@ -144,9 +203,11 @@ public final class URLSessionStreamingManifestLoader: StreamingManifestLoader, S
             }
         }
         let effectiveSnapshot: BrowserSessionSnapshot?
-        if let s = candidate.browserSessionSnapshot {
+        if let s = refreshedCandidate.browserSessionSnapshot {
             effectiveSnapshot = s
-        } else if let ctx = candidate.browserRequestContext {
+        } else if let s = DownloadRequestEnricher.sharedSessionSnapshot.snapshot {
+            effectiveSnapshot = s
+        } else if let ctx = refreshedCandidate.browserRequestContext {
             let httpCookies = ctx.cookies.compactMap { $0.toHTTPCookie() }
             effectiveSnapshot = BrowserSessionSnapshot(
                 userAgent: ctx.userAgent ?? "",
@@ -157,9 +218,9 @@ public final class URLSessionStreamingManifestLoader: StreamingManifestLoader, S
         } else {
             effectiveSnapshot = nil
         }
-        let urlString = candidate.url.absoluteString.lowercased()
-        let pathExt = candidate.url.pathExtension.lowercased()
-        let mime = candidate.mimeType?.lowercased() ?? ""
+        let urlString = refreshedCandidate.url.absoluteString.lowercased()
+        let pathExt = refreshedCandidate.url.pathExtension.lowercased()
+        let mime = refreshedCandidate.mimeType?.lowercased() ?? ""
 
         if pathExt == "mpd" || urlString.contains(".mpd") || mime.contains("dash") {
             request.setValue("application/dash+xml, application/xml, text/xml, */*", forHTTPHeaderField: "Accept")
@@ -167,7 +228,7 @@ public final class URLSessionStreamingManifestLoader: StreamingManifestLoader, S
             request.setValue("application/vnd.apple.mpegurl, application/x-mpegURL, */*", forHTTPHeaderField: "Accept")
         }
 
-        request = DownloadRequestEnricher.enrich(request, snapshot: effectiveSnapshot, context: candidate.browserRequestContext)
+        request = await DownloadRequestEnricher.enrichAsync(request, snapshot: effectiveSnapshot, context: refreshedCandidate.browserRequestContext)
 
         // Ensure Accept header is specifically preserved if target was an MPD or M3U8 manifest
         if pathExt == "mpd" || urlString.contains(".mpd") || mime.contains("dash") {
@@ -178,12 +239,12 @@ public final class URLSessionStreamingManifestLoader: StreamingManifestLoader, S
 
         // Ensure User-Agent and Referer are populated from browserRequestContext if still missing
         if request.value(forHTTPHeaderField: "User-Agent") == nil,
-           let ua = candidate.browserRequestContext?.userAgent, !ua.isEmpty {
+           let ua = refreshedCandidate.browserRequestContext?.userAgent, !ua.isEmpty {
             request.setValue(ua, forHTTPHeaderField: "User-Agent")
         }
         if request.value(forHTTPHeaderField: "Referer") == nil {
-            if let ref = candidate.browserRequestContext?.referer ?? candidate.browserRequestContext?.pageURL?.absoluteString {
-                let isDowngrade = candidate.url.scheme?.lowercased() == "http" && (URL(string: ref)?.scheme?.lowercased() == "https")
+            if let ref = refreshedCandidate.browserRequestContext?.referer ?? refreshedCandidate.browserRequestContext?.pageURL?.absoluteString {
+                let isDowngrade = refreshedCandidate.url.scheme?.lowercased() == "http" && (URL(string: ref)?.scheme?.lowercased() == "https")
                 if !isDowngrade {
                     request.setValue(ref, forHTTPHeaderField: "Referer")
                 }
@@ -191,10 +252,10 @@ public final class URLSessionStreamingManifestLoader: StreamingManifestLoader, S
         }
 
         let delegate = StreamingRedirectDelegate(
-            originalURL: candidate.url,
+            originalURL: refreshedCandidate.url,
             headers: headers,
             snapshot: effectiveSnapshot,
-            context: candidate.browserRequestContext
+            context: refreshedCandidate.browserRequestContext
         )
         let (data, response) = try await session.data(for: request, delegate: delegate)
         guard let httpResponse = response as? HTTPURLResponse else {
@@ -729,6 +790,8 @@ public actor StreamingDownloadOrchestrator {
     public var downloadEngine: DownloadEngine?
     /// Durable store for HLS parent-transfer records. `nil` when persistence is unavailable.
     public var hlsPersistenceStore: HLSPersistenceStore?
+    /// Optional dynamic cookie provider for refreshing session cookies on subresource/segment requests.
+    public var dynamicCookieProvider: (@Sendable (URL) async -> [BrowserCookie])?
     private var proposals: [String: StreamingTransferProposal] = [:]
     private var runningTransfers: Set<String> = []
     private var activeAssemblyOperations: Set<String> = []
@@ -1472,6 +1535,7 @@ public actor StreamingDownloadOrchestrator {
     }
 
     public func prepare(candidate: StreamingManifestCandidate) async throws -> StreamingTransferProposal {
+        let candidate = candidate.withRefreshedCookies()
         let candidateMIME = candidate.mimeType ?? ""
         var fingerprintComponents = [candidate.url.absoluteString, candidateMIME]
         if let context = candidate.browserRequestContext {
@@ -1724,7 +1788,7 @@ public actor StreamingDownloadOrchestrator {
                 browserSessionSnapshot: candidate.browserSessionSnapshot,
                 hlsVariantPreferences: candidate.hlsVariantPreferences,
                 cachedManifestText: audioCachedText
-            )
+            ).withRefreshedCookies()
             do {
                 let audioSubResponse = try await loadManifestResponse(
                     candidate: audioCandidate,
@@ -1844,7 +1908,7 @@ public actor StreamingDownloadOrchestrator {
                 browserSessionSnapshot: candidate.browserSessionSnapshot,
                 hlsVariantPreferences: candidate.hlsVariantPreferences,
                 cachedManifestText: variantCachedText
-            )
+            ).withRefreshedCookies()
 
             let subResponse: StreamingManifestResponse
             do {
@@ -2654,7 +2718,7 @@ public actor StreamingDownloadOrchestrator {
         let request = StreamingSegmentTransferRequest(
             identity: resource.identity,
             url: targetURL,
-            headers: requestHeaders(for: resource, manifest: proposal.manifest),
+            headers: await segmentRequestHeaders(for: resource, manifest: proposal.manifest, transferID: proposal.transferID),
             byteRange: resource.byteRange,
             destinationURL: destinationURL
         )
@@ -2692,13 +2756,27 @@ public actor StreamingDownloadOrchestrator {
                         data: Data((candidate.url.absoluteString + "|" + candidateMIME).utf8)
                     )
                     proposals.removeValue(forKey: metadataFingerprint)
-                    if let freshProposal = try? await prepare(candidate: candidate),
+
+                    // Fetch fresh dynamic cookies and refresh candidate context
+                    let dynamicFresh = await DownloadRequestEnricher.dynamicCookies(for: candidate.url)
+                    let freshCandidate = candidate.withRefreshedCookies(
+                        snapshot: DownloadRequestEnricher.sharedSessionSnapshot.snapshot,
+                        freshCookies: dynamicFresh.compactMap(BrowserCookie.init(from:))
+                    )
+                    candidatesByTransfer[proposal.transferID] = freshCandidate
+
+                    if let freshProposal = try? await prepare(candidate: freshCandidate),
                        let freshResource = freshProposal.resources.first(where: { $0.identity.order == resource.identity.order }) {
                         PipelineLogger.shared.log("\(pipelineTag) Successfully refreshed manifest. Retrying segment \(resource.identity.order)...")
+                        let freshHeaders = await segmentRequestHeaders(
+                            for: freshResource,
+                            manifest: freshProposal.manifest,
+                            transferID: proposal.transferID
+                        )
                         let freshRequest = StreamingSegmentTransferRequest(
                             identity: freshResource.identity,
                             url: freshResource.url,
-                            headers: requestHeaders(for: freshResource, manifest: freshProposal.manifest),
+                            headers: freshHeaders,
                             byteRange: freshResource.byteRange,
                             destinationURL: destinationURL
                         )
@@ -3594,6 +3672,54 @@ public actor StreamingDownloadOrchestrator {
             to: resource.url,
             allowedOrigins: context.allowedCredentialOrigins
         )
+    }
+
+    private func segmentRequestHeaders(
+        for resource: StreamingTransferResource,
+        manifest: StreamingTransferManifest,
+        transferID: String
+    ) async -> [String: String] {
+        var headers = requestHeaders(for: resource, manifest: manifest)
+
+        let candidate = candidatesByTransfer[transferID]
+        let snapshot = candidate?.browserSessionSnapshot ?? DownloadRequestEnricher.sharedSessionSnapshot.snapshot
+
+        var freshCookies: [BrowserCookie] = []
+        if let dynamic = await dynamicCookieProvider?(resource.url), !dynamic.isEmpty {
+            freshCookies.append(contentsOf: dynamic)
+        } else {
+            let cookies = await DownloadRequestEnricher.dynamicCookies(for: resource.url)
+            freshCookies.append(contentsOf: cookies.compactMap(BrowserCookie.init(from:)))
+        }
+        if let snapshot {
+            freshCookies.append(contentsOf: snapshot.allCookies.compactMap(BrowserCookie.init(from:)))
+        }
+
+        if !freshCookies.isEmpty {
+            let matchingFresh = freshCookies.filter { cookie in
+                cookie.matches(url: resource.url)
+            }
+            if !matchingFresh.isEmpty {
+                var cookieMap: [String: String] = [:]
+                if let existingHeader = headers["Cookie"] {
+                    for pair in existingHeader.split(separator: ";") {
+                        let parts = pair.split(separator: "=", maxSplits: 1).map { String($0).trimmingCharacters(in: .whitespaces) }
+                        if parts.count == 2 {
+                            cookieMap[parts[0]] = parts[1]
+                        }
+                    }
+                }
+                for c in matchingFresh.sorted(by: { $0.path.count > $1.path.count }) {
+                    cookieMap[c.name] = c.value
+                }
+                let mergedCookies = cookieMap.map { "\($0.key)=\($0.value)" }.sorted().joined(separator: "; ")
+                if !mergedCookies.isEmpty {
+                    headers["Cookie"] = mergedCookies
+                }
+            }
+        }
+
+        return headers
     }
 
     private func makeResources(

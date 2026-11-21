@@ -667,6 +667,112 @@ final class BrowserTests: XCTestCase {
         XCTAssertTrue(roundTrippedDomain.matches(url: subHostURL))
     }
 
+    func testWebKitCompatibleCookieMatchingEdgeCases() {
+        // 1. Secure cookies allowed on localhost / loopback in WebKit / Secure Contexts
+        let localhostSecureCookie = BrowserCookie(
+            name: "local_auth",
+            value: "secret",
+            domain: "localhost",
+            isSecure: true
+        )
+        XCTAssertTrue(localhostSecureCookie.matches(url: URL(string: "http://localhost:8080/api")!))
+        XCTAssertTrue(localhostSecureCookie.matches(url: URL(string: "https://localhost:8080/api")!))
+
+        let ipSecureCookie = BrowserCookie(
+            name: "ip_auth",
+            value: "secret",
+            domain: "127.0.0.1",
+            isSecure: true
+        )
+        XCTAssertTrue(ipSecureCookie.matches(url: URL(string: "http://127.0.0.1:3000/media")!))
+
+        // But secure cookie must still reject non-localhost plain HTTP
+        let remoteSecureCookie = BrowserCookie(
+            name: "remote_auth",
+            value: "secret",
+            domain: "example.com",
+            isSecure: true
+        )
+        XCTAssertFalse(remoteSecureCookie.matches(url: URL(string: "http://example.com/media")!))
+        XCTAssertTrue(remoteSecureCookie.matches(url: URL(string: "https://example.com/media")!))
+
+        // 2. FQDN trailing dot handling
+        let trailingDotCookie = BrowserCookie(
+            name: "dot_cookie",
+            value: "val",
+            domain: ".example.com."
+        )
+        XCTAssertTrue(trailingDotCookie.matches(url: URL(string: "https://example.com/video")!))
+        XCTAssertTrue(trailingDotCookie.matches(url: URL(string: "https://video.example.com/video")!))
+        XCTAssertTrue(trailingDotCookie.matches(url: URL(string: "https://video.example.com./video")!))
+
+        // 3. Percent-encoded and normalized path matching
+        let encodedPathCookie = BrowserCookie(
+            name: "path_cookie",
+            value: "val",
+            domain: "example.com",
+            path: "/stream media/"
+        )
+        XCTAssertTrue(encodedPathCookie.matches(url: URL(string: "https://example.com/stream%20media/segment1.ts")!))
+        XCTAssertTrue(encodedPathCookie.matches(url: URL(string: "https://example.com/stream%20media/")!))
+        XCTAssertFalse(encodedPathCookie.matches(url: URL(string: "https://example.com/other/segment1.ts")!))
+    }
+
+    func testBrowserRequestContextThirdPartyAndUpdatedCookies() {
+        let manifestURL = URL(string: "https://web.example.com/stream/manifest.m3u8")!
+        let cdnSegmentURL = URL(string: "https://edge.cdn.net/hls/seg1.ts")!
+
+        let initialCookie = BrowserCookie(
+            name: "session_id",
+            value: "old_session_1",
+            domain: "web.example.com",
+            path: "/"
+        )
+        let thirdPartyCookie = BrowserCookie(
+            name: "cdn_auth",
+            value: "cdn_token_xyz",
+            domain: ".cdn.net",
+            path: "/"
+        )
+
+        let initialContext = BrowserRequestContext(
+            url: manifestURL,
+            pageURL: URL(string: "https://web.example.com/watch")!,
+            userAgent: "TestBrowser/1.0",
+            cookies: [initialCookie, thirdPartyCookie]
+        )
+
+        // 1. Effective headers for manifest should only get manifest cookies
+        let manifestHeaders = initialContext.effectiveHeaders(for: manifestURL)
+        XCTAssertEqual(manifestHeaders["Cookie"], "session_id=old_session_1")
+
+        // 2. Effective headers for third-party CDN segment gets third-party cookie
+        let cdnHeaders = initialContext.effectiveHeaders(for: cdnSegmentURL)
+        XCTAssertEqual(cdnHeaders["Cookie"], "cdn_auth=cdn_token_xyz")
+
+        // 3. Updating cookies with refreshed session
+        let updatedCookie = BrowserCookie(
+            name: "session_id",
+            value: "new_session_2",
+            domain: "web.example.com",
+            path: "/"
+        )
+        let newThirdPartyCookie = BrowserCookie(
+            name: "edge_token",
+            value: "edge_val",
+            domain: ".cdn.net",
+            path: "/"
+        )
+
+        let refreshedContext = initialContext.updatingCookies(with: [updatedCookie, newThirdPartyCookie])
+        let refreshedManifestHeaders = refreshedContext.effectiveHeaders(for: manifestURL)
+        XCTAssertEqual(refreshedManifestHeaders["Cookie"], "session_id=new_session_2")
+
+        let refreshedCdnHeaders = refreshedContext.effectiveHeaders(for: cdnSegmentURL)
+        XCTAssertTrue(refreshedCdnHeaders["Cookie"]?.contains("cdn_auth=cdn_token_xyz") == true)
+        XCTAssertTrue(refreshedCdnHeaders["Cookie"]?.contains("edge_token=edge_val") == true)
+    }
+
     func testBrowserRequestContextSuppressesRefererAndOriginOnHTTPDowngrade() {
         let securePage = URL(string: "https://example.com/watch")!
         let context = BrowserRequestContext(

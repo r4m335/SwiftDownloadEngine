@@ -3047,6 +3047,119 @@ final class StreamingDownloadOrchestratorTests: XCTestCase {
         let loadCount = await loader.loadCount
         XCTAssertEqual(loadCount, 1, "Orchestrator must bypass expired cached manifest and attempt network load")
     }
+
+    func testSessionCookieChangesAfterCaptureAreReflectedInSegmentRequests() async throws {
+        let manifestURL = URL(string: "https://video.example/vod.m3u8")!
+        let playlist = """
+        #EXTM3U
+        #EXT-X-PLAYLIST-TYPE:VOD
+        #EXTINF:2,
+        segment1.ts
+        #EXT-X-ENDLIST
+        """
+        let loader = RecordingManifestLoader(
+            data: Data(playlist.utf8),
+            finalURL: manifestURL,
+            mimeType: "application/vnd.apple.mpegurl"
+        )
+        let executor = RecordingSegmentExecutor()
+        let orchestrator = StreamingDownloadOrchestrator(
+            manifestLoader: loader,
+            segmentExecutor: executor
+        )
+
+        let initialCookie = BrowserCookie(
+            name: "session_token",
+            value: "stale_token_1",
+            domain: "video.example",
+            path: "/"
+        )
+        let initialContext = BrowserRequestContext(
+            url: manifestURL,
+            pageURL: URL(string: "https://video.example/watch")!,
+            cookies: [initialCookie]
+        )
+        let candidate = try StreamingManifestCandidate(
+            url: manifestURL,
+            browserRequestContext: initialContext
+        )
+
+        // Simulate session-cookie change after capture (e.g. browser navigation / token refresh in shared session snapshot)
+        let refreshedHTTPCookie = HTTPCookie(properties: [
+            .name: "session_token",
+            .value: "fresh_token_2",
+            .domain: "video.example",
+            .path: "/"
+        ])!
+        DownloadRequestEnricher.sharedSessionSnapshot.snapshot = BrowserSessionSnapshot(
+            userAgent: "TestAgent/1.0",
+            acceptLanguage: "en-US",
+            allCookies: [refreshedHTTPCookie],
+            pageURL: URL(string: "https://video.example/watch")!
+        )
+
+        let proposal = try await orchestrator.prepare(candidate: candidate)
+        let destination = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: destination) }
+
+        _ = try await orchestrator.execute(proposal, approved: true, destinationDirectory: destination)
+
+        let requests = await executor.requests
+        XCTAssertEqual(requests.count, 1)
+        let segRequest = try XCTUnwrap(requests.first)
+        XCTAssertEqual(segRequest.headers["Cookie"], "session_token=fresh_token_2")
+    }
+
+    func testThirdPartyCookiesInSessionSnapshotAreForwardedToCDNSegments() async throws {
+        let manifestURL = URL(string: "https://video.example/playlist.m3u8")!
+        let playlist = """
+        #EXTM3U
+        #EXT-X-PLAYLIST-TYPE:VOD
+        #EXTINF:2,
+        https://cdn.thirdparty-edge.net/seg1.ts
+        #EXT-X-ENDLIST
+        """
+        let loader = RecordingManifestLoader(
+            data: Data(playlist.utf8),
+            finalURL: manifestURL,
+            mimeType: "application/vnd.apple.mpegurl"
+        )
+        let executor = RecordingSegmentExecutor()
+        let orchestrator = StreamingDownloadOrchestrator(
+            manifestLoader: loader,
+            segmentExecutor: executor
+        )
+
+        // Webpage session has a third-party cookie for the CDN
+        let cdnCookie = HTTPCookie(properties: [
+            .name: "edge_auth",
+            .value: "edge_cookie_val",
+            .domain: ".thirdparty-edge.net",
+            .path: "/"
+        ])!
+        let snapshot = BrowserSessionSnapshot(
+            userAgent: "TestAgent/1.0",
+            acceptLanguage: "en-US",
+            allCookies: [cdnCookie],
+            pageURL: URL(string: "https://video.example/watch")!
+        )
+
+        let candidate = try StreamingManifestCandidate(
+            url: manifestURL,
+            browserSessionSnapshot: snapshot
+        )
+
+        let proposal = try await orchestrator.prepare(candidate: candidate)
+        let destination = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: destination) }
+
+        _ = try await orchestrator.execute(proposal, approved: true, destinationDirectory: destination)
+
+        let requests = await executor.requests
+        XCTAssertEqual(requests.count, 1)
+        let segRequest = try XCTUnwrap(requests.first)
+        XCTAssertEqual(segRequest.headers["Cookie"], "edge_auth=edge_cookie_val")
+    }
 }
 
 private final class DummyAuthSender: NSObject, URLAuthenticationChallengeSender {
