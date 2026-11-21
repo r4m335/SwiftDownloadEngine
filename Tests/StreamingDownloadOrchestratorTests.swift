@@ -3403,11 +3403,14 @@ final class StreamingDownloadOrchestratorTests: XCTestCase {
             dashTextRepresentationID: "sub_en"
         )
         let comboProposal = try await orchestrator.prepare(candidate: comboCandidate)
-        let comboOutput = directory.appendingPathComponent("video.mp4")
+        let comboDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("dash-combo-execution-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: comboDirectory) }
+        let comboOutput = comboDirectory.appendingPathComponent("video.mp4")
         let comboResult = try await orchestrator.executeAndAssembleDASH(
             comboProposal,
             approved: true,
-            destinationDirectory: directory,
+            destinationDirectory: comboDirectory,
             outputURL: comboOutput
         )
 

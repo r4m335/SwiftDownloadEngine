@@ -1558,7 +1558,14 @@ public actor StreamingDownloadOrchestrator {
     public func prepare(candidate: StreamingManifestCandidate) async throws -> StreamingTransferProposal {
         let candidate = candidate.withRefreshedCookies()
         let candidateMIME = candidate.mimeType ?? ""
-        var fingerprintComponents = [candidate.url.absoluteString, candidateMIME]
+        var fingerprintComponents = [
+            candidate.url.absoluteString,
+            candidateMIME,
+            candidate.dashVideoRepresentationID ?? "",
+            candidate.dashAudioRepresentationID ?? "",
+            candidate.dashTextRepresentationID ?? "",
+            "\(candidate.hlsVariantPreferences.maximumBandwidth ?? -1)|\(candidate.hlsVariantPreferences.maximumWidth ?? -1)|\(candidate.hlsVariantPreferences.maximumHeight ?? -1)|\(candidate.hlsVariantPreferences.exactURI?.absoluteString ?? "")"
+        ]
         if let context = candidate.browserRequestContext {
             fingerprintComponents.append(context.userAgent ?? "")
             fingerprintComponents.append(context.referer ?? "")
