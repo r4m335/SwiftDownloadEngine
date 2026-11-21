@@ -323,18 +323,30 @@ public struct BrowserRequestContext: Sendable, Codable, Hashable {
         var headers: [String: String] = [:]
 
         // 1. Origin-matched Cookie header
-        let isOriginPermitted = isAllowedCredentialOrigin(dest)
+        let isSameOrigin = BrowserHeaderFilter.sameOrigin(url, dest)
+        let isPageOrigin = pageURL.map { BrowserHeaderFilter.sameOrigin($0, dest) } ?? false
+        let isAllowedOrigin = BrowserHeaderFilter.isOriginAllowed(dest, allowedOrigins: allowedCredentialOrigins)
+        let isDowngrade: Bool = {
+            let srcHTTPS = (url.scheme?.lowercased() == "https") || (pageURL?.scheme?.lowercased() == "https")
+            return srcHTTPS && (dest.scheme?.lowercased() == "http")
+        }()
+
         let matchingCookies: [BrowserCookie] = {
-            guard includeCredentials else { return [] }
-            if isOriginPermitted {
+            guard includeCredentials && !isDowngrade else { return [] }
+            if isSameOrigin || isPageOrigin {
+                return cookies.filter { $0.matches(url: dest) }
+            } else if isAllowedOrigin {
                 return cookies.filter { cookie in
                     if cookie.matches(url: dest) { return true }
-                    if let exp = cookie.expiresDate, exp < Date() { return false }
-                    if cookie.isSecure && (dest.scheme?.lowercased() ?? "") != "https" { return false }
-                    return true
+                    if cookie.matches(url: self.url) || (self.pageURL != nil && cookie.matches(url: self.pageURL!)) {
+                        if let exp = cookie.expiresDate, exp < Date() { return false }
+                        if cookie.isSecure && (dest.scheme?.lowercased() ?? "") != "https" { return false }
+                        return true
+                    }
+                    return false
                 }
             } else {
-                return cookies.filter { $0.matches(url: dest) }
+                return []
             }
         }()
         if !matchingCookies.isEmpty {
@@ -380,13 +392,14 @@ public struct BrowserRequestContext: Sendable, Codable, Hashable {
 
         // 4. Approved custom headers (filtered against forbidden names)
         let isDestHTTP = dest.scheme?.lowercased() == "http"
+        let canForwardCredentials = includeCredentials && !isDowngrade && (isSameOrigin || isPageOrigin || isAllowedOrigin)
         for (k, v) in customHeaders {
             let lowerName = k.trimmingCharacters(in: .whitespaces).lowercased()
             if !BrowserHeaderFilter.isForbiddenHeader(k) &&
                 lowerName != "cookie" &&
                 lowerName != "referer" &&
                 lowerName != "user-agent" &&
-                (includeCredentials || !BrowserHeaderFilter.isSensitiveHeader(k)) {
+                (canForwardCredentials || !BrowserHeaderFilter.isSensitiveHeader(k)) {
                 if lowerName == "origin" && isDestHTTP && v.lowercased().hasPrefix("https:") {
                     continue
                 }
