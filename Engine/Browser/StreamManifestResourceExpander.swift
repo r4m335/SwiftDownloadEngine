@@ -328,7 +328,8 @@ public actor StreamManifestResourceExpander {
     public static func buildVariants(
         from options: [StreamQualityOption],
         masterResource: WebpageResource,
-        manifestText: String?
+        manifestText: String?,
+        includeIFrameVariants: Bool = false
     ) -> (variants: [WebpageResource], items: [HLSVariantStreamItem]) {
         let baseStem: String = {
             let raw = (masterResource.suggestedFilename as NSString).deletingPathExtension
@@ -351,6 +352,7 @@ public actor StreamManifestResourceExpander {
         var variants: [WebpageResource] = []
         var items: [HLSVariantStreamItem] = []
         var seenFilenames = Set<String>()
+        let hasPrimaryVideo = options.contains { !$0.isIFrameOnly && !$0.isAudioOnly }
 
         for option in options {
             let isLive = option.isLive || masterResource.isLive
@@ -360,12 +362,7 @@ public actor StreamManifestResourceExpander {
                 .replacingOccurrences(of: " ", with: "-")
                 .replacingOccurrences(of: "(", with: "")
                 .replacingOccurrences(of: ")", with: "")
-            var filename = "\(baseStem)-\(safeQualityLabel).mp4"
-            if seenFilenames.contains(filename.lowercased()) {
-                let disambiguator = option.bitrateText.replacingOccurrences(of: " ", with: "")
-                filename = "\(baseStem)-\(safeQualityLabel)-\(disambiguator).mp4"
-            }
-            seenFilenames.insert(filename.lowercased())
+
             let resText = option.resolutionText ?? option.resolution.map { "\($0.width) × \($0.height)" }
             let bitrateText = option.bitrateText
 
@@ -381,15 +378,6 @@ public actor StreamManifestResourceExpander {
                 }
             }()
 
-            let title: String = {
-                let livePrefix = isLive ? "[LIVE] " : ""
-                if option.isAudioOnly {
-                    return "\(livePrefix)HLS Audio (\(option.audioCodec ?? "AAC"))"
-                } else {
-                    return "\(livePrefix)HLS \(qualityLabel)"
-                }
-            }()
-
             let preferences = HLSVariantSelectionPreferences(
                 maximumBandwidth: Int(option.bandwidth),
                 maximumWidth: option.resolution?.width,
@@ -398,38 +386,6 @@ public actor StreamManifestResourceExpander {
             )
 
             let optionDrm = drmResult.isProtected ? drmResult : StreamDRMDetector.evaluate(manifestText: "", url: option.uri)
-            let isSupported = !optionDrm.isProtected && !isLive
-            let unsupportedReason: String? = {
-                if optionDrm.isProtected {
-                    return optionDrm.reason
-                }
-                if isLive {
-                    return "Live stream recording required; VOD download unsupported for live/event manifests"
-                }
-                return nil
-            }()
-
-            let resource = WebpageResource(
-                id: variantID,
-                url: masterResource.url, // Keep pointing to master manifest URL for orchestrator planning
-                title: title,
-                suggestedFilename: filename,
-                resourceType: option.isAudioOnly ? .audio : .video,
-                mimeType: masterResource.mimeType ?? "application/vnd.apple.mpegurl",
-                estimatedSize: isLive ? nil : option.estimatedSizeBytes,
-                isSupported: isSupported,
-                unsupportedReason: unsupportedReason,
-                requestContext: masterResource.requestContext,
-                manifestText: effectiveText,
-                hlsVariantPreferences: preferences,
-                dashVideoRepresentationID: option.dashVideoRepresentationID,
-                dashAudioRepresentationID: option.dashAudioRepresentationID,
-                isDRMProtected: optionDrm.isProtected,
-                drmProtectionType: optionDrm.protectionType,
-                discoveredAt: masterResource.discoveredAt,
-                isLive: isLive
-            )
-            variants.append(resource)
 
             let item = HLSVariantStreamItem(
                 id: variantID,
@@ -453,6 +409,87 @@ public actor StreamManifestResourceExpander {
                 isLowLatency: option.isLowLatency
             )
             items.append(item)
+
+            if option.isIFrameOnly {
+                // If primary full video variants exist, exclude trick-play I-frame variants from full download
+                if hasPrimaryVideo && !includeIFrameVariants {
+                    continue
+                }
+
+                // If retained or when only trick-play variants exist, provide through a distinct thumbnail/seek variant, not as a complete video
+                let thumbFilename = "\(baseStem)-\(safeQualityLabel)-thumbnails.m3u8"
+                let thumbTitle = "\(isLive ? "[LIVE] " : "")HLS \(qualityLabel) (Thumbnails/Seek)"
+                let resource = WebpageResource(
+                    id: variantID,
+                    url: masterResource.url,
+                    title: thumbTitle,
+                    suggestedFilename: thumbFilename,
+                    resourceType: .other,
+                    mimeType: masterResource.mimeType ?? "application/vnd.apple.mpegurl",
+                    estimatedSize: isLive ? nil : option.estimatedSizeBytes,
+                    isSupported: false,
+                    unsupportedReason: "I-frame-only trick-play streams are for seek thumbnails and cannot be downloaded as a complete video.",
+                    requestContext: masterResource.requestContext,
+                    manifestText: effectiveText,
+                    hlsVariantPreferences: preferences,
+                    dashVideoRepresentationID: option.dashVideoRepresentationID,
+                    dashAudioRepresentationID: option.dashAudioRepresentationID,
+                    isDRMProtected: optionDrm.isProtected,
+                    drmProtectionType: optionDrm.protectionType,
+                    discoveredAt: masterResource.discoveredAt,
+                    isLive: isLive
+                )
+                variants.append(resource)
+            } else {
+                var filename = "\(baseStem)-\(safeQualityLabel).mp4"
+                if seenFilenames.contains(filename.lowercased()) {
+                    let disambiguator = option.bitrateText.replacingOccurrences(of: " ", with: "")
+                    filename = "\(baseStem)-\(safeQualityLabel)-\(disambiguator).mp4"
+                }
+                seenFilenames.insert(filename.lowercased())
+
+                let title: String = {
+                    let livePrefix = isLive ? "[LIVE] " : ""
+                    if option.isAudioOnly {
+                        return "\(livePrefix)HLS Audio (\(option.audioCodec ?? "AAC"))"
+                    } else {
+                        return "\(livePrefix)HLS \(qualityLabel)"
+                    }
+                }()
+
+                let isSupported = !optionDrm.isProtected && !isLive
+                let unsupportedReason: String? = {
+                    if optionDrm.isProtected {
+                        return optionDrm.reason
+                    }
+                    if isLive {
+                        return "Live stream recording required; VOD download unsupported for live/event manifests"
+                    }
+                    return nil
+                }()
+
+                let resource = WebpageResource(
+                    id: variantID,
+                    url: masterResource.url,
+                    title: title,
+                    suggestedFilename: filename,
+                    resourceType: option.isAudioOnly ? .audio : .video,
+                    mimeType: masterResource.mimeType ?? "application/vnd.apple.mpegurl",
+                    estimatedSize: isLive ? nil : option.estimatedSizeBytes,
+                    isSupported: isSupported,
+                    unsupportedReason: unsupportedReason,
+                    requestContext: masterResource.requestContext,
+                    manifestText: effectiveText,
+                    hlsVariantPreferences: preferences,
+                    dashVideoRepresentationID: option.dashVideoRepresentationID,
+                    dashAudioRepresentationID: option.dashAudioRepresentationID,
+                    isDRMProtected: optionDrm.isProtected,
+                    drmProtectionType: optionDrm.protectionType,
+                    discoveredAt: masterResource.discoveredAt,
+                    isLive: isLive
+                )
+                variants.append(resource)
+            }
         }
 
         return (variants, items)
@@ -462,7 +499,8 @@ public actor StreamManifestResourceExpander {
     public static func expandSynchronously(
         masterResource: WebpageResource,
         manifestText: String,
-        durationSeconds: Double? = nil
+        durationSeconds: Double? = nil,
+        includeIFrameVariants: Bool = false
     ) -> (variants: [WebpageResource], items: [HLSVariantStreamItem]) {
         guard let options = try? StreamQualityInspector.inspect(
             manifestText: manifestText,
@@ -505,7 +543,8 @@ public actor StreamManifestResourceExpander {
         return buildVariants(
             from: options,
             masterResource: masterResource,
-            manifestText: manifestText
+            manifestText: manifestText,
+            includeIFrameVariants: includeIFrameVariants
         )
     }
 }

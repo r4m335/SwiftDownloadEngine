@@ -1870,6 +1870,16 @@ public actor StreamingDownloadOrchestrator {
             let variantDesc = "Variant #\(index + 1)/\(rankedVariants.count) [bw=\(variant.bandwidth), res=\(variantResolution), codecs=\(variant.codecs ?? "none")]"
             PipelineLogger.shared.log("[HLS Pipeline] Evaluating \(variantDesc) at \(variant.uri.absoluteString)...")
 
+            if variant.isIFrameOnly {
+                PipelineLogger.shared.log("[HLS Pipeline] Skipping I-frame-only variant \(variantDesc): I-frame trick-play streams cannot be assembled as a complete video.")
+                let failureError = StreamingDownloadOrchestratorError.hlsVariantSelectionFailed(.unsupportedIFrameVariant)
+                if isExplicitVariantSelection {
+                    throw failureError
+                }
+                lastPlanningError = failureError
+                continue
+            }
+
             do {
                 try HLSVariantSelector.validateAudioLayout(
                     selectedVariant: variant,

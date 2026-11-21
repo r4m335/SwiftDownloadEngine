@@ -387,13 +387,13 @@ public enum BrowserMediaCandidateClassifier {
             }
         } else if manifest.kind == .hls {
             kind = .hlsManifest
-            availability = .requiresPlanning
-            evidence = ["HLS manifest metadata was recognized"]
+            availability = resource.isSupported ? .requiresPlanning : .unsupported
+            evidence = resource.isSupported ? ["HLS manifest metadata was recognized"] : [resource.unsupportedReason ?? "HLS stream variant is unsupported for full download"]
             blobKind = nil
         } else if manifest.kind == .dash {
             kind = .dashManifest
-            availability = .requiresPlanning
-            evidence = ["DASH manifest metadata was recognized"]
+            availability = resource.isSupported ? .requiresPlanning : .unsupported
+            evidence = resource.isSupported ? ["DASH manifest metadata was recognized"] : [resource.unsupportedReason ?? "DASH stream variant is unsupported for full download"]
             blobKind = nil
         } else if resource.resourceType == .video || resource.resourceType == .audio {
             kind = .directMedia

@@ -89,6 +89,16 @@ public enum BrowserDownloadDecisionPipeline {
             )
         }
 
+        // 1b. Unsupported candidate (e.g. I-frame trick-play thumbnails, unsupported formats)
+        if candidate.availability == .unsupported {
+            let reason = candidate.evidence.first ?? "Resource is unsupported for full download"
+            return BrowserDownloadDecision(
+                action: .unsupported(reason: reason),
+                candidate: candidate,
+                reason: reason
+            )
+        }
+
         // 2. Streaming Manifests (HLS / DASH)
         if candidate.kind == .hlsManifest {
             guard let url = candidate.url ?? URL(string: candidate.rawURL),

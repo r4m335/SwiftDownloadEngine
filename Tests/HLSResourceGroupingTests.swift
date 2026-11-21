@@ -312,6 +312,9 @@ final class HLSResourceGroupingTests: XCTestCase {
         XCTAssertEqual(resources.count, 2)
         XCTAssertTrue(resources[0].title.contains("1080p (I-Frame)"))
         XCTAssertFalse(resources[0].suggestedFilename.contains("("), "Filename should not contain raw parens")
+        XCTAssertEqual(resources[0].resourceType, .other, "I-frame variant must not be complete video")
+        XCTAssertFalse(resources[0].isSupported, "I-frame variant must not be marked isSupported for full download")
+        XCTAssertNotNil(resources[0].unsupportedReason)
     }
 
     func testMixedMasterPlaylistQualitySummaryShowsPrimaryQualities() {
@@ -351,6 +354,16 @@ final class HLSResourceGroupingTests: XCTestCase {
         XCTAssertTrue(items[2].isIFrameOnly)
         XCTAssertEqual(items[2].qualityLabel, "1080p (I-Frame)")
         XCTAssertFalse(items[2].hasAudio)
+
+        // Resources for full download must exclude I-frame variants
+        let resources = HLSResourceGrouping.extractVariantResources(from: master)
+        XCTAssertEqual(resources.count, 2, "extractVariantResources must exclude I-frame variants when primary video variants exist")
+        XCTAssertEqual(resources[0].title, "HLS 1080p")
+        XCTAssertEqual(resources[0].resourceType, .video)
+        XCTAssertTrue(resources[0].isSupported)
+        XCTAssertEqual(resources[1].title, "HLS 720p")
+        XCTAssertEqual(resources[1].resourceType, .video)
+        XCTAssertTrue(resources[1].isSupported)
     }
 
     func testBandwidthOnlyVariantsDoNotIncurInferredResolutionLabels() {

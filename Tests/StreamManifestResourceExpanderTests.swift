@@ -709,6 +709,87 @@ final class StreamManifestResourceExpanderTests: XCTestCase {
             XCTAssertNotEqual(item.estimatedSizeText, "Live Broadcast")
         }
     }
+
+    func testMixedMasterPlaylistExcludesIFrameVariantsFromFullDownload() {
+        let mixedManifest = """
+        #EXTM3U
+        #EXT-X-VERSION:4
+        #EXT-X-STREAM-INF:BANDWIDTH=4000000,RESOLUTION=1920x1080,CODECS="avc1.640028,mp4a.40.2"
+        1080p.m3u8
+        #EXT-X-I-FRAME-STREAM-INF:BANDWIDTH=800000,RESOLUTION=1920x1080,URI="iframe_1080p.m3u8"
+        #EXT-X-STREAM-INF:BANDWIDTH=2000000,RESOLUTION=1280x720,CODECS="avc1.4d401f,mp4a.40.2"
+        720p.m3u8
+        """
+
+        let master = WebpageResource(
+            id: "mixed-master",
+            url: URL(string: "https://video.example.com/master.m3u8")!,
+            title: "Mixed Video",
+            suggestedFilename: "mixed.m3u8",
+            resourceType: .video,
+            mimeType: "application/vnd.apple.mpegurl",
+            manifestText: mixedManifest
+        )
+
+        let (variants, items) = StreamManifestResourceExpander.expandSynchronously(
+            masterResource: master,
+            manifestText: mixedManifest
+        )
+
+        // Variants for full download must ONLY include the 2 primary video streams (1080p and 720p)
+        XCTAssertEqual(variants.count, 2, "I-frame variants must be excluded from full download variants when primary video variants exist")
+        XCTAssertEqual(variants[0].title, "HLS 1080p")
+        XCTAssertEqual(variants[0].resourceType, .video)
+        XCTAssertTrue(variants[0].isSupported)
+        XCTAssertEqual(variants[1].title, "HLS 720p")
+        XCTAssertEqual(variants[1].resourceType, .video)
+        XCTAssertTrue(variants[1].isSupported)
+
+        // Presentation items still retain all 3 items for inspection metadata
+        XCTAssertEqual(items.count, 3)
+        XCTAssertFalse(items[0].isIFrameOnly)
+        XCTAssertFalse(items[1].isIFrameOnly)
+        XCTAssertTrue(items[2].isIFrameOnly)
+        XCTAssertEqual(items[2].qualityLabel, "1080p (I-Frame)")
+    }
+
+    func testIFrameOnlyMasterPlaylistProvidesDistinctThumbnailVariantsNotCompleteVideo() {
+        let iframeOnlyManifest = """
+        #EXTM3U
+        #EXT-X-VERSION:4
+        #EXT-X-I-FRAME-STREAM-INF:BANDWIDTH=800000,RESOLUTION=1920x1080,URI="iframe_1080p.m3u8"
+        #EXT-X-I-FRAME-STREAM-INF:BANDWIDTH=400000,RESOLUTION=1280x720,URI="iframe_720p.m3u8"
+        """
+
+        let master = WebpageResource(
+            id: "iframe-master",
+            url: URL(string: "https://video.example.com/iframe_master.m3u8")!,
+            title: "Trickplay Only",
+            suggestedFilename: "iframe_master.m3u8",
+            resourceType: .video,
+            mimeType: "application/vnd.apple.mpegurl",
+            manifestText: iframeOnlyManifest
+        )
+
+        let (variants, items) = StreamManifestResourceExpander.expandSynchronously(
+            masterResource: master,
+            manifestText: iframeOnlyManifest
+        )
+
+        XCTAssertEqual(variants.count, 2)
+        for variant in variants {
+            // Must NOT be classified as complete video (.video)
+            XCTAssertEqual(variant.resourceType, .other, "I-frame variants must not be classified as complete video")
+            XCTAssertTrue(variant.title.contains("Thumbnails/Seek"), "Title must indicate thumbnail/seek variant")
+            XCTAssertTrue(variant.suggestedFilename.hasSuffix("-thumbnails.m3u8"), "Filename must indicate thumbnails rather than .mp4 video")
+            XCTAssertFalse(variant.isSupported, "I-frame variant must not be marked isSupported for full download")
+            XCTAssertNotNil(variant.unsupportedReason)
+        }
+
+        XCTAssertEqual(items.count, 2)
+        XCTAssertTrue(items[0].isIFrameOnly)
+        XCTAssertTrue(items[1].isIFrameOnly)
+    }
 }
 
 // MARK: - Failing URL Protocol Helper for Error Testing

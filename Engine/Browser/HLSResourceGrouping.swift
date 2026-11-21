@@ -261,7 +261,10 @@ public enum HLSResourceGrouping {
     }
 
     /// Converts an HLS master resource into individual selectable video items in the grabber list.
-    public static func extractVariantResources(from masterResource: WebpageResource) -> [WebpageResource] {
+    public static func extractVariantResources(
+        from masterResource: WebpageResource,
+        includeIFrameVariants: Bool = false
+    ) -> [WebpageResource] {
         let items = extractVariantStreamItems(for: masterResource)
         guard !items.isEmpty else {
             if let text = masterResource.manifestText,
@@ -293,23 +296,17 @@ public enum HLSResourceGrouping {
             return [masterResource]
         }
 
+        let hasPrimary = items.contains { !$0.isIFrameOnly }
         var seenFilenames = Set<String>()
-        return items.map { item in
+        var result: [WebpageResource] = []
+
+        for item in items {
             let isLive = item.isLive || masterResource.isLive
             let baseFilename = (masterResource.suggestedFilename as NSString).deletingPathExtension
             let safeQualityLabel = item.qualityLabel
                 .replacingOccurrences(of: " ", with: "-")
                 .replacingOccurrences(of: "(", with: "")
                 .replacingOccurrences(of: ")", with: "")
-            var filename = "\(baseFilename)-\(safeQualityLabel).mp4"
-            let livePrefix = isLive ? "[LIVE] " : ""
-            var title = "\(livePrefix)HLS \(item.qualityLabel)"
-            if seenFilenames.contains(filename.lowercased()) {
-                let disambiguator = item.bitrateText.replacingOccurrences(of: " ", with: "")
-                filename = "\(baseFilename)-\(safeQualityLabel)-\(disambiguator).mp4"
-                title = "\(livePrefix)HLS \(item.qualityLabel) (\(item.bitrateText))"
-            }
-            seenFilenames.insert(filename.lowercased())
 
             let preferences = HLSVariantSelectionPreferences(
                 maximumBandwidth: item.bandwidth,
@@ -318,28 +315,69 @@ public enum HLSResourceGrouping {
                 exactURI: item.variantURL
             )
 
-            let isSupported = !isLive
-            let unsupportedReason = isLive ? "Live stream recording required; VOD download unsupported for live/event manifests" : nil
+            if item.isIFrameOnly {
+                if hasPrimary && !includeIFrameVariants {
+                    continue
+                }
+                let thumbFilename = "\(baseFilename)-\(safeQualityLabel)-thumbnails.m3u8"
+                let thumbTitle = "\(isLive ? "[LIVE] " : "")HLS \(item.qualityLabel) (Thumbnails/Seek)"
+                let res = WebpageResource(
+                    id: item.id,
+                    url: masterResource.url,
+                    title: thumbTitle,
+                    suggestedFilename: thumbFilename,
+                    resourceType: .other,
+                    mimeType: masterResource.mimeType ?? "application/vnd.apple.mpegurl",
+                    estimatedSize: isLive ? nil : item.estimatedSizeBytes,
+                    isSupported: false,
+                    unsupportedReason: "I-frame-only trick-play streams are for seek thumbnails and cannot be downloaded as a complete video.",
+                    requestContext: masterResource.requestContext,
+                    manifestText: masterResource.manifestText,
+                    hlsVariantPreferences: preferences,
+                    dashVideoRepresentationID: masterResource.dashVideoRepresentationID,
+                    dashAudioRepresentationID: masterResource.dashAudioRepresentationID,
+                    isDRMProtected: masterResource.isDRMProtected,
+                    drmProtectionType: masterResource.drmProtectionType,
+                    discoveredAt: masterResource.discoveredAt,
+                    isLive: isLive
+                )
+                result.append(res)
+            } else {
+                var filename = "\(baseFilename)-\(safeQualityLabel).mp4"
+                let livePrefix = isLive ? "[LIVE] " : ""
+                var title = "\(livePrefix)HLS \(item.qualityLabel)"
+                if seenFilenames.contains(filename.lowercased()) {
+                    let disambiguator = item.bitrateText.replacingOccurrences(of: " ", with: "")
+                    filename = "\(baseFilename)-\(safeQualityLabel)-\(disambiguator).mp4"
+                    title = "\(livePrefix)HLS \(item.qualityLabel) (\(item.bitrateText))"
+                }
+                seenFilenames.insert(filename.lowercased())
 
-            return WebpageResource(
-                id: item.id,
-                url: masterResource.url, // Points to master manifest so orchestrator plans with variant preferences
-                title: title,
-                suggestedFilename: filename,
-                resourceType: .video,
-                mimeType: masterResource.mimeType ?? "application/vnd.apple.mpegurl",
-                estimatedSize: isLive ? nil : item.estimatedSizeBytes,
-                isSupported: isSupported,
-                unsupportedReason: unsupportedReason,
-                requestContext: masterResource.requestContext,
-                manifestText: masterResource.manifestText,
-                hlsVariantPreferences: preferences,
-                isDRMProtected: masterResource.isDRMProtected,
-                drmProtectionType: masterResource.drmProtectionType,
-                discoveredAt: masterResource.discoveredAt,
-                isLive: isLive
-            )
+                let isSupported = !isLive
+                let unsupportedReason = isLive ? "Live stream recording required; VOD download unsupported for live/event manifests" : nil
+
+                let res = WebpageResource(
+                    id: item.id,
+                    url: masterResource.url, // Points to master manifest so orchestrator plans with variant preferences
+                    title: title,
+                    suggestedFilename: filename,
+                    resourceType: .video,
+                    mimeType: masterResource.mimeType ?? "application/vnd.apple.mpegurl",
+                    estimatedSize: isLive ? nil : item.estimatedSizeBytes,
+                    isSupported: isSupported,
+                    unsupportedReason: unsupportedReason,
+                    requestContext: masterResource.requestContext,
+                    manifestText: masterResource.manifestText,
+                    hlsVariantPreferences: preferences,
+                    isDRMProtected: masterResource.isDRMProtected,
+                    drmProtectionType: masterResource.drmProtectionType,
+                    discoveredAt: masterResource.discoveredAt,
+                    isLive: isLive
+                )
+                result.append(res)
+            }
         }
+        return result
     }
 
     public static func formatBandwidth(_ bandwidth: Int) -> String {

@@ -3574,7 +3574,8 @@ public final class BrowserViewModel: NSObject, ObservableObject {
 
     public func downloadSelectedResources() async throws {
         let targets = discoveredResources.filter { res in
-            (res.isSupported || res.isStreamingManifest) && selectedResourceIDs.contains(res.id)
+            let isEligibleManifest = res.isStreamingManifest && res.resourceType != .other && res.unsupportedReason == nil
+            return (res.isSupported || isEligibleManifest) && selectedResourceIDs.contains(res.id)
         }
 
         guard !targets.isEmpty else { return }

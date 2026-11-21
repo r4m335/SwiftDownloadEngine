@@ -28,6 +28,7 @@ public enum HLSVariantSelectionError: Error, LocalizedError, Sendable, Equatable
     case noVariantMatchesPreferences
     case separateAudioNotSupported
     case missingAudioRendition(groupID: String)
+    case unsupportedIFrameVariant
 
     public var errorDescription: String? {
         switch self {
@@ -39,6 +40,8 @@ public enum HLSVariantSelectionError: Error, LocalizedError, Sendable, Equatable
             return "This HLS reconstruction path does not yet mux a separate audio rendition."
         case .missingAudioRendition(let groupID):
             return "The audio group '\(groupID)' referenced by the selected HLS variant has no accessible audio rendition."
+        case .unsupportedIFrameVariant:
+            return "I-frame-only trick-play streams cannot be downloaded or assembled as a complete video."
         }
     }
 }
@@ -53,6 +56,7 @@ public enum HLSVariantSelector {
         guard master.playlistType == .master, !master.variants.isEmpty else {
             throw HLSVariantSelectionError.noVariants
         }
+        let hasPrimary = master.variants.contains { !$0.isIFrameOnly }
         let matching = master.variants.filter { variant in
             if let exactURI = preferences.exactURI {
                 let matches = variant.uri == exactURI ||
@@ -61,6 +65,8 @@ public enum HLSVariantSelector {
                 if !matches {
                     return false
                 }
+            } else if hasPrimary && variant.isIFrameOnly {
+                return false
             }
             if let maximumBandwidth = preferences.maximumBandwidth, variant.bandwidth > maximumBandwidth {
                 return false
