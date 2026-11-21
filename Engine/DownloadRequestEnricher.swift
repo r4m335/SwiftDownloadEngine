@@ -39,10 +39,17 @@ extension HTTPCookie {
         if !cookiePath.hasPrefix("/") {
             cookiePath = "/" + cookiePath
         }
-        let requestPath = url.path.isEmpty ? "/" : url.path
+        var requestPath = url.path.isEmpty ? "/" : url.path
+        let urlPathWithoutQuery = url.absoluteString.split(separator: "?", maxSplits: 1).first.map(String.init) ?? url.absoluteString
+        if urlPathWithoutQuery.hasSuffix("/") && !requestPath.hasSuffix("/") {
+            requestPath += "/"
+        }
+
         if cookiePath != "/" && requestPath != cookiePath {
             var matched = false
-            if requestPath.hasPrefix(cookiePath) {
+            if cookiePath.hasSuffix("/") && requestPath == String(cookiePath.dropLast()) {
+                matched = true
+            } else if requestPath.hasPrefix(cookiePath) {
                 if cookiePath.hasSuffix("/") {
                     matched = true
                 } else {
@@ -57,6 +64,8 @@ extension HTTPCookie {
                let decodedCookie = cookiePath.removingPercentEncoding,
                (decodedReq != requestPath || decodedCookie != cookiePath) {
                 if decodedReq == decodedCookie {
+                    matched = true
+                } else if decodedCookie.hasSuffix("/") && decodedReq == String(decodedCookie.dropLast()) {
                     matched = true
                 } else if decodedReq.hasPrefix(decodedCookie) {
                     if decodedCookie.hasSuffix("/") {

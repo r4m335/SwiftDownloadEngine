@@ -138,8 +138,18 @@ public struct BrowserCookie: Sendable, Hashable, Codable {
         if !cookiePath.hasPrefix("/") {
             cookiePath = "/" + cookiePath
         }
-        let requestPath = url.path.isEmpty ? "/" : url.path
+        var requestPath = url.path.isEmpty ? "/" : url.path
+        // Foundation URL.path strips trailing slash; preserve it if URL path had a trailing slash
+        let urlPathWithoutQuery = url.absoluteString.split(separator: "?", maxSplits: 1).first.map(String.init) ?? url.absoluteString
+        if urlPathWithoutQuery.hasSuffix("/") && !requestPath.hasSuffix("/") {
+            requestPath += "/"
+        }
+
         if cookiePath == "/" || requestPath == cookiePath {
+            return true
+        }
+        // If cookiePath ends with a slash and requestPath equals cookiePath without that slash (e.g. /video/ vs /video)
+        if cookiePath.hasSuffix("/") && requestPath == String(cookiePath.dropLast()) {
             return true
         }
         if requestPath.hasPrefix(cookiePath) {
@@ -156,6 +166,9 @@ public struct BrowserCookie: Sendable, Hashable, Codable {
            let decodedCookie = cookiePath.removingPercentEncoding,
            (decodedReq != requestPath || decodedCookie != cookiePath) {
             if decodedReq == decodedCookie {
+                return true
+            }
+            if decodedCookie.hasSuffix("/") && decodedReq == String(decodedCookie.dropLast()) {
                 return true
             }
             if decodedReq.hasPrefix(decodedCookie) {
