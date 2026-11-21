@@ -2316,6 +2316,9 @@ public actor StreamingDownloadOrchestrator {
                     }
                 }
             }
+            let isTextCandidate = candidate.dashTextRepresentationID != nil &&
+                                  candidate.dashVideoRepresentationID == nil &&
+                                  candidate.dashAudioRepresentationID == nil
             let plan: DASHVODTransferPlan
             do {
                 plan = try DASHTransferPlanner.makeVODPlan(
@@ -2323,6 +2326,7 @@ public actor StreamingDownloadOrchestrator {
                     videoRepresentationID: candidate.dashVideoRepresentationID,
                     audioRepresentationID: candidate.dashAudioRepresentationID,
                     textRepresentationID: candidate.dashTextRepresentationID,
+                    isTextOnly: isTextCandidate,
                     browserRequestContext: effectiveContext,
                     sidxDataByRepresentationID: sidxDataMap
                 )
@@ -3541,15 +3545,26 @@ public actor StreamingDownloadOrchestrator {
             }
 
             // Step 3: Validate the final published output file before completing download
-            let validationReport = MediaIntegrityValidator.validateDASHOutput(fileURL: assemblyOutput.destinationURL)
-            guard validationReport.outcome.isConfirmedValid else {
-                let failureReason = validationReport.outcome.localizedDescription
-                PipelineLogger.shared.log("[DASH Pipeline] Final output validation failed: \(failureReason). Preserving downloaded segments for recovery.")
-                throw StreamingDownloadOrchestratorError.dashReconstructionFailed(
-                    DASHVODReconstructionError.assemblyFailed(
-                        .finalValidationFailed(reason: failureReason)
+            if !isTextOnly {
+                let validationReport = MediaIntegrityValidator.validateDASHOutput(fileURL: assemblyOutput.destinationURL)
+                guard validationReport.outcome.isConfirmedValid else {
+                    let failureReason = validationReport.outcome.localizedDescription
+                    PipelineLogger.shared.log("[DASH Pipeline] Final output validation failed: \(failureReason). Preserving downloaded segments for recovery.")
+                    throw StreamingDownloadOrchestratorError.dashReconstructionFailed(
+                        DASHVODReconstructionError.assemblyFailed(
+                            .finalValidationFailed(reason: failureReason)
+                        )
                     )
-                )
+                }
+            } else {
+                guard FileManager.default.fileExists(atPath: assemblyOutput.destinationURL.path),
+                      (FileManager.default.fileSize(atPath: assemblyOutput.destinationURL.path) ?? 0) > 0 else {
+                    throw StreamingDownloadOrchestratorError.dashReconstructionFailed(
+                        DASHVODReconstructionError.assemblyFailed(
+                            .finalValidationFailed(reason: "Subtitle file is empty or missing.")
+                        )
+                    )
+                }
             }
             if let engine = self.downloadEngine {
                 let finalSize = FileManager.default.fileSize(atPath: assemblyOutput.destinationURL.path) ?? 0

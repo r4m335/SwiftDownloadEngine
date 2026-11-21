@@ -387,7 +387,8 @@ final class DASHTransferPlannerTests: XCTestCase {
             from: manifest,
             videoRepresentationID: nil,
             audioRepresentationID: nil,
-            textRepresentationID: "sub_fr"
+            textRepresentationID: "sub_fr",
+            isTextOnly: true
         )
 
         XCTAssertNil(plan.video)

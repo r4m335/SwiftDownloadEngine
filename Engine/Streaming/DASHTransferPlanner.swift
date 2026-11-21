@@ -231,6 +231,7 @@ public enum DASHTransferPlanner {
         videoRepresentationID: String? = nil,
         audioRepresentationID: String? = nil,
         textRepresentationID: String? = nil,
+        isTextOnly: Bool = false,
         browserRequestContext: BrowserRequestContext? = nil,
         limits: DASHTransferPlanningLimits = .default,
         sidxDataByRepresentationID: [String: Data] = [:]
@@ -249,7 +250,7 @@ public enum DASHTransferPlanner {
             limits: limits
         )
 
-        let isTextOnly = textRepresentationID != nil && videoRepresentationID == nil && audioRepresentationID == nil
+        let isTextOnlyPlan = isTextOnly && textRepresentationID != nil
         var totalSegments = 0
         var allVideoResources: [DASHPlannedResource] = []
         var allAudioResources: [DASHPlannedResource] = []
@@ -285,7 +286,7 @@ public enum DASHTransferPlanner {
 
             // Select video (unless text-only plan)
             let videoSelection: Selection?
-            if isTextOnly {
+            if isTextOnlyPlan {
                 videoSelection = nil
             } else {
                 do {
@@ -309,7 +310,7 @@ public enum DASHTransferPlanner {
 
             // Select audio (unless text-only plan)
             let audioSelection: Selection?
-            if isTextOnly {
+            if isTextOnlyPlan {
                 audioSelection = nil
             } else {
                 do {
