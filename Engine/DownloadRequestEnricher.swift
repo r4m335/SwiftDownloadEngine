@@ -343,9 +343,11 @@ public enum DownloadRequestEnricher {
         if let sourceURL, let targetURL = req.url {
             let isSameOrigin = BrowserHeaderFilter.sameOrigin(sourceURL, targetURL)
             let isSameSite = BrowserHeaderFilter.isSchemefulSameSite(sourceURL, targetURL)
+            let isAllowed = BrowserHeaderFilter.isOriginAllowed(targetURL, allowedOrigins: context?.allowedCredentialOrigins ?? [])
+            let isDowngrade = (sourceURL.scheme?.lowercased() == "https") && (targetURL.scheme?.lowercased() == "http")
 
-            // 1. Cross-origin credential stripping (RFC 7235 §2.2 / RFC 9110 §15.4)
-            if !isSameOrigin {
+            // 1. Cross-origin credential stripping (RFC 7235 §2.2 / RFC 9110 §15.4), preserving for allowlisted origins
+            if (!isSameOrigin && !isAllowed) || isDowngrade {
                 req.setValue(nil, forHTTPHeaderField: "Authorization")
                 req.setValue(nil, forHTTPHeaderField: "Proxy-Authorization")
                 if let allHeaders = req.allHTTPHeaderFields {
@@ -357,21 +359,17 @@ public enum DownloadRequestEnricher {
                 }
                 // Clear origin-specific raw Cookie header so destination cookies are freshly recalculated per RFC 6265
                 req.setValue(nil, forHTTPHeaderField: "Cookie")
-            } else if !isSameSite {
+            } else if (!isSameSite && !isAllowed) || isDowngrade {
                 req.setValue(nil, forHTTPHeaderField: "Cookie")
             }
 
             // 2. Referer security: strip on HTTPS -> HTTP downgrade or cross-site redirect (RFC 7231 §5.5.2)
-            if let srcScheme = sourceURL.scheme?.lowercased(),
-               let dstScheme = targetURL.scheme?.lowercased(),
-               (srcScheme == "https" && dstScheme == "http") || !isSameSite {
+            if isDowngrade || (!isSameSite && !isAllowed) {
                 req.setValue(nil, forHTTPHeaderField: "Referer")
             }
 
             // 3. Origin security: strip on downgrade or cross-site redirect
-            if let srcScheme = sourceURL.scheme?.lowercased(),
-               let dstScheme = targetURL.scheme?.lowercased(),
-               (srcScheme == "https" && dstScheme == "http") || !isSameSite {
+            if isDowngrade || (!isSameSite && !isAllowed) {
                 req.setValue(nil, forHTTPHeaderField: "Origin")
             }
         }

@@ -961,7 +961,8 @@ public actor DownloadCoordinator {
             executionRequest.headers = BrowserHeaderFilter.stripCredentialsOnRedirect(
                 headers: request.headers,
                 from: request.url,
-                to: probeResult.finalURL
+                to: probeResult.finalURL,
+                allowedOrigins: request.context?.allowedCredentialOrigins ?? []
             )
 
             if request.transportPolicy == .background {
@@ -1121,7 +1122,8 @@ public actor DownloadCoordinator {
         let safeHeaders = BrowserHeaderFilter.stripCredentialsOnRedirect(
             headers: request.headers,
             from: request.url,
-            to: probeResult.finalURL
+            to: probeResult.finalURL,
+            allowedOrigins: request.context?.allowedCredentialOrigins ?? []
         )
         for (name, value) in BrowserHeaderFilter.sanitizeHeaders(safeHeaders) {
             if name.caseInsensitiveCompare("Range") != .orderedSame &&
@@ -1297,7 +1299,8 @@ public actor DownloadCoordinator {
                 let safeHeaders = BrowserHeaderFilter.stripCredentialsOnRedirect(
                     headers: request.headers,
                     from: request.url,
-                    to: probeResult.finalURL
+                    to: probeResult.finalURL,
+                    allowedOrigins: request.context?.allowedCredentialOrigins ?? []
                 )
                 for (name, value) in BrowserHeaderFilter.sanitizeHeaders(safeHeaders) {
                     if name.caseInsensitiveCompare("Accept-Encoding") != .orderedSame &&

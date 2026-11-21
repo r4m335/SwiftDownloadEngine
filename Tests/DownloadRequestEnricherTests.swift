@@ -427,4 +427,41 @@ final class DownloadRequestEnricherTests: XCTestCase {
 
         XCTAssertNil(redirected.value(forHTTPHeaderField: "Referer"), "Referer must be stripped on HTTPS to HTTP redirect downgrade")
     }
+
+    func testHandleRedirectPreservesCredentialsWhenTargetOriginIsAllowlisted() {
+        let originalURL = URL(string: "https://source.example.com/start")!
+        let targetURL = URL(string: "https://cdn.partner-service.com/finish")!
+
+        let context = BrowserRequestContext(
+            url: originalURL,
+            customHeaders: ["Authorization": "Bearer secret-token", "X-Api-Key": "my-api-key"],
+            allowedCredentialOrigins: ["cdn.partner-service.com"]
+        )
+
+        var originalRequest = URLRequest(url: originalURL)
+        originalRequest.setValue("Bearer secret-token", forHTTPHeaderField: "Authorization")
+        originalRequest.setValue("my-api-key", forHTTPHeaderField: "X-Api-Key")
+        originalRequest.setValue("bytes=0-100", forHTTPHeaderField: "Range")
+
+        var newRequest = URLRequest(url: targetURL)
+        newRequest.setValue("Bearer secret-token", forHTTPHeaderField: "Authorization")
+        newRequest.setValue("my-api-key", forHTTPHeaderField: "X-Api-Key")
+        newRequest.setValue("bytes=0-100", forHTTPHeaderField: "Range")
+
+        let session = URLSession(configuration: .default)
+        let task = session.dataTask(with: originalRequest)
+        let response = HTTPURLResponse(url: originalURL, statusCode: 302, httpVersion: "HTTP/1.1", headerFields: [:])!
+
+        let redirected = DownloadRequestEnricher.handleRedirect(
+            task: task,
+            response: response,
+            newRequest: newRequest,
+            snapshot: nil,
+            context: context
+        )
+
+        XCTAssertEqual(redirected.value(forHTTPHeaderField: "Authorization"), "Bearer secret-token")
+        XCTAssertEqual(redirected.value(forHTTPHeaderField: "X-Api-Key"), "my-api-key")
+        XCTAssertEqual(redirected.value(forHTTPHeaderField: "Range"), "bytes=0-100")
+    }
 }

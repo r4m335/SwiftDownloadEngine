@@ -183,7 +183,8 @@ public enum DirectMediaTransferPlanner {
             headers = BrowserHeaderFilter.stripCredentialsOnRedirect(
                 headers: captured,
                 from: originalURL,
-                to: transferURL
+                to: transferURL,
+                allowedOrigins: context.allowedCredentialOrigins
             )
         } else {
             headers = [:]

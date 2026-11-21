@@ -185,7 +185,8 @@ public final class URLSessionStreamingManifestLoader: StreamingManifestLoader, S
         let delegate = StreamingRedirectDelegate(
             originalURL: candidate.url,
             headers: headers,
-            snapshot: effectiveSnapshot
+            snapshot: effectiveSnapshot,
+            context: candidate.browserRequestContext
         )
         let (data, response) = try await session.data(for: request, delegate: delegate)
         guard let httpResponse = response as? HTTPURLResponse else {
@@ -3534,7 +3535,13 @@ public actor StreamingDownloadOrchestrator {
 
     private func manifestHeaders(for candidate: StreamingManifestCandidate) -> [String: String] {
         guard let context = candidate.browserRequestContext else { return [:] }
-        return context.effectiveHeaders(for: candidate.url)
+        let headers = context.effectiveHeaders(for: candidate.url)
+        return BrowserHeaderFilter.stripCredentialsOnRedirect(
+            headers: headers,
+            from: context.url,
+            to: candidate.url,
+            allowedOrigins: context.allowedCredentialOrigins
+        )
     }
 
     private func requestHeaders(
@@ -3561,7 +3568,8 @@ public actor StreamingDownloadOrchestrator {
         return BrowserHeaderFilter.stripCredentialsOnRedirect(
             headers: headers,
             from: context.url,
-            to: resource.url
+            to: resource.url,
+            allowedOrigins: context.allowedCredentialOrigins
         )
     }
 
@@ -3774,11 +3782,18 @@ private final class StreamingRedirectDelegate: NSObject, URLSessionTaskDelegate,
     private let originalURL: URL?
     private let headers: [String: String]?
     private let snapshot: BrowserSessionSnapshot?
+    private let context: BrowserRequestContext?
 
-    init(originalURL: URL? = nil, headers: [String: String]? = nil, snapshot: BrowserSessionSnapshot? = nil) {
+    init(
+        originalURL: URL? = nil,
+        headers: [String: String]? = nil,
+        snapshot: BrowserSessionSnapshot? = nil,
+        context: BrowserRequestContext? = nil
+    ) {
         self.originalURL = originalURL
         self.headers = headers
         self.snapshot = snapshot
+        self.context = context
     }
 
     func urlSession(
@@ -3792,7 +3807,8 @@ private final class StreamingRedirectDelegate: NSObject, URLSessionTaskDelegate,
             task: task,
             response: response,
             newRequest: request,
-            snapshot: snapshot
+            snapshot: snapshot,
+            context: context
         )
         completionHandler(redirected)
     }

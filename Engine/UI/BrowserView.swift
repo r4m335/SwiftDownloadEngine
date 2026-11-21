@@ -1929,6 +1929,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
             let effectiveUserAgent = baseContext?.userAgent ?? BrowserViewModel.defaultDesktopUserAgent
             let effectiveCookies = baseContext?.cookies ?? []
             let effectiveCustomHeaders = baseContext?.customHeaders ?? [:]
+            let effectiveAllowedOrigins = baseContext?.allowedCredentialOrigins ?? []
             let reconstructedContext = BrowserRequestContext(
                 url: targetURL,
                 pageURL: effectivePageURL,
@@ -1936,7 +1937,8 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                 cookies: effectiveCookies,
                 customHeaders: effectiveCustomHeaders,
                 captureDate: Date(),
-                source: baseContext?.source ?? .webpageResource
+                source: baseContext?.source ?? .webpageResource,
+                allowedCredentialOrigins: effectiveAllowedOrigins
             )
 
             let updatedPreferences: HLSVariantSelectionPreferences? = {

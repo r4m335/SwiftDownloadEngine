@@ -113,6 +113,37 @@ final class DASHTransferPlannerTests: XCTestCase {
         XCTAssertEqual(headers["X-Trace-ID"], "safe")
     }
 
+    func testDASHCrossOriginResourcesWithVerifiedAllowlistReceiveCredentials() throws {
+        let mpd = """
+        <MPD type="static" mediaPresentationDuration="PT4S">
+          <Period duration="PT4S">
+            <AdaptationSet contentType="video" mimeType="video/mp4">
+              <Representation id="v1" bandwidth="1000000">
+                <SegmentTemplate duration="2" initialization="https://cdn.example/init.mp4" media="https://cdn.example/segment-$Number$.m4s"/>
+              </Representation>
+            </AdaptationSet>
+          </Period>
+        </MPD>
+        """
+        let context = BrowserRequestContext(
+            url: manifestURL,
+            pageURL: URL(string: "https://video.example/watch")!,
+            userAgent: "BrowserTest/1.0",
+            cookies: [BrowserCookie(name: "session", value: "cookie-secret", domain: "video.example")],
+            customHeaders: ["Authorization": "Bearer header-secret", "X-Trace-ID": "safe"],
+            allowedCredentialOrigins: ["cdn.example"]
+        )
+
+        let manifest = try DASHManifestParser.parse(mpd, baseURL: manifestURL)
+        let plan = try DASHTransferPlanner.makeVODPlan(from: manifest, browserRequestContext: context)
+        let resource = try XCTUnwrap(plan.video?.resources.first(where: { $0.kind == .mediaSegment }))
+        let headers = plan.requestHeaders(for: resource)
+
+        XCTAssertEqual(headers["Cookie"], "session=cookie-secret")
+        XCTAssertEqual(headers["Authorization"], "Bearer header-secret")
+        XCTAssertEqual(headers["X-Trace-ID"], "safe")
+    }
+
     func testPlannerRejectsDynamicDRMMalformedMissingAndUnboundedContent() throws {
         let dynamic = DASHManifest(
             url: manifestURL,

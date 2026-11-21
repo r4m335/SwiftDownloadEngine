@@ -204,14 +204,16 @@ public struct DASHVODTransferPlan: Sendable, Equatable {
     }
 
     /// Returns headers eligible for this resource. Sensitive credentials are stripped
-    /// automatically when a resource is on another origin from the MPD.
+    /// automatically when a resource is on another origin from the MPD,
+    /// unless the target origin is present in the verified allowlist.
     public func requestHeaders(for resource: DASHPlannedResource) -> [String: String] {
         guard let browserRequestContext else { return [:] }
         let headers = browserRequestContext.effectiveHeaders(for: resource.url)
         return BrowserHeaderFilter.stripCredentialsOnRedirect(
             headers: headers,
             from: manifestURL,
-            to: resource.url
+            to: resource.url,
+            allowedOrigins: browserRequestContext.allowedCredentialOrigins
         )
     }
 }

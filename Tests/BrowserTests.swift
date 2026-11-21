@@ -305,6 +305,103 @@ final class BrowserTests: XCTestCase {
         XCTAssertEqual(stripped["X-Trace-ID"], "trace-1")
     }
 
+    func testBrowserCredentialsArePreservedForAllowlistedCrossOriginOrigins() {
+        let original = URL(string: "https://example.com/master.m3u8")!
+        let crossOriginAllowlisted = URL(string: "https://cdn.example.net/variant/720p.m3u8")!
+        let crossOriginDisallowed = URL(string: "https://other.untrusted.com/child.m3u8")!
+        let headers = [
+            "Cookie": "session=private",
+            "Authorization": "Bearer private",
+            "Referer": "https://example.com/watch",
+            "User-Agent": "BrowserTest/1.0",
+            "X-Trace-ID": "trace-1"
+        ]
+
+        let preserved = BrowserHeaderFilter.stripCredentialsOnRedirect(
+            headers: headers,
+            from: original,
+            to: crossOriginAllowlisted,
+            allowedOrigins: ["cdn.example.net"]
+        )
+        XCTAssertEqual(preserved["Cookie"], "session=private")
+        XCTAssertEqual(preserved["Authorization"], "Bearer private")
+        XCTAssertEqual(preserved["Referer"], "https://example.com/watch")
+        XCTAssertEqual(preserved["User-Agent"], "BrowserTest/1.0")
+        XCTAssertEqual(preserved["X-Trace-ID"], "trace-1")
+
+        let stripped = BrowserHeaderFilter.stripCredentialsOnRedirect(
+            headers: headers,
+            from: original,
+            to: crossOriginDisallowed,
+            allowedOrigins: ["cdn.example.net"]
+        )
+        XCTAssertNil(stripped["Cookie"])
+        XCTAssertNil(stripped["Authorization"])
+        XCTAssertNil(stripped["Referer"])
+        XCTAssertEqual(stripped["User-Agent"], "BrowserTest/1.0")
+        XCTAssertEqual(stripped["X-Trace-ID"], "trace-1")
+    }
+
+    func testBrowserRequestContextVerifiedAllowlistMatchingAndCredentialForwarding() throws {
+        let masterURL = URL(string: "https://video.example.com/master.m3u8")!
+        let childURL = URL(string: "https://edge.cdn-streaming.net/hls/720p.m3u8")!
+        let untrustedURL = URL(string: "https://attacker.com/evil.m3u8")!
+
+        let context = BrowserRequestContext(
+            url: masterURL,
+            pageURL: URL(string: "https://video.example.com/watch")!,
+            userAgent: "TestAgent/1.0",
+            cookies: [
+                BrowserCookie(name: "auth_session", value: "token-abc-123", domain: "video.example.com", isSecure: true)
+            ],
+            customHeaders: [
+                "Authorization": "Bearer master-jwt-token",
+                "X-Api-Key": "api-key-999"
+            ],
+            allowedCredentialOrigins: ["*.cdn-streaming.net"]
+        )
+
+        XCTAssertTrue(context.isAllowedCredentialOrigin(childURL))
+        XCTAssertFalse(context.isAllowedCredentialOrigin(untrustedURL))
+
+        // Child URL on allowlisted host receives cookies and custom auth headers
+        let childHeaders = context.effectiveHeaders(for: childURL)
+        XCTAssertEqual(childHeaders["Cookie"], "auth_session=token-abc-123")
+        XCTAssertEqual(childHeaders["Authorization"], "Bearer master-jwt-token")
+        XCTAssertEqual(childHeaders["X-Api-Key"], "api-key-999")
+        XCTAssertEqual(childHeaders["User-Agent"], "TestAgent/1.0")
+
+        // Untrusted URL does NOT receive cookies
+        let untrustedHeaders = context.effectiveHeaders(for: untrustedURL)
+        XCTAssertNil(untrustedHeaders["Cookie"])
+
+        // Strip credentials on redirect honors allowlist
+        let strippedAllowed = BrowserHeaderFilter.stripCredentialsOnRedirect(
+            headers: childHeaders,
+            from: masterURL,
+            to: childURL,
+            allowedOrigins: context.allowedCredentialOrigins
+        )
+        XCTAssertEqual(strippedAllowed["Authorization"], "Bearer master-jwt-token")
+        XCTAssertEqual(strippedAllowed["Cookie"], "auth_session=token-abc-123")
+
+        // Strip credentials on redirect for untrusted removes them
+        let strippedUntrusted = BrowserHeaderFilter.stripCredentialsOnRedirect(
+            headers: childHeaders,
+            from: masterURL,
+            to: untrustedURL,
+            allowedOrigins: context.allowedCredentialOrigins
+        )
+        XCTAssertNil(strippedUntrusted["Authorization"])
+        XCTAssertNil(strippedUntrusted["Cookie"])
+
+        // Codable round-trip preserves allowlist
+        let encoded = try JSONEncoder().encode(context)
+        let decoded = try JSONDecoder().decode(BrowserRequestContext.self, from: encoded)
+        XCTAssertEqual(decoded.allowedCredentialOrigins, ["*.cdn-streaming.net"])
+        XCTAssertEqual(decoded, context)
+    }
+
     func testBrowserCredentialsAndRefererAreStrippedOnHTTPSDowngradeToHTTP() {
         let secureOrigin = URL(string: "https://example.com/file.zip")!
         let insecureSameHost = URL(string: "http://example.com/file.zip")!

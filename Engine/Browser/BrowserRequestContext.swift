@@ -158,6 +158,20 @@ public struct BrowserRequestContext: Sendable, Codable, Hashable {
     public let customHeaders: [String: String]
     public let captureDate: Date
     public let source: BrowserRequestContextSource
+    /// Verified allowed origins, hosts, or domain wildcards permitted to receive credentials
+    /// (Authorization, session cookies, and custom authentication tokens) even when cross-origin.
+    public let allowedCredentialOrigins: Set<String>
+
+    private enum CodingKeys: String, CodingKey {
+        case url
+        case pageURL
+        case userAgent
+        case cookies
+        case customHeaders
+        case captureDate
+        case source
+        case allowedCredentialOrigins
+    }
 
     public init(
         url: URL,
@@ -166,7 +180,8 @@ public struct BrowserRequestContext: Sendable, Codable, Hashable {
         cookies: [BrowserCookie] = [],
         customHeaders: [String: String] = [:],
         captureDate: Date = Date(),
-        source: BrowserRequestContextSource = .directLink
+        source: BrowserRequestContextSource = .directLink,
+        allowedCredentialOrigins: Set<String> = []
     ) {
         self.url = url
         self.pageURL = pageURL
@@ -175,6 +190,31 @@ public struct BrowserRequestContext: Sendable, Codable, Hashable {
         self.customHeaders = customHeaders
         self.captureDate = captureDate
         self.source = source
+        self.allowedCredentialOrigins = allowedCredentialOrigins
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.url = try container.decode(URL.self, forKey: .url)
+        self.pageURL = try container.decodeIfPresent(URL.self, forKey: .pageURL)
+        self.userAgent = try container.decodeIfPresent(String.self, forKey: .userAgent)
+        self.cookies = try container.decodeIfPresent([BrowserCookie].self, forKey: .cookies) ?? []
+        self.customHeaders = try container.decodeIfPresent([String: String].self, forKey: .customHeaders) ?? [:]
+        self.captureDate = try container.decodeIfPresent(Date.self, forKey: .captureDate) ?? Date()
+        self.source = try container.decodeIfPresent(BrowserRequestContextSource.self, forKey: .source) ?? .directLink
+        self.allowedCredentialOrigins = try container.decodeIfPresent(Set<String>.self, forKey: .allowedCredentialOrigins) ?? []
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(url, forKey: .url)
+        try container.encodeIfPresent(pageURL, forKey: .pageURL)
+        try container.encodeIfPresent(userAgent, forKey: .userAgent)
+        try container.encode(cookies, forKey: .cookies)
+        try container.encode(customHeaders, forKey: .customHeaders)
+        try container.encode(captureDate, forKey: .captureDate)
+        try container.encode(source, forKey: .source)
+        try container.encode(allowedCredentialOrigins, forKey: .allowedCredentialOrigins)
     }
 
     public static func == (lhs: BrowserRequestContext, rhs: BrowserRequestContext) -> Bool {
@@ -184,7 +224,8 @@ public struct BrowserRequestContext: Sendable, Codable, Hashable {
         lhs.cookies == rhs.cookies &&
         lhs.customHeaders == rhs.customHeaders &&
         lhs.captureDate == rhs.captureDate &&
-        lhs.source == rhs.source
+        lhs.source == rhs.source &&
+        lhs.allowedCredentialOrigins == rhs.allowedCredentialOrigins
     }
 
     public func hash(into hasher: inout Hasher) {
@@ -198,6 +239,45 @@ public struct BrowserRequestContext: Sendable, Codable, Hashable {
         }
         hasher.combine(captureDate)
         hasher.combine(source)
+        for origin in allowedCredentialOrigins.sorted() {
+            hasher.combine(origin)
+        }
+    }
+
+    /// Returns a copy of this context with a new set of verified allowed credential origins.
+    public func withAllowedCredentialOrigins(_ origins: Set<String>) -> BrowserRequestContext {
+        BrowserRequestContext(
+            url: url,
+            pageURL: pageURL,
+            userAgent: userAgent,
+            cookies: cookies,
+            customHeaders: customHeaders,
+            captureDate: captureDate,
+            source: source,
+            allowedCredentialOrigins: origins
+        )
+    }
+
+    /// Returns a copy of this context with additional verified allowed credential origins merged in.
+    public func addingAllowedCredentialOrigins(_ origins: Set<String>) -> BrowserRequestContext {
+        BrowserRequestContext(
+            url: url,
+            pageURL: pageURL,
+            userAgent: userAgent,
+            cookies: cookies,
+            customHeaders: customHeaders,
+            captureDate: captureDate,
+            source: source,
+            allowedCredentialOrigins: allowedCredentialOrigins.union(origins)
+        )
+    }
+
+    /// Evaluates whether a destination URL is eligible to receive credentials under this context
+    /// (either because it is same-origin with the context's URL or page URL, or is explicitly allowlisted).
+    public func isAllowedCredentialOrigin(_ targetURL: URL) -> Bool {
+        if BrowserHeaderFilter.sameOrigin(url, targetURL) { return true }
+        if let pageURL, BrowserHeaderFilter.sameOrigin(pageURL, targetURL) { return true }
+        return BrowserHeaderFilter.isOriginAllowed(targetURL, allowedOrigins: allowedCredentialOrigins)
     }
 
     /// Computes the valid `Referer` header value according to RFC 7231 / Referrer-Policy.
@@ -243,7 +323,20 @@ public struct BrowserRequestContext: Sendable, Codable, Hashable {
         var headers: [String: String] = [:]
 
         // 1. Origin-matched Cookie header
-        let matchingCookies = includeCredentials ? cookies.filter { $0.matches(url: dest) } : []
+        let isOriginPermitted = isAllowedCredentialOrigin(dest)
+        let matchingCookies: [BrowserCookie] = {
+            guard includeCredentials else { return [] }
+            if isOriginPermitted {
+                return cookies.filter { cookie in
+                    if cookie.matches(url: dest) { return true }
+                    if let exp = cookie.expiresDate, exp < Date() { return false }
+                    if cookie.isSecure && (dest.scheme?.lowercased() ?? "") != "https" { return false }
+                    return true
+                }
+            } else {
+                return cookies.filter { $0.matches(url: dest) }
+            }
+        }()
         if !matchingCookies.isEmpty {
             // Deduplicate by name, preferring most specific path
             var cookieMap: [String: String] = [:]
@@ -412,21 +505,85 @@ public struct BrowserHeaderFilter {
         return redacted
     }
 
-    /// Strips session cookies and authorization credentials when an HTTP redirect crosses origins.
+    /// Evaluates whether a given URL matches a set of verified allowed credential origins, hosts, or domain wildcards.
+    public static func isOriginAllowed(_ url: URL, allowedOrigins: Set<String>) -> Bool {
+        guard !allowedOrigins.isEmpty else { return false }
+        guard let host = url.host?.lowercased(), !host.isEmpty else { return false }
+        let scheme = url.scheme?.lowercased() ?? "https"
+        let port = url.port
+
+        let originWithPort = port != nil ? "\(scheme)://\(host):\(port!)" : "\(scheme)://\(host)"
+        let originDefault = "\(scheme)://\(host)"
+
+        for rawAllowed in allowedOrigins {
+            let allowed = rawAllowed.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            guard !allowed.isEmpty else { continue }
+
+            // 1. Exact origin match (e.g. "https://cdn.example.com" or "https://cdn.example.com:8443")
+            if allowed == originWithPort || allowed == originDefault {
+                return true
+            }
+
+            // 2. Exact host match (e.g. "cdn.example.com" or "cdn.example.com:8443")
+            if allowed == host || (port != nil && allowed == "\(host):\(port!)") {
+                return true
+            }
+
+            // 3. If allowed is a URL with scheme/host/path
+            if allowed.contains("://") {
+                if let allowedURL = URL(string: allowed), let allowedHost = allowedURL.host?.lowercased() {
+                    let allowedScheme = allowedURL.scheme?.lowercased()
+                    if allowedScheme == nil || allowedScheme == scheme {
+                        if allowedURL.port == nil || allowedURL.port == port {
+                            let clean = allowedHost.hasPrefix("*.") ? String(allowedHost.dropFirst(2)) : (allowedHost.hasPrefix(".") ? String(allowedHost.dropFirst(1)) : allowedHost)
+                            if host == clean || host.hasSuffix("." + clean) {
+                                return true
+                            }
+                        }
+                    }
+                }
+                continue
+            }
+
+            // 4. Wildcard or domain suffix match
+            let cleanDomain: String
+            if allowed.hasPrefix("*.") {
+                cleanDomain = String(allowed.dropFirst(2))
+            } else if allowed.hasPrefix(".") {
+                cleanDomain = String(allowed.dropFirst(1))
+            } else {
+                cleanDomain = allowed
+            }
+
+            // Domain suffix match (e.g. host "cdn.example.com" matches cleanDomain "example.com")
+            if host == cleanDomain || host.hasSuffix("." + cleanDomain) {
+                return true
+            }
+        }
+
+        return false
+    }
+
+    /// Strips session cookies and authorization credentials when an HTTP redirect crosses origins,
+    /// unless the destination is verified in `allowedOrigins`.
     ///
     /// Per RFC 7235 §2.2, RFC 9110 §15.4, and modern browser security standards, sensitive credentials
     /// (such as Authorization) must NEVER be forwarded across origins, and cookies are restricted
-    /// to schemeful same-site boundaries.
+    /// to schemeful same-site boundaries, unless explicitly permitted via a verified allowlist.
+    /// Under all circumstances, credentials are never forwarded over an HTTPS -> HTTP downgrade.
     public static func stripCredentialsOnRedirect(
         headers: [String: String],
         from originalURL: URL,
-        to redirectURL: URL
+        to redirectURL: URL,
+        allowedOrigins: Set<String> = []
     ) -> [String: String] {
-        if sameOrigin(originalURL, redirectURL) {
+        let isSameOrigin = sameOrigin(originalURL, redirectURL)
+        let isAllowedOrigin = isOriginAllowed(redirectURL, allowedOrigins: allowedOrigins)
+
+        if isSameOrigin {
             return headers
         }
 
-        let isSameOrigin = sameOrigin(originalURL, redirectURL)
         let isSameSite = isSchemefulSameSite(originalURL, redirectURL)
         let isOriginalHTTPS = originalURL.scheme?.lowercased() == "https"
         let isRedirectHTTP = redirectURL.scheme?.lowercased() == "http"
@@ -435,33 +592,47 @@ public struct BrowserHeaderFilter {
         var stripped: [String: String] = [:]
         for (k, v) in headers {
             let lower = k.trimmingCharacters(in: .whitespaces).lowercased()
-            // 1. Authorization & Proxy-Authorization are NEVER forwarded across origins (RFC 7235 §2.2 / RFC 9110 §15.4)
+            // 1. Authorization & Proxy-Authorization: stripped across origins unless target origin is verified in allowlist (without downgrade)
             if !isSameOrigin && (lower == "authorization" || lower == "proxy-authorization") {
-                continue
-            }
-            // 2. Retain domain-scoped cookies when redirecting to a schemeful same-site host without downgrade
-            if lower == "cookie" {
-                if isSameSite && !isDowngrade {
+                if isAllowedOrigin && !isDowngrade {
                     stripped[k] = v
                 }
                 continue
             }
-            // 3. Sensitive custom tokens / secrets are stripped across origins
+            // 2. Retain domain-scoped cookies when redirecting to a schemeful same-site host without downgrade, or for verified allowlisted origins
+            if lower == "cookie" {
+                if (isSameSite || isAllowedOrigin) && !isDowngrade {
+                    stripped[k] = v
+                }
+                continue
+            }
+            // 3. Sensitive custom tokens / secrets are stripped across origins unless allowlisted
             if !isSameOrigin && isSensitiveHeader(lower) {
+                if isAllowedOrigin && !isDowngrade {
+                    stripped[k] = v
+                }
                 continue
             }
-            // 4. Omit Referer on HTTPS -> HTTP downgrade or cross-site redirect (RFC 7231 §5.5.2)
-            if lower == "referer" && (!isSameSite || isDowngrade) {
+            // 4. Omit Referer on HTTPS -> HTTP downgrade or cross-site redirect (unless allowlisted)
+            if lower == "referer" && ((!isSameSite && !isAllowedOrigin) || isDowngrade) {
                 continue
             }
-            // 5. Suppress secure Origin on downgrade or cross-site redirect
-            if lower == "origin" && (!isSameSite || isDowngrade) {
+            // 5. Suppress secure Origin on downgrade or cross-site redirect (unless allowlisted)
+            if lower == "origin" && ((!isSameSite && !isAllowedOrigin) || isDowngrade) {
                 continue
             }
             stripped[k] = v
         }
 
         return stripped
+    }
+
+    public static func stripCredentialsOnRedirect(
+        headers: [String: String],
+        from originalURL: URL,
+        to redirectURL: URL
+    ) -> [String: String] {
+        stripCredentialsOnRedirect(headers: headers, from: originalURL, to: redirectURL, allowedOrigins: [])
     }
 
     /// Evaluates whether two URLs belong to the same schemeful site (same scheme and registrable domain).

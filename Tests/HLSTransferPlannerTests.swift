@@ -87,6 +87,85 @@ final class HLSTransferPlannerTests: XCTestCase {
         XCTAssertEqual(headers["User-Agent"], "BrowserTest/1.0")
     }
 
+    func testCrossOriginResourcesWithVerifiedAllowlistReceiveCredentials() throws {
+        let playlist = """
+        #EXTM3U
+        #EXT-X-PLAYLIST-TYPE:VOD
+        #EXTINF:4,
+        https://cdn.example/video/one.m4s?sig=segment-signed
+        #EXT-X-ENDLIST
+        """
+        let context = BrowserRequestContext(
+            url: manifestURL,
+            pageURL: URL(string: "https://video.example/watch")!,
+            userAgent: "BrowserTest/1.0",
+            cookies: [BrowserCookie(name: "session", value: "cookie-secret", domain: "video.example")],
+            customHeaders: ["Authorization": "Bearer header-secret", "X-Trace-ID": "safe"],
+            allowedCredentialOrigins: ["cdn.example"]
+        )
+
+        let manifest = try HLSManifestParser.parse(playlist, baseURL: manifestURL)
+        let plan = try HLSTransferPlanner.makeVODPlan(from: manifest, browserRequestContext: context)
+        let headers = plan.requestHeaders(for: try XCTUnwrap(plan.resources.first))
+
+        XCTAssertEqual(headers["Cookie"], "session=cookie-secret")
+        XCTAssertEqual(headers["Authorization"], "Bearer header-secret")
+        XCTAssertEqual(headers["X-Trace-ID"], "safe")
+        XCTAssertEqual(headers["User-Agent"], "BrowserTest/1.0")
+    }
+
+    func testCrossOriginResourcesWithUnmatchedAllowlistDoNotReceiveCredentials() throws {
+        let playlist = """
+        #EXTM3U
+        #EXT-X-PLAYLIST-TYPE:VOD
+        #EXTINF:4,
+        https://cdn.example/video/one.m4s?sig=segment-signed
+        #EXT-X-ENDLIST
+        """
+        let context = BrowserRequestContext(
+            url: manifestURL,
+            pageURL: URL(string: "https://video.example/watch")!,
+            userAgent: "BrowserTest/1.0",
+            cookies: [BrowserCookie(name: "session", value: "cookie-secret", domain: "video.example")],
+            customHeaders: ["Authorization": "Bearer header-secret", "X-Trace-ID": "safe"],
+            allowedCredentialOrigins: ["other.example"]
+        )
+
+        let manifest = try HLSManifestParser.parse(playlist, baseURL: manifestURL)
+        let plan = try HLSTransferPlanner.makeVODPlan(from: manifest, browserRequestContext: context)
+        let headers = plan.requestHeaders(for: try XCTUnwrap(plan.resources.first))
+
+        XCTAssertNil(headers["Cookie"])
+        XCTAssertNil(headers["Authorization"])
+        XCTAssertEqual(headers["X-Trace-ID"], "safe")
+        XCTAssertEqual(headers["User-Agent"], "BrowserTest/1.0")
+    }
+
+    func testCrossOriginResourcesHTTPSDowngradeToHTTPRejectsCredentialsEvenIfAllowlisted() throws {
+        let playlist = """
+        #EXTM3U
+        #EXT-X-PLAYLIST-TYPE:VOD
+        #EXTINF:4,
+        http://cdn.example/video/one.m4s
+        #EXT-X-ENDLIST
+        """
+        let context = BrowserRequestContext(
+            url: manifestURL, // https://video.example/...
+            pageURL: URL(string: "https://video.example/watch")!,
+            userAgent: "BrowserTest/1.0",
+            cookies: [BrowserCookie(name: "session", value: "cookie-secret", domain: "video.example")],
+            customHeaders: ["Authorization": "Bearer header-secret"],
+            allowedCredentialOrigins: ["cdn.example"]
+        )
+
+        let manifest = try HLSManifestParser.parse(playlist, baseURL: manifestURL)
+        let plan = try HLSTransferPlanner.makeVODPlan(from: manifest, browserRequestContext: context)
+        let headers = plan.requestHeaders(for: try XCTUnwrap(plan.resources.first))
+
+        XCTAssertNil(headers["Cookie"], "Must not forward cookies over unencrypted HTTP downgrade")
+        XCTAssertNil(headers["Authorization"], "Must not forward authorization over unencrypted HTTP downgrade")
+    }
+
     func testSameOriginResourcesReceiveEligibleBrowserCredentials() throws {
         let playlist = """
         #EXTM3U
