@@ -4072,7 +4072,12 @@ public actor StreamingDownloadOrchestrator {
                 let timescale = item.resource.timescale > 0 ? Double(item.resource.timescale) : 1000.0
                 let segTime: Double
                 if let st = item.resource.segmentTime {
-                    segTime = Double(st) / timescale
+                    let computed = Double(st) / timescale
+                    if computed < cumulativeTime && (cumulativeTime - computed) > 1.0 {
+                        segTime = cumulativeTime
+                    } else {
+                        segTime = computed
+                    }
                 } else {
                     segTime = cumulativeTime
                 }
@@ -4087,7 +4092,7 @@ public actor StreamingDownloadOrchestrator {
                     playlistStartTime: segTime,
                     duration: dur
                 ))
-                cumulativeTime = segTime + dur
+                cumulativeTime = max(cumulativeTime, segTime + dur)
             } else {
                 isAllWebVTT = false
             }

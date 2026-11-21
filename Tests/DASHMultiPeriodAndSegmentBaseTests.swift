@@ -696,6 +696,157 @@ final class DASHMultiPeriodAndSegmentBaseTests: XCTestCase {
         XCTAssertEqual(track.mediaSegments[4].fileURL.lastPathComponent, "res-5.bin")
     }
 
+    func testMultiPeriodTextSubtitleSegmentTimeOffsetByPeriodStart() throws {
+        let multiPeriodMPD = """
+        <MPD type="static" mediaPresentationDuration="PT10S">
+          <Period id="p0" duration="PT4S">
+            <AdaptationSet id="v0" contentType="video" mimeType="video/mp4" codecs="avc1">
+              <Representation id="v1" bandwidth="1000000">
+                <SegmentTemplate timescale="1" duration="2" initialization="init-v.mp4" media="p0-v-$Number$.m4s"/>
+              </Representation>
+            </AdaptationSet>
+            <AdaptationSet id="t0" contentType="text" mimeType="text/vtt" lang="en">
+              <Representation id="sub_en" bandwidth="500">
+                <SegmentTemplate timescale="1" duration="2" media="p0-sub-$Number$.vtt"/>
+              </Representation>
+            </AdaptationSet>
+          </Period>
+          <Period id="p1" duration="PT6S">
+            <AdaptationSet id="v1" contentType="video" mimeType="video/mp4" codecs="avc1">
+              <Representation id="v1" bandwidth="1000000">
+                <SegmentTemplate timescale="1" duration="2" initialization="init-v.mp4" media="p1-v-$Number$.m4s"/>
+              </Representation>
+            </AdaptationSet>
+            <AdaptationSet id="t1" contentType="text" mimeType="text/vtt" lang="en">
+              <Representation id="sub_en" bandwidth="500">
+                <SegmentTemplate timescale="1" duration="2" media="p1-sub-$Number$.vtt"/>
+              </Representation>
+            </AdaptationSet>
+          </Period>
+        </MPD>
+        """
+
+        let manifest = try DASHManifestParser.parse(multiPeriodMPD, baseURL: manifestURL)
+        let plan = try DASHTransferPlanner.makeVODPlan(from: manifest, textRepresentationID: "sub_en")
+        let textPlan = try XCTUnwrap(plan.text)
+
+        // 2 segments from Period 0 (0..4s) + 3 segments from Period 1 (4..10s) = 5 media segments
+        XCTAssertEqual(textPlan.resources.count, 5)
+        XCTAssertEqual(textPlan.resources.map(\.segmentTime), [0, 2, 4, 6, 8])
+        XCTAssertEqual(textPlan.resources.map(\.url.lastPathComponent), [
+            "p0-sub-1.vtt",
+            "p0-sub-2.vtt",
+            "p1-sub-1.vtt",
+            "p1-sub-2.vtt",
+            "p1-sub-3.vtt"
+        ])
+
+        // Verify that assembling these segments offsets Period 1 cues by Period 0 duration (4.0s)
+        let p0Sub1 = """
+        WEBVTT
+
+        00:00:00.500 --> 00:00:01.500
+        First period greeting
+        """
+        let p1Sub1 = """
+        WEBVTT
+
+        00:00:00.250 --> 00:00:01.750
+        Second period response
+        """
+
+        let input0 = WebVTTSegmentInput(
+            text: p0Sub1,
+            playlistStartTime: Double(textPlan.resources[0].segmentTime!) / Double(textPlan.resources[0].timescale),
+            duration: Double(textPlan.resources[0].duration!) / Double(textPlan.resources[0].timescale)
+        )
+        let input2 = WebVTTSegmentInput(
+            text: p1Sub1,
+            playlistStartTime: Double(textPlan.resources[2].segmentTime!) / Double(textPlan.resources[2].timescale),
+            duration: Double(textPlan.resources[2].duration!) / Double(textPlan.resources[2].timescale)
+        )
+
+        let assembled = HLSWebVTTAssembler.assemble(segments: [input0, input2])
+        XCTAssertTrue(assembled.contains("00:00:00.500 --> 00:00:01.500"))
+        XCTAssertTrue(assembled.contains("First period greeting"))
+        // Period 1 cue started at 0.250 relative to Period 1, shifted by 4.0s = 00:00:04.250 --> 00:00:05.750
+        XCTAssertTrue(assembled.contains("00:00:04.250 --> 00:00:05.750"))
+        XCTAssertTrue(assembled.contains("Second period response"))
+    }
+
+    func testMultiPeriodExplicitPeriodStartOffsetsSegmentTime() throws {
+        let multiPeriodMPD = """
+        <MPD type="static" mediaPresentationDuration="PT20S">
+          <Period id="p0" start="PT0S" duration="PT5S">
+            <AdaptationSet id="v0" contentType="video" mimeType="video/mp4" codecs="avc1">
+              <Representation id="v1" bandwidth="1000000">
+                <SegmentTemplate timescale="1000" duration="5000" initialization="init-v.mp4" media="p0-v-$Number$.m4s"/>
+              </Representation>
+            </AdaptationSet>
+          </Period>
+          <Period id="p1" start="PT10S" duration="PT6S">
+            <AdaptationSet id="v1" contentType="video" mimeType="video/mp4" codecs="avc1">
+              <Representation id="v1" bandwidth="1000000">
+                <SegmentTemplate timescale="1000" duration="2000" initialization="init-v.mp4" media="p1-v-$Number$.m4s"/>
+              </Representation>
+            </AdaptationSet>
+            <AdaptationSet id="t1" contentType="text" mimeType="text/vtt" lang="en">
+              <Representation id="sub_p1" bandwidth="500">
+                <SegmentTemplate timescale="1000" duration="3000" media="p1-sub-$Number$.vtt"/>
+              </Representation>
+            </AdaptationSet>
+          </Period>
+        </MPD>
+        """
+
+        let manifest = try DASHManifestParser.parse(multiPeriodMPD, baseURL: manifestURL)
+        let plan = try DASHTransferPlanner.makeVODPlan(from: manifest, textRepresentationID: "sub_p1")
+        let textPlan = try XCTUnwrap(plan.text)
+
+        // Period 1 starts at 10s (10000ms), 2 segments of 3000ms: 10000ms, 13000ms
+        XCTAssertEqual(textPlan.resources.count, 2)
+        XCTAssertEqual(textPlan.resources.map(\.segmentTime), [10000, 13000])
+        XCTAssertEqual(textPlan.resources.map(\.timescale), [1000, 1000])
+    }
+
+    func testMultiPeriodSingleContiguousResourceOffsetByPeriodStart() throws {
+        let multiPeriodMPD = """
+        <MPD type="static" mediaPresentationDuration="PT12S">
+          <Period id="p0" duration="PT4S">
+            <AdaptationSet id="v0" contentType="video" mimeType="video/mp4" codecs="avc1">
+              <Representation id="v1" bandwidth="1000000">
+                <SegmentTemplate timescale="1" duration="2" initialization="init-v.mp4" media="p0-v-$Number$.m4s"/>
+              </Representation>
+            </AdaptationSet>
+          </Period>
+          <Period id="p1" duration="PT8S">
+            <AdaptationSet id="v1" contentType="video" mimeType="video/mp4" codecs="avc1">
+              <Representation id="v1" bandwidth="1000000">
+                <SegmentTemplate timescale="1" duration="2" initialization="init-v.mp4" media="p1-v-$Number$.m4s"/>
+              </Representation>
+            </AdaptationSet>
+            <AdaptationSet id="t1" contentType="text" mimeType="text/vtt" lang="en">
+              <Representation id="sub_sidecar" bandwidth="500">
+                <BaseURL>p1-subtitles.vtt</BaseURL>
+              </Representation>
+            </AdaptationSet>
+          </Period>
+        </MPD>
+        """
+
+        let manifest = try DASHManifestParser.parse(multiPeriodMPD, baseURL: manifestURL)
+        let plan = try DASHTransferPlanner.makeVODPlan(from: manifest, textRepresentationID: "sub_sidecar")
+        let textPlan = try XCTUnwrap(plan.text)
+
+        XCTAssertEqual(textPlan.resources.count, 1)
+        let res = textPlan.resources[0]
+        XCTAssertEqual(res.url.lastPathComponent, "p1-subtitles.vtt")
+        // Period 0 is 4s, so Period 1 single file starts at 4000ms with timescale 1000
+        XCTAssertEqual(res.segmentTime, 4000)
+        XCTAssertEqual(res.timescale, 1000)
+        XCTAssertEqual(res.duration, 8000)
+    }
+
     private func isoBox(_ type: String, payload: Data) -> Data {
         let size = UInt32(8 + payload.count).bigEndian
         var data = Data()

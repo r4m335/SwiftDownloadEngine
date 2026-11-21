@@ -308,14 +308,18 @@ public enum DASHTransferPlanner {
         var firstTextBandwidth: Int64?
         var firstTextCodecs: String?
 
+        var currentPeriodStart: Double = 0.0
         for (periodIndex, period) in manifest.periods.enumerated() {
+            let periodStart = period.start ?? currentPeriodStart
             let periodDuration = try finitePeriodDuration(
                 period: period,
                 periodIndex: periodIndex,
                 periods: manifest.periods,
+                periodStart: periodStart,
                 fallback: manifest.mediaPresentationDuration,
                 limits: limits
             )
+            currentPeriodStart = periodStart + periodDuration
 
             // Select video (unless text-only plan)
             let videoSelection: Selection?
@@ -427,6 +431,7 @@ public enum DASHTransferPlanner {
                     manifestURL: manifestURL,
                     fallbackBaseURL: manifestBaseURL,
                     periodDuration: periodDuration,
+                    periodStart: periodStart,
                     limits: limits,
                     totalSegments: &totalSegments,
                     sidxData: sidx
@@ -480,6 +485,7 @@ public enum DASHTransferPlanner {
                     manifestURL: manifestURL,
                     fallbackBaseURL: manifestBaseURL,
                     periodDuration: periodDuration,
+                    periodStart: periodStart,
                     limits: limits,
                     totalSegments: &totalSegments,
                     sidxData: sidx
@@ -533,6 +539,7 @@ public enum DASHTransferPlanner {
                     manifestURL: manifestURL,
                     fallbackBaseURL: manifestBaseURL,
                     periodDuration: periodDuration,
+                    periodStart: periodStart,
                     limits: limits,
                     totalSegments: &totalSegments,
                     sidxData: sidx
@@ -729,6 +736,7 @@ public enum DASHTransferPlanner {
         manifestURL: URL,
         fallbackBaseURL: URL,
         periodDuration: Double,
+        periodStart: Double,
         limits: DASHTransferPlanningLimits,
         totalSegments: inout Int,
         sidxData: Data? = nil
@@ -768,6 +776,7 @@ public enum DASHTransferPlanner {
                 template: template,
                 baseURL: resolvedBaseURL,
                 periodDuration: periodDuration,
+                periodStart: periodStart,
                 limits: limits,
                 totalSegments: &totalSegments
             )
@@ -780,6 +789,7 @@ public enum DASHTransferPlanner {
                 list: list,
                 baseURL: resolvedBaseURL,
                 periodDuration: periodDuration,
+                periodStart: periodStart,
                 limits: limits,
                 totalSegments: &totalSegments
             )
@@ -792,6 +802,7 @@ public enum DASHTransferPlanner {
                 base: base,
                 baseURL: resolvedBaseURL,
                 periodDuration: periodDuration,
+                periodStart: periodStart,
                 limits: limits,
                 totalSegments: &totalSegments,
                 sidxData: sidxData
@@ -800,6 +811,7 @@ public enum DASHTransferPlanner {
             estimatedDuration = result.duration
         } else if representation.baseURL != nil || adaptationSet.baseURL != nil || period.baseURL != nil {
             // Single contiguous resource (e.g. sidecar .vtt file)
+            let periodStartMs = Int64((periodStart * 1000.0).rounded())
             let res = DASHPlannedResource(
                 order: totalSegments,
                 mediaType: mediaType,
@@ -807,9 +819,9 @@ public enum DASHTransferPlanner {
                 url: resolvedBaseURL,
                 byteRange: nil,
                 segmentNumber: 1,
-                segmentTime: 0,
-                duration: Int64(periodDuration),
-                timescale: 1
+                segmentTime: periodStartMs,
+                duration: Int64((periodDuration * 1000.0).rounded()),
+                timescale: 1000
             )
             totalSegments += 1
             resources = [res]
@@ -842,6 +854,7 @@ public enum DASHTransferPlanner {
         base: DASHSegmentBase,
         baseURL: URL,
         periodDuration: Double,
+        periodStart: Double,
         limits: DASHTransferPlanningLimits,
         totalSegments: inout Int,
         sidxData: Data? = nil
@@ -862,6 +875,7 @@ public enum DASHTransferPlanner {
         )]
 
         var durationSeconds = 0.0
+        let periodStartUnits = Int64((periodStart * Double(base.timescale)).rounded())
 
         if let sidxData {
             let sidxOffset: Int64
@@ -879,7 +893,9 @@ public enum DASHTransferPlanner {
             }
             try reserveSegments(sidxSegments.count, limits: limits, totalSegments: &totalSegments)
 
+            var currentSegTime = periodStartUnits
             for (index, seg) in sidxSegments.enumerated() {
+                let segDurUnits = Int64(round(seg.duration * Double(base.timescale)))
                 resources.append(DASHPlannedResource(
                     order: resources.count,
                     mediaType: mediaType,
@@ -887,9 +903,11 @@ public enum DASHTransferPlanner {
                     url: baseURL,
                     byteRange: seg.byteRange,
                     segmentNumber: Int64(index + 1),
-                    duration: Int64(round(seg.duration * Double(base.timescale))),
+                    segmentTime: currentSegTime,
+                    duration: segDurUnits,
                     timescale: base.timescale
                 ))
+                currentSegTime = try adding(currentSegTime, segDurUnits)
                 durationSeconds += seg.duration
             }
         } else if let mediaRangeStr = base.mediaRange {
@@ -902,6 +920,7 @@ public enum DASHTransferPlanner {
                 url: baseURL,
                 byteRange: mediaRange,
                 segmentNumber: 1,
+                segmentTime: periodStartUnits,
                 duration: Int64(round(periodDuration * Double(base.timescale))),
                 timescale: base.timescale
             ))
@@ -925,6 +944,7 @@ public enum DASHTransferPlanner {
         template: DASHSegmentTemplate,
         baseURL: URL,
         periodDuration: Double,
+        periodStart: Double,
         limits: DASHTransferPlanningLimits,
         totalSegments: inout Int
     ) throws -> BuiltResources {
@@ -964,6 +984,8 @@ public enum DASHTransferPlanner {
         )
         guard !entries.isEmpty else { throw DASHVODTransferPlanError.noMediaSegments }
 
+        let periodStartUnits = Int64((periodStart * Double(template.timescale)).rounded())
+
         var segmentDuration = 0.0
         var allDurationsKnown = true
         for (index, entry) in entries.enumerated() {
@@ -976,13 +998,17 @@ public enum DASHTransferPlanner {
                 baseURL: baseURL,
                 limits: limits
             )
+            let relativeTime = entry.time >= template.presentationTimeOffset
+                ? (entry.time - template.presentationTimeOffset)
+                : entry.time
+            let presentationTime = try adding(periodStartUnits, relativeTime)
             resources.append(DASHPlannedResource(
                 order: resources.count,
                 mediaType: mediaType,
                 kind: .mediaSegment,
                 url: url,
                 segmentNumber: number,
-                segmentTime: entry.time,
+                segmentTime: presentationTime,
                 duration: entry.duration,
                 timescale: template.timescale
             ))
@@ -1085,6 +1111,7 @@ public enum DASHTransferPlanner {
         list: DASHSegmentList,
         baseURL: URL,
         periodDuration: Double,
+        periodStart: Double,
         limits: DASHTransferPlanningLimits,
         totalSegments: inout Int
     ) throws -> BuiltResources {
@@ -1108,12 +1135,15 @@ public enum DASHTransferPlanner {
             timescale: list.timescale
         )]
         var durationSeconds = 0.0
+        let periodStartUnits = Int64((periodStart * Double(list.timescale)).rounded())
+        var currentSegTime = periodStartUnits
         for (index, segment) in list.segmentURLs.enumerated() {
             guard segment.indexURL == nil, let mediaURL = segment.mediaURL else {
                 throw DASHVODTransferPlanError.unsupportedSegmentAddressing
             }
             let url = try validatedURL(mediaURL, against: baseURL, limits: limits)
             let number = try adding(list.startNumber, Int64(index))
+            let segDuration = list.duration
             resources.append(DASHPlannedResource(
                 order: resources.count,
                 mediaType: mediaType,
@@ -1121,11 +1151,13 @@ public enum DASHTransferPlanner {
                 url: url,
                 byteRange: try parseRange(segment.mediaRange),
                 segmentNumber: number,
-                duration: list.duration,
+                segmentTime: currentSegTime,
+                duration: segDuration,
                 timescale: list.timescale
             ))
-            if let duration = list.duration {
+            if let duration = segDuration {
                 durationSeconds += Double(duration) / Double(list.timescale)
+                currentSegTime = try adding(currentSegTime, duration)
             }
         }
         let estimatedDuration = list.duration == nil ? nil : durationSeconds
@@ -1139,6 +1171,7 @@ public enum DASHTransferPlanner {
         period: DASHPeriod,
         periodIndex: Int = 0,
         periods: [DASHPeriod] = [],
+        periodStart: Double = 0.0,
         fallback: Double?,
         limits: DASHTransferPlanningLimits
     ) throws -> Double {
@@ -1148,16 +1181,16 @@ public enum DASHTransferPlanner {
             }
             return duration
         }
-        if let start = period.start, periodIndex + 1 < periods.count, let nextStart = periods[periodIndex + 1].start, nextStart > start {
-            let dur = nextStart - start
+        let actualStart = period.start ?? periodStart
+        if periodIndex + 1 < periods.count, let nextStart = periods[periodIndex + 1].start, nextStart > actualStart {
+            let dur = nextStart - actualStart
             guard dur <= limits.maxPeriodDuration else {
                 throw DASHVODTransferPlanError.periodDurationLimitExceeded
             }
             return dur
         }
         if let fallback, fallback.isFinite, fallback > 0 {
-            let start = period.start ?? 0
-            let dur = fallback - start
+            let dur = fallback - actualStart
             if dur > 0 && dur <= limits.maxPeriodDuration {
                 return dur
             }
