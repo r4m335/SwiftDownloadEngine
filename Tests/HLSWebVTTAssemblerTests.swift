@@ -210,10 +210,10 @@ final class HLSWebVTTAssemblerTests: XCTestCase {
     }
 
     func testPTS33BitRolloverHandled() {
-        // MPEGTS ticks near 2^33 (8,589,934,592)
-        let ptsNearRollover: Int64 = 8_589_930_000
-        // Segment 2 PTS wrapped around: 900,000 ticks (~10s) past rollover
-        let ptsAfterRollover: Int64 = 85_408
+        // MPEGTS ticks near 2^33 (8,589,934,592): 1 second (90,000 ticks) before 33-bit rollover
+        let ptsNearRollover: Int64 = 8_589_934_592 - 90_000
+        // Segment 2 PTS wrapped around: 10 seconds (900,000 ticks) after segment 1
+        let ptsAfterRollover: Int64 = 810_000
 
         let seg1 = """
         WEBVTT
@@ -238,8 +238,8 @@ final class HLSWebVTTAssemblerTests: XCTestCase {
 
         XCTAssertTrue(assembled.contains("Before rollover"))
         XCTAssertTrue(assembled.contains("After rollover"))
-        // After rollover, cue should be at ~12.0s to 15.0s, not negative or early
-        XCTAssertTrue(assembled.contains("00:00:12.000 --> 00:00:15.000") || assembled.contains("00:00:11.") || assembled.contains("00:00:12."))
+        // After rollover, cue should be at 12.0s to 15.0s, not negative or early
+        XCTAssertTrue(assembled.contains("00:00:12.000 --> 00:00:15.000"))
     }
 
     func testPreservesCueSettings() {
