@@ -410,4 +410,38 @@ final class HLSResourceGroupingTests: XCTestCase {
         XCTAssertEqual(resources[2].title, "HLS 600 Kbps")
         XCTAssertEqual(resources[2].suggestedFilename, "video-600-Kbps.mp4")
     }
+
+    func testVariantURLsIncludesRenditionsAndMatchesRegardlessOfQueryOrCase() {
+        let masterURL = URL(string: "https://media.example.com/master.m3u8")!
+        let master = WebpageResource(
+            id: "master-renditions",
+            url: masterURL,
+            title: "Multi-Track Master",
+            suggestedFilename: "master.m3u8",
+            resourceType: .video,
+            mimeType: "application/vnd.apple.mpegurl",
+            manifestText: """
+            #EXTM3U
+            #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="audio",NAME="English",DEFAULT=YES,URI="audio/en.m3u8"
+            #EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",NAME="English",DEFAULT=YES,URI="subs/en.vtt"
+            #EXT-X-STREAM-INF:BANDWIDTH=2500000,RESOLUTION=1280x720,AUDIO="audio",SUBTITLES="subs"
+            720p.m3u8
+            """
+        )
+
+        let known = HLSResourceGrouping.variantURLs(in: [master])
+
+        // Video variant matching
+        let variantWithQuery = URL(string: "https://media.example.com/720p.m3u8?token=xyz123")!
+        XCTAssertTrue(HLSResourceGrouping.isVariantOrRenditionURL(variantWithQuery, matchingVariantURLs: known))
+
+        // Audio rendition matching
+        let audioRendition = URL(string: "https://media.example.com/audio/en.m3u8")!
+        let audioWithQuery = URL(string: "https://media.example.com/audio/en.m3u8?session=abc")!
+        XCTAssertTrue(HLSResourceGrouping.isVariantOrRenditionURL(audioRendition, matchingVariantURLs: known))
+        XCTAssertTrue(HLSResourceGrouping.isVariantOrRenditionURL(audioWithQuery, matchingVariantURLs: known))
+
+        // Master itself should not be classified as a child variant
+        XCTAssertFalse(HLSResourceGrouping.isVariantOrRenditionURL(masterURL, matchingVariantURLs: known))
+    }
 }

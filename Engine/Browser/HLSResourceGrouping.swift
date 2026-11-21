@@ -84,8 +84,52 @@ public enum HLSResourceGrouping {
         return manifest
     }
 
+    public static func urlWithoutQuery(_ url: URL) -> String {
+        if var components = URLComponents(url: url, resolvingAgainstBaseURL: true) {
+            components.query = nil
+            components.fragment = nil
+            return components.url?.absoluteString.lowercased() ?? url.absoluteString.lowercased()
+        }
+        return url.absoluteString.lowercased()
+    }
+
     public static func variantURLs(in resources: [WebpageResource]) -> Set<String> {
-        Set(masterManifests(in: resources).flatMap { $0.variants.map { $0.uri.absoluteString.lowercased() } })
+        var urls = Set<String>()
+        // 1. URLs from master manifest texts (variants + renditions)
+        for manifest in masterManifests(in: resources) {
+            for variant in manifest.variants {
+                urls.insert(variant.uri.absoluteString)
+                urls.insert(variant.uri.absoluteString.lowercased())
+                urls.insert(urlWithoutQuery(variant.uri))
+            }
+            for rendition in manifest.renditions {
+                if let rURI = rendition.uri {
+                    urls.insert(rURI.absoluteString)
+                    urls.insert(rURI.absoluteString.lowercased())
+                    urls.insert(urlWithoutQuery(rURI))
+                }
+            }
+        }
+        // 2. URLs from already expanded variants in resources
+        for res in resources {
+            if let exact = res.hlsVariantPreferences?.exactURI {
+                urls.insert(exact.absoluteString)
+                urls.insert(exact.absoluteString.lowercased())
+                urls.insert(urlWithoutQuery(exact))
+            }
+        }
+        return urls
+    }
+
+    public static func isVariantOrRenditionURL(_ url: URL, matchingVariantURLs known: Set<String>) -> Bool {
+        let exact = url.absoluteString
+        let lower = exact.lowercased()
+        let noQuery = urlWithoutQuery(url)
+        return known.contains(exact) || known.contains(lower) || known.contains(noQuery)
+    }
+
+    public static func isVariantOrRenditionURL(_ url: URL, in resources: [WebpageResource]) -> Bool {
+        isVariantOrRenditionURL(url, matchingVariantURLs: variantURLs(in: resources))
     }
 
     public static func qualitySummary(for resource: WebpageResource) -> String? {

@@ -85,7 +85,7 @@ public struct BrowserResourceInspectorSheet: View {
                 continue
             }
             // Discard raw child playlist URLs discovered separately without metadata
-            if resolvedVariantURLs.contains(res.url.absoluteString.lowercased()) && res.hlsVariantPreferences == nil {
+            if HLSResourceGrouping.isVariantOrRenditionURL(res.url, matchingVariantURLs: resolvedVariantURLs) && res.hlsVariantPreferences == nil {
                 continue
             }
 
@@ -113,6 +113,15 @@ public struct BrowserResourceInspectorSheet: View {
             }
 
             expanded.append(res)
+        }
+
+        // Final pass: ensure no raw child playlists survive in expanded, regardless of discovery order or showsAllResources
+        let allKnownVariantURLs = HLSResourceGrouping.variantURLs(in: expanded)
+        let combinedVariantURLs = resolvedVariantURLs.union(allKnownVariantURLs)
+        if !combinedVariantURLs.isEmpty {
+            expanded.removeAll { res in
+                res.hlsVariantPreferences == nil && HLSResourceGrouping.isVariantOrRenditionURL(res.url, matchingVariantURLs: combinedVariantURLs)
+            }
         }
         return expanded
     }

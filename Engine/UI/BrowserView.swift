@@ -1728,6 +1728,11 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                 continue
             }
 
+            let knownVariants = HLSResourceGrouping.variantURLs(in: discoveredResources)
+            if HLSResourceGrouping.isVariantOrRenditionURL(url, matchingVariantURLs: knownVariants) {
+                continue
+            }
+
             let resourceType: WebpageResourceType
             switch candidate.kind {
             case .directMedia, .hlsManifest, .dashManifest, .mediaSource, .protectedMedia:
@@ -2435,6 +2440,31 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                 // Keep the master manifest selected so the user can either choose a specific variant
                 // or have the quality picker presented when initiating the download.
 
+                // Collect all child variant and rendition URLs from expanded variants and manifest text
+                var childURLs = Set<String>()
+                for v in expanded {
+                    if let exact = v.hlsVariantPreferences?.exactURI {
+                        childURLs.insert(exact.absoluteString)
+                        childURLs.insert(exact.absoluteString.lowercased())
+                        childURLs.insert(HLSResourceGrouping.urlWithoutQuery(exact))
+                    }
+                }
+                if let manifestObj = try? HLSManifestParser.parse(result.manifestText, baseURL: manifest.url) {
+                    for v in manifestObj.variants {
+                        childURLs.insert(v.uri.absoluteString)
+                        childURLs.insert(v.uri.absoluteString.lowercased())
+                        childURLs.insert(HLSResourceGrouping.urlWithoutQuery(v.uri))
+                    }
+                    for r in manifestObj.renditions {
+                        if let rURI = r.uri {
+                            childURLs.insert(rURI.absoluteString)
+                            childURLs.insert(rURI.absoluteString.lowercased())
+                            childURLs.insert(HLSResourceGrouping.urlWithoutQuery(rURI))
+                        }
+                    }
+                }
+                childURLs.formUnion(HLSResourceGrouping.variantURLs(in: self.discoveredResources))
+
                 var updated: [WebpageResource] = []
                 var inserted = false
                 for res in self.discoveredResources {
@@ -2493,12 +2523,20 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                             updated.append(parent)
                             inserted = true
                         }
-                    } else if !expanded.contains(where: { $0.id == res.id }) {
-                        updated.append(res)
+                    } else {
+                        // Check if this resource is a raw child playlist belonging to the expanded variants
+                        let isRawChild = res.hlsVariantPreferences == nil && HLSResourceGrouping.isVariantOrRenditionURL(res.url, matchingVariantURLs: childURLs)
+                        if !isRawChild && !expanded.contains(where: { $0.id == res.id }) {
+                            updated.append(res)
+                        }
                     }
                 }
                 if !inserted {
                     updated.append(contentsOf: expanded)
+                }
+                // Final prune: ensure no raw child playlist matching childURLs remains in updated
+                updated.removeAll { res in
+                    res.hlsVariantPreferences == nil && HLSResourceGrouping.isVariantOrRenditionURL(res.url, matchingVariantURLs: childURLs)
                 }
                 self.discoveredResources = updated
             }
@@ -3340,7 +3378,9 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         )
 
         // 1. Immediately insert at top with 0 delay so user sees grabbed link instantly
-        if !discoveredResources.contains(where: {
+        let knownVariants = HLSResourceGrouping.variantURLs(in: discoveredResources)
+        let isRawChildOfKnownMaster = HLSResourceGrouping.isVariantOrRenditionURL(immediateResource.url, matchingVariantURLs: knownVariants)
+        if !isRawChildOfKnownMaster && !discoveredResources.contains(where: {
             $0.url.absoluteString.lowercased() == immediateResource.url.absoluteString.lowercased()
         }) {
             discoveredResources.insert(immediateResource, at: 0)
@@ -3398,9 +3438,13 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         var catalog = mediaCandidateCatalogs[targetTabID] ?? BrowserMediaCandidateCatalog()
         var newToInsert: [WebpageResource] = []
         var seenURLs = Set(discoveredResources.map { $0.url })
+        let knownVariants = HLSResourceGrouping.variantURLs(in: discoveredResources)
         for resource in resources {
             _ = catalog.ingest(resource: resource)
             if !seenURLs.contains(resource.url) {
+                if resource.hlsVariantPreferences == nil && HLSResourceGrouping.isVariantOrRenditionURL(resource.url, matchingVariantURLs: knownVariants) {
+                    continue
+                }
                 seenURLs.insert(resource.url)
                 newToInsert.append(resource)
             }

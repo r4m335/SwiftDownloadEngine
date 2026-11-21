@@ -1185,6 +1185,152 @@ final class BrowserMediaDiscoveryTests: XCTestCase {
         XCTAssertEqual(updated.hlsVariantPreferences?.exactURI?.query, "token=newMaster&expires=9999999999", "Parent master query must be propagated to variant exactURI")
         XCTAssertEqual(updated.requestContext?.url, updated.hlsVariantPreferences?.exactURI, "Context url must match the refreshed exactURI")
     }
+
+    @MainActor
+    func testRawChildPlaylistsDiscoveredBeforeMasterExpansionArePrunedFromDiscoveredResources() async {
+        let vm = BrowserViewModel()
+        let childVideoURL = URL(string: "https://cdn.example.com/vod/720p.m3u8")!
+        let childAudioURL = URL(string: "https://cdn.example.com/vod/audio/en.m3u8")!
+        let masterURL = URL(string: "https://cdn.example.com/vod/master.m3u8")!
+
+        let childVideo = WebpageResource(
+            id: "raw-child-video",
+            url: childVideoURL,
+            title: "720p.m3u8",
+            suggestedFilename: "720p.m3u8",
+            resourceType: .video,
+            mimeType: "application/vnd.apple.mpegurl"
+        )
+        let childAudio = WebpageResource(
+            id: "raw-child-audio",
+            url: childAudioURL,
+            title: "en.m3u8",
+            suggestedFilename: "en.m3u8",
+            resourceType: .video,
+            mimeType: "application/vnd.apple.mpegurl"
+        )
+
+        let masterText = """
+        #EXTM3U
+        #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="audio",NAME="English",DEFAULT=YES,URI="audio/en.m3u8"
+        #EXT-X-STREAM-INF:BANDWIDTH=5000000,RESOLUTION=1920x1080,AUDIO="audio"
+        1080p.m3u8
+        #EXT-X-STREAM-INF:BANDWIDTH=2500000,RESOLUTION=1280x720,AUDIO="audio"
+        720p.m3u8
+        """
+        let masterResource = WebpageResource(
+            id: "master-with-children",
+            url: masterURL,
+            title: "Main Video Master",
+            suggestedFilename: "master.m3u8",
+            resourceType: .video,
+            mimeType: "application/vnd.apple.mpegurl",
+            manifestText: masterText
+        )
+
+        // Raw child playlists were intercepted before master expansion
+        vm.discoveredResources = [childVideo, childAudio, masterResource]
+        vm.expandStreamingManifests()
+
+        for _ in 0..<20 {
+            if vm.discoveredResources.contains(where: { $0.hlsVariantPreferences != nil }) { break }
+            try? await Task.sleep(nanoseconds: 50_000_000)
+        }
+
+        let remainingIDs = Set(vm.discoveredResources.map { $0.id })
+        XCTAssertFalse(remainingIDs.contains(childVideo.id), "Raw child video playlist must be pruned from discoveredResources upon master expansion")
+        XCTAssertFalse(remainingIDs.contains(childAudio.id), "Raw child audio rendition playlist must be pruned from discoveredResources upon master expansion")
+        XCTAssertTrue(vm.discoveredResources.contains(where: { $0.hlsVariantPreferences != nil }), "Expanded quality variants must be present")
+    }
+
+    func testRawChildPlaylistsAreDiscardedInBothMediaAndAllViewsInResourceInspector() {
+        let childVideoURL = URL(string: "https://cdn.example.com/vod/720p.m3u8?token=123")!
+        let childAudioURL = URL(string: "https://cdn.example.com/vod/audio/en.m3u8")!
+        let masterURL = URL(string: "https://cdn.example.com/vod/master.m3u8")!
+
+        let childVideo = WebpageResource(
+            id: "raw-child-video",
+            url: childVideoURL,
+            title: "720p.m3u8",
+            suggestedFilename: "720p.m3u8",
+            resourceType: .video,
+            mimeType: "application/vnd.apple.mpegurl"
+        )
+        let childAudio = WebpageResource(
+            id: "raw-child-audio",
+            url: childAudioURL,
+            title: "en.m3u8",
+            suggestedFilename: "en.m3u8",
+            resourceType: .video,
+            mimeType: "application/vnd.apple.mpegurl"
+        )
+
+        let masterText = """
+        #EXTM3U
+        #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="audio",NAME="English",DEFAULT=YES,URI="audio/en.m3u8"
+        #EXT-X-STREAM-INF:BANDWIDTH=5000000,RESOLUTION=1920x1080,AUDIO="audio"
+        1080p.m3u8
+        #EXT-X-STREAM-INF:BANDWIDTH=2500000,RESOLUTION=1280x720,AUDIO="audio"
+        720p.m3u8
+        """
+        let master = WebpageResource(
+            id: "master-inspector-test",
+            url: masterURL,
+            title: "Movie Master",
+            suggestedFilename: "master.m3u8",
+            resourceType: .video,
+            mimeType: "application/vnd.apple.mpegurl",
+            manifestText: masterText
+        )
+
+        let discovered = [childVideo, childAudio, master]
+
+        // 1. Media view (showsAllResources: false)
+        let mediaEligible = BrowserResourceInspectorSheet.eligibleResources(in: discovered, showsAllResources: false)
+        let mediaIDs = Set(mediaEligible.map { $0.id })
+        XCTAssertFalse(mediaIDs.contains(childVideo.id), "Raw child video playlist must be discarded in Media view")
+        XCTAssertFalse(mediaIDs.contains(childAudio.id), "Raw child audio playlist must be discarded in Media view")
+
+        // 2. All view (showsAllResources: true)
+        let allEligible = BrowserResourceInspectorSheet.eligibleResources(in: discovered, showsAllResources: true)
+        let allIDs = Set(allEligible.map { $0.id })
+        XCTAssertFalse(allIDs.contains(childVideo.id), "Raw child video playlist must NOT survive in All view")
+        XCTAssertFalse(allIDs.contains(childAudio.id), "Raw child audio playlist must NOT survive in All view")
+        XCTAssertTrue(allIDs.contains(master.id), "Parent master remains visible in All view")
+
+        // 3. Filtered resources under All
+        let allFiltered = BrowserResourceInspectorSheet.filteredResources(in: discovered, showsAllResources: true)
+        let allFilteredIDs = Set(allFiltered.map { $0.id })
+        XCTAssertFalse(allFilteredIDs.contains(childVideo.id), "Raw child video must not appear in filtered All view")
+        XCTAssertFalse(allFilteredIDs.contains(childAudio.id), "Raw child audio must not appear in filtered All view")
+    }
+
+    func testStandaloneMediaPlaylistWithoutMasterIsNotDiscarded() {
+        let standaloneURL = URL(string: "https://cdn.example.com/single/playlist.m3u8")!
+        let standaloneText = """
+        #EXTM3U
+        #EXT-X-VERSION:3
+        #EXT-X-TARGETDURATION:6
+        #EXTINF:6.0,
+        seg1.ts
+        #EXT-X-ENDLIST
+        """
+        let standalone = WebpageResource(
+            id: "standalone-media-playlist",
+            url: standaloneURL,
+            title: "Standalone Stream",
+            suggestedFilename: "playlist.m3u8",
+            resourceType: .video,
+            mimeType: "application/vnd.apple.mpegurl",
+            manifestText: standaloneText
+        )
+
+        let eligibleMedia = BrowserResourceInspectorSheet.eligibleResources(in: [standalone], showsAllResources: false)
+        XCTAssertTrue(eligibleMedia.contains(where: { $0.id == standalone.id }), "Standalone media playlist without master must remain eligible in Media view")
+
+        let eligibleAll = BrowserResourceInspectorSheet.eligibleResources(in: [standalone], showsAllResources: true)
+        XCTAssertTrue(eligibleAll.contains(where: { $0.id == standalone.id }), "Standalone media playlist without master must remain eligible in All view")
+    }
     #endif
 }
 
