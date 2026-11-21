@@ -153,7 +153,7 @@ public enum DASHManifestParser {
         let contentType = node.attribute("contentType")
         let mimeType = node.attribute("mimeType")
         let codecs = node.attribute("codecs")
-        let language = node.attribute("lang")
+        let language = node.attribute("lang") ?? node.attribute("xml:lang") ?? node.attribute("language")
 
         let protectionNodes = node.children(named: "ContentProtection")
         let hasProtection = !protectionNodes.isEmpty

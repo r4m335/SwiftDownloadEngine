@@ -141,6 +141,8 @@ public enum StreamQualityInspector {
                     hasAudio: opt.hasAudio,
                     hasVideo: opt.hasVideo,
                     isAudioOnly: opt.isAudioOnly,
+                    hasSubtitles: opt.hasSubtitles,
+                    subtitleText: opt.subtitleText,
                     estimatedSizeBytes: opt.estimatedSizeBytes,
                     estimatedSizeText: opt.estimatedSizeText,
                     uri: opt.uri,
@@ -183,59 +185,248 @@ public enum StreamQualityInspector {
     ) throws -> [StreamQualityOption] {
         let manifest = try DASHManifestParser.parse(Data(manifestText.utf8), baseURL: baseURL)
         let isLive = manifest.presentationType == .dynamicPresentation
-        guard let period = manifest.periods.first else {
+        guard !manifest.periods.isEmpty else {
             return [StreamQualityOption.defaultMedia(url: baseURL, mimeType: "application/dash+xml", kind: .dash, isLive: isLive)]
         }
 
-        // Find video adaptation sets and audio adaptation sets
+        // Compute effective duration across periods if not explicitly provided
+        let effectiveDuration: Double? = {
+            if let duration = durationSeconds, duration > 0 {
+                return duration
+            }
+            if let mpdDuration = manifest.mediaPresentationDuration, mpdDuration > 0 {
+                return mpdDuration
+            }
+            let sumPeriodDurations = manifest.periods.compactMap(\.duration).reduce(0.0, +)
+            if sumPeriodDurations > 0 {
+                return sumPeriodDurations
+            }
+            return nil
+        }()
+
+        struct AudioTrackItem {
+            let rep: DASHRepresentation
+            let adaptationSet: DASHAdaptationSet
+            let period: DASHPeriod
+            let language: String?
+        }
+
+        struct TextTrackItem {
+            let rep: DASHRepresentation
+            let adaptationSet: DASHAdaptationSet
+            let period: DASHPeriod
+            let language: String?
+            let isClosedCaption: Bool
+        }
+
         var videoReps: [DASHRepresentation] = []
-        var audioReps: [DASHRepresentation] = []
+        var seenVideoKeys = Set<String>()
+        var audioTracks: [AudioTrackItem] = []
+        var seenAudioKeys = Set<String>()
+        var textTracks: [TextTrackItem] = []
+        var seenTextKeys = Set<String>()
 
-        for adaptation in period.adaptationSets {
-            let isVideo = adaptation.contentType?.lowercased() == "video" || adaptation.mimeType?.lowercased().contains("video") == true
-            let isAudio = adaptation.contentType?.lowercased() == "audio" || adaptation.mimeType?.lowercased().contains("audio") == true
+        // Scan all periods
+        for period in manifest.periods {
+            for adaptation in period.adaptationSets {
+                if adaptation.hasContentProtection { continue } // Skip DRM adaptation sets
 
-            for rep in adaptation.representations {
-                if rep.hasContentProtection { continue } // Skip DRM representations
-                let repMime = rep.mimeType?.lowercased() ?? adaptation.mimeType?.lowercased() ?? ""
-                if isVideo || repMime.contains("video") || rep.height != nil {
-                    videoReps.append(rep)
-                } else if isAudio || repMime.contains("audio") {
-                    audioReps.append(rep)
+                let cType = adaptation.contentType?.lowercased() ?? ""
+                let mMime = adaptation.mimeType?.lowercased() ?? ""
+
+                let isTextAdaptation = cType == "text"
+                    || cType == "caption"
+                    || cType == "subtitle"
+                    || mMime.contains("vtt")
+                    || mMime.contains("ttml")
+                    || mMime.contains("stpp")
+                    || mMime.contains("wvtt")
+                    || mMime.contains("caption")
+                    || mMime.contains("sub")
+
+                let isAudioAdaptation = !isTextAdaptation && (cType == "audio" || mMime.contains("audio"))
+                let isVideoAdaptation = !isTextAdaptation && !isAudioAdaptation && (cType == "video" || mMime.contains("video"))
+
+                for rep in adaptation.representations {
+                    if rep.hasContentProtection { continue } // Skip DRM representations
+
+                    let repMime = rep.mimeType?.lowercased() ?? mMime
+                    let repCodecs = rep.codecs?.lowercased() ?? ""
+
+                    let isTextRep = isTextAdaptation
+                        || repMime.contains("vtt")
+                        || repMime.contains("ttml")
+                        || repMime.contains("stpp")
+                        || repMime.contains("wvtt")
+                        || repCodecs.contains("wvtt")
+                        || repCodecs.contains("stpp")
+                        || repCodecs.contains("ttml")
+
+                    if isTextRep {
+                        let isCC = cType == "caption"
+                            || adaptation.id?.lowercased().contains("cc") == true
+                            || rep.id?.lowercased().contains("cc") == true
+                        let lang = adaptation.language?.trimmingCharacters(in: .whitespacesAndNewlines)
+                        let textKey = "\(isCC ? "cc" : "sub")-\(lang?.lowercased() ?? rep.id ?? "text")"
+                        if seenTextKeys.insert(textKey).inserted {
+                            textTracks.append(TextTrackItem(
+                                rep: rep,
+                                adaptationSet: adaptation,
+                                period: period,
+                                language: lang,
+                                isClosedCaption: isCC
+                            ))
+                        }
+                    } else if isAudioAdaptation || repMime.contains("audio") {
+                        let lang = adaptation.language?.trimmingCharacters(in: .whitespacesAndNewlines)
+                        let bw = rep.bandwidth ?? 0
+                        let audioKey = "\(lang?.lowercased() ?? "default")-\(rep.id ?? "")-\(bw)-\(rep.codecs ?? "")"
+                        if seenAudioKeys.insert(audioKey).inserted {
+                            audioTracks.append(AudioTrackItem(
+                                rep: rep,
+                                adaptationSet: adaptation,
+                                period: period,
+                                language: lang
+                            ))
+                        }
+                    } else if isVideoAdaptation || repMime.contains("video") || rep.height != nil {
+                        let key = "\(rep.width ?? 0)x\(rep.height ?? 0)-\(rep.bandwidth ?? 0)-\(rep.codecs ?? "")"
+                        if seenVideoKeys.insert(key).inserted {
+                            videoReps.append(rep)
+                        }
+                    }
                 }
             }
         }
 
-        // Sort video reps highest to lowest bandwidth and deduplicate identical quality tiers
+        // Determine default audio representation (preferring English or primary/first track)
+        let defaultAudio: DASHRepresentation? = {
+            let englishTracks = audioTracks.filter {
+                guard let lang = $0.language?.lowercased() else { return false }
+                return lang.hasPrefix("en") || lang == "eng"
+            }
+            if !englishTracks.isEmpty {
+                return englishTracks.max(by: { ($0.rep.bandwidth ?? 0) < ($1.rep.bandwidth ?? 0) })?.rep
+            }
+            return audioTracks.first?.rep
+        }()
+
+        // Subtitle summary for video options
+        let hasSubtitles = !textTracks.isEmpty
+        let subtitleSummary: String? = {
+            guard hasSubtitles else { return nil }
+            var uniqueShortLangs: [String] = []
+            for item in textTracks {
+                guard let lang = item.language, !lang.isEmpty else { continue }
+                let code2 = SubtitleLanguageCatalog.to2LetterCode(lang).uppercased()
+                let displayCode = code2.isEmpty ? lang.uppercased() : code2
+                if !uniqueShortLangs.contains(displayCode) {
+                    uniqueShortLangs.append(displayCode)
+                }
+            }
+            if uniqueShortLangs.isEmpty {
+                return "Subtitles"
+            } else {
+                return "Subtitles (\(uniqueShortLangs.joined(separator: ", ")))"
+            }
+        }()
+
+        // Sort video reps highest to lowest bandwidth
         videoReps.sort { ($0.bandwidth ?? 0) > ($1.bandwidth ?? 0) }
-        var seenVideoKeys = Set<String>()
-        videoReps = videoReps.filter { rep in
-            let key = "\(rep.width ?? 0)x\(rep.height ?? 0)-\(rep.bandwidth ?? 0)-\(rep.codecs ?? "")"
-            return seenVideoKeys.insert(key).inserted
-        }
-        let defaultAudio = audioReps.first
 
         var options: [StreamQualityOption] = videoReps.map { rep in
             StreamQualityOption.from(
                 dashRepresentation: rep,
                 audioRep: defaultAudio,
                 baseURL: baseURL,
-                durationSeconds: durationSeconds,
+                durationSeconds: effectiveDuration,
+                hasSubtitles: hasSubtitles,
+                subtitleText: subtitleSummary,
                 isLive: isLive
             )
         }
 
-        // Add Audio Only option if audio representations exist
-        if let audio = defaultAudio {
-            let audioBw = audio.bandwidth ?? 128_000
-            let estBytes = durationSeconds.flatMap { StreamQualityOption.estimateSize(bandwidth: audioBw, durationSeconds: $0) }
-            let estText = estBytes.map { "~\(StreamQualityOption.formatByteSize($0))" }
-            let audioURI = audio.baseURL ?? baseURL
-            let uriHash = String(EngineSHA256.hash(data: Data(audioURI.absoluteString.utf8)).prefix(8))
+        // Disambiguate identical labels (e.g. multiple 1080p tiers at different bitrates)
+        let labelCounts = Dictionary(grouping: options, by: \.label).mapValues(\.count)
+        if labelCounts.values.contains(where: { $0 > 1 }) {
+            options = options.map { opt in
+                guard (labelCounts[opt.label] ?? 0) > 1 else { return opt }
+                let disambiguated: String
+                if let codec = opt.videoCodec {
+                    disambiguated = "\(opt.label) (\(codec), \(opt.bitrateText))"
+                } else {
+                    disambiguated = "\(opt.label) (\(opt.bitrateText))"
+                }
+                return StreamQualityOption(
+                    id: opt.id,
+                    label: disambiguated,
+                    qualityBadge: opt.qualityBadge,
+                    resolution: opt.resolution,
+                    resolutionText: opt.resolutionText,
+                    bandwidth: opt.bandwidth,
+                    bitrateText: opt.bitrateText,
+                    codecs: opt.codecs,
+                    videoCodec: opt.videoCodec,
+                    audioCodec: opt.audioCodec,
+                    frameRate: opt.frameRate,
+                    hasAudio: opt.hasAudio,
+                    hasVideo: opt.hasVideo,
+                    isAudioOnly: opt.isAudioOnly,
+                    hasSubtitles: opt.hasSubtitles,
+                    subtitleText: opt.subtitleText,
+                    estimatedSizeBytes: opt.estimatedSizeBytes,
+                    estimatedSizeText: opt.estimatedSizeText,
+                    uri: opt.uri,
+                    manifestKind: opt.manifestKind,
+                    dashVideoRepresentationID: opt.dashVideoRepresentationID,
+                    dashAudioRepresentationID: opt.dashAudioRepresentationID,
+                    isLive: opt.isLive,
+                    isIFrameOnly: opt.isIFrameOnly,
+                    isLowLatency: opt.isLowLatency
+                )
+            }
+        }
 
+        // Add Audio Only quality options for all distinct audio tracks / alternate languages
+        // Group by language if available, or expose each distinct track
+        var seenAudioLangKeys = Set<String>()
+        var distinctAudioTracks: [AudioTrackItem] = []
+        for track in audioTracks {
+            let key = track.language?.lowercased() ?? track.rep.id ?? "\(track.rep.bandwidth ?? 0)"
+            if seenAudioLangKeys.insert(key).inserted {
+                distinctAudioTracks.append(track)
+            }
+        }
+
+        for item in distinctAudioTracks {
+            let audio = item.rep
+            let audioBw = audio.bandwidth ?? 128_000
+            let estBytes = effectiveDuration.flatMap { StreamQualityOption.estimateSize(bandwidth: audioBw, durationSeconds: $0) }
+            let estText = estBytes.map { "~\(StreamQualityOption.formatByteSize($0))" }
+            let audioURI = audio.baseURL ?? item.adaptationSet.baseURL ?? item.period.baseURL ?? baseURL
+            let uriHash = String(EngineSHA256.hash(data: Data(audioURI.absoluteString.utf8)).prefix(8))
+            let aCodec = StreamQualityOption.extractAudioCodec(audio.codecs) ?? "AAC"
+
+            let langName: String? = {
+                guard let l = item.language, !l.isEmpty else { return nil }
+                let name = SubtitleLanguageCatalog.displayName(for: l)
+                return (name != l && !name.isEmpty) ? name : SubtitleLanguageCatalog.to2LetterCode(l).uppercased()
+            }()
+
+            let label: String = {
+                if let name = langName {
+                    return "Audio Only (\(name))"
+                } else if distinctAudioTracks.count == 1 {
+                    return "Audio Only"
+                } else {
+                    return "Audio Only (\(aCodec) \(StreamQualityOption.formatBandwidth(audioBw)))"
+                }
+            }()
+
+            let repID = audio.id ?? "audio-\(item.language ?? "default")-\(audioBw)"
             let audioOption = StreamQualityOption(
-                id: "dash-audio-\(audio.id ?? "default")-\(uriHash)",
-                label: "Audio Only",
+                id: "dash-audio-\(repID)-\(uriHash)",
+                label: label,
                 qualityBadge: "AUDIO",
                 resolution: nil,
                 resolutionText: nil,
@@ -243,20 +434,81 @@ public enum StreamQualityInspector {
                 bitrateText: StreamQualityOption.formatBandwidth(audioBw),
                 codecs: audio.codecs,
                 videoCodec: nil,
-                audioCodec: "AAC",
+                audioCodec: aCodec,
                 frameRate: nil,
                 hasAudio: true,
                 hasVideo: false,
                 isAudioOnly: true,
+                hasSubtitles: false,
+                subtitleText: nil,
                 estimatedSizeBytes: estBytes,
                 estimatedSizeText: estText,
-                uri: audio.baseURL ?? baseURL,
+                uri: audioURI,
                 manifestKind: .dash,
                 dashVideoRepresentationID: nil,
                 dashAudioRepresentationID: audio.id,
                 isLive: isLive
             )
-            options.append(audioOption)
+            if !options.contains(where: { $0.id == audioOption.id }) {
+                options.append(audioOption)
+            }
+        }
+
+        // Add subtitle and closed caption options
+        for item in textTracks {
+            let rep = item.rep
+            let textURI = rep.baseURL ?? item.adaptationSet.baseURL ?? item.period.baseURL ?? baseURL
+            let uriHash = String(EngineSHA256.hash(data: Data(textURI.absoluteString.utf8)).prefix(8))
+            let lang = item.language ?? ""
+            let langDisplayName: String = {
+                if !lang.isEmpty {
+                    let name = SubtitleLanguageCatalog.displayName(for: lang)
+                    if name != lang && !name.isEmpty { return name }
+                    let code2 = SubtitleLanguageCatalog.to2LetterCode(lang).uppercased()
+                    if !code2.isEmpty { return code2 }
+                }
+                return "Unknown"
+            }()
+
+            let isCC = item.isClosedCaption
+            let badge = isCC ? "CC" : "SUB"
+            let label: String = {
+                if langDisplayName != "Unknown" {
+                    return isCC ? "Closed Captions (\(langDisplayName))" : "Subtitles (\(langDisplayName))"
+                } else {
+                    return isCC ? "Closed Captions" : "Subtitles"
+                }
+            }()
+
+            let repID = rep.id ?? "text-\(lang)-\(isCC ? "cc" : "sub")"
+            let textOption = StreamQualityOption(
+                id: "dash-text-\(repID)-\(uriHash)",
+                label: label,
+                qualityBadge: badge,
+                resolution: nil,
+                resolutionText: nil,
+                bandwidth: rep.bandwidth ?? 0,
+                bitrateText: "Text",
+                codecs: rep.codecs ?? item.adaptationSet.codecs,
+                videoCodec: nil,
+                audioCodec: nil,
+                frameRate: nil,
+                hasAudio: false,
+                hasVideo: false,
+                isAudioOnly: false,
+                hasSubtitles: true,
+                subtitleText: langDisplayName != "Unknown" ? langDisplayName : nil,
+                estimatedSizeBytes: nil,
+                estimatedSizeText: "< 1 MB",
+                uri: textURI,
+                manifestKind: .dash,
+                dashVideoRepresentationID: nil,
+                dashAudioRepresentationID: nil,
+                isLive: isLive
+            )
+            if !options.contains(where: { $0.id == textOption.id }) {
+                options.append(textOption)
+            }
         }
 
         if options.isEmpty {

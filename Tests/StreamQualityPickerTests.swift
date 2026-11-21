@@ -171,6 +171,183 @@ final class StreamQualityPickerTests: XCTestCase {
         XCTAssertNil(audioOnly.dashVideoRepresentationID)
     }
 
+    func testMultiPeriodDASHQualityInspectionDiscoversRepsAcrossAllPeriods() throws {
+        let multiPeriodMPD = """
+        <?xml version="1.0" encoding="utf-8"?>
+        <MPD xmlns="urn:mpeg:dash:schema:mpd:2011" type="static">
+          <Period id="p1" duration="PT15S">
+            <AdaptationSet mimeType="video/mp4" contentType="video">
+              <Representation id="p1-v-720p" bandwidth="2200000" width="1280" height="720" codecs="avc1.4d401f">
+                <SegmentTemplate media="p1-v-$Number$.m4s" timescale="1000" duration="1000" />
+              </Representation>
+            </AdaptationSet>
+            <AdaptationSet mimeType="audio/mp4" contentType="audio" lang="en">
+              <Representation id="p1-a-en" bandwidth="128000" codecs="mp4a.40.2">
+                <SegmentTemplate media="p1-a-$Number$.m4s" timescale="1000" duration="1000" />
+              </Representation>
+            </AdaptationSet>
+          </Period>
+          <Period id="p2" duration="PT45S">
+            <AdaptationSet mimeType="video/mp4" contentType="video">
+              <Representation id="p2-v-1080p" bandwidth="5000000" width="1920" height="1080" codecs="avc1.64002a">
+                <SegmentTemplate media="p2-v-$Number$.m4s" timescale="1000" duration="1000" />
+              </Representation>
+              <Representation id="p2-v-720p" bandwidth="2200000" width="1280" height="720" codecs="avc1.4d401f">
+                <SegmentTemplate media="p2-v720-$Number$.m4s" timescale="1000" duration="1000" />
+              </Representation>
+            </AdaptationSet>
+            <AdaptationSet mimeType="audio/mp4" contentType="audio" lang="en">
+              <Representation id="p2-a-en" bandwidth="128000" codecs="mp4a.40.2">
+                <SegmentTemplate media="p2-a-$Number$.m4s" timescale="1000" duration="1000" />
+              </Representation>
+            </AdaptationSet>
+          </Period>
+        </MPD>
+        """
+
+        let options = try StreamQualityInspector.inspectDASH(
+            manifestText: multiPeriodMPD,
+            baseURL: dashURL
+        )
+
+        // Should find 1080p (from Period 2), 720p (deduplicated across periods), and 1 Audio Only option
+        XCTAssertEqual(options.count, 3)
+
+        let rep1080 = options[0]
+        XCTAssertEqual(rep1080.qualityBadge, "1080p")
+        XCTAssertEqual(rep1080.bandwidth, 5_000_000)
+        // Duration sum is 15s + 45s = 60s
+        XCTAssertNotNil(rep1080.estimatedSizeBytes)
+        // 5,000,000 bps * 60s / 8 = 37,500,000 bytes (~35.7 MB)
+        XCTAssertTrue(rep1080.estimatedSizeText?.contains("MB") == true)
+
+        let rep720 = options[1]
+        XCTAssertEqual(rep720.qualityBadge, "720p")
+        XCTAssertEqual(rep720.bandwidth, 2_200_000)
+
+        let audio = options[2]
+        XCTAssertTrue(audio.isAudioOnly)
+        XCTAssertEqual(audio.qualityBadge, "AUDIO")
+        XCTAssertEqual(audio.label, "Audio Only (English)")
+    }
+
+    func testDASHQualityInspectionDiscoversAlternateAudioLanguages() throws {
+        let multiAudioMPD = """
+        <?xml version="1.0" encoding="utf-8"?>
+        <MPD xmlns="urn:mpeg:dash:schema:mpd:2011" type="static" mediaPresentationDuration="PT120S">
+          <Period id="0">
+            <AdaptationSet mimeType="video/mp4" contentType="video">
+              <Representation id="v1" bandwidth="3000000" width="1280" height="720" codecs="avc1.4d401f">
+                <SegmentTemplate media="v-$Number$.m4s" timescale="1000" duration="2000" />
+              </Representation>
+            </AdaptationSet>
+            <AdaptationSet mimeType="audio/mp4" contentType="audio" lang="en">
+              <Representation id="a-en" bandwidth="128000" codecs="mp4a.40.2">
+                <SegmentTemplate media="a-en-$Number$.m4s" timescale="1000" duration="2000" />
+              </Representation>
+            </AdaptationSet>
+            <AdaptationSet mimeType="audio/mp4" contentType="audio" lang="es">
+              <Representation id="a-es" bandwidth="128000" codecs="mp4a.40.2">
+                <SegmentTemplate media="a-es-$Number$.m4s" timescale="1000" duration="2000" />
+              </Representation>
+            </AdaptationSet>
+            <AdaptationSet mimeType="audio/mp4" contentType="audio" lang="fr">
+              <Representation id="a-fr" bandwidth="128000" codecs="mp4a.40.2">
+                <SegmentTemplate media="a-fr-$Number$.m4s" timescale="1000" duration="2000" />
+              </Representation>
+            </AdaptationSet>
+          </Period>
+        </MPD>
+        """
+
+        let options = try StreamQualityInspector.inspectDASH(
+            manifestText: multiAudioMPD,
+            baseURL: dashURL
+        )
+
+        // 1 video + 3 audio-only representations (en, es, fr)
+        XCTAssertEqual(options.count, 4)
+
+        let video = options[0]
+        XCTAssertEqual(video.qualityBadge, "720p")
+        // English preferred as default audio pair
+        XCTAssertEqual(video.dashAudioRepresentationID, "a-en")
+
+        let audioOptions = options.filter { $0.isAudioOnly }
+        XCTAssertEqual(audioOptions.count, 3)
+
+        let englishAudio = audioOptions.first { $0.label.contains("English") }
+        XCTAssertNotNil(englishAudio)
+        XCTAssertEqual(englishAudio?.dashAudioRepresentationID, "a-en")
+
+        let spanishAudio = audioOptions.first { $0.label.contains("Spanish") }
+        XCTAssertNotNil(spanishAudio)
+        XCTAssertEqual(spanishAudio?.dashAudioRepresentationID, "a-es")
+
+        let frenchAudio = audioOptions.first { $0.label.contains("French") }
+        XCTAssertNotNil(frenchAudio)
+        XCTAssertEqual(frenchAudio?.dashAudioRepresentationID, "a-fr")
+    }
+
+    func testDASHQualityInspectionDiscoversSubtitlesAndCaptions() throws {
+        let subMPD = """
+        <?xml version="1.0" encoding="utf-8"?>
+        <MPD xmlns="urn:mpeg:dash:schema:mpd:2011" type="static" mediaPresentationDuration="PT90S">
+          <Period id="0">
+            <AdaptationSet mimeType="video/mp4" contentType="video">
+              <Representation id="v1" bandwidth="4000000" width="1920" height="1080" codecs="avc1.64002a">
+                <SegmentTemplate media="v-$Number$.m4s" timescale="1000" duration="2000" />
+              </Representation>
+            </AdaptationSet>
+            <AdaptationSet mimeType="audio/mp4" contentType="audio" lang="en">
+              <Representation id="a1" bandwidth="128000" codecs="mp4a.40.2">
+                <SegmentTemplate media="a-$Number$.m4s" timescale="1000" duration="2000" />
+              </Representation>
+            </AdaptationSet>
+            <AdaptationSet mimeType="text/vtt" contentType="text" lang="en">
+              <Representation id="sub-en" bandwidth="1000">
+                <SegmentTemplate media="sub-en-$Number$.vtt" timescale="1000" duration="2000" />
+              </Representation>
+            </AdaptationSet>
+            <AdaptationSet mimeType="application/ttml+xml" contentType="caption" lang="es">
+              <Representation id="cc-es" bandwidth="1000">
+                <SegmentTemplate media="cc-es-$Number$.ttml" timescale="1000" duration="2000" />
+              </Representation>
+            </AdaptationSet>
+          </Period>
+        </MPD>
+        """
+
+        let options = try StreamQualityInspector.inspectDASH(
+            manifestText: subMPD,
+            baseURL: dashURL
+        )
+
+        // 1 video + 1 audio + 2 text tracks (sub + cc) = 4 options
+        XCTAssertEqual(options.count, 4)
+
+        let video = options[0]
+        XCTAssertEqual(video.qualityBadge, "1080p")
+        XCTAssertTrue(video.hasSubtitles)
+        XCTAssertEqual(video.subtitleText, "Subtitles (EN, ES)")
+
+        let audio = options[1]
+        XCTAssertTrue(audio.isAudioOnly)
+        XCTAssertEqual(audio.label, "Audio Only (English)")
+
+        let subOption = options.first { $0.qualityBadge == "SUB" }
+        XCTAssertNotNil(subOption)
+        XCTAssertEqual(subOption?.label, "Subtitles (English)")
+        XCTAssertTrue(subOption?.hasSubtitles == true)
+        XCTAssertFalse(subOption?.hasVideo == true)
+        XCTAssertFalse(subOption?.hasAudio == true)
+
+        let ccOption = options.first { $0.qualityBadge == "CC" }
+        XCTAssertNotNil(ccOption)
+        XCTAssertEqual(ccOption?.label, "Closed Captions (Spanish)")
+        XCTAssertTrue(ccOption?.hasSubtitles == true)
+    }
+
     // MARK: - Single Media Playlist Fallback
 
     func testSingleMediaPlaylistProducesDefaultStreamQuality() throws {

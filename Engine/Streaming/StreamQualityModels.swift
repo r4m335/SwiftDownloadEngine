@@ -21,6 +21,8 @@ public struct StreamQualityOption: Identifiable, Sendable, Equatable, Hashable {
     public let hasAudio: Bool
     public let hasVideo: Bool
     public let isAudioOnly: Bool
+    public let hasSubtitles: Bool
+    public let subtitleText: String?
     public let estimatedSizeBytes: Int64?
     public let estimatedSizeText: String?
     public let uri: URL
@@ -47,6 +49,8 @@ public struct StreamQualityOption: Identifiable, Sendable, Equatable, Hashable {
         hasAudio: Bool = true,
         hasVideo: Bool = true,
         isAudioOnly: Bool = false,
+        hasSubtitles: Bool = false,
+        subtitleText: String? = nil,
         estimatedSizeBytes: Int64? = nil,
         estimatedSizeText: String? = nil,
         uri: URL,
@@ -72,6 +76,8 @@ public struct StreamQualityOption: Identifiable, Sendable, Equatable, Hashable {
         self.hasAudio = hasAudio
         self.hasVideo = hasVideo
         self.isAudioOnly = isAudioOnly
+        self.hasSubtitles = hasSubtitles
+        self.subtitleText = subtitleText
         self.estimatedSizeBytes = estimatedSizeBytes
         self.estimatedSizeText = estimatedSizeText
         self.uri = uri
@@ -97,6 +103,9 @@ public struct StreamQualityOption: Identifiable, Sendable, Equatable, Hashable {
     public var badgeColor: Color {
         if isAudioOnly {
             return .orange
+        }
+        if hasSubtitles && !hasVideo && !hasAudio {
+            return .teal
         }
         guard let height = resolution?.height else {
             return .blue
@@ -227,6 +236,8 @@ public struct StreamQualityOption: Identifiable, Sendable, Equatable, Hashable {
             hasAudio: hasAudio,
             hasVideo: true,
             isAudioOnly: false,
+            hasSubtitles: variant.subtitlesGroup != nil,
+            subtitleText: variant.subtitlesGroup != nil ? "Subtitles" : nil,
             estimatedSizeBytes: estBytes,
             estimatedSizeText: estText,
             uri: variant.uri,
@@ -282,6 +293,8 @@ public struct StreamQualityOption: Identifiable, Sendable, Equatable, Hashable {
         audioRep: DASHRepresentation? = nil,
         baseURL: URL,
         durationSeconds: Double? = nil,
+        hasSubtitles: Bool = false,
+        subtitleText: String? = nil,
         isLive: Bool = false
     ) -> StreamQualityOption {
         let bw = rep.bandwidth ?? 1_000_000
@@ -336,6 +349,8 @@ public struct StreamQualityOption: Identifiable, Sendable, Equatable, Hashable {
             hasAudio: audioRep != nil || aCodec != nil,
             hasVideo: true,
             isAudioOnly: false,
+            hasSubtitles: hasSubtitles,
+            subtitleText: subtitleText,
             estimatedSizeBytes: estBytes,
             estimatedSizeText: estText,
             uri: targetURL,
@@ -370,6 +385,8 @@ public struct StreamQualityOption: Identifiable, Sendable, Equatable, Hashable {
             hasAudio: true,
             hasVideo: true,
             isAudioOnly: false,
+            hasSubtitles: false,
+            subtitleText: nil,
             estimatedSizeBytes: nil,
             estimatedSizeText: "Size unavailable",
             uri: url,
@@ -379,13 +396,13 @@ public struct StreamQualityOption: Identifiable, Sendable, Equatable, Hashable {
         )
     }
 
-    // MARK: - Private Codec & Badge Helpers
+    // MARK: - Codec & Badge Helpers
 
-    private static func formatBandwidthAsBadge(_ bandwidth: Int64) -> String {
+    public static func formatBandwidthAsBadge(_ bandwidth: Int64) -> String {
         formatBandwidth(bandwidth)
     }
 
-    private static func extractVideoCodec(_ codecs: String?) -> String? {
+    public static func extractVideoCodec(_ codecs: String?) -> String? {
         guard let codecs = codecs?.lowercased() else { return nil }
         if codecs.contains("avc1") || codecs.contains("h264") { return "H.264" }
         if codecs.contains("hvc1") || codecs.contains("hev1") || codecs.contains("h265") { return "HEVC" }
@@ -394,7 +411,7 @@ public struct StreamQualityOption: Identifiable, Sendable, Equatable, Hashable {
         return nil
     }
 
-    private static func extractAudioCodec(_ codecs: String?) -> String? {
+    public static func extractAudioCodec(_ codecs: String?) -> String? {
         guard let codecs = codecs?.lowercased() else { return nil }
         if codecs.contains("mp4a") || codecs.contains("aac") { return "AAC" }
         if codecs.contains("ac-3") || codecs.contains("ac3") { return "AC-3" }

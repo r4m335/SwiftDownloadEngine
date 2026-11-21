@@ -352,7 +352,7 @@ public actor StreamManifestResourceExpander {
         var variants: [WebpageResource] = []
         var items: [HLSVariantStreamItem] = []
         var seenFilenames = Set<String>()
-        let hasPrimaryVideo = options.contains { !$0.isIFrameOnly && !$0.isAudioOnly }
+        let hasPrimaryVideo = options.contains { $0.hasVideo && !$0.isIFrameOnly }
 
         for option in options {
             let isLive = option.isLive || masterResource.isLive
@@ -398,8 +398,8 @@ public actor StreamManifestResourceExpander {
                 bitrateText: bitrateText,
                 hasAudio: option.hasAudio,
                 audioText: option.audioCodec ?? (option.hasAudio ? "Audio" : nil),
-                hasSubtitles: false,
-                subtitleText: nil,
+                hasSubtitles: option.hasSubtitles,
+                subtitleText: option.subtitleText,
                 codecs: option.codecs,
                 videoCodec: option.videoCodec,
                 estimatedSizeBytes: isLive ? nil : option.estimatedSizeBytes,
@@ -441,20 +441,44 @@ public actor StreamManifestResourceExpander {
                 )
                 variants.append(resource)
             } else {
-                var filename = "\(baseStem)-\(safeQualityLabel).mp4"
+                let isSubtitle = option.hasSubtitles && !option.hasVideo && !option.hasAudio
+                let manifestKind = option.manifestKind
+                let kindPrefix = manifestKind == .dash ? "DASH" : "HLS"
+                let fileExt = isSubtitle ? "vtt" : "mp4"
+
+                var filename = "\(baseStem)-\(safeQualityLabel).\(fileExt)"
                 if seenFilenames.contains(filename.lowercased()) {
                     let disambiguator = option.bitrateText.replacingOccurrences(of: " ", with: "")
-                    filename = "\(baseStem)-\(safeQualityLabel)-\(disambiguator).mp4"
+                    filename = "\(baseStem)-\(safeQualityLabel)-\(disambiguator).\(fileExt)"
                 }
                 seenFilenames.insert(filename.lowercased())
 
                 let title: String = {
                     let livePrefix = isLive ? "[LIVE] " : ""
-                    if option.isAudioOnly {
-                        return "\(livePrefix)HLS Audio (\(option.audioCodec ?? "AAC"))"
+                    if isSubtitle {
+                        return "\(kindPrefix) \(option.label)"
+                    } else if option.isAudioOnly {
+                        return "\(livePrefix)\(kindPrefix) Audio (\(option.audioCodec ?? "AAC"))"
                     } else {
-                        return "\(livePrefix)HLS \(qualityLabel)"
+                        return "\(livePrefix)\(kindPrefix) \(qualityLabel)"
                     }
+                }()
+
+                let resourceType: WebpageResourceType = {
+                    if isSubtitle {
+                        return .other
+                    } else if option.isAudioOnly {
+                        return .audio
+                    } else {
+                        return .video
+                    }
+                }()
+
+                let mimeType: String = {
+                    if isSubtitle {
+                        return "text/vtt"
+                    }
+                    return masterResource.mimeType ?? (manifestKind == .dash ? "application/dash+xml" : "application/vnd.apple.mpegurl")
                 }()
 
                 let isSupported = !optionDrm.isProtected && !isLive
@@ -473,8 +497,8 @@ public actor StreamManifestResourceExpander {
                     url: masterResource.url,
                     title: title,
                     suggestedFilename: filename,
-                    resourceType: option.isAudioOnly ? .audio : .video,
-                    mimeType: masterResource.mimeType ?? "application/vnd.apple.mpegurl",
+                    resourceType: resourceType,
+                    mimeType: mimeType,
                     estimatedSize: isLive ? nil : option.estimatedSizeBytes,
                     isSupported: isSupported,
                     unsupportedReason: unsupportedReason,
