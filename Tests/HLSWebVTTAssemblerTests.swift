@@ -256,4 +256,117 @@ final class HLSWebVTTAssemblerTests: XCTestCase {
 
         XCTAssertTrue(assembled.contains("line:50% position:20% align:start"))
     }
+
+    func testMultiSegmentWithoutTimestampMapPreservesSpanningCueWithoutDoubleShifting() {
+        let seg1 = """
+        WEBVTT
+
+        00:00:08.500 --> 00:00:12.000
+        Spanning speech across segments
+        """
+
+        let seg2 = """
+        WEBVTT
+
+        00:00:08.500 --> 00:00:12.000
+        Spanning speech across segments
+
+        00:00:14.000 --> 00:00:17.000
+        Later cue in segment 2
+        """
+
+        let assembled = HLSWebVTTAssembler.assemble(segments: [
+            WebVTTSegmentInput(text: seg1, playlistStartTime: 0.0, duration: 10.0),
+            WebVTTSegmentInput(text: seg2, playlistStartTime: 10.0, duration: 10.0)
+        ])
+
+        // The spanning cue must remain at 00:00:08.500 --> 00:00:12.000 and not be shifted to 18.5s
+        XCTAssertTrue(assembled.contains("00:00:08.500 --> 00:00:12.000"))
+        XCTAssertFalse(assembled.contains("00:00:18.500 --> 00:00:22.000"))
+
+        let spanningCount = assembled.components(separatedBy: "Spanning speech across segments").count - 1
+        XCTAssertEqual(spanningCount, 1, "Spanning cue must be deduplicated across boundary")
+
+        // Later cue in segment 2 must not be shifted by an extra 10s to 24s
+        XCTAssertTrue(assembled.contains("00:00:14.000 --> 00:00:17.000"))
+        XCTAssertFalse(assembled.contains("00:00:24.000 --> 00:00:27.000"))
+    }
+
+    func testMultiSegmentWithoutTimestampMapPreservesSpanningCueWhenOnlyCueInSegment() {
+        let seg1 = """
+        WEBVTT
+
+        00:00:08.500 --> 00:00:12.000
+        Solo spanning cue
+        """
+
+        let seg2 = """
+        WEBVTT
+
+        00:00:08.500 --> 00:00:12.000
+        Solo spanning cue
+        """
+
+        let assembled = HLSWebVTTAssembler.assemble(segments: [
+            WebVTTSegmentInput(text: seg1, playlistStartTime: 0.0, duration: 10.0),
+            WebVTTSegmentInput(text: seg2, playlistStartTime: 10.0, duration: 10.0)
+        ])
+
+        XCTAssertTrue(assembled.contains("00:00:08.500 --> 00:00:12.000"))
+        XCTAssertFalse(assembled.contains("00:00:18.500 --> 00:00:22.000"))
+        let count = assembled.components(separatedBy: "Solo spanning cue").count - 1
+        XCTAssertEqual(count, 1)
+    }
+
+    func testMultiSegmentWithoutTimestampMapPreservesAudioLeadInCue() {
+        let seg1 = """
+        WEBVTT
+
+        00:00:02.000 --> 00:00:05.000
+        Opening dialogue
+        """
+
+        // Cue starting 0.8s before segment start (playlistStartTime = 10.0s) due to audio lead-in
+        let seg2 = """
+        WEBVTT
+
+        00:00:09.200 --> 00:00:13.000
+        Lead-in dialogue
+        """
+
+        let assembled = HLSWebVTTAssembler.assemble(segments: [
+            WebVTTSegmentInput(text: seg1, playlistStartTime: 0.0, duration: 10.0),
+            WebVTTSegmentInput(text: seg2, playlistStartTime: 10.0, duration: 10.0)
+        ])
+
+        // Must not shift the 9.2s cue to 19.2s
+        XCTAssertTrue(assembled.contains("00:00:09.200 --> 00:00:13.000"))
+        XCTAssertFalse(assembled.contains("00:00:19.200 --> 00:00:23.000"))
+    }
+
+    func testMultiSegmentWithoutTimestampMapLateSegmentSpanningCueNotShifted() {
+        let seg1 = """
+        WEBVTT
+
+        00:00:45.000 --> 00:00:48.000
+        Earlier dialogue
+        """
+
+        // In segment starting at 60s (dur 10s), cue starts at 58.0s and ends at 62.0s
+        let seg2 = """
+        WEBVTT
+
+        00:00:58.000 --> 00:01:02.000
+        Late spanning dialogue
+        """
+
+        let assembled = HLSWebVTTAssembler.assemble(segments: [
+            WebVTTSegmentInput(text: seg1, playlistStartTime: 0.0, duration: 50.0),
+            WebVTTSegmentInput(text: seg2, playlistStartTime: 60.0, duration: 10.0)
+        ])
+
+        // Must remain at 58s..62s and not be shifted to 118s..122s
+        XCTAssertTrue(assembled.contains("00:00:58.000 --> 00:01:02.000"))
+        XCTAssertFalse(assembled.contains("00:01:58.000 --> 00:02:02.000"))
+    }
 }

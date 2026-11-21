@@ -300,6 +300,16 @@ public enum HLSWebVTTAssembler {
             }
         }
 
+        // Step 1b: Determine whether unmapped segments in this playlist use absolute presentation timestamps
+        let streamIsAbsolute = parsedDocuments.enumerated().contains { idx, doc in
+            guard doc.timestampMap == nil else { return false }
+            let seg = segments[idx]
+            guard seg.playlistStartTime > 0.001 else { return false }
+            return doc.cues.contains { cue in
+                cue.startTime >= (seg.playlistStartTime - 0.5) || cue.startTime > (seg.duration + 2.0)
+            }
+        }
+
         // Step 2: Time-shift all cues to presentation time
         var allCues: [WebVTTCue] = []
         var headerBlocks: [String] = []
@@ -332,14 +342,43 @@ public enum HLSWebVTTAssembler {
                     ))
                 }
             } else {
-                // No X-TIMESTAMP-MAP: Shift by cumulative playlist time if cues are segment-relative
+                // No X-TIMESTAMP-MAP: Shift by cumulative playlist time if cues are segment-relative.
+                // Avoid erroneously shifting valid absolute cues (e.g. spanning cues, lead-ins, or
+                // segments where earlier cues start slightly before the playlist start boundary).
                 let isSegmentRelative: Bool
-                if let firstCue = doc.cues.first {
-                    // If first cue starts earlier than the segment start (with a small 0.5s tolerance),
-                    // the segment starts at 00:00.000 relative to itself.
-                    isSegmentRelative = firstCue.startTime < (seg.playlistStartTime - 0.5)
-                } else {
+                if seg.playlistStartTime <= 0.001 || doc.cues.isEmpty {
                     isSegmentRelative = false
+                } else if streamIsAbsolute {
+                    // In a stream with absolute timestamps, cues are already on the presentation timeline.
+                    // Only if all cues in this segment start near 0:00 and end well before playlistStartTime
+                    // could it be an isolated segment-relative block.
+                    let maxEnd = doc.cues.map(\.endTime).max() ?? 0.0
+                    isSegmentRelative = maxEnd <= (seg.playlistStartTime * 0.5)
+                } else {
+                    let minStart = doc.cues.map(\.startTime).min() ?? 0.0
+                    let maxStart = doc.cues.map(\.startTime).max() ?? 0.0
+                    let maxEnd = doc.cues.map(\.endTime).max() ?? 0.0
+
+                    // If any cue starts at/after playlistStartTime (with 0.5s tolerance) or exceeds segment duration:
+                    if maxStart >= (seg.playlistStartTime - 0.5) || maxStart > (seg.duration + 2.0) {
+                        isSegmentRelative = false
+                    } else if maxEnd > seg.playlistStartTime && (seg.playlistStartTime - minStart) <= max(seg.duration, 15.0) {
+                        // Cue spans across segment boundary: check for matching cue in previous segment or close lead-in
+                        let previousDoc = idx > 0 ? parsedDocuments[idx - 1] : nil
+                        let hasMatchingPreviousCue = previousDoc?.cues.contains { prevCue in
+                            doc.cues.contains { cue in
+                                cue.text.trimmingCharacters(in: .whitespacesAndNewlines) == prevCue.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                            }
+                        } ?? false
+
+                        if hasMatchingPreviousCue || (seg.playlistStartTime - minStart) <= 2.0 {
+                            isSegmentRelative = false
+                        } else {
+                            isSegmentRelative = true
+                        }
+                    } else {
+                        isSegmentRelative = true
+                    }
                 }
 
                 let shift = isSegmentRelative ? seg.playlistStartTime : 0.0
