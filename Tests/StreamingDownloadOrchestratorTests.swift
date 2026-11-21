@@ -2421,6 +2421,7 @@ final class StreamingDownloadOrchestratorTests: XCTestCase {
         XCTAssertTrue(savedContent.contains("00:00:08.000 --> 00:00:12.000"))
         let occurrences = savedContent.components(separatedBy: "Spanning cue").count - 1
         XCTAssertEqual(occurrences, 1, "Spanning cue must not be duplicated")
+    }
 
     func testDownloadAndSaveSubtitle_RejectsHTMLResponsesAndAvoidsWritingBrokenVTT() async throws {
         let errorURL = URL(string: "https://auth.example.com/subtitles/error.vtt")!
