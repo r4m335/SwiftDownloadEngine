@@ -1555,8 +1555,7 @@ public actor StreamingDownloadOrchestrator {
         }
     }
 
-    public func prepare(candidate: StreamingManifestCandidate) async throws -> StreamingTransferProposal {
-        let candidate = candidate.withRefreshedCookies()
+    private func proposalFingerprint(for candidate: StreamingManifestCandidate) -> String {
         let candidateMIME = candidate.mimeType ?? ""
         var fingerprintComponents = [
             candidate.url.absoluteString,
@@ -1581,9 +1580,14 @@ public actor StreamingDownloadOrchestrator {
             let cookieDesc = snapshot.allCookies.map { "\($0.name)=\($0.value)" }.sorted().joined(separator: ";")
             fingerprintComponents.append(cookieDesc)
         }
-        let metadataFingerprint = EngineSHA256.hash(
+        return EngineSHA256.hash(
             data: Data(fingerprintComponents.joined(separator: "|").utf8)
         )
+    }
+
+    public func prepare(candidate: StreamingManifestCandidate) async throws -> StreamingTransferProposal {
+        let candidate = candidate.withRefreshedCookies()
+        let metadataFingerprint = proposalFingerprint(for: candidate)
         if let existing = proposals[metadataFingerprint] {
             return existing
         }
@@ -2799,11 +2803,9 @@ public actor StreamingDownloadOrchestrator {
                 // Retry once with refreshed manifest tokens in case the session expired during pause
                 PipelineLogger.shared.log("\(pipelineTag) Segment \(resource.identity.order) encountered authorization/expiration error: \(error.localizedDescription). Attempting token refresh...")
                 if let candidate = candidatesByTransfer[proposal.transferID] {
-                    let candidateMIME = candidate.mimeType ?? ""
-                    let metadataFingerprint = EngineSHA256.hash(
-                        data: Data((candidate.url.absoluteString + "|" + candidateMIME).utf8)
-                    )
-                    proposals.removeValue(forKey: metadataFingerprint)
+                    let oldFingerprint = proposalFingerprint(for: candidate)
+                    proposals.removeValue(forKey: oldFingerprint)
+                    proposals.removeValue(forKey: proposal.transferID)
 
                     // Fetch fresh dynamic cookies and refresh candidate context
                     let dynamicFresh = await DownloadRequestEnricher.dynamicCookies(for: candidate.url)
@@ -2812,6 +2814,8 @@ public actor StreamingDownloadOrchestrator {
                         freshCookies: dynamicFresh.compactMap(BrowserCookie.init(from:))
                     )
                     candidatesByTransfer[proposal.transferID] = freshCandidate
+                    let freshFingerprint = proposalFingerprint(for: freshCandidate)
+                    proposals.removeValue(forKey: freshFingerprint)
 
                     if let freshProposal = try? await prepare(candidate: freshCandidate),
                        let freshResource = freshProposal.resources.first(where: { $0.identity.order == resource.identity.order }) {
