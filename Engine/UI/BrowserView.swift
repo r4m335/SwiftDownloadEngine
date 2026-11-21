@@ -3561,8 +3561,8 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                         return BrowserHeaderFilter.isApprovedForwardedHeader(key) &&
                             key != "cookie" && key != "referer" && key != "user-agent"
                     },
-                    allowedCredentialOrigins: allowedCredentialOrigins,
-                    source: source
+                    source: source,
+                    allowedCredentialOrigins: allowedCredentialOrigins
                 )
                 DispatchQueue.main.async {
                     completion(context)
@@ -3599,8 +3599,8 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                     pageURL: snapshot.pageURL ?? currentURL,
                     userAgent: snapshot.userAgent.isEmpty ? nil : snapshot.userAgent,
                     cookies: matchedCookies,
-                    allowedCredentialOrigins: resource.requestContext?.allowedCredentialOrigins ?? [],
-                    source: .webpageResource
+                    source: .webpageResource,
+                    allowedCredentialOrigins: resource.requestContext?.allowedCredentialOrigins ?? []
                 )
             }
 
