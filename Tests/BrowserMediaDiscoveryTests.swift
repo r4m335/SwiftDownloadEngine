@@ -1026,6 +1026,165 @@ final class BrowserMediaDiscoveryTests: XCTestCase {
         XCTAssertTrue(reconstructedMaster.title.contains("(Master Playlist)"), "Master title should be annotated")
         XCTAssertFalse(reconstructedMaster.title.contains("(Master Playlist) (Master Playlist)"), "Master Playlist annotation must not be duplicated")
     }
+
+    @MainActor
+    func testDirectResourceTokenRefreshUpdatesURLAndReconstructsRequestContext() {
+        let vm = BrowserViewModel()
+        let oldURL = URL(string: "https://cdn.example.com/video.mp4?token=old&expires=1000")!
+        let newURL = URL(string: "https://cdn.example.com/video.mp4?token=new&expires=9999999999")!
+
+        let initialContext = BrowserRequestContext(
+            url: oldURL,
+            pageURL: URL(string: "https://example.com/watch")!,
+            userAgent: "Mozilla/5.0 Custom",
+            cookies: [BrowserCookie(name: "auth", value: "token123", domain: "cdn.example.com")]
+        )
+
+        let resource = WebpageResource(
+            id: "direct-1",
+            url: oldURL,
+            title: "video.mp4",
+            suggestedFilename: "video.mp4",
+            resourceType: .video,
+            mimeType: "video/mp4",
+            requestContext: initialContext
+        )
+
+        let candidate = BrowserMediaCandidate(
+            id: "cand-1",
+            url: newURL,
+            rawURL: newURL.absoluteString,
+            kind: .directMedia,
+            suggestedFilename: "video.mp4",
+            availability: .ready,
+            requestContext: initialContext
+        )
+
+        vm.discoveredResources = [resource]
+        vm.setMediaCandidatesForTesting([candidate])
+
+        vm.refreshResourceToken(for: resource)
+
+        guard let updated = vm.discoveredResources.first(where: { $0.id == resource.id }) else {
+            XCTFail("Updated resource not found")
+            return
+        }
+
+        XCTAssertEqual(updated.url, newURL, "Direct resource url must be refreshed to newURL")
+        XCTAssertEqual(updated.requestContext?.url, newURL, "Browser request context must be reconstructed targeting newURL")
+        XCTAssertEqual(updated.requestContext?.pageURL, URL(string: "https://example.com/watch")!)
+    }
+
+    @MainActor
+    func testVariantTokenRefreshUpdatesExactURIAndReconstructsRequestContext() {
+        let vm = BrowserViewModel()
+        let masterOldURL = URL(string: "https://cdn.example.com/master.m3u8?token=oldMaster&expires=1000")!
+        let masterNewURL = URL(string: "https://cdn.example.com/master.m3u8?token=newMaster&expires=9999999999")!
+        let variantOldURL = URL(string: "https://cdn.example.com/720p.m3u8?token=oldVar&expires=1000")!
+        let variantNewURL = URL(string: "https://cdn.example.com/720p.m3u8?token=newVar&expires=9999999999")!
+
+        let initialContext = BrowserRequestContext(
+            url: masterOldURL,
+            pageURL: URL(string: "https://example.com/watch")!,
+            userAgent: "Mozilla/5.0 Custom"
+        )
+
+        let variantResource = WebpageResource(
+            id: "master-variant-720",
+            url: masterOldURL,
+            title: "HLS 720p",
+            suggestedFilename: "master-720p.mp4",
+            resourceType: .video,
+            mimeType: "application/vnd.apple.mpegurl",
+            requestContext: initialContext,
+            hlsVariantPreferences: HLSVariantSelectionPreferences(maximumBandwidth: 2500000, maximumHeight: 720, exactURI: variantOldURL)
+        )
+
+        let variantItem = HLSVariantStreamItem(
+            id: variantResource.id,
+            masterURL: masterOldURL,
+            variantURL: variantOldURL,
+            bandwidth: 2500000,
+            qualityLabel: "720p",
+            bitrateText: "2.5 Mbps"
+        )
+
+        let variantCandidate = BrowserMediaCandidate(
+            id: "cand-var",
+            url: variantNewURL,
+            rawURL: variantNewURL.absoluteString,
+            kind: .hlsManifest,
+            suggestedFilename: "720p.m3u8",
+            availability: .ready
+        )
+
+        let masterCandidate = BrowserMediaCandidate(
+            id: "cand-master",
+            url: masterNewURL,
+            rawURL: masterNewURL.absoluteString,
+            kind: .hlsManifest,
+            suggestedFilename: "master.m3u8",
+            availability: .ready
+        )
+
+        vm.discoveredResources = [variantResource]
+        vm.variantStreamItems[variantResource.id] = variantItem
+        vm.setMediaCandidatesForTesting([variantCandidate, masterCandidate])
+
+        vm.refreshResourceToken(for: variantResource)
+
+        guard let updated = vm.discoveredResources.first(where: { $0.id == variantResource.id }) else {
+            XCTFail("Updated variant resource not found")
+            return
+        }
+
+        XCTAssertEqual(updated.hlsVariantPreferences?.exactURI, variantNewURL, "Variant exactURI must be refreshed")
+        XCTAssertEqual(updated.url, masterNewURL, "Master URL on variant must be refreshed")
+        XCTAssertEqual(updated.requestContext?.url, variantNewURL, "Reconstructed context url must target the refreshed variant exactURI")
+        XCTAssertEqual(vm.variantStreamItems[variantResource.id]?.variantURL, variantNewURL, "Variant metadata cache must be updated")
+        XCTAssertEqual(vm.variantStreamItems[variantResource.id]?.masterURL, masterNewURL, "Master URL in metadata cache must be updated")
+    }
+
+    @MainActor
+    func testVariantTokenRefreshPropagatesMasterQueryWhenVariantCandidateNotFound() {
+        let vm = BrowserViewModel()
+        let masterOldURL = URL(string: "https://cdn.example.com/master.m3u8?token=oldMaster&expires=1000")!
+        let masterNewURL = URL(string: "https://cdn.example.com/master.m3u8?token=newMaster&expires=9999999999")!
+        let variantOldURL = URL(string: "https://cdn.example.com/720p.m3u8")!
+
+        let variantResource = WebpageResource(
+            id: "master-variant-720-prop",
+            url: masterOldURL,
+            title: "HLS 720p",
+            suggestedFilename: "master-720p.mp4",
+            resourceType: .video,
+            mimeType: "application/vnd.apple.mpegurl",
+            hlsVariantPreferences: HLSVariantSelectionPreferences(maximumBandwidth: 2500000, maximumHeight: 720, exactURI: variantOldURL)
+        )
+
+        let masterCandidate = BrowserMediaCandidate(
+            id: "cand-master-only",
+            url: masterNewURL,
+            rawURL: masterNewURL.absoluteString,
+            kind: .hlsManifest,
+            suggestedFilename: "master.m3u8",
+            availability: .ready
+        )
+
+        vm.discoveredResources = [variantResource]
+        vm.setMediaCandidatesForTesting([masterCandidate])
+
+        vm.refreshResourceToken(for: variantResource)
+
+        guard let updated = vm.discoveredResources.first(where: { $0.id == variantResource.id }) else {
+            XCTFail("Updated variant resource not found")
+            return
+        }
+
+        XCTAssertEqual(updated.url, masterNewURL, "Master URL must be updated")
+        XCTAssertEqual(updated.hlsVariantPreferences?.exactURI?.query, "token=newMaster&expires=9999999999", "Parent master query must be propagated to variant exactURI")
+        XCTAssertEqual(updated.requestContext?.url, updated.hlsVariantPreferences?.exactURI, "Context url must match the refreshed exactURI")
+    }
     #endif
 }
 

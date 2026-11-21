@@ -116,6 +116,9 @@ public final class BrowserViewModel: NSObject, ObservableObject {
     @Published public var selectedResourceIDs: Set<String> = []
     @Published public var resourceScanError: String? = nil
     @Published public private(set) var mediaCandidates: [BrowserMediaCandidate] = []
+    public func setMediaCandidatesForTesting(_ candidates: [BrowserMediaCandidate]) {
+        self.mediaCandidates = candidates
+    }
     public let mediaDiscoveryBridge = BrowserMediaDiscoveryBridge()
 
     // Streaming proposal/execution state. The orchestrator remains the only
@@ -1866,56 +1869,138 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         onOpenAddDownload?(resource.url)
     }
 
+    private func findNewerCandidate(for url: URL) -> BrowserMediaCandidate? {
+        mediaCandidates
+            .filter { cand in
+                guard let candURL = cand.url, !cand.isExpired else { return false }
+                return candURL.host?.lowercased() == url.host?.lowercased() &&
+                       candURL.path == url.path &&
+                       candURL != url
+            }
+            .max(by: { $0.lastObserved < $1.lastObserved })
+    }
+
     /// Refreshes expired or expiring signed media tokens from the active webpage.
     public func refreshResourceToken(for resource: WebpageResource) {
-        let targetURL = resource.hlsVariantPreferences?.exactURI ?? resource.url
-        if let newer = mediaCandidates.first(where: { cand in
-            cand.url != nil && cand.url != targetURL &&
-            cand.url?.host == targetURL.host &&
-            cand.url?.path == targetURL.path &&
-            !cand.isExpired
-        }) {
-            if let newURL = newer.url {
-                var updatedResources = discoveredResources
-                if let idx = updatedResources.firstIndex(where: { $0.id == resource.id }) {
-                    let updatedPreferences: HLSVariantSelectionPreferences? = {
-                        if let currentPrefs = resource.hlsVariantPreferences {
-                            return HLSVariantSelectionPreferences(
-                                maximumBandwidth: currentPrefs.maximumBandwidth,
-                                maximumWidth: currentPrefs.maximumWidth,
-                                maximumHeight: currentPrefs.maximumHeight,
-                                exactURI: newURL
-                            )
-                        }
-                        return nil
-                    }()
-                    let updated = WebpageResource(
-                        id: resource.id,
-                        url: resource.hlsVariantPreferences != nil ? resource.url : newURL,
-                        title: resource.title,
-                        suggestedFilename: resource.suggestedFilename,
-                        resourceType: resource.resourceType,
-                        mimeType: resource.mimeType,
-                        estimatedSize: resource.estimatedSize,
-                        isSupported: resource.isSupported,
-                        unsupportedReason: resource.unsupportedReason,
-                        requestContext: newer.requestContext ?? resource.requestContext,
-                        manifestText: resource.manifestText,
-                        hlsVariantPreferences: updatedPreferences ?? resource.hlsVariantPreferences,
-                        dashVideoRepresentationID: resource.dashVideoRepresentationID,
-                        dashAudioRepresentationID: resource.dashAudioRepresentationID,
-                        isDRMProtected: resource.isDRMProtected,
-                        drmProtectionType: resource.drmProtectionType,
-                        discoveredAt: resource.discoveredAt,
-                        isLive: resource.isLive
-                    )
-                    updatedResources[idx] = updated
-                    discoveredResources = updatedResources
+        let isVariant = resource.hlsVariantPreferences != nil
+        let exactURI = resource.hlsVariantPreferences?.exactURI
+        let masterURL = resource.url
+
+        var refreshedExactURI: URL? = nil
+        var refreshedMasterURL: URL? = nil
+        var candidateContext: BrowserRequestContext? = nil
+
+        if isVariant {
+            // 1. If variant has an exactURI, look for a newer candidate matching the variant URL
+            if let exact = exactURI, let newerVariant = findNewerCandidate(for: exact) {
+                refreshedExactURI = newerVariant.url
+                candidateContext = newerVariant.requestContext
+            }
+
+            // 2. Also check if the master manifest URL has a newer candidate
+            if let newerMaster = findNewerCandidate(for: masterURL) {
+                refreshedMasterURL = newerMaster.url
+                if candidateContext == nil {
+                    candidateContext = newerMaster.requestContext
                 }
-                promptDownloadFromInspector(for: resource)
-                return
+                // If variant's exactURI did not match a separate candidate, propagate query token from master
+                if refreshedExactURI == nil, let exact = exactURI, let parentQuery = newerMaster.url?.query {
+                    refreshedExactURI = exact.mergingParentQuery(parentQuery)
+                }
+            }
+        } else {
+            // Direct resource (or unexpanded master manifest): refresh resource.url
+            if let newerDirect = findNewerCandidate(for: resource.url) {
+                refreshedMasterURL = newerDirect.url
+                candidateContext = newerDirect.requestContext
             }
         }
+
+        let didRefresh = (isVariant && (refreshedExactURI != nil || refreshedMasterURL != nil)) || (!isVariant && refreshedMasterURL != nil)
+        if didRefresh {
+            let targetURL = isVariant ? (refreshedExactURI ?? exactURI ?? refreshedMasterURL ?? masterURL) : (refreshedMasterURL ?? resource.url)
+            let baseContext = candidateContext ?? resource.requestContext
+            let effectivePageURL = baseContext?.pageURL ?? currentURL ?? URL(string: "about:blank")!
+            let effectiveUserAgent = baseContext?.userAgent ?? BrowserViewModel.defaultDesktopUserAgent
+            let effectiveCookies = baseContext?.cookies ?? []
+            let effectiveCustomHeaders = baseContext?.customHeaders ?? [:]
+            let reconstructedContext = BrowserRequestContext(
+                url: targetURL,
+                pageURL: effectivePageURL,
+                userAgent: effectiveUserAgent,
+                cookies: effectiveCookies,
+                customHeaders: effectiveCustomHeaders,
+                captureDate: Date(),
+                source: baseContext?.source ?? .webpageResource
+            )
+
+            let updatedPreferences: HLSVariantSelectionPreferences? = {
+                if let currentPrefs = resource.hlsVariantPreferences {
+                    return HLSVariantSelectionPreferences(
+                        maximumBandwidth: currentPrefs.maximumBandwidth,
+                        maximumWidth: currentPrefs.maximumWidth,
+                        maximumHeight: currentPrefs.maximumHeight,
+                        exactURI: refreshedExactURI ?? currentPrefs.exactURI
+                    )
+                }
+                return nil
+            }()
+
+            let updated = WebpageResource(
+                id: resource.id,
+                url: isVariant ? (refreshedMasterURL ?? resource.url) : (refreshedMasterURL ?? resource.url),
+                title: resource.title,
+                suggestedFilename: resource.suggestedFilename,
+                resourceType: resource.resourceType,
+                mimeType: resource.mimeType,
+                estimatedSize: resource.estimatedSize,
+                isSupported: resource.isSupported,
+                unsupportedReason: resource.unsupportedReason,
+                requestContext: reconstructedContext,
+                manifestText: resource.manifestText,
+                hlsVariantPreferences: updatedPreferences ?? resource.hlsVariantPreferences,
+                dashVideoRepresentationID: resource.dashVideoRepresentationID,
+                dashAudioRepresentationID: resource.dashAudioRepresentationID,
+                isDRMProtected: resource.isDRMProtected,
+                drmProtectionType: resource.drmProtectionType,
+                discoveredAt: resource.discoveredAt,
+                isLive: resource.isLive
+            )
+
+            if let currentItem = variantStreamItems[resource.id] {
+                variantStreamItems[resource.id] = HLSVariantStreamItem(
+                    id: currentItem.id,
+                    masterURL: refreshedMasterURL ?? currentItem.masterURL,
+                    variantURL: refreshedExactURI ?? currentItem.variantURL,
+                    bandwidth: currentItem.bandwidth,
+                    resolution: currentItem.resolution,
+                    qualityLabel: currentItem.qualityLabel,
+                    resolutionText: currentItem.resolutionText,
+                    bitrateText: currentItem.bitrateText,
+                    hasAudio: currentItem.hasAudio,
+                    audioText: currentItem.audioText,
+                    hasSubtitles: currentItem.hasSubtitles,
+                    subtitleText: currentItem.subtitleText,
+                    codecs: currentItem.codecs,
+                    videoCodec: currentItem.videoCodec,
+                    estimatedSizeBytes: currentItem.estimatedSizeBytes,
+                    estimatedSizeText: currentItem.estimatedSizeText,
+                    isLive: currentItem.isLive,
+                    isIFrameOnly: currentItem.isIFrameOnly,
+                    isLowLatency: currentItem.isLowLatency
+                )
+            }
+
+            var updatedResources = discoveredResources
+            if let idx = updatedResources.firstIndex(where: { $0.id == resource.id }) {
+                updatedResources[idx] = updated
+                discoveredResources = updatedResources
+            }
+
+            promptDownloadFromInspector(for: updated)
+            return
+        }
+
         inspectCurrentPageResources()
     }
 
