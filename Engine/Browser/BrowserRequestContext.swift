@@ -333,20 +333,18 @@ public struct BrowserRequestContext: Sendable, Codable, Hashable {
 
         let matchingCookies: [BrowserCookie] = {
             guard includeCredentials && !isDowngrade else { return [] }
-            if isSameOrigin || isPageOrigin {
-                return cookies.filter { $0.matches(url: dest) }
-            } else if isAllowedOrigin {
-                return cookies.filter { cookie in
-                    if cookie.matches(url: dest) { return true }
-                    if cookie.matches(url: self.url) || (self.pageURL != nil && cookie.matches(url: self.pageURL!)) {
-                        if let exp = cookie.expiresDate, exp < Date() { return false }
-                        if cookie.isSecure && (dest.scheme?.lowercased() ?? "") != "https" { return false }
-                        return true
-                    }
-                    return false
+            return cookies.filter { cookie in
+                // 1. Direct RFC 6265 match (exact host or domain-scoped subdomain match)
+                if cookie.matches(url: dest) {
+                    return true
                 }
-            } else {
-                return []
+                // 2. Verified allowlist cross-origin match: Forward cookies belonging to this context
+                if isAllowedOrigin && (cookie.matches(url: self.url) || (self.pageURL != nil && cookie.matches(url: self.pageURL!))) {
+                    if let exp = cookie.expiresDate, exp < Date() { return false }
+                    if cookie.isSecure && (dest.scheme?.lowercased() ?? "") != "https" { return false }
+                    return true
+                }
+                return false
             }
         }()
         if !matchingCookies.isEmpty {
