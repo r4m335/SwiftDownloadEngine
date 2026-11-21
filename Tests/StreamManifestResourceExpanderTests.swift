@@ -850,6 +850,55 @@ final class StreamManifestResourceExpanderTests: XCTestCase {
         XCTAssertTrue(items[0].isIFrameOnly)
         XCTAssertTrue(items[1].isIFrameOnly)
     }
+
+    func testStandaloneIFramesOnlyPlaylistExpandedAsUnsupportedThumbnailVariant() async {
+        let expander = StreamManifestResourceExpander()
+
+        let iframeMediaPlaylist = """
+        #EXTM3U
+        #EXT-X-VERSION:4
+        #EXT-X-I-FRAMES-ONLY
+        #EXT-X-TARGETDURATION:5
+        #EXTINF:5.0,
+        segment1.ts
+        #EXTINF:5.0,
+        segment2.ts
+        #EXT-X-ENDLIST
+        """
+
+        let master = WebpageResource(
+            id: "standalone-iframe",
+            url: URL(string: "https://video.example.com/standalone_iframe.m3u8")!,
+            title: "Standalone Trickplay",
+            suggestedFilename: "standalone_iframe.m3u8",
+            resourceType: .video,
+            mimeType: "application/vnd.apple.mpegurl",
+            manifestText: iframeMediaPlaylist
+        )
+
+        // 1. Asynchronous expansion
+        let asyncVariants = await expander.expand(manifestResource: master)
+        XCTAssertEqual(asyncVariants.count, 1)
+        let asyncVariant = asyncVariants[0]
+        XCTAssertEqual(asyncVariant.resourceType, .other, "Standalone I-frame playlist must not be classified as complete video")
+        XCTAssertFalse(asyncVariant.isSupported, "Standalone I-frame playlist must not be marked isSupported for full download")
+        XCTAssertNotNil(asyncVariant.unsupportedReason)
+        XCTAssertTrue(asyncVariant.title.contains("Thumbnails/Seek"))
+        XCTAssertTrue(asyncVariant.suggestedFilename.hasSuffix("-thumbnails.m3u8"))
+
+        // 2. Synchronous expansion
+        let (syncVariants, _) = StreamManifestResourceExpander.expandSynchronously(
+            masterResource: master,
+            manifestText: iframeMediaPlaylist
+        )
+        XCTAssertEqual(syncVariants.count, 1)
+        let syncVariant = syncVariants[0]
+        XCTAssertEqual(syncVariant.resourceType, .other)
+        XCTAssertFalse(syncVariant.isSupported)
+        XCTAssertNotNil(syncVariant.unsupportedReason)
+        XCTAssertTrue(syncVariant.title.contains("Thumbnails/Seek"))
+        XCTAssertTrue(syncVariant.suggestedFilename.hasSuffix("-thumbnails.m3u8"))
+    }
 }
 
 // MARK: - Failing URL Protocol Helper for Error Testing

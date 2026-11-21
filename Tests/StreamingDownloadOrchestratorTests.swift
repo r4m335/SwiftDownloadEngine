@@ -3310,6 +3310,40 @@ final class StreamingDownloadOrchestratorTests: XCTestCase {
             }
         }
     }
+
+    func testStreamingDownloadOrchestratorRejectsStandaloneIFrameOnlyMediaPlaylist() async throws {
+        let mediaURL = URL(string: "https://video.example/standalone_iframe.m3u8")!
+        let iframeManifest = """
+        #EXTM3U
+        #EXT-X-VERSION:4
+        #EXT-X-I-FRAMES-ONLY
+        #EXT-X-TARGETDURATION:6
+        #EXTINF:6.0,
+        #EXT-X-BYTERANGE:34000@0
+        segment.ts
+        #EXTINF:6.0,
+        #EXT-X-BYTERANGE:32000@34000
+        segment.ts
+        #EXT-X-ENDLIST
+        """
+
+        let loader = RecordingManifestLoader(data: Data(iframeManifest.utf8), finalURL: mediaURL, mimeType: "application/vnd.apple.mpegurl")
+        let executor = RecordingSegmentExecutor()
+        let orchestrator = StreamingDownloadOrchestrator(manifestLoader: loader, segmentExecutor: executor)
+
+        let candidate = try StreamingManifestCandidate(url: mediaURL, mimeType: "application/vnd.apple.mpegurl")
+
+        do {
+            _ = try await orchestrator.prepare(candidate: candidate)
+            XCTFail("Preparing a standalone I-frame-only media playlist must throw unsupportedIFrameVariant")
+        } catch let err as StreamingDownloadOrchestratorError {
+            if case .hlsVariantSelectionFailed(let selectionError) = err {
+                XCTAssertEqual(selectionError, .unsupportedIFrameVariant)
+            } else {
+                XCTFail("Expected hlsVariantSelectionFailed(.unsupportedIFrameVariant) but got \(err)")
+            }
+        }
+    }
 }
 
 private final class DummyAuthSender: NSObject, URLAuthenticationChallengeSender {

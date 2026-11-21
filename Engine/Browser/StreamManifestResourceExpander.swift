@@ -211,6 +211,46 @@ public actor StreamManifestResourceExpander {
             if options.isEmpty || (options.count == 1 && (options[0].id.hasPrefix("default-") || (options[0].resolution == nil && options[0].hlsVariant == nil))) {
                 let isMediaPlaylist = effectiveText.contains("#EXT-X-TARGETDURATION")
                 let isLive = options.first?.isLive ?? (manifestResource.isLive || (isMediaPlaylist && !effectiveText.contains("#EXT-X-ENDLIST")))
+                let isIFrameOnly = options.first?.isIFrameOnly ?? effectiveText.contains("#EXT-X-I-FRAMES-ONLY")
+
+                if isIFrameOnly {
+                    let baseStem: String = {
+                        let raw = (manifestResource.suggestedFilename as NSString).deletingPathExtension
+                        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+                        return trimmed.isEmpty ? "video" : trimmed
+                    }()
+                    let thumbFilename = "\(baseStem)-IFRAME-thumbnails.m3u8"
+                    let thumbTitle = "\(isLive ? "[LIVE] " : "")HLS IFRAME (Thumbnails/Seek)"
+                    let thumbResource = WebpageResource(
+                        id: manifestResource.id,
+                        url: manifestResource.url,
+                        title: thumbTitle,
+                        suggestedFilename: thumbFilename,
+                        resourceType: .other,
+                        mimeType: manifestResource.mimeType ?? "application/vnd.apple.mpegurl",
+                        estimatedSize: nil,
+                        isSupported: false,
+                        unsupportedReason: "I-frame-only trick-play streams are for seek thumbnails and cannot be downloaded as a complete video.",
+                        requestContext: manifestResource.requestContext,
+                        manifestText: effectiveText.isEmpty ? manifestResource.manifestText : effectiveText,
+                        hlsVariantPreferences: manifestResource.hlsVariantPreferences,
+                        dashVideoRepresentationID: manifestResource.dashVideoRepresentationID,
+                        dashAudioRepresentationID: manifestResource.dashAudioRepresentationID,
+                        isDRMProtected: false,
+                        drmProtectionType: nil,
+                        discoveredAt: manifestResource.discoveredAt,
+                        isLive: isLive
+                    )
+                    return ExpansionResult(
+                        masterURL: url,
+                        manifestText: effectiveText,
+                        options: options,
+                        variants: [thumbResource],
+                        variantStreamItems: [],
+                        isExpanded: false
+                    )
+                }
+
                 let updatedTitle: String
                 if isLive {
                     let base = manifestResource.title.isEmpty ? manifestResource.suggestedFilename : manifestResource.title
@@ -537,6 +577,37 @@ public actor StreamManifestResourceExpander {
 
         if options.count == 1 && (options[0].id.hasPrefix("default-") || (options[0].resolution == nil && options[0].hlsVariant == nil)) {
             let singleOption = options[0]
+            if singleOption.isIFrameOnly {
+                let baseStem: String = {
+                    let raw = (masterResource.suggestedFilename as NSString).deletingPathExtension
+                    let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+                    return trimmed.isEmpty ? "video" : trimmed
+                }()
+                let isLive = singleOption.isLive || masterResource.isLive
+                let thumbFilename = "\(baseStem)-IFRAME-thumbnails.m3u8"
+                let thumbTitle = "\(isLive ? "[LIVE] " : "")HLS IFRAME (Thumbnails/Seek)"
+                let resource = WebpageResource(
+                    id: masterResource.id,
+                    url: masterResource.url,
+                    title: thumbTitle,
+                    suggestedFilename: thumbFilename,
+                    resourceType: .other,
+                    mimeType: masterResource.mimeType ?? "application/vnd.apple.mpegurl",
+                    estimatedSize: nil,
+                    isSupported: false,
+                    unsupportedReason: "I-frame-only trick-play streams are for seek thumbnails and cannot be downloaded as a complete video.",
+                    requestContext: masterResource.requestContext,
+                    manifestText: manifestText,
+                    hlsVariantPreferences: masterResource.hlsVariantPreferences,
+                    dashVideoRepresentationID: masterResource.dashVideoRepresentationID,
+                    dashAudioRepresentationID: masterResource.dashAudioRepresentationID,
+                    isDRMProtected: masterResource.isDRMProtected,
+                    drmProtectionType: masterResource.drmProtectionType,
+                    discoveredAt: masterResource.discoveredAt,
+                    isLive: isLive
+                )
+                return ([resource], [])
+            }
             if singleOption.isLive || masterResource.isLive {
                 let liveTitle = masterResource.title.hasPrefix("[LIVE]") ? masterResource.title : "[LIVE] \(masterResource.title)"
                 let liveResource = WebpageResource(

@@ -372,6 +372,34 @@ final class StreamQualityPickerTests: XCTestCase {
         XCTAssertEqual(options[0].qualityBadge, "HD")
     }
 
+    func testStandaloneIFramesOnlyPlaylistProducesIFrameQualityOption() throws {
+        let iframeMediaPlaylist = """
+        #EXTM3U
+        #EXT-X-VERSION:4
+        #EXT-X-I-FRAMES-ONLY
+        #EXT-X-TARGETDURATION:6
+        #EXTINF:6.0,
+        #EXT-X-BYTERANGE:34000@0
+        segment.ts
+        #EXTINF:6.0,
+        #EXT-X-BYTERANGE:32000@34000
+        segment.ts
+        #EXT-X-ENDLIST
+        """
+
+        let options = try StreamQualityInspector.inspectHLS(
+            manifestText: iframeMediaPlaylist,
+            baseURL: URL(string: "https://cdn.example.com/video/iframe_index.m3u8")!
+        )
+
+        XCTAssertEqual(options.count, 1)
+        let option = options[0]
+        XCTAssertTrue(option.isIFrameOnly, "Standalone I-frame playlist must set isIFrameOnly: true")
+        XCTAssertEqual(option.qualityBadge, "IFRAME", "Quality badge should be IFRAME")
+        XCTAssertEqual(option.label, "I-Frame Thumbnails/Seek Stream")
+        XCTAssertFalse(option.hasAudio, "I-frame trickplay playlists have no audio")
+    }
+
     // MARK: - Exact Variant Preference Filtering
 
     func testExactURIInHLSVariantSelectionPreferencesPinsSelection() throws {

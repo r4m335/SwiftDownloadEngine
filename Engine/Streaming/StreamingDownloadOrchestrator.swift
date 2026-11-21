@@ -1760,6 +1760,10 @@ public actor StreamingDownloadOrchestrator {
         let currentContext = effectiveContext ?? candidate.browserRequestContext?.redirectResolved(to: baseURL)
         guard manifest.playlistType == .master else {
             // Already a media playlist: validate directly
+            if manifest.isIFramesOnly {
+                PipelineLogger.shared.log("[HLS Pipeline] Rejecting standalone I-frame-only media playlist: I-frame trick-play streams cannot be assembled as a complete video.")
+                throw StreamingDownloadOrchestratorError.hlsVariantSelectionFailed(.unsupportedIFrameVariant)
+            }
             let videoPlan: HLSVODTransferPlan
             do {
                 videoPlan = try HLSTransferPlanner.makeVODPlan(

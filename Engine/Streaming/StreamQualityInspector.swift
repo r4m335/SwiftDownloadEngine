@@ -91,7 +91,16 @@ public enum StreamQualityInspector {
 
         guard manifest.playlistType == .master, !manifest.variants.isEmpty else {
             // Media playlist (single variant)
-            return [StreamQualityOption.defaultMedia(url: baseURL, mimeType: "application/vnd.apple.mpegurl", kind: .hls, isLive: isLive, isLowLatency: manifest.isLowLatency)]
+            return [
+                StreamQualityOption.defaultMedia(
+                    url: baseURL,
+                    mimeType: "application/vnd.apple.mpegurl",
+                    kind: .hls,
+                    isLive: isLive,
+                    isLowLatency: manifest.isLowLatency,
+                    isIFrameOnly: manifest.isIFramesOnly
+                )
+            ]
         }
 
         // Rank variants highest to lowest and deduplicate redundant quality tiers

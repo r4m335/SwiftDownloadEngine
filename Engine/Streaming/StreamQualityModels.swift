@@ -107,6 +107,9 @@ public struct StreamQualityOption: Identifiable, Sendable, Equatable, Hashable {
         if hasSubtitles && !hasVideo && !hasAudio {
             return .teal
         }
+        if isIFrameOnly {
+            return .gray
+        }
         guard let height = resolution?.height else {
             return .blue
         }
@@ -368,21 +371,35 @@ public struct StreamQualityOption: Identifiable, Sendable, Equatable, Hashable {
         bandwidth: Int64 = 2_500_000,
         kind: StreamingManifestKind = .hls,
         isLive: Bool = false,
-        isLowLatency: Bool = false
+        isLowLatency: Bool = false,
+        isIFrameOnly: Bool = false
     ) -> StreamQualityOption {
-        StreamQualityOption(
+        let label: String
+        let qualityBadge: String
+        if isIFrameOnly {
+            label = "I-Frame Thumbnails/Seek Stream"
+            qualityBadge = "IFRAME"
+        } else if isLowLatency {
+            label = "Default LL-HLS Stream Quality"
+            qualityBadge = "LL-HLS"
+        } else {
+            label = "Default Stream Quality"
+            qualityBadge = "HD"
+        }
+
+        return StreamQualityOption(
             id: "default-\(url.absoluteString)",
-            label: isLowLatency ? "Default LL-HLS Stream Quality" : "Default Stream Quality",
-            qualityBadge: isLowLatency ? "LL-HLS" : "HD",
+            label: label,
+            qualityBadge: qualityBadge,
             resolution: nil,
             resolutionText: nil,
             bandwidth: bandwidth,
             bitrateText: formatBandwidth(bandwidth),
             codecs: nil,
-            videoCodec: "H.264",
-            audioCodec: "AAC",
+            videoCodec: isIFrameOnly ? "H.264 (I-Frames)" : "H.264",
+            audioCodec: isIFrameOnly ? nil : "AAC",
             frameRate: nil,
-            hasAudio: true,
+            hasAudio: !isIFrameOnly,
             hasVideo: true,
             isAudioOnly: false,
             hasSubtitles: false,
@@ -392,6 +409,7 @@ public struct StreamQualityOption: Identifiable, Sendable, Equatable, Hashable {
             uri: url,
             manifestKind: kind,
             isLive: isLive,
+            isIFrameOnly: isIFrameOnly,
             isLowLatency: isLowLatency
         )
     }
