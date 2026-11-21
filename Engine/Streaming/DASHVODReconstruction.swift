@@ -119,6 +119,9 @@ public enum DASHVODReconstructionPlanner {
         let safe = stem.map { character in
             character.isLetter || character.isNumber || character == "-" || character == "_" ? character : "_"
         }
+        if transferPlan.video == nil && transferPlan.audio == nil && transferPlan.text != nil {
+            return "\(String(safe)).vtt"
+        }
         return "\(String(safe)).mp4"
     }
 

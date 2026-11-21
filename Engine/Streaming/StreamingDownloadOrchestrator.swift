@@ -15,6 +15,7 @@ public struct StreamingManifestCandidate: Sendable, Equatable {
     public let cachedManifestText: String?
     public let dashVideoRepresentationID: String?
     public let dashAudioRepresentationID: String?
+    public let dashTextRepresentationID: String?
 
     public init(
         url: URL,
@@ -24,7 +25,8 @@ public struct StreamingManifestCandidate: Sendable, Equatable {
         hlsVariantPreferences: HLSVariantSelectionPreferences = HLSVariantSelectionPreferences(),
         cachedManifestText: String? = nil,
         dashVideoRepresentationID: String? = nil,
-        dashAudioRepresentationID: String? = nil
+        dashAudioRepresentationID: String? = nil,
+        dashTextRepresentationID: String? = nil
     ) throws {
         guard BrowserURLResolver.isValidDownloadURL(url) else {
             throw StreamingDownloadOrchestratorError.invalidManifestURL
@@ -51,6 +53,7 @@ public struct StreamingManifestCandidate: Sendable, Equatable {
         self.cachedManifestText = cachedManifestText
         self.dashVideoRepresentationID = dashVideoRepresentationID
         self.dashAudioRepresentationID = dashAudioRepresentationID
+        self.dashTextRepresentationID = dashTextRepresentationID
     }
 
     /// Returns a copy of this candidate with an updated `browserRequestContext` and optional snapshot.
@@ -66,7 +69,8 @@ public struct StreamingManifestCandidate: Sendable, Equatable {
             hlsVariantPreferences: hlsVariantPreferences,
             cachedManifestText: cachedManifestText,
             dashVideoRepresentationID: dashVideoRepresentationID,
-            dashAudioRepresentationID: dashAudioRepresentationID
+            dashAudioRepresentationID: dashAudioRepresentationID,
+            dashTextRepresentationID: dashTextRepresentationID
         )
     }
 
@@ -123,7 +127,8 @@ public struct StreamingManifestCandidate: Sendable, Equatable {
             hlsVariantPreferences: resource.hlsVariantPreferences ?? HLSVariantSelectionPreferences(),
             cachedManifestText: resource.manifestText,
             dashVideoRepresentationID: resource.dashVideoRepresentationID,
-            dashAudioRepresentationID: resource.dashAudioRepresentationID
+            dashAudioRepresentationID: resource.dashAudioRepresentationID,
+            dashTextRepresentationID: resource.dashTextRepresentationID
         )
     }
 }
@@ -2317,6 +2322,7 @@ public actor StreamingDownloadOrchestrator {
                     from: parsed,
                     videoRepresentationID: candidate.dashVideoRepresentationID,
                     audioRepresentationID: candidate.dashAudioRepresentationID,
+                    textRepresentationID: candidate.dashTextRepresentationID,
                     browserRequestContext: effectiveContext,
                     sidxDataByRepresentationID: sidxDataMap
                 )
@@ -3421,7 +3427,13 @@ public actor StreamingDownloadOrchestrator {
         guard case .dash(let transferPlan) = proposal.manifest else {
             throw StreamingDownloadOrchestratorError.unsupportedManifest(.hls)
         }
-        let finalOutputURL = outputURL
+        let isTextOnly = transferPlan.video == nil && transferPlan.audio == nil && transferPlan.text != nil
+        let finalOutputURL: URL
+        if isTextOnly && outputURL.pathExtension.lowercased() == "mp4" {
+            finalOutputURL = outputURL.deletingPathExtension().appendingPathExtension("vtt")
+        } else {
+            finalOutputURL = outputURL
+        }
         let originalSourceURL = candidatesByTransfer[proposal.transferID]?.url ?? transferPlan.manifestURL
         let parentID = proposal.transferID
         let manifestKey = originalSourceURL.absoluteString
@@ -3431,6 +3443,7 @@ public actor StreamingDownloadOrchestrator {
 
         if let engine = self.downloadEngine {
             let estimated = proposal.estimatedTransferBytes ?? (Int64(proposal.resources.count) * 1_000_000)
+            let mimeType = isTextOnly ? "text/vtt" : "video/mp4"
             do {
                 _ = try await engine.registerStreamingDownload(
                     id: parentID,
@@ -3438,7 +3451,7 @@ public actor StreamingDownloadOrchestrator {
                     destinationURL: finalOutputURL,
                     filename: finalOutputURL.lastPathComponent,
                     totalBytes: estimated,
-                    mimeType: "video/mp4"
+                    mimeType: mimeType
                 )
                 PipelineLogger.shared.log("[DASH Pipeline] Active stream registered with DownloadEngine: \(parentID)")
             } catch {
@@ -3489,15 +3502,32 @@ public actor StreamingDownloadOrchestrator {
             DASHCompletedResource(resource: $0.0, fileURL: $0.1)
         }
         do {
-            let assemblyOutput = try await DASHVODReconstructor.assemble(
-                transferPlan: transferPlan,
-                completedResources: completed,
-                destinationURL: finalOutputURL,
-                temporaryDirectoryURL: destinationDirectory.appendingPathComponent(
-                    ".media-assembly",
-                    isDirectory: true
+            let assemblyOutput: MediaAssemblyOutput
+            if isTextOnly, let textPlan = transferPlan.text {
+                assemblyOutput = try assembleDASHSubtitles(
+                    textPlan: textPlan,
+                    completedResources: completed,
+                    destinationURL: finalOutputURL
                 )
-            )
+            } else {
+                assemblyOutput = try await DASHVODReconstructor.assemble(
+                    transferPlan: transferPlan,
+                    completedResources: completed,
+                    destinationURL: finalOutputURL,
+                    temporaryDirectoryURL: destinationDirectory.appendingPathComponent(
+                        ".media-assembly",
+                        isDirectory: true
+                    )
+                )
+                if let textPlan = transferPlan.text {
+                    let sidecarURL = finalOutputURL.deletingPathExtension().appendingPathExtension("vtt")
+                    _ = try? assembleDASHSubtitles(
+                        textPlan: textPlan,
+                        completedResources: completed,
+                        destinationURL: sidecarURL
+                    )
+                }
+            }
             try Task.checkCancellation()
             if isCancelled(transferID: parentID) {
                 if let engine = self.downloadEngine {
@@ -3979,6 +4009,95 @@ public actor StreamingDownloadOrchestrator {
         } catch {
             PipelineLogger.shared.log("[HLS Pipeline] Subtitle download skipped (non-fatal): \(error.localizedDescription)")
         }
+    }
+
+    private func assembleDASHSubtitles(
+        textPlan: DASHRepresentationTransferPlan,
+        completedResources: [DASHCompletedResource],
+        destinationURL: URL
+    ) throws -> MediaAssemblyOutput {
+        let textCompleted = completedResources.filter { $0.resource.mediaType == .text }
+        guard !textCompleted.isEmpty else {
+            throw DASHVODReconstructionError.noMediaSegments
+        }
+
+        let fileManager = FileManager.default
+        let parentDir = destinationURL.deletingLastPathComponent()
+        if !fileManager.fileExists(atPath: parentDir.path) {
+            try fileManager.createDirectory(at: parentDir, withIntermediateDirectories: true)
+        }
+
+        var downloadedSegments: [WebVTTSegmentInput] = []
+        var cumulativeTime: Double = 0.0
+        var isAllWebVTT = true
+        var rawContentBuffers: [Data] = []
+
+        for item in textCompleted {
+            guard item.fileURL.isFileURL,
+                  fileManager.fileExists(atPath: item.fileURL.path),
+                  let data = try? Data(contentsOf: item.fileURL),
+                  !data.isEmpty else {
+                throw DASHVODReconstructionError.invalidResourceFile
+            }
+            rawContentBuffers.append(data)
+
+            let contentString = String(decoding: data, as: UTF8.self)
+            if contentString.contains("WEBVTT") || contentString.contains("-->") {
+                let timescale = item.resource.timescale > 0 ? Double(item.resource.timescale) : 1000.0
+                let segTime: Double
+                if let st = item.resource.segmentTime {
+                    segTime = Double(st) / timescale
+                } else {
+                    segTime = cumulativeTime
+                }
+                let dur: Double
+                if let d = item.resource.duration {
+                    dur = Double(d) / timescale
+                } else {
+                    dur = 0.0
+                }
+                downloadedSegments.append(WebVTTSegmentInput(
+                    text: contentString,
+                    playlistStartTime: segTime,
+                    duration: dur
+                ))
+                cumulativeTime = segTime + dur
+            } else {
+                isAllWebVTT = false
+            }
+        }
+
+        if isAllWebVTT && !downloadedSegments.isEmpty {
+            let combinedVTT = HLSWebVTTAssembler.assemble(segments: downloadedSegments)
+            try Data(combinedVTT.utf8).write(to: destinationURL, options: .atomic)
+            PipelineLogger.shared.log("[DASH Pipeline] Assembled \(downloadedSegments.count) subtitle segments into: \(destinationURL.path)")
+        } else {
+            var combinedData = Data()
+            for buffer in rawContentBuffers {
+                combinedData.append(buffer)
+            }
+            try combinedData.write(to: destinationURL, options: .atomic)
+            PipelineLogger.shared.log("[DASH Pipeline] Saved \(rawContentBuffers.count) raw text/subtitle segments into: \(destinationURL.path)")
+        }
+
+        let finalSize = fileManager.fileSize(atPath: destinationURL.path) ?? 0
+        let validationReport = MediaAssemblyValidationReport(
+            container: .fragmentedMP4,
+            trackCount: 1,
+            mediaSegmentCount: textCompleted.count,
+            totalInputBytes: finalSize,
+            isReadyForAssembly: true,
+            isStructurallyValid: true,
+            isPlayableConfirmed: true,
+            state: .assemblyCompleted
+        )
+        return MediaAssemblyOutput(
+            destinationURL: destinationURL,
+            container: .fragmentedMP4,
+            trackCount: 1,
+            byteCount: finalSize,
+            validation: validationReport
+        )
     }
 }
 

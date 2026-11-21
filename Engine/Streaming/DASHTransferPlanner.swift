@@ -3,6 +3,7 @@ import Foundation
 public enum DASHMediaType: String, Sendable, Equatable {
     case video
     case audio
+    case text
 }
 
 public enum DASHPlannedResourceKind: String, Sendable, Equatable {
@@ -176,6 +177,7 @@ public struct DASHVODTransferPlan: Sendable, Equatable {
     public let periodID: String?
     public let video: DASHRepresentationTransferPlan?
     public let audio: DASHRepresentationTransferPlan?
+    public let text: DASHRepresentationTransferPlan?
     public let browserRequestContext: BrowserRequestContext?
     public let estimatedTransferBytes: Int64?
 
@@ -184,6 +186,7 @@ public struct DASHVODTransferPlan: Sendable, Equatable {
         periodID: String?,
         video: DASHRepresentationTransferPlan?,
         audio: DASHRepresentationTransferPlan?,
+        text: DASHRepresentationTransferPlan? = nil,
         browserRequestContext: BrowserRequestContext? = nil,
         estimatedTransferBytes: Int64? = nil
     ) {
@@ -191,16 +194,17 @@ public struct DASHVODTransferPlan: Sendable, Equatable {
         self.periodID = periodID
         self.video = video
         self.audio = audio
+        self.text = text
         self.browserRequestContext = browserRequestContext
         self.estimatedTransferBytes = estimatedTransferBytes
     }
 
     public var resources: [DASHPlannedResource] {
-        (video?.resources ?? []) + (audio?.resources ?? [])
+        (video?.resources ?? []) + (audio?.resources ?? []) + (text?.resources ?? [])
     }
 
     public var estimatedSegmentCount: Int {
-        (video?.estimatedSegmentCount ?? 0) + (audio?.estimatedSegmentCount ?? 0)
+        (video?.estimatedSegmentCount ?? 0) + (audio?.estimatedSegmentCount ?? 0) + (text?.estimatedSegmentCount ?? 0)
     }
 
     /// Returns headers eligible for this resource. Sensitive credentials are stripped
@@ -226,6 +230,7 @@ public enum DASHTransferPlanner {
         from manifest: DASHManifest,
         videoRepresentationID: String? = nil,
         audioRepresentationID: String? = nil,
+        textRepresentationID: String? = nil,
         browserRequestContext: BrowserRequestContext? = nil,
         limits: DASHTransferPlanningLimits = .default,
         sidxDataByRepresentationID: [String: Data] = [:]
@@ -244,14 +249,18 @@ public enum DASHTransferPlanner {
             limits: limits
         )
 
+        let isTextOnly = textRepresentationID != nil && videoRepresentationID == nil && audioRepresentationID == nil
         var totalSegments = 0
         var allVideoResources: [DASHPlannedResource] = []
         var allAudioResources: [DASHPlannedResource] = []
+        var allTextResources: [DASHPlannedResource] = []
         var totalVideoDuration: Double = 0
         var totalAudioDuration: Double = 0
+        var totalTextDuration: Double = 0
 
         var selectedVideoRepID = videoRepresentationID
         var selectedAudioRepID = audioRepresentationID
+        var selectedTextRepID = textRepresentationID
         var firstVideoAdaptationSetID: String?
         var firstVideoRepresentationID: String?
         var firstVideoBandwidth: Int64?
@@ -260,6 +269,10 @@ public enum DASHTransferPlanner {
         var firstAudioRepresentationID: String?
         var firstAudioBandwidth: Int64?
         var firstAudioCodecs: String?
+        var firstTextAdaptationSetID: String?
+        var firstTextRepresentationID: String?
+        var firstTextBandwidth: Int64?
+        var firstTextCodecs: String?
 
         for (periodIndex, period) in manifest.periods.enumerated() {
             let periodDuration = try finitePeriodDuration(
@@ -270,52 +283,85 @@ public enum DASHTransferPlanner {
                 limits: limits
             )
 
-            // Select video
+            // Select video (unless text-only plan)
             let videoSelection: Selection?
-            do {
-                videoSelection = try select(
-                    mediaType: .video,
-                    requestedID: selectedVideoRepID,
-                    from: period.adaptationSets
-                )
-            } catch DASHVODTransferPlanError.representationNotFound {
-                if periodIndex > 0 {
+            if isTextOnly {
+                videoSelection = nil
+            } else {
+                do {
                     videoSelection = try select(
                         mediaType: .video,
-                        requestedID: nil,
+                        requestedID: selectedVideoRepID,
                         from: period.adaptationSets
                     )
-                } else {
-                    throw DASHVODTransferPlanError.representationNotFound
+                } catch DASHVODTransferPlanError.representationNotFound {
+                    if periodIndex > 0 {
+                        videoSelection = try select(
+                            mediaType: .video,
+                            requestedID: nil,
+                            from: period.adaptationSets
+                        )
+                    } else {
+                        throw DASHVODTransferPlanError.representationNotFound
+                    }
                 }
             }
 
-            // Select audio
+            // Select audio (unless text-only plan)
             let audioSelection: Selection?
-            do {
-                audioSelection = try select(
-                    mediaType: .audio,
-                    requestedID: selectedAudioRepID,
-                    from: period.adaptationSets
-                )
-            } catch DASHVODTransferPlanError.representationNotFound {
-                if periodIndex > 0 {
+            if isTextOnly {
+                audioSelection = nil
+            } else {
+                do {
                     audioSelection = try select(
                         mediaType: .audio,
-                        requestedID: nil,
+                        requestedID: selectedAudioRepID,
                         from: period.adaptationSets
                     )
-                } else {
-                    throw DASHVODTransferPlanError.representationNotFound
+                } catch DASHVODTransferPlanError.representationNotFound {
+                    if periodIndex > 0 {
+                        audioSelection = try select(
+                            mediaType: .audio,
+                            requestedID: nil,
+                            from: period.adaptationSets
+                        )
+                    } else {
+                        throw DASHVODTransferPlanError.representationNotFound
+                    }
                 }
+            }
+
+            // Select text (if requested)
+            let textSelection: Selection?
+            if selectedTextRepID != nil {
+                do {
+                    textSelection = try select(
+                        mediaType: .text,
+                        requestedID: selectedTextRepID,
+                        from: period.adaptationSets
+                    )
+                } catch DASHVODTransferPlanError.representationNotFound {
+                    if periodIndex > 0 {
+                        textSelection = try select(
+                            mediaType: .text,
+                            requestedID: nil,
+                            from: period.adaptationSets
+                        )
+                    } else {
+                        throw DASHVODTransferPlanError.representationNotFound
+                    }
+                }
+            } else {
+                textSelection = nil
             }
 
             if periodIndex == 0 {
-                guard videoSelection != nil || audioSelection != nil else {
+                guard videoSelection != nil || audioSelection != nil || textSelection != nil else {
                     throw DASHVODTransferPlanError.noSupportedRepresentation
                 }
                 selectedVideoRepID = videoSelection?.representation.id
                 selectedAudioRepID = audioSelection?.representation.id
+                selectedTextRepID = textSelection?.representation.id
                 firstVideoAdaptationSetID = videoSelection?.adaptationSet.id
                 firstVideoRepresentationID = videoSelection?.representation.id
                 firstVideoBandwidth = videoSelection?.representation.bandwidth
@@ -324,6 +370,10 @@ public enum DASHTransferPlanner {
                 firstAudioRepresentationID = audioSelection?.representation.id
                 firstAudioBandwidth = audioSelection?.representation.bandwidth
                 firstAudioCodecs = audioSelection?.representation.codecs ?? audioSelection?.adaptationSet.codecs
+                firstTextAdaptationSetID = textSelection?.adaptationSet.id
+                firstTextRepresentationID = textSelection?.representation.id
+                firstTextBandwidth = textSelection?.representation.bandwidth
+                firstTextCodecs = textSelection?.representation.codecs ?? textSelection?.adaptationSet.codecs
             }
 
             // Build video plan for this period
@@ -401,6 +451,44 @@ public enum DASHTransferPlanner {
                     totalAudioDuration += dur
                 }
             }
+
+            // Build text plan for this period
+            if let textSel = textSelection {
+                let sidx = sidxDataByRepresentationID[textSel.representation.id ?? ""]
+                let periodPlan = try buildRepresentationPlan(
+                    mediaType: .text,
+                    adaptationSet: textSel.adaptationSet,
+                    representation: textSel.representation,
+                    period: period,
+                    manifestURL: manifestURL,
+                    fallbackBaseURL: manifestBaseURL,
+                    periodDuration: periodDuration,
+                    limits: limits,
+                    totalSegments: &totalSegments,
+                    sidxData: sidx
+                )
+                if periodIndex == 0 {
+                    allTextResources.append(contentsOf: periodPlan.resources)
+                } else {
+                    let media = periodPlan.resources.filter { $0.kind == .mediaSegment }
+                    for m in media {
+                        allTextResources.append(DASHPlannedResource(
+                            order: allTextResources.count,
+                            mediaType: m.mediaType,
+                            kind: m.kind,
+                            url: m.url,
+                            byteRange: m.byteRange,
+                            segmentNumber: m.segmentNumber,
+                            segmentTime: m.segmentTime,
+                            duration: m.duration,
+                            timescale: m.timescale
+                        ))
+                    }
+                }
+                if let dur = periodPlan.estimatedDurationSeconds {
+                    totalTextDuration += dur
+                }
+            }
         }
 
         let videoPlan: DASHRepresentationTransferPlan?
@@ -443,7 +531,27 @@ public enum DASHTransferPlanner {
             audioPlan = nil
         }
 
-        let allResources = (videoPlan?.resources ?? []) + (audioPlan?.resources ?? [])
+        let textPlan: DASHRepresentationTransferPlan?
+        if !allTextResources.isEmpty {
+            let mediaSegments = allTextResources.filter { $0.kind == .mediaSegment }
+            guard !mediaSegments.isEmpty else { throw DASHVODTransferPlanError.noMediaSegments }
+            let bytes = calculateEstimatedBytes(for: allTextResources)
+            textPlan = DASHRepresentationTransferPlan(
+                mediaType: .text,
+                adaptationSetID: firstTextAdaptationSetID,
+                representationID: firstTextRepresentationID,
+                bandwidth: firstTextBandwidth,
+                codecs: firstTextCodecs,
+                resources: allTextResources,
+                estimatedSegmentCount: mediaSegments.count,
+                estimatedDurationSeconds: totalTextDuration > 0 ? totalTextDuration : nil,
+                estimatedTransferBytes: bytes
+            )
+        } else {
+            textPlan = nil
+        }
+
+        let allResources = (videoPlan?.resources ?? []) + (audioPlan?.resources ?? []) + (textPlan?.resources ?? [])
         let estimatedBytes = calculateEstimatedBytes(for: allResources)
 
         return DASHVODTransferPlan(
@@ -451,6 +559,7 @@ public enum DASHTransferPlanner {
             periodID: manifest.periods.first?.id,
             video: videoPlan,
             audio: audioPlan,
+            text: textPlan,
             browserRequestContext: browserRequestContext?.redirectResolved(to: manifestURL),
             estimatedTransferBytes: estimatedBytes
         )
@@ -506,15 +615,18 @@ public enum DASHTransferPlanner {
         if let contentType = adaptationSet.contentType?.lowercased() {
             if contentType == "video" { return .video }
             if contentType == "audio" { return .audio }
+            if contentType == "text" || contentType == "caption" || contentType == "subtitle" { return .text }
         }
         if let mimeType = adaptationSet.mimeType?.lowercased() {
             if mimeType.hasPrefix("video/") { return .video }
             if mimeType.hasPrefix("audio/") { return .audio }
+            if mimeType.hasPrefix("text/") || mimeType.contains("vtt") || mimeType.contains("ttml") || mimeType.contains("caption") || mimeType.contains("subtitle") { return .text }
         }
         for representation in adaptationSet.representations {
             if let mimeType = representation.mimeType?.lowercased() {
                 if mimeType.hasPrefix("video/") { return .video }
                 if mimeType.hasPrefix("audio/") { return .audio }
+                if mimeType.hasPrefix("text/") || mimeType.contains("vtt") || mimeType.contains("ttml") || mimeType.contains("caption") || mimeType.contains("subtitle") { return .text }
             }
         }
         return nil
@@ -536,9 +648,15 @@ public enum DASHTransferPlanner {
             throw DASHVODTransferPlanError.drmProtectedRepresentation
         }
         if let representationMIME = representation.mimeType?.lowercased() {
-            let isCompatible = mediaType == .video
-                ? representationMIME.hasPrefix("video/")
-                : representationMIME.hasPrefix("audio/")
+            let isCompatible: Bool
+            switch mediaType {
+            case .video:
+                isCompatible = representationMIME.hasPrefix("video/")
+            case .audio:
+                isCompatible = representationMIME.hasPrefix("audio/")
+            case .text:
+                isCompatible = representationMIME.hasPrefix("text/") || representationMIME.contains("vtt") || representationMIME.contains("ttml") || representationMIME.contains("xml") || representationMIME.contains("caption") || representationMIME.contains("subtitle") || representationMIME.hasPrefix("application/")
+            }
             guard isCompatible else {
                 throw DASHVODTransferPlanError.incompatibleMediaTypes
             }
@@ -591,6 +709,22 @@ public enum DASHTransferPlanner {
             )
             resources = result.resources
             estimatedDuration = result.duration
+        } else if representation.baseURL != nil || adaptationSet.baseURL != nil || period.baseURL != nil {
+            // Single contiguous resource (e.g. sidecar .vtt file)
+            let res = DASHPlannedResource(
+                order: totalSegments,
+                mediaType: mediaType,
+                kind: .mediaSegment,
+                url: resolvedBaseURL,
+                byteRange: nil,
+                segmentNumber: 1,
+                segmentTime: 0,
+                duration: Int64(periodDuration),
+                timescale: 1
+            )
+            totalSegments += 1
+            resources = [res]
+            estimatedDuration = periodDuration
         } else {
             throw DASHVODTransferPlanError.unsupportedSegmentAddressing
         }
@@ -705,26 +839,33 @@ public enum DASHTransferPlanner {
         limits: DASHTransferPlanningLimits,
         totalSegments: inout Int
     ) throws -> BuiltResources {
-        guard let initialization = template.initialization, !initialization.isEmpty,
-              let media = template.media, !media.isEmpty else {
+        guard let media = template.media, !media.isEmpty else {
             throw DASHVODTransferPlanError.missingInitialization
         }
+        if mediaType != .text {
+            guard let initialization = template.initialization, !initialization.isEmpty else {
+                throw DASHVODTransferPlanError.missingInitialization
+            }
+        }
 
-        let initializationURL = try expandURL(
-            initialization,
-            representation: representation,
-            number: template.startNumber,
-            time: template.presentationTimeOffset,
-            baseURL: baseURL,
-            limits: limits
-        )
-        var resources = [DASHPlannedResource(
-            order: 0,
-            mediaType: mediaType,
-            kind: .initialization,
-            url: initializationURL,
-            timescale: template.timescale
-        )]
+        var resources: [DASHPlannedResource] = []
+        if let initialization = template.initialization, !initialization.isEmpty {
+            let initializationURL = try expandURL(
+                initialization,
+                representation: representation,
+                number: template.startNumber,
+                time: template.presentationTimeOffset,
+                baseURL: baseURL,
+                limits: limits
+            )
+            resources.append(DASHPlannedResource(
+                order: 0,
+                mediaType: mediaType,
+                kind: .initialization,
+                url: initializationURL,
+                timescale: template.timescale
+            ))
+        }
 
         let entries = try timelineEntries(
             template: template,

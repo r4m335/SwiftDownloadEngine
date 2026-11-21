@@ -45,6 +45,8 @@ public struct WebpageResource: Identifiable, Hashable, Sendable {
     public let dashVideoRepresentationID: String?
     /// Optional DASH audio representation ID selected by the user.
     public let dashAudioRepresentationID: String?
+    /// Optional DASH text/subtitle representation ID selected by the user.
+    public let dashTextRepresentationID: String?
     /// Whether this resource or streaming manifest was detected to contain DRM protection (FairPlay, Widevine, PlayReady).
     public let isDRMProtected: Bool
     /// Identified DRM encryption system if protected (e.g. "FairPlay", "Widevine", "PlayReady", "Sample-AES").
@@ -156,6 +158,7 @@ public struct WebpageResource: Identifiable, Hashable, Sendable {
         hlsVariantPreferences: HLSVariantSelectionPreferences? = nil,
         dashVideoRepresentationID: String? = nil,
         dashAudioRepresentationID: String? = nil,
+        dashTextRepresentationID: String? = nil,
         isDRMProtected: Bool = false,
         drmProtectionType: String? = nil,
         discoveredAt: Date = Date(),
@@ -175,6 +178,7 @@ public struct WebpageResource: Identifiable, Hashable, Sendable {
         self.hlsVariantPreferences = hlsVariantPreferences
         self.dashVideoRepresentationID = dashVideoRepresentationID
         self.dashAudioRepresentationID = dashAudioRepresentationID
+        self.dashTextRepresentationID = dashTextRepresentationID
         self.isDRMProtected = isDRMProtected
         self.drmProtectionType = drmProtectionType
         self.discoveredAt = discoveredAt

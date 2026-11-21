@@ -3344,6 +3344,79 @@ final class StreamingDownloadOrchestratorTests: XCTestCase {
             }
         }
     }
+
+    func testDASHExecutionWithTextRepresentationAssemblesSubtitleOutput() async throws {
+        let url = URL(string: "https://video.example/vod/subtitles.mpd")!
+        let mpd = """
+        <MPD type="static" mediaPresentationDuration="PT4S">
+          <Period duration="PT4S">
+            <AdaptationSet contentType="video" mimeType="video/mp4" codecs="avc1">
+              <Representation id="v1" bandwidth="1000">
+                <SegmentTemplate timescale="1" duration="2" initialization="init.mp4" media="segment-$Number$.m4s"/>
+              </Representation>
+            </AdaptationSet>
+            <AdaptationSet contentType="text" mimeType="text/vtt" lang="en">
+              <Representation id="sub_en" bandwidth="1000">
+                <SegmentTemplate timescale="1" duration="2" media="sub-$Number$.vtt"/>
+              </Representation>
+            </AdaptationSet>
+          </Period>
+        </MPD>
+        """
+        let orchestrator = StreamingDownloadOrchestrator(
+            manifestLoader: RecordingManifestLoader(
+                data: Data(mpd.utf8),
+                finalURL: url,
+                mimeType: "application/dash+xml"
+            ),
+            segmentExecutor: DASHWritingSegmentExecutor()
+        )
+
+        // 1. Text-only download
+        let candidate = try StreamingManifestCandidate(
+            url: url,
+            dashTextRepresentationID: "sub_en"
+        )
+        let proposal = try await orchestrator.prepare(candidate: candidate)
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("dash-sub-execution-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let output = directory.appendingPathComponent("subtitles.vtt")
+
+        let result = try await orchestrator.executeAndAssembleDASH(
+            proposal,
+            approved: true,
+            destinationDirectory: directory,
+            outputURL: output
+        )
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: output.path))
+        XCTAssertEqual(result.destinationURL.pathExtension, "vtt")
+        let content = try String(contentsOf: output, encoding: .utf8)
+        XCTAssertTrue(content.contains("WEBVTT"))
+        XCTAssertTrue(content.contains("Hello DASH Subtitles"))
+
+        // 2. Video + Text download: video as .mp4 and sidecar .vtt
+        let comboCandidate = try StreamingManifestCandidate(
+            url: url,
+            dashVideoRepresentationID: "v1",
+            dashTextRepresentationID: "sub_en"
+        )
+        let comboProposal = try await orchestrator.prepare(candidate: comboCandidate)
+        let comboOutput = directory.appendingPathComponent("video.mp4")
+        let comboResult = try await orchestrator.executeAndAssembleDASH(
+            comboProposal,
+            approved: true,
+            destinationDirectory: directory,
+            outputURL: comboOutput
+        )
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: comboResult.destinationURL.path))
+        let sidecarVTT = comboResult.destinationURL.deletingPathExtension().appendingPathExtension("vtt")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: sidecarVTT.path))
+        let sidecarContent = try String(contentsOf: sidecarVTT, encoding: .utf8)
+        XCTAssertTrue(sidecarContent.contains("WEBVTT"))
+    }
 }
 
 private final class DummyAuthSender: NSObject, URLAuthenticationChallengeSender {
@@ -3494,6 +3567,8 @@ private actor DASHWritingSegmentExecutor: StreamingSegmentExecutor {
         let bytes: Data
         if request.url.path.contains("init") {
             bytes = isoBox("ftyp", payload: Data([1])) + isoBox("moov", payload: Data([2]))
+        } else if request.url.path.hasSuffix(".vtt") || request.url.path.contains("sub") {
+            bytes = Data("WEBVTT\n\n00:00:00.000 --> 00:00:02.000\nHello DASH Subtitles\n".utf8)
         } else {
             bytes = isoBox("moof", payload: Data([3])) + isoBox("mdat", payload: Data([4]))
         }

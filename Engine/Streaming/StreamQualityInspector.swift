@@ -159,6 +159,7 @@ public enum StreamQualityInspector {
                     hlsVariant: opt.hlsVariant,
                     dashVideoRepresentationID: opt.dashVideoRepresentationID,
                     dashAudioRepresentationID: opt.dashAudioRepresentationID,
+                    dashTextRepresentationID: opt.dashTextRepresentationID,
                     isLive: opt.isLive,
                     isIFrameOnly: opt.isIFrameOnly,
                     isLowLatency: opt.isLowLatency
@@ -389,6 +390,7 @@ public enum StreamQualityInspector {
                     manifestKind: opt.manifestKind,
                     dashVideoRepresentationID: opt.dashVideoRepresentationID,
                     dashAudioRepresentationID: opt.dashAudioRepresentationID,
+                    dashTextRepresentationID: opt.dashTextRepresentationID,
                     isLive: opt.isLive,
                     isIFrameOnly: opt.isIFrameOnly,
                     isLowLatency: opt.isLowLatency
@@ -513,6 +515,7 @@ public enum StreamQualityInspector {
                 manifestKind: .dash,
                 dashVideoRepresentationID: nil,
                 dashAudioRepresentationID: nil,
+                dashTextRepresentationID: rep.id ?? repID,
                 isLive: isLive
             )
             if !options.contains(where: { $0.id == textOption.id }) {

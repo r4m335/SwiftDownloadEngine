@@ -328,4 +328,77 @@ final class DASHTransferPlannerTests: XCTestCase {
         XCTAssertEqual(plan.video?.resources[1].url.absoluteString, "https://video.example/path/seg-1.m4s")
         XCTAssertNil(plan.video?.resources[1].url.fragment)
     }
+
+    func testTextRepresentationPlanFromSegmentTemplateWithoutInit() throws {
+        let mpd = """
+        <MPD type="static" mediaPresentationDuration="PT4S">
+          <Period duration="PT4S">
+            <AdaptationSet contentType="video" mimeType="video/mp4" codecs="avc1">
+              <Representation id="v1" bandwidth="1000">
+                <SegmentTemplate timescale="1" duration="2" initialization="init.mp4" media="seg-$Number$.m4s"/>
+              </Representation>
+            </AdaptationSet>
+            <AdaptationSet contentType="text" mimeType="text/vtt" lang="en">
+              <Representation id="sub_en" bandwidth="500">
+                <SegmentTemplate timescale="1" duration="2" media="sub-$Number$.vtt"/>
+              </Representation>
+            </AdaptationSet>
+          </Period>
+        </MPD>
+        """
+
+        let manifest = try MPDManifestParser.parse(mpd, baseURL: manifestURL)
+        let plan = try DASHTransferPlanner.makeVODPlan(
+            from: manifest,
+            textRepresentationID: "sub_en"
+        )
+
+        XCTAssertNotNil(plan.video)
+        XCTAssertEqual(plan.video?.representationID, "v1")
+        XCTAssertNotNil(plan.text)
+        XCTAssertEqual(plan.text?.representationID, "sub_en")
+        XCTAssertEqual(plan.text?.mediaType, .text)
+        XCTAssertEqual(plan.text?.resources.count, 2)
+        XCTAssertEqual(plan.text?.resources[0].kind, .mediaSegment)
+        XCTAssertEqual(plan.text?.resources[0].url.absoluteString, "https://video.example/path/sub-1.vtt")
+        XCTAssertEqual(plan.text?.resources[1].url.absoluteString, "https://video.example/path/sub-2.vtt")
+    }
+
+    func testTextOnlyPlanFromBaseURLAndSuggestedFilename() throws {
+        let mpd = """
+        <MPD type="static" mediaPresentationDuration="PT10S">
+          <Period duration="PT10S">
+            <AdaptationSet contentType="video" mimeType="video/mp4" codecs="avc1">
+              <Representation id="v1" bandwidth="1000">
+                <SegmentTemplate timescale="1" duration="5" initialization="init.mp4" media="seg-$Number$.m4s"/>
+              </Representation>
+            </AdaptationSet>
+            <AdaptationSet contentType="text" mimeType="text/vtt" lang="fr">
+              <Representation id="sub_fr" bandwidth="200">
+                <BaseURL>subtitles-fr.vtt</BaseURL>
+              </Representation>
+            </AdaptationSet>
+          </Period>
+        </MPD>
+        """
+
+        let manifest = try MPDManifestParser.parse(mpd, baseURL: manifestURL)
+        let plan = try DASHTransferPlanner.makeVODPlan(
+            from: manifest,
+            videoRepresentationID: nil,
+            audioRepresentationID: nil,
+            textRepresentationID: "sub_fr"
+        )
+
+        XCTAssertNil(plan.video)
+        XCTAssertNil(plan.audio)
+        XCTAssertNotNil(plan.text)
+        XCTAssertEqual(plan.text?.representationID, "sub_fr")
+        XCTAssertEqual(plan.text?.resources.count, 1)
+        XCTAssertEqual(plan.text?.resources[0].url.absoluteString, "https://video.example/path/subtitles-fr.vtt")
+        XCTAssertEqual(plan.resources.count, 1)
+
+        let suggestedFilename = DASHVODReconstructionPlanner.suggestedFilename(for: plan)
+        XCTAssertTrue(suggestedFilename.hasSuffix(".vtt"), "Text-only DASH plan must suggest a .vtt filename, got: \(suggestedFilename)")
+    }
 }

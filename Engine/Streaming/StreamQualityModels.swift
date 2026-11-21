@@ -30,6 +30,7 @@ public struct StreamQualityOption: Identifiable, Sendable, Equatable, Hashable {
     public let hlsVariant: HLSVariant?
     public let dashVideoRepresentationID: String?
     public let dashAudioRepresentationID: String?
+    public let dashTextRepresentationID: String?
     public let isLive: Bool
     public let isIFrameOnly: Bool
     public let isLowLatency: Bool
@@ -58,6 +59,7 @@ public struct StreamQualityOption: Identifiable, Sendable, Equatable, Hashable {
         hlsVariant: HLSVariant? = nil,
         dashVideoRepresentationID: String? = nil,
         dashAudioRepresentationID: String? = nil,
+        dashTextRepresentationID: String? = nil,
         isLive: Bool = false,
         isIFrameOnly: Bool = false,
         isLowLatency: Bool = false
@@ -85,6 +87,7 @@ public struct StreamQualityOption: Identifiable, Sendable, Equatable, Hashable {
         self.hlsVariant = hlsVariant
         self.dashVideoRepresentationID = dashVideoRepresentationID
         self.dashAudioRepresentationID = dashAudioRepresentationID
+        self.dashTextRepresentationID = dashTextRepresentationID
         self.isLive = isLive
         self.isIFrameOnly = isIFrameOnly
         self.isLowLatency = isLowLatency

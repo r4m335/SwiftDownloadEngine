@@ -1719,6 +1719,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                         hlsVariantPreferences: old.hlsVariantPreferences,
                         dashVideoRepresentationID: old.dashVideoRepresentationID,
                         dashAudioRepresentationID: old.dashAudioRepresentationID,
+                        dashTextRepresentationID: old.dashTextRepresentationID,
                         isDRMProtected: old.isDRMProtected,
                         drmProtectionType: old.drmProtectionType,
                         discoveredAt: old.discoveredAt,
@@ -1968,6 +1969,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                 hlsVariantPreferences: updatedPreferences ?? resource.hlsVariantPreferences,
                 dashVideoRepresentationID: resource.dashVideoRepresentationID,
                 dashAudioRepresentationID: resource.dashAudioRepresentationID,
+                dashTextRepresentationID: resource.dashTextRepresentationID,
                 isDRMProtected: resource.isDRMProtected,
                 drmProtectionType: resource.drmProtectionType,
                 discoveredAt: resource.discoveredAt,
@@ -2138,6 +2140,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                             hlsVariantPreferences: effectiveResource.hlsVariantPreferences,
                             dashVideoRepresentationID: effectiveResource.dashVideoRepresentationID,
                             dashAudioRepresentationID: effectiveResource.dashAudioRepresentationID,
+                            dashTextRepresentationID: effectiveResource.dashTextRepresentationID,
                             isDRMProtected: effectiveResource.isDRMProtected,
                             drmProtectionType: effectiveResource.drmProtectionType,
                             discoveredAt: effectiveResource.discoveredAt,
@@ -2159,6 +2162,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                             hlsVariantPreferences: effectiveResource.hlsVariantPreferences,
                             dashVideoRepresentationID: effectiveResource.dashVideoRepresentationID,
                             dashAudioRepresentationID: effectiveResource.dashAudioRepresentationID,
+                            dashTextRepresentationID: effectiveResource.dashTextRepresentationID,
                             isDRMProtected: effectiveResource.isDRMProtected,
                             drmProtectionType: effectiveResource.drmProtectionType,
                             discoveredAt: effectiveResource.discoveredAt,
@@ -2170,7 +2174,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                 // If no specific variant was pre-selected, inspect the manifest first.
                 // When multiple quality variants exist (e.g. 1080p, 720p, 480p, audio),
                 // present the interactive StreamQualityPickerSheet so user can choose.
-                if resource.hlsVariantPreferences == nil && resource.dashVideoRepresentationID == nil && !self.isShowingQualityPicker {
+                if resource.hlsVariantPreferences == nil && resource.dashVideoRepresentationID == nil && resource.dashTextRepresentationID == nil && !self.isShowingQualityPicker {
                     do {
                         let options = try await StreamQualityInspector.inspect(
                             manifestText: effectiveResource.manifestText ?? "",
@@ -2299,8 +2303,19 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                     completionMessage = "Streaming download completed: \(filename)."
                 case .dash(let transferPlan):
                     let filename: String
+                    let isTextOnly = transferPlan.video == nil && transferPlan.audio == nil && transferPlan.text != nil
                     if let custom = self?.activeStreamingFilename?.trimmingCharacters(in: .whitespacesAndNewlines), !custom.isEmpty {
-                        filename = custom.hasSuffix(".mp4") ? custom : custom + ".mp4"
+                        if isTextOnly {
+                            if custom.hasSuffix(".vtt") {
+                                filename = custom
+                            } else if custom.hasSuffix(".mp4") {
+                                filename = (custom as NSString).deletingPathExtension + ".vtt"
+                            } else {
+                                filename = custom + ".vtt"
+                            }
+                        } else {
+                            filename = custom.hasSuffix(".mp4") ? custom : custom + ".mp4"
+                        }
                     } else {
                         filename = DASHVODReconstructionPlanner.suggestedFilename(for: transferPlan)
                     }
@@ -2375,11 +2390,25 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                 try DownloadManagerViewModel.ensureDirectoryExistsAndWritable(tempAssemblyDir)
 
                 let targetFilename: String = {
+                    let isTextOnly: Bool
+                    if case .dash(let plan) = proposal.manifest {
+                        isTextOnly = plan.video == nil && plan.audio == nil && plan.text != nil
+                    } else {
+                        isTextOnly = false
+                    }
                     if let custom = customFilename?.trimmingCharacters(in: .whitespacesAndNewlines), !custom.isEmpty {
+                        if isTextOnly {
+                            if custom.hasSuffix(".vtt") { return custom }
+                            if custom.hasSuffix(".mp4") { return (custom as NSString).deletingPathExtension + ".vtt" }
+                            return custom + ".vtt"
+                        }
                         return custom.hasSuffix(".mp4") ? custom : custom + ".mp4"
                     }
                     if !resource.suggestedFilename.isEmpty && resource.suggestedFilename != resource.url.lastPathComponent {
                         let f = resource.suggestedFilename
+                        if isTextOnly || f.hasSuffix(".vtt") {
+                            return f.hasSuffix(".vtt") ? f : (f as NSString).deletingPathExtension + ".vtt"
+                        }
                         return f.hasSuffix(".mp4") ? f : f + ".mp4"
                     }
                     switch proposal.manifest {
@@ -2419,7 +2448,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
     /// into individual selectable video and audio quality resources directly in `discoveredResources`.
     public func expandStreamingManifests(in resources: [WebpageResource]? = nil) {
         let targets = (resources ?? discoveredResources).filter {
-            $0.isStreamingManifest && $0.hlsVariantPreferences == nil && $0.dashVideoRepresentationID == nil
+            $0.isStreamingManifest && $0.hlsVariantPreferences == nil && $0.dashVideoRepresentationID == nil && $0.dashTextRepresentationID == nil
         }
         guard !targets.isEmpty else { return }
 
@@ -2518,6 +2547,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                                 hlsVariantPreferences: res.hlsVariantPreferences,
                                 dashVideoRepresentationID: res.dashVideoRepresentationID,
                                 dashAudioRepresentationID: res.dashAudioRepresentationID,
+                                dashTextRepresentationID: res.dashTextRepresentationID,
                                 isDRMProtected: isMasterDRM,
                                 drmProtectionType: drmType,
                                 discoveredAt: res.discoveredAt,
@@ -2663,13 +2693,14 @@ public final class BrowserViewModel: NSObject, ObservableObject {
             }
 
             let isAudio = selectedQualityOption?.isAudioOnly == true
+            let isText = selectedQualityOption?.dashTextRepresentationID != nil || selectedQualityOption?.label.lowercased().contains("subtitle") == true || selectedQualityOption?.label.lowercased().contains("caption") == true
             let effectiveFilename: String
             if !filename.isEmpty {
                 effectiveFilename = filename
             } else if !resource.suggestedFilename.isEmpty {
                 effectiveFilename = resource.suggestedFilename
             } else {
-                effectiveFilename = isAudio ? "audio.m4a" : "video.mp4"
+                effectiveFilename = isText ? "subtitles.vtt" : (isAudio ? "audio.m4a" : "video.mp4")
             }
 
             let configuredResource = WebpageResource(
@@ -2677,7 +2708,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                 url: targetURL,
                 title: effectiveFilename,
                 suggestedFilename: effectiveFilename,
-                resourceType: isAudio ? .audio : .video,
+                resourceType: isText ? .other : (isAudio ? .audio : .video),
                 mimeType: resource.mimeType,
                 estimatedSize: selectedQualityOption?.estimatedSizeBytes ?? resource.estimatedSize,
                 isSupported: selectedQualityOption?.isLive != true && resource.isSupported,
@@ -2687,6 +2718,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                 hlsVariantPreferences: prefs,
                 dashVideoRepresentationID: selectedQualityOption?.dashVideoRepresentationID,
                 dashAudioRepresentationID: selectedQualityOption?.dashAudioRepresentationID,
+                dashTextRepresentationID: selectedQualityOption?.dashTextRepresentationID,
                 isDRMProtected: resource.isDRMProtected,
                 drmProtectionType: resource.drmProtectionType,
                 discoveredAt: resource.discoveredAt,
@@ -2735,13 +2767,14 @@ public final class BrowserViewModel: NSObject, ObservableObject {
             }
 
             let isAudio = selectedQualityOption?.isAudioOnly == true
+            let isText = selectedQualityOption?.dashTextRepresentationID != nil || selectedQualityOption?.label.lowercased().contains("subtitle") == true || selectedQualityOption?.label.lowercased().contains("caption") == true
             let effectiveFilename: String
             if !filename.isEmpty {
                 effectiveFilename = filename
             } else if !candidate.suggestedFilename.isEmpty {
                 effectiveFilename = candidate.suggestedFilename
             } else {
-                effectiveFilename = isAudio ? "audio.m4a" : "video.mp4"
+                effectiveFilename = isText ? "subtitles.vtt" : (isAudio ? "audio.m4a" : "video.mp4")
             }
 
             if selectedQualityOption?.isLive == true {
@@ -2770,7 +2803,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                 url: targetURL,
                 title: effectiveFilename,
                 suggestedFilename: effectiveFilename,
-                resourceType: isAudio ? .audio : .video,
+                resourceType: isText ? .other : (isAudio ? .audio : .video),
                 mimeType: candidate.mimeType,
                 estimatedSize: selectedQualityOption?.estimatedSizeBytes,
                 isSupported: true,
@@ -2778,7 +2811,8 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                 manifestText: (targetURL == url) ? candidate.cachedManifestText : nil,
                 hlsVariantPreferences: prefs,
                 dashVideoRepresentationID: selectedQualityOption?.dashVideoRepresentationID,
-                dashAudioRepresentationID: selectedQualityOption?.dashAudioRepresentationID
+                dashAudioRepresentationID: selectedQualityOption?.dashAudioRepresentationID,
+                dashTextRepresentationID: selectedQualityOption?.dashTextRepresentationID
             )
 
             promptStreamingDownload(for: configuredResource, customFilename: effectiveFilename)
@@ -3269,6 +3303,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                         hlsVariantPreferences: existing.hlsVariantPreferences,
                         dashVideoRepresentationID: existing.dashVideoRepresentationID,
                         dashAudioRepresentationID: existing.dashAudioRepresentationID,
+                        dashTextRepresentationID: existing.dashTextRepresentationID,
                         isDRMProtected: existing.isDRMProtected,
                         drmProtectionType: existing.drmProtectionType,
                         discoveredAt: existing.discoveredAt,
@@ -3314,6 +3349,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                 hlsVariantPreferences: resource.hlsVariantPreferences,
                 dashVideoRepresentationID: resource.dashVideoRepresentationID,
                 dashAudioRepresentationID: resource.dashAudioRepresentationID,
+                dashTextRepresentationID: resource.dashTextRepresentationID,
                 isDRMProtected: resource.isDRMProtected,
                 drmProtectionType: resource.drmProtectionType,
                 discoveredAt: resource.discoveredAt,
@@ -3343,6 +3379,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                 hlsVariantPreferences: resource.hlsVariantPreferences,
                 dashVideoRepresentationID: resource.dashVideoRepresentationID,
                 dashAudioRepresentationID: resource.dashAudioRepresentationID,
+                dashTextRepresentationID: resource.dashTextRepresentationID,
                 isDRMProtected: resource.isDRMProtected,
                 drmProtectionType: resource.drmProtectionType,
                 discoveredAt: resource.discoveredAt,
@@ -3374,6 +3411,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
             hlsVariantPreferences: resource.hlsVariantPreferences,
             dashVideoRepresentationID: resource.dashVideoRepresentationID,
             dashAudioRepresentationID: resource.dashAudioRepresentationID,
+            dashTextRepresentationID: resource.dashTextRepresentationID,
             isDRMProtected: resource.isDRMProtected,
             drmProtectionType: resource.drmProtectionType,
             discoveredAt: resource.discoveredAt,
@@ -3643,6 +3681,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                     hlsVariantPreferences: resource.hlsVariantPreferences,
                     dashVideoRepresentationID: resource.dashVideoRepresentationID,
                     dashAudioRepresentationID: resource.dashAudioRepresentationID,
+                    dashTextRepresentationID: resource.dashTextRepresentationID,
                     isDRMProtected: resource.isDRMProtected,
                     drmProtectionType: resource.drmProtectionType,
                     discoveredAt: resource.discoveredAt,
@@ -3989,6 +4028,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                 hlsVariantPreferences: res.hlsVariantPreferences,
                 dashVideoRepresentationID: res.dashVideoRepresentationID,
                 dashAudioRepresentationID: res.dashAudioRepresentationID,
+                dashTextRepresentationID: res.dashTextRepresentationID,
                 isDRMProtected: res.isDRMProtected,
                 drmProtectionType: res.drmProtectionType,
                 discoveredAt: res.discoveredAt,
@@ -4077,6 +4117,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                 hlsVariantPreferences: activeDownloadResource?.hlsVariantPreferences,
                 dashVideoRepresentationID: activeDownloadResource?.dashVideoRepresentationID,
                 dashAudioRepresentationID: activeDownloadResource?.dashAudioRepresentationID,
+                dashTextRepresentationID: activeDownloadResource?.dashTextRepresentationID,
                 isDRMProtected: activeDownloadResource?.isDRMProtected ?? false,
                 drmProtectionType: activeDownloadResource?.drmProtectionType,
                 discoveredAt: activeDownloadResource?.discoveredAt ?? Date(),
