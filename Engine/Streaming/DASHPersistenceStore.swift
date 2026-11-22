@@ -234,13 +234,26 @@ public actor DASHPersistenceStore {
     // MARK: - Private Helpers
 
     public func recordFileURL(id: String) -> URL {
-        let safeName = id.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? id
-        return storageDirectoryURL.appendingPathComponent("\(safeName).json", isDirectory: false)
+        let safeID = id.unicodeScalars.allSatisfy { scalar in
+            CharacterSet.alphanumerics.contains(scalar) || "-_.".unicodeScalars.contains(scalar)
+        }
+        let filename = safeID ? id : "dash-\(EngineSHA256.hash(data: Data(id.utf8)).prefix(32))"
+        return storageDirectoryURL.appendingPathComponent("\(filename).json")
     }
 
     private func writeToDisk(_ record: DASHTransferRecord) throws {
         let destination = recordFileURL(id: record.id)
-        try DurableStorage.writeAtomically(record, to: destination, encoder: encoder)
+        let data: Data
+        do {
+            data = try encoder.encode(record)
+        } catch {
+            throw DASHPersistenceError.serializationFailed(underlyingError: error.localizedDescription)
+        }
+        do {
+            try DurableStorage.writeAtomically(data, to: destination)
+        } catch {
+            throw DASHPersistenceError.serializationFailed(underlyingError: error.localizedDescription)
+        }
     }
 
     private func quarantineCorruptedFile(_ fileURL: URL) throws {
