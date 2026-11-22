@@ -694,6 +694,101 @@ final class DASHMultiPeriodAndSegmentBaseTests: XCTestCase {
         XCTAssertEqual(track.mediaSegments[3].fileURL.lastPathComponent, "res-4.bin")
         XCTAssertEqual(track.mediaSegments[4].role, .media)
         XCTAssertEqual(track.mediaSegments[4].fileURL.lastPathComponent, "res-5.bin")
+
+        // Also verify track.periods decomposition
+        XCTAssertEqual(track.periods.count, 2)
+        XCTAssertEqual(track.periods[0].periodIndex, 0)
+        XCTAssertEqual(track.periods[0].initializationSegment?.fileURL.lastPathComponent, "res-0.bin")
+        XCTAssertEqual(track.periods[0].mediaSegments.count, 2)
+        XCTAssertEqual(track.periods[0].mediaSegments.map(\.fileURL.lastPathComponent), ["res-1.bin", "res-2.bin"])
+        XCTAssertEqual(track.periods[1].periodIndex, 1)
+        XCTAssertEqual(track.periods[1].initializationSegment?.fileURL.lastPathComponent, "res-3.bin")
+        XCTAssertEqual(track.periods[1].mediaSegments.count, 2)
+        XCTAssertEqual(track.periods[1].mediaSegments.map(\.fileURL.lastPathComponent), ["res-4.bin", "res-5.bin"])
+    }
+
+    func testMultiPeriodMediaWithDifferingInitSegmentsAcrossPeriodsAssemblesWithoutMidStreamInitBoxes() async throws {
+        let multiPeriodMPD = """
+        <MPD type="static" mediaPresentationDuration="PT4S">
+          <Period id="p1" duration="PT2S">
+            <AdaptationSet contentType="video" mimeType="video/mp4" codecs="avc1">
+              <Representation id="v1" bandwidth="1000">
+                <SegmentTemplate timescale="1" duration="1" initialization="init-p1.mp4" media="p1-s$Number$.m4s"/>
+              </Representation>
+            </AdaptationSet>
+          </Period>
+          <Period id="p2" duration="PT2S">
+            <AdaptationSet contentType="video" mimeType="video/mp4" codecs="avc1">
+              <Representation id="v2" bandwidth="2000">
+                <SegmentTemplate timescale="1" duration="1" initialization="init-p2.mp4" media="p2-s$Number$.m4s"/>
+              </Representation>
+            </AdaptationSet>
+          </Period>
+        </MPD>
+        """
+
+        let manifest = try DASHManifestParser.parse(multiPeriodMPD, baseURL: manifestURL)
+        let transferPlan = try DASHTransferPlanner.makeVODPlan(from: manifest)
+
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("dash-multiperiod-diff-inits-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let completed = try transferPlan.resources.enumerated().map { index, resource in
+            let fileURL = directory.appendingPathComponent("res-\(index).bin")
+            let data: Data
+            if resource.kind == .initialization {
+                data = isoBox("ftyp", payload: Data([0, 0, 0, UInt8(index + 1)])) + isoBox("moov", payload: Data([0, 0, 0, UInt8(index + 2)]))
+            } else {
+                data = isoBox("moof", payload: Data([UInt8(index)])) + isoBox("mdat", payload: Data([UInt8(index)]))
+            }
+            try data.write(to: fileURL)
+            return DASHCompletedResource(resource: resource, fileURL: fileURL)
+        }
+
+        let outputURL = directory.appendingPathComponent("assembled-diff-inits.mp4")
+        let reconPlan = try DASHVODReconstructionPlanner.makePlan(
+            from: transferPlan,
+            completedResources: completed,
+            destinationURL: outputURL
+        )
+
+        let assemblyOutput = try await MediaAssembler.assemble(reconPlan.assemblyRequest)
+        XCTAssertEqual(assemblyOutput.container, .fragmentedMP4)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: outputURL.path))
+
+        // Validate ISOBMFF structure: must have ftyp, moov, moof, mdat and NO duplicate/midstream init boxes
+        let validation = MediaIntegrityValidator.validateISOBMFF(fileURL: outputURL, requiredBoxes: ["ftyp", "moov", "moof", "mdat"])
+        XCTAssertTrue(validation.isConfirmedValid)
+
+        // Read all top-level box types in order from the assembled file
+        guard let handle = try? FileHandle(forReadingFrom: outputURL) else {
+            XCTFail("Could not open assembled file")
+            return
+        }
+        defer { try? handle.close() }
+
+        var boxOrder: [String] = []
+        let fileSize = UInt64(FileManager.default.fileSize(atPath: outputURL.path) ?? 0)
+        var offset: UInt64 = 0
+        while offset < fileSize {
+            try handle.seek(toOffset: offset)
+            guard let header = try handle.read(upToCount: 8), header.count == 8 else { break }
+            let size = UInt64(header[0]) << 24 | UInt64(header[1]) << 16 | UInt64(header[2]) << 8 | UInt64(header[3])
+            let type = String(bytes: Array(header[4...7]), encoding: .ascii) ?? ""
+            boxOrder.append(type)
+            offset += size
+        }
+
+        // Expected sequence: ftyp, moov (from Period 1 init), then moof, mdat for all 4 segments across both periods
+        // NO ftyp or moov from Period 2 initialization must appear mid-stream!
+        XCTAssertEqual(boxOrder.filter { $0 == "ftyp" }.count, 1)
+        XCTAssertEqual(boxOrder.filter { $0 == "moov" }.count, 1)
+        XCTAssertEqual(boxOrder.first, "ftyp")
+        XCTAssertEqual(boxOrder[1], "moov")
+        XCTAssertEqual(boxOrder.filter { $0 == "moof" }.count, 4)
+        XCTAssertEqual(boxOrder.filter { $0 == "mdat" }.count, 4)
     }
 
     func testMultiPeriodTextSubtitleSegmentTimeOffsetByPeriodStart() throws {

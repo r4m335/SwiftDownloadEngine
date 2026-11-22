@@ -96,6 +96,22 @@ public struct MediaAssemblySegment: Codable, Sendable, Equatable {
     }
 }
 
+public struct MediaAssemblyTrackPeriod: Codable, Sendable, Equatable {
+    public let periodIndex: Int
+    public let initializationSegment: MediaAssemblySegment?
+    public let mediaSegments: [MediaAssemblySegment]
+
+    public init(
+        periodIndex: Int,
+        initializationSegment: MediaAssemblySegment?,
+        mediaSegments: [MediaAssemblySegment]
+    ) {
+        self.periodIndex = periodIndex
+        self.initializationSegment = initializationSegment
+        self.mediaSegments = mediaSegments
+    }
+}
+
 public struct MediaAssemblyTrack: Codable, Sendable, Equatable {
     public let kind: MediaAssemblyTrackKind
     public let container: MediaAssemblyContainer
@@ -103,6 +119,34 @@ public struct MediaAssemblyTrack: Codable, Sendable, Equatable {
     public let initializationSegment: MediaAssemblySegment?
     public let mediaSegments: [MediaAssemblySegment]
     public let encryption: MediaAssemblyEncryption
+
+    public var periods: [MediaAssemblyTrackPeriod] {
+        var result: [MediaAssemblyTrackPeriod] = []
+        var currentInit: MediaAssemblySegment? = initializationSegment
+        var currentMedia: [MediaAssemblySegment] = []
+        var periodIdx = 0
+
+        for segment in mediaSegments {
+            if segment.role == .initialization {
+                result.append(MediaAssemblyTrackPeriod(
+                    periodIndex: periodIdx,
+                    initializationSegment: currentInit,
+                    mediaSegments: currentMedia
+                ))
+                periodIdx += 1
+                currentInit = segment
+                currentMedia = []
+            } else {
+                currentMedia.append(segment)
+            }
+        }
+        result.append(MediaAssemblyTrackPeriod(
+            periodIndex: periodIdx,
+            initializationSegment: currentInit,
+            mediaSegments: currentMedia
+        ))
+        return result
+    }
 
     public init(
         kind: MediaAssemblyTrackKind,

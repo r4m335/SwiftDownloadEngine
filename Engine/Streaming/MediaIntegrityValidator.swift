@@ -703,6 +703,25 @@ public enum MediaIntegrityValidator {
                     )
                 }
 
+                if foundBoxTypes.contains("moof") && (boxType == "ftyp" || boxType == "moov") {
+                    return .integrityFailure(
+                        detectedType: .fragmentedMP4,
+                        reason: "Unexpected top-level '\(boxType)' box encountered after movie fragments ('moof') at offset \(offset)."
+                    )
+                }
+                if boxType == "ftyp" && foundBoxTypes.contains("ftyp") {
+                    return .integrityFailure(
+                        detectedType: .fragmentedMP4,
+                        reason: "Duplicate top-level 'ftyp' box encountered at offset \(offset)."
+                    )
+                }
+                if boxType == "moov" && foundBoxTypes.contains("moov") {
+                    return .integrityFailure(
+                        detectedType: .fragmentedMP4,
+                        reason: "Duplicate top-level 'moov' box encountered at offset \(offset)."
+                    )
+                }
+
                 if !boxType.isEmpty { foundBoxTypes.insert(boxType) }
 
                 let payloadSize = boxSize - headerSize

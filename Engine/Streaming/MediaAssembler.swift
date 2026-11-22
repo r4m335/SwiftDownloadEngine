@@ -180,37 +180,13 @@ public enum MediaAssembler {
         }
 
         do {
-            guard fileManager.createFile(atPath: temporaryOutput.path, contents: nil) else {
-                throw MediaAssemblyError.fileOperationFailed
-            }
-            let output = try FileHandle(forWritingTo: temporaryOutput)
-            defer {
-                do {
-                    try output.close()
-                } catch {
-                    PipelineLogger.shared.log("[MediaAssembler] Failed to close output handle: \(error)")
-                }
-            }
-
             let track = request.tracks[0]
-            if let initialization = track.initializationSegment {
-                try copyValidatedSegment(
-                    initialization,
-                    kind: track.kind,
-                    container: request.container,
-                    output: output
-                )
-            }
-            for segment in track.mediaSegments {
-                try copyValidatedSegment(
-                    segment,
-                    kind: track.kind,
-                    container: request.container,
-                    output: output
-                )
-            }
-            try output.synchronize()
-            try output.close()
+            try await assembleTrack(
+                track,
+                container: request.container,
+                temporaryDirectoryURL: request.temporaryDirectoryURL,
+                destinationURL: temporaryOutput
+            )
         } catch let error as MediaAssemblyError {
             throw error
         } catch {
@@ -810,35 +786,12 @@ public enum MediaAssembler {
 
         do {
             for (track, sourceURL) in zip(request.tracks, sourceURLs) {
-                guard fileManager.createFile(atPath: sourceURL.path, contents: nil) else {
-                    throw MediaAssemblyError.fileOperationFailed
-                }
-                let handle = try FileHandle(forWritingTo: sourceURL)
-                defer {
-                    do {
-                        try handle.close()
-                    } catch {
-                        PipelineLogger.shared.log("[MediaAssembler] Failed to close handle: \(error)")
-                    }
-                }
-                if let initialization = track.initializationSegment {
-                    try copyValidatedSegment(
-                        initialization,
-                        kind: track.kind,
-                        container: request.container,
-                        output: handle
-                    )
-                }
-                for segment in track.mediaSegments {
-                    try copyValidatedSegment(
-                        segment,
-                        kind: track.kind,
-                        container: request.container,
-                        output: handle
-                    )
-                }
-                try handle.synchronize()
-                try handle.close()
+                try await assembleTrack(
+                    track,
+                    container: request.container,
+                    temporaryDirectoryURL: request.temporaryDirectoryURL,
+                    destinationURL: sourceURL
+                )
             }
         } catch let error as MediaAssemblyError {
             throw error
@@ -1749,6 +1702,204 @@ public enum MediaAssembler {
     private static func knownByteCount(for segment: MediaAssemblySegment) -> Int64? {
         segment.actualByteCount ?? segment.expectedByteCount
     }
+
+    private static func assembleTrack(
+        _ track: MediaAssemblyTrack,
+        container: MediaAssemblyContainer,
+        temporaryDirectoryURL: URL,
+        destinationURL: URL
+    ) async throws {
+        let fileManager = FileManager.default
+        let periods = track.periods
+
+        if container == .fragmentedMP4 && periods.count > 1 {
+            var periodPartURLs: [URL] = []
+            defer {
+                for partURL in periodPartURLs {
+                    try? fileManager.removeItem(at: partURL)
+                }
+            }
+
+            for period in periods {
+                let partURL = temporaryDirectoryURL
+                    .appendingPathComponent("period-part-\(period.periodIndex)-\(UUID().uuidString).mp4")
+                guard fileManager.createFile(atPath: partURL.path, contents: nil) else {
+                    throw MediaAssemblyError.fileOperationFailed
+                }
+                let handle = try FileHandle(forWritingTo: partURL)
+                defer {
+                    try? handle.close()
+                }
+                if let initSeg = period.initializationSegment {
+                    try copyValidatedSegment(
+                        initSeg,
+                        kind: track.kind,
+                        container: container,
+                        output: handle
+                    )
+                }
+                for seg in period.mediaSegments {
+                    try copyValidatedSegment(
+                        seg,
+                        kind: track.kind,
+                        container: container,
+                        output: handle
+                    )
+                }
+                try handle.synchronize()
+                periodPartURLs.append(partURL)
+            }
+
+            #if canImport(AVFoundation)
+            do {
+                if let remuxed = try await remuxPeriodFilesWithAVFoundation(
+                    periodURLs: periodPartURLs,
+                    kind: track.kind,
+                    temporaryDirectoryURL: temporaryDirectoryURL,
+                    outputURL: destinationURL
+                ), remuxed {
+                    return
+                }
+            } catch {
+                PipelineLogger.shared.log("[MediaAssembler] remuxPeriodFilesWithAVFoundation failed: \(error.localizedDescription). Falling back to box-level transition remuxing.")
+            }
+            #endif
+
+            // Box-level structural remuxing fallback:
+            // Write period 0 init + media, then subsequent periods' media only (no mid-stream ftyp/moov)
+            guard fileManager.createFile(atPath: destinationURL.path, contents: nil) else {
+                throw MediaAssemblyError.fileOperationFailed
+            }
+            let outputHandle = try FileHandle(forWritingTo: destinationURL)
+            defer {
+                try? outputHandle.close()
+            }
+
+            for (idx, period) in periods.enumerated() {
+                if idx == 0 {
+                    if let initSeg = period.initializationSegment {
+                        try copyValidatedSegment(
+                            initSeg,
+                            kind: track.kind,
+                            container: container,
+                            output: outputHandle
+                        )
+                    }
+                }
+                for seg in period.mediaSegments {
+                    try copyValidatedSegment(
+                        seg,
+                        kind: track.kind,
+                        container: container,
+                        output: outputHandle
+                    )
+                }
+            }
+            try outputHandle.synchronize()
+        } else {
+            guard fileManager.createFile(atPath: destinationURL.path, contents: nil) else {
+                throw MediaAssemblyError.fileOperationFailed
+            }
+            let handle = try FileHandle(forWritingTo: destinationURL)
+            defer {
+                try? handle.close()
+            }
+            if let initialization = track.initializationSegment {
+                try copyValidatedSegment(
+                    initialization,
+                    kind: track.kind,
+                    container: container,
+                    output: handle
+                )
+            }
+            for segment in track.mediaSegments {
+                if segment.role == .initialization {
+                    continue
+                }
+                try copyValidatedSegment(
+                    segment,
+                    kind: track.kind,
+                    container: container,
+                    output: handle
+                )
+            }
+            try handle.synchronize()
+        }
+    }
+
+#if canImport(AVFoundation)
+    private static func remuxPeriodFilesWithAVFoundation(
+        periodURLs: [URL],
+        kind: MediaAssemblyTrackKind,
+        temporaryDirectoryURL: URL,
+        outputURL: URL
+    ) async throws -> Bool? {
+        guard periodURLs.count > 1 else { return false }
+
+        let composition = AVMutableComposition()
+        let mediaType: AVMediaType = kind == .video ? .video : .audio
+        guard let compTrack = composition.addMutableTrack(withMediaType: mediaType, preferredTrackID: kCMPersistentTrackID_Invalid) else {
+            return false
+        }
+
+        var currentTime = CMTime.zero
+        for periodURL in periodURLs {
+            let asset = AVURLAsset(url: periodURL)
+            let tracks = (try? await asset.loadTracks(withMediaType: mediaType)) ?? []
+            guard let srcTrack = tracks.first else {
+                return nil
+            }
+            let duration = (try? await asset.load(.duration)) ?? .zero
+            guard duration.isNumeric && duration.seconds > 0 else {
+                return nil
+            }
+            let timeRange = CMTimeRange(start: .zero, duration: duration)
+            do {
+                try compTrack.insertTimeRange(timeRange, of: srcTrack, at: currentTime)
+                currentTime = CMTimeAdd(currentTime, duration)
+            } catch {
+                PipelineLogger.shared.log("[MediaAssembler] remuxPeriodFilesWithAVFoundation insertTimeRange failed: \(error)")
+                return nil
+            }
+        }
+
+        guard currentTime.seconds > 0 else { return nil }
+
+        let fileManager = FileManager.default
+        let stagingExport = temporaryDirectoryURL.appendingPathComponent("remux-export-\(UUID().uuidString).mp4")
+        defer {
+            try? fileManager.removeItem(at: stagingExport)
+        }
+
+        let presets = [AVAssetExportPresetPassthrough, AVAssetExportPresetHighestQuality]
+        for preset in presets {
+            try? fileManager.removeItem(at: stagingExport)
+            guard let exportSession = AVAssetExportSession(asset: composition, presetName: preset) else {
+                continue
+            }
+            exportSession.outputURL = stagingExport
+            exportSession.outputFileType = .mp4
+            exportSession.shouldOptimizeForNetworkUse = true
+
+            await withCheckedContinuation { continuation in
+                exportSession.exportAsynchronously {
+                    continuation.resume()
+                }
+            }
+
+            if exportSession.status == .completed && fileManager.fileExists(atPath: stagingExport.path) {
+                let size = fileManager.fileSize(atPath: stagingExport.path) ?? 0
+                if size > 0 && validateOutput(stagingExport, container: .fragmentedMP4) {
+                    try? fileManager.removeItem(at: outputURL)
+                    try fileManager.moveItem(at: stagingExport, to: outputURL)
+                    PipelineLogger.shared.log("[MediaAssembler] Multi-period remux succeeded with preset \(preset): \(size) bytes")
+                    return true
+                }
+            }
+        }
+        return nil
+    }
+#endif
 
     private static func copyValidatedSegment(
         _ segment: MediaAssemblySegment,

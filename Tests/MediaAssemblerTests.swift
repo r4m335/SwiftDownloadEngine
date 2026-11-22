@@ -264,6 +264,62 @@ final class MediaAssemblerTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: output), initBytes + mediaBytes)
     }
 
+    func testAssembleMultiPeriodTrackStructurallyRemuxesWithoutMidStreamInitBoxes() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("media-assembler-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let init1 = directory.appendingPathComponent("init1.mp4")
+        let seg1 = directory.appendingPathComponent("seg1.m4s")
+        let init2 = directory.appendingPathComponent("init2.mp4")
+        let seg2 = directory.appendingPathComponent("seg2.m4s")
+        let output = directory.appendingPathComponent("multi-period.mp4")
+
+        let init1Bytes = isoBox("ftyp", payload: Data([0, 0, 0, 1])) + isoBox("moov", payload: Data([0, 0, 0, 2]))
+        let seg1Bytes = isoBox("moof", payload: Data([0, 0, 0, 3])) + isoBox("mdat", payload: Data([0, 0, 0, 4]))
+        let init2Bytes = isoBox("ftyp", payload: Data([0, 0, 0, 5])) + isoBox("moov", payload: Data([0, 0, 0, 6]))
+        let seg2Bytes = isoBox("moof", payload: Data([0, 0, 0, 7])) + isoBox("mdat", payload: Data([0, 0, 0, 8]))
+
+        try init1Bytes.write(to: init1)
+        try seg1Bytes.write(to: seg1)
+        try init2Bytes.write(to: init2)
+        try seg2Bytes.write(to: seg2)
+
+        let request = MediaAssemblyRequest(
+            container: .fragmentedMP4,
+            tracks: [MediaAssemblyTrack(
+                kind: .video,
+                container: .fragmentedMP4,
+                initializationSegment: MediaAssemblySegment(
+                    fileURL: init1,
+                    role: .initialization,
+                    order: 0,
+                    actualByteCount: Int64(init1Bytes.count)
+                ),
+                mediaSegments: [
+                    MediaAssemblySegment(fileURL: seg1, order: 0, actualByteCount: Int64(seg1Bytes.count)),
+                    MediaAssemblySegment(fileURL: init2, role: .initialization, order: 1, actualByteCount: Int64(init2Bytes.count)),
+                    MediaAssemblySegment(fileURL: seg2, order: 2, actualByteCount: Int64(seg2Bytes.count))
+                ]
+            )],
+            destinationURL: output
+        )
+        let result = try await MediaAssembler.assemble(request)
+
+        XCTAssertEqual(result.container, .fragmentedMP4)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: output.path))
+
+        // Ensure exactly one ftyp and one moov, no mid-stream init2Bytes
+        let assembledData = try Data(contentsOf: output)
+        XCTAssertEqual(assembledData, init1Bytes + seg1Bytes + seg2Bytes)
+        XCTAssertFalse(assembledData.contains(init2Bytes))
+
+        // Structural ISOBMFF validation
+        let report = MediaIntegrityValidator.validateISOBMFF(fileURL: output, requiredBoxes: ["ftyp", "moov", "moof", "mdat"])
+        XCTAssertTrue(report.isConfirmedValid)
+    }
+
     func testInvalidFragmentedMP4NeverReplacesExistingOutput() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("media-assembler-\(UUID().uuidString)", isDirectory: true)
