@@ -1065,9 +1065,9 @@ final class BackgroundHTTPTransportTests: XCTestCase {
             originalURL: URL(string: "https://example.com/segment.ts")!,
             destinationURL: storageDirectoryURL.appendingPathComponent("segment.ts"),
             totalSize: 0,
-            suggestedFilename: "segment.ts",
             state: .downloading,
             storageMode: .partFiles,
+            suggestedFilename: "segment.ts",
             segments: [
                 SegmentRecord(id: 0, startOffset: 0, endOffset: 0, length: 0, completedBytes: 0)
             ]
