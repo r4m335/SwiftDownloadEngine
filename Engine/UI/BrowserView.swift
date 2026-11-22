@@ -455,6 +455,11 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         isIncognito: Bool = false,
         isDesktopMode: Bool = false
     ) -> UUID {
+        if let current = activeTabID {
+            tabDiscoveredResources[current] = discoveredResources
+            tabVariantStreamItems[current] = variantStreamItems
+            tabSelectedResourceIDs[current] = selectedResourceIDs
+        }
         let id = tabManager.createTab(
             select: true,
             isIncognito: isIncognito,
@@ -462,6 +467,11 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         )
         publishTabState()
         syncActiveTabState()
+
+        discoveredResources = []
+        variantStreamItems = [:]
+        selectedResourceIDs = []
+
         publishMediaCandidates()
         isShowingTabSwitcher = false
         if let url = url {
