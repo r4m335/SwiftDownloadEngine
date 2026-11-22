@@ -1182,9 +1182,12 @@ final class DownloadQueueManagerTests: XCTestCase {
         } catch {
             // Verify neither req1 nor req2 was added
             let snap = await queueManager.snapshot()
-            XCTAssertNil(await queueManager.item(for: "bulk-ok-1"))
-            XCTAssertNil(await queueManager.item(for: "bulk-ok-2"))
-            XCTAssertNil(await queueManager.item(for: "bulk-fail"))
+            let item1 = await queueManager.item(for: "bulk-ok-1")
+            let item2 = await queueManager.item(for: "bulk-ok-2")
+            let itemFail = await queueManager.item(for: "bulk-fail")
+            XCTAssertNil(item1)
+            XCTAssertNil(item2)
+            XCTAssertNil(itemFail)
             XCTAssertEqual(snap.totalItems, 0, "Bulk add must be atomic: no partial additions if any request is invalid")
         }
     }
@@ -1238,7 +1241,8 @@ final class DownloadQueueManagerTests: XCTestCase {
         try await queueManager.add(req, autoStart: false)
 
         // Read the persisted queue_manifest.json directly
-        let manifestData = try Data(contentsOf: queueManager.queueStoreURL)
+        let storeURL = await queueManager.queueStoreURL
+        let manifestData = try Data(contentsOf: storeURL)
         let manifestString = String(data: manifestData, encoding: .utf8) ?? ""
         XCTAssertFalse(manifestString.contains("secret_token_12345"), "Sensitive cookie must NEVER be persisted in queue_manifest.json")
 
@@ -1246,7 +1250,7 @@ final class DownloadQueueManagerTests: XCTestCase {
         let freshQueueManager = DownloadQueueManager(
             coordinator: coordinator,
             persistenceStore: persistenceStore,
-            queueStoreURL: queueManager.queueStoreURL
+            queueStoreURL: storeURL
         )
         try await freshQueueManager.restoreQueue(autoStart: false)
 
@@ -1300,6 +1304,7 @@ final class DownloadQueueManagerTests: XCTestCase {
             id: tag,
             originalURL: URL(string: "https://secure.example.com/data")!,
             destinationURL: tempDirectory.appendingPathComponent("data.bin"),
+            totalSize: 1000,
             headers: ["Authorization": secret]
         )
         try await persistenceStore.save(record)
@@ -1308,7 +1313,7 @@ final class DownloadQueueManagerTests: XCTestCase {
         XCTAssertNotNil(KeychainManager.shared.getGenericSecret(key: "authorization", account: "download:\(tag)"))
 
         // Delete all
-        try persistenceStore.deleteAll()
+        try await persistenceStore.deleteAll()
 
         // Verify secret purged
         XCTAssertNil(KeychainManager.shared.getGenericSecret(key: "authorization", account: "download:\(tag)"), "deleteAll() must purge Keychain credentials")
