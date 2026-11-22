@@ -75,11 +75,17 @@ public final class DownloadLinkRefresher: Sendable {
         // Filter and sanitize request headers according to origin security
         let sanitizedHeaders = sanitizeHeaders(newHeaders, for: newURL, originalURL: record.originalURL, downloadID: id)
 
-        // Probe the replacement URL
+        // Probe the replacement URL with existing secured headers overridden by fresh sanitized headers
         let probe = HTTPRangeProbe(session: session)
+        var probeHeaders = record.securedHeaders
+        if let sanitized = sanitizedHeaders {
+            for (k, v) in sanitized {
+                probeHeaders[k] = v
+            }
+        }
         let probeConfig = HTTPRangeProbeConfiguration(
             url: newURL,
-            customHeaders: sanitizedHeaders ?? record.securedHeaders,
+            customHeaders: probeHeaders,
             allowsCellularAccess: record.networkPolicy.allowsCellularAccess
         )
 
@@ -105,6 +111,12 @@ public final class DownloadLinkRefresher: Sendable {
             if let h = sanitizedHeaders {
                 record.updateHeaders(h)
             }
+            for k in Array(record.headers.keys) {
+                let lower = k.lowercased()
+                if lower == "authorization" || lower == "cookie" || lower == "proxy-authorization" {
+                    record.headers.removeValue(forKey: k)
+                }
+            }
             if let e = probeResult.eTag { record.eTag = e }
             if let lm = probeResult.lastModified { record.lastModified = lm }
             record.state = .paused
@@ -121,6 +133,12 @@ public final class DownloadLinkRefresher: Sendable {
                 record.resolvedURL = probeResult.finalURL
                 if let h = sanitizedHeaders {
                     record.updateHeaders(h)
+                }
+                for k in Array(record.headers.keys) {
+                    let lower = k.lowercased()
+                    if lower == "authorization" || lower == "cookie" || lower == "proxy-authorization" {
+                        record.headers.removeValue(forKey: k)
+                    }
                 }
                 record.eTag = probeResult.eTag
                 record.lastModified = probeResult.lastModified

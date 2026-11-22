@@ -992,11 +992,18 @@ public actor DownloadQueueManager {
                     for item in manifest.items where !Self.isInternalStreamingSegmentID(item.id) {
                         if activeTasks[item.id] == nil {
                             var restoredItem = item
+                            for k in Array(restoredItem.request.headers.keys) {
+                                let lower = k.lowercased()
+                                if lower == "cookie" || lower == "authorization" || lower == "proxy-authorization" {
+                                    restoredItem.request.headers.removeValue(forKey: k)
+                                }
+                            }
                             for key in ["cookie", "authorization", "proxy-authorization"] {
                                 if let data = KeychainManager.shared.getGenericSecret(key: key, account: "download:\(restoredItem.id)"),
                                    let val = String(data: data, encoding: .utf8), !val.isEmpty {
                                     restoredItem.request.headers[key.capitalized] = val
-                                } else if let host = restoredItem.request.url.host,
+                                } else if restoredItem.request.url.scheme?.lowercased() == "https",
+                                          let host = restoredItem.request.url.host?.lowercased(),
                                           let data = KeychainManager.shared.getGenericSecret(key: key, account: host),
                                           let val = String(data: data, encoding: .utf8), !val.isEmpty {
                                     restoredItem.request.headers[key.capitalized] = val
@@ -1272,10 +1279,15 @@ public actor DownloadQueueManager {
                 let lower = k.lowercased()
                 if lower == "cookie" || lower == "authorization" || lower == "proxy-authorization" {
                     KeychainManager.shared.storeGenericSecret(key: lower, account: "download:\(copy.id)", data: Data(v.utf8))
-                    if let host = copy.request.url.host {
+                    if copy.request.url.scheme?.lowercased() == "https", let host = copy.request.url.host?.lowercased() {
                         KeychainManager.shared.storeGenericSecret(key: lower, account: host, data: Data(v.utf8))
                     }
-                    strippedHeaders.removeValue(forKey: k)
+                }
+            }
+            for existingKey in Array(strippedHeaders.keys) {
+                let lower = existingKey.lowercased()
+                if lower == "cookie" || lower == "authorization" || lower == "proxy-authorization" {
+                    strippedHeaders.removeValue(forKey: existingKey)
                 }
             }
             copy.request.headers = strippedHeaders

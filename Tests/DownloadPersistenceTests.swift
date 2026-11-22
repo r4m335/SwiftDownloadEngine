@@ -451,6 +451,18 @@ final class DownloadPersistenceTests: XCTestCase {
         XCTAssertNotNil(dlAuth, "Download-scoped auth should be saved in Keychain")
         XCTAssertNotNil(hostAuth, "Host-scoped auth fallback should be saved in Keychain")
 
+        // Also store browser cookies, Internet Password, and generic secret to verify deleteAll is not overly destructive
+        let cookie = HTTPCookie(properties: [
+            .domain: host,
+            .path: "/",
+            .name: "browser_session",
+            .value: "keep_me_alive",
+            .secure: "TRUE"
+        ])!
+        KeychainManager.shared.storeCookies([cookie], domain: host)
+        KeychainManager.shared.storeInternetPassword(server: host, user: "admin", password: "saved_password")
+        KeychainManager.shared.storeGenericSecret(key: "app_theme", account: "preferences", data: Data("dark".utf8))
+
         // Perform deleteAll
         try await store.deleteAll()
 
@@ -464,6 +476,18 @@ final class DownloadPersistenceTests: XCTestCase {
         XCTAssertNil(hostCookieAfter, "Host-scoped credentials must be purged after deleteAll")
         XCTAssertNil(dlAuthAfter, "Download-scoped auth must be purged after deleteAll")
         XCTAssertNil(hostAuthAfter, "Host-scoped auth must be purged after deleteAll")
+
+        // Verify browser cookies, saved Internet passwords, and unrelated generic secrets were NOT deleted
+        let savedCookies = KeychainManager.shared.getCookies(domain: host)
+        XCTAssertFalse(savedCookies.isEmpty, "deleteAll must NOT wipe browser cookies")
+        XCTAssertEqual(savedCookies.first?.value, "keep_me_alive")
+
+        let savedAuth = KeychainManager.shared.getInternetPassword(server: host)
+        XCTAssertNotNil(savedAuth, "deleteAll must NOT wipe saved HTTP Basic/Internet passwords")
+        XCTAssertEqual(savedAuth?.password, "saved_password")
+
+        let savedPref = KeychainManager.shared.getGenericSecret(key: "app_theme", account: "preferences")
+        XCTAssertNotNil(savedPref, "deleteAll must NOT wipe unrelated app secrets")
     }
 
     func testDeleteTagPurgesHostCredentialsWhenNoOtherRecordsShareHost() async throws {

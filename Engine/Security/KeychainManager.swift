@@ -292,12 +292,36 @@ public final class KeychainManager: @unchecked Sendable {
         #endif
     }
 
-    /// Purges all sensitive credentials, cookies, and tokens associated with a host.
+    /// Purges download-specific sensitive credentials (authorization, cookie, proxy-authorization) associated with a host fallback.
+    /// Preserves browser/request-enricher cookies and saved Internet Passwords (HTTP Basic/Digest auth).
     public func deleteCredentials(forHost host: String) {
         lock.lock()
         defer { lock.unlock() }
 
         let normalizedHost = host.lowercased()
+        let downloadKeys = ["cookie", "authorization", "proxy-authorization"]
+
+        #if canImport(Security) && !os(Linux)
+        for key in downloadKeys {
+            let delQuery: [String: Any] = [
+                kSecClass as String: kSecClassGenericPassword,
+                kSecAttrService as String: serviceName,
+                kSecAttrAccount as String: "\(normalizedHost):\(key)"
+            ]
+            SecItemDelete(delQuery as CFDictionary)
+        }
+        #else
+        for key in downloadKeys {
+            fallbackStore.removeValue(forKey: "\(normalizedHost):\(key)")
+        }
+        #endif
+    }
+
+    /// Purges download-related credentials (all download IDs and host fallback tokens) without touching
+    /// browser cookies or saved Internet Passwords.
+    public func deleteAllCredentials() {
+        lock.lock()
+        defer { lock.unlock() }
 
         #if canImport(Security) && !os(Linux)
         let query: [String: Any] = [
@@ -310,52 +334,33 @@ public final class KeychainManager: @unchecked Sendable {
         let status = SecItemCopyMatching(query as CFDictionary, &item)
         if status == errSecSuccess, let items = item as? [[String: Any]] {
             for it in items {
-                if let acct = it[kSecAttrAccount as String] as? String,
-                   (acct.lowercased() == normalizedHost || acct.lowercased().hasPrefix("\(normalizedHost):")) {
-                    let delQuery: [String: Any] = [
-                        kSecClass as String: kSecClassGenericPassword,
-                        kSecAttrService as String: serviceName,
-                        kSecAttrAccount as String: acct
-                    ]
-                    SecItemDelete(delQuery as CFDictionary)
+                if let acct = it[kSecAttrAccount as String] as? String {
+                    let isDownloadAccount = acct.hasPrefix("download:")
+                    let isHostDownloadCredential = acct.hasSuffix(":cookie") ||
+                                                   acct.hasSuffix(":authorization") ||
+                                                   acct.hasSuffix(":proxy-authorization")
+                    // Explicitly preserve browser cookies ("...:cookies") and non-download items
+                    if (isDownloadAccount || isHostDownloadCredential) && !acct.hasSuffix(":cookies") {
+                        let delQuery: [String: Any] = [
+                            kSecClass as String: kSecClassGenericPassword,
+                            kSecAttrService as String: serviceName,
+                            kSecAttrAccount as String: acct
+                        ]
+                        SecItemDelete(delQuery as CFDictionary)
+                    }
                 }
             }
         }
-
-        let internetQuery: [String: Any] = [
-            kSecClass as String: kSecClassInternetPassword,
-            kSecAttrServer as String: normalizedHost
-        ]
-        SecItemDelete(internetQuery as CFDictionary)
         #else
         fallbackStore = fallbackStore.filter { key, _ in
             let lower = key.lowercased()
-            return !(lower == normalizedHost ||
-                     lower.hasPrefix("\(normalizedHost):") ||
-                     lower.hasPrefix("internet:\(normalizedHost):"))
+            let isDownloadAccount = lower.hasPrefix("download:")
+            let isHostDownloadCredential = lower.hasSuffix(":cookie") ||
+                                           lower.hasSuffix(":authorization") ||
+                                           lower.hasSuffix(":proxy-authorization")
+            return !((isDownloadAccount || isHostDownloadCredential) && !lower.hasSuffix(":cookies"))
         }
         #endif
-    }
-
-    /// Purges all stored credentials, tokens, cookies, and passwords from the Keychain and fallback store.
-    public func deleteAllCredentials() {
-        lock.lock()
-        defer { lock.unlock() }
-
-        #if canImport(Security) && !os(Linux)
-        let genericQuery: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: serviceName
-        ]
-        SecItemDelete(genericQuery as CFDictionary)
-
-        let internetQuery: [String: Any] = [
-            kSecClass as String: kSecClassInternetPassword
-        ]
-        SecItemDelete(internetQuery as CFDictionary)
-        #endif
-
-        fallbackStore.removeAll()
     }
 
     /// Clears all in-memory fallback items (useful in tests).

@@ -421,6 +421,97 @@ final class DownloadRecoveryTests: XCTestCase {
         XCTAssertNil(updated.headers["Cookie"], "Sensitive cookie must not be stored in plain text headers")
     }
 
+    func testDownloadLinkRefresherSameOriginUpdatesCredentialsWithoutLeakage() async throws {
+        KeychainManager.shared.resetFallbackStore()
+
+        let destination = tempDirectory.appendingPathComponent("same_origin_target.mp4")
+        let oldURL = URL(string: "https://media.example.com/video.mp4?token=expired")!
+        let newURL = URL(string: "https://media.example.com/video.mp4?token=refreshed")!
+
+        let seg0 = SegmentRecord(id: 0, startOffset: 0, endOffset: 499, length: 500, completedBytes: 500)
+        let initialRecord = DownloadRecord(
+            id: "same_origin_dl_id",
+            originalURL: oldURL,
+            resolvedURL: oldURL,
+            destinationURL: destination,
+            totalSize: 1000,
+            state: .failed(reason: "HTTP 401"),
+            storageMode: .directSeek,
+            eTag: "\"etag-v1\"",
+            headers: [
+                "Authorization": "Bearer old_secret_token",
+                "Cookie": "sess=old_cookie",
+                "User-Agent": "EngineTest/1.0"
+            ],
+            segments: [seg0]
+        )
+        try await persistenceStore.save(initialRecord)
+
+        // Ensure initial secured headers have old credentials and plaintext headers do not
+        XCTAssertEqual(initialRecord.securedHeaders["Authorization"], "Bearer old_secret_token")
+        XCTAssertNil(initialRecord.headers["Authorization"])
+        XCTAssertNil(initialRecord.headers["Cookie"])
+
+        var capturedProbeAuth: String?
+        var capturedProbeCookie: String?
+
+        MockURLProtocol.setHandler(for: newURL) { req in
+            capturedProbeAuth = req.value(forHTTPHeaderField: "Authorization")
+            capturedProbeCookie = req.value(forHTTPHeaderField: "Cookie")
+            let resp = HTTPURLResponse(
+                url: newURL,
+                statusCode: 200,
+                httpVersion: "HTTP/1.1",
+                headerFields: [
+                    "Content-Length": "1000",
+                    "Accept-Ranges": "bytes",
+                    "ETag": "\"etag-v1\"",
+                    "Content-Type": "video/mp4"
+                ]
+            )!
+            return (resp, Data(repeating: 0x42, count: 1000))
+        }
+
+        let refresher = DownloadLinkRefresher(session: session, persistenceStore: persistenceStore)
+        let (updated, outcome) = try await refresher.refresh(
+            id: "same_origin_dl_id",
+            newURL: newURL,
+            newHeaders: [
+                "Authorization": "Bearer new_refreshed_token",
+                "Cookie": "sess=new_refreshed_cookie",
+                "Proxy-Authorization": "Basic new_proxy"
+            ]
+        )
+
+        XCTAssertTrue(outcome.isCompatible)
+        // Verify probe received the new refreshed credentials
+        XCTAssertEqual(capturedProbeAuth, "Bearer new_refreshed_token")
+        XCTAssertEqual(capturedProbeCookie, "sess=new_refreshed_cookie")
+
+        // Verify securedHeaders returns the new credentials (NOT the old ones)
+        XCTAssertEqual(updated.securedHeaders["Authorization"], "Bearer new_refreshed_token")
+        XCTAssertEqual(updated.securedHeaders["Cookie"], "sess=new_refreshed_cookie")
+        XCTAssertEqual(updated.securedHeaders["Proxy-Authorization"], "Basic new_proxy")
+        XCTAssertEqual(updated.securedHeaders["User-Agent"], "EngineTest/1.0")
+
+        // Verify raw in-memory headers contain zero sensitive credentials
+        XCTAssertNil(updated.headers["Authorization"])
+        XCTAssertNil(updated.headers["authorization"])
+        XCTAssertNil(updated.headers["Cookie"])
+        XCTAssertNil(updated.headers["cookie"])
+        XCTAssertNil(updated.headers["Proxy-Authorization"])
+        XCTAssertNil(updated.headers["proxy-authorization"])
+
+        // Verify persisted record on disk contains zero plaintext credentials in JSON
+        let diskRecord = try await persistenceStore.fetch(tag: "same_origin_dl_id")
+        XCTAssertNotNil(diskRecord)
+        XCTAssertNil(diskRecord?.headers["Authorization"])
+        XCTAssertNil(diskRecord?.headers["Cookie"])
+        XCTAssertNil(diskRecord?.headers["Proxy-Authorization"])
+        XCTAssertEqual(diskRecord?.securedHeaders["Authorization"], "Bearer new_refreshed_token")
+        XCTAssertEqual(diskRecord?.securedHeaders["Cookie"], "sess=new_refreshed_cookie")
+    }
+
     func testDownloadLinkRefresherRejectsIncompatibleFileWithoutWiping() async throws {
         let destination = tempDirectory.appendingPathComponent("target_incompat.mp4")
         let oldURL = URL(string: "https://media.example.com/file1.mp4")!

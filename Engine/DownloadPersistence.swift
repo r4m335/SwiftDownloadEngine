@@ -223,7 +223,7 @@ public struct DownloadRecord: Codable, Equatable, Identifiable, Sendable, Schema
             if lower == "cookie" || lower == "authorization" || lower == "proxy-authorization" {
                 // Scope credentials by download ID for strict session/task isolation
                 KeychainManager.shared.storeGenericSecret(key: lower, account: "download:\(id)", data: Data(v.utf8))
-                if let host = originalURL.host {
+                if originalURL.scheme?.lowercased() == "https", let host = originalURL.host?.lowercased() {
                     // Also store with host fallback for legacy queries
                     KeychainManager.shared.storeGenericSecret(key: lower, account: host, data: Data(v.utf8))
                 }
@@ -241,12 +241,19 @@ public struct DownloadRecord: Codable, Equatable, Identifiable, Sendable, Schema
     /// Reconstitutes full request headers by retrieving sensitive credentials from Keychain scoped to this download ID.
     public var securedHeaders: [String: String] {
         var result = headers
+        // Strip any residual sensitive headers from result first
+        for key in Array(result.keys) {
+            let lower = key.lowercased()
+            if lower == "cookie" || lower == "authorization" || lower == "proxy-authorization" {
+                result.removeValue(forKey: key)
+            }
+        }
         for key in ["cookie", "authorization", "proxy-authorization"] {
             if let data = KeychainManager.shared.getGenericSecret(key: key, account: "download:\(id)"),
                let value = String(data: data, encoding: .utf8), !value.isEmpty {
                 result[key.capitalized] = value
             } else if originalURL.scheme?.lowercased() == "https",
-                      let host = originalURL.host,
+                      let host = originalURL.host?.lowercased(),
                       let data = KeychainManager.shared.getGenericSecret(key: key, account: host),
                       let value = String(data: data, encoding: .utf8), !value.isEmpty {
                 result[key.capitalized] = value
@@ -261,12 +268,22 @@ public struct DownloadRecord: Codable, Equatable, Identifiable, Sendable, Schema
             let lower = k.lowercased()
             if lower == "cookie" || lower == "authorization" || lower == "proxy-authorization" {
                 KeychainManager.shared.storeGenericSecret(key: lower, account: "download:\(id)", data: Data(v.utf8))
-                if let host = originalURL.host {
+                if originalURL.scheme?.lowercased() == "https", let host = originalURL.host?.lowercased() {
                     KeychainManager.shared.storeGenericSecret(key: lower, account: host, data: Data(v.utf8))
                 }
-                headers.removeValue(forKey: k)
+                for existingKey in Array(headers.keys) {
+                    if existingKey.lowercased() == lower {
+                        headers.removeValue(forKey: existingKey)
+                    }
+                }
             } else {
                 headers[k] = v
+            }
+        }
+        for existingKey in Array(headers.keys) {
+            let lower = existingKey.lowercased()
+            if lower == "cookie" || lower == "authorization" || lower == "proxy-authorization" {
+                headers.removeValue(forKey: existingKey)
             }
         }
     }
@@ -304,7 +321,20 @@ public struct DownloadRecord: Codable, Equatable, Identifiable, Sendable, Schema
         self.lastModified = try container.decodeIfPresent(String.self, forKey: .lastModified)
         self.suggestedFilename = try container.decodeIfPresent(String.self, forKey: .suggestedFilename)
         self.mimeType = try container.decodeIfPresent(String.self, forKey: .mimeType)
-        self.headers = try container.decode([String: String].self, forKey: .headers)
+        let decodedHeaders = try container.decode([String: String].self, forKey: .headers)
+        var cleanHeaders: [String: String] = [:]
+        for (k, v) in decodedHeaders {
+            let lower = k.lowercased()
+            if lower == "cookie" || lower == "authorization" || lower == "proxy-authorization" {
+                KeychainManager.shared.storeGenericSecret(key: lower, account: "download:\(self.id)", data: Data(v.utf8))
+                if self.originalURL.scheme?.lowercased() == "https", let host = self.originalURL.host?.lowercased() {
+                    KeychainManager.shared.storeGenericSecret(key: lower, account: host, data: Data(v.utf8))
+                }
+            } else {
+                cleanHeaders[k] = v
+            }
+        }
+        self.headers = cleanHeaders
         self.createdAt = try container.decode(Date.self, forKey: .createdAt)
         self.updatedAt = try container.decode(Date.self, forKey: .updatedAt)
         self.segments = try container.decode([SegmentRecord].self, forKey: .segments)
