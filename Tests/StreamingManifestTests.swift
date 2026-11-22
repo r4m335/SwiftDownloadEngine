@@ -684,4 +684,59 @@ final class StreamingManifestTests: XCTestCase {
             XCTAssertTrue(error.localizedDescription.contains("BANDWIDTH"))
         }
     }
+
+    func testHLSVariantDeduplicationPreservesCaseSensitiveDistinctPlaylists() {
+        let variantA = HLSVariant(
+            uri: URL(string: "https://cdn.example.com/hls/Stream_720p.m3u8?token=AbC")!,
+            bandwidth: 2000000,
+            resolution: HLSResolution(width: 1280, height: 720),
+            codecs: "avc1.4d401f"
+        )
+        let variantB = HLSVariant(
+            uri: URL(string: "https://cdn.example.com/hls/stream_720p.m3u8?token=AbC")!,
+            bandwidth: 2500000,
+            resolution: HLSResolution(width: 1920, height: 1080),
+            codecs: "avc1.640028"
+        )
+        let variantC = HLSVariant(
+            uri: URL(string: "https://cdn.example.com/hls/stream_720p.m3u8?token=abc")!,
+            bandwidth: 1500000,
+            resolution: HLSResolution(width: 854, height: 480),
+            codecs: "avc1.4d401e"
+        )
+        // Truly duplicate URI with uppercase scheme and host
+        let variantDuplicate = HLSVariant(
+            uri: URL(string: "HTTPS://CDN.EXAMPLE.COM/hls/Stream_720p.m3u8?token=AbC")!,
+            bandwidth: 3000000,
+            resolution: HLSResolution(width: 2560, height: 1440),
+            codecs: "avc1.64002a"
+        )
+
+        let deduplicated = HLSVariantSelector.deduplicate([variantA, variantB, variantC, variantDuplicate])
+        // variantDuplicate has identical canonical URI to variantA (differing only in scheme/host case),
+        // so it must be deduplicated out.
+        // variantA, variantB, and variantC have case-differing paths/queries and must all be retained.
+        XCTAssertEqual(deduplicated.count, 3)
+        XCTAssertTrue(deduplicated.contains(where: { $0.uri.absoluteString == "https://cdn.example.com/hls/Stream_720p.m3u8?token=AbC" }))
+        XCTAssertTrue(deduplicated.contains(where: { $0.uri.absoluteString == "https://cdn.example.com/hls/stream_720p.m3u8?token=AbC" }))
+        XCTAssertTrue(deduplicated.contains(where: { $0.uri.absoluteString == "https://cdn.example.com/hls/stream_720p.m3u8?token=abc" }))
+    }
+
+    func testHLSMasterPlaylistDeduplicationWithCaseSensitiveURLs() throws {
+        let master = """
+        #EXTM3U
+        #EXT-X-VERSION:4
+        #EXT-X-STREAM-INF:BANDWIDTH=3000000,RESOLUTION=1920x1080,CODECS="avc1.640028"
+        https://cdn.example.com/live/Stream_A/playlist.m3u8
+        #EXT-X-STREAM-INF:BANDWIDTH=2000000,RESOLUTION=1280x720,CODECS="avc1.4d401f"
+        https://cdn.example.com/live/stream_a/playlist.m3u8
+        #EXT-X-STREAM-INF:BANDWIDTH=1000000,RESOLUTION=854x480,CODECS="avc1.4d401f"
+        HTTPS://CDN.EXAMPLE.COM/live/stream_a/playlist.m3u8
+        """
+        let parsed = try HLSManifestParser.parse(master, baseURL: URL(string: "https://cdn.example.com/live/master.m3u8")!)
+        let ranked = try HLSVariantSelector.rank(from: parsed, deduplicate: true)
+        XCTAssertEqual(ranked.count, 2)
+        XCTAssertEqual(ranked[0].uri.absoluteString, "https://cdn.example.com/live/Stream_A/playlist.m3u8")
+        XCTAssertEqual(ranked[1].uri.absoluteString, "https://cdn.example.com/live/stream_a/playlist.m3u8")
+    }
 }

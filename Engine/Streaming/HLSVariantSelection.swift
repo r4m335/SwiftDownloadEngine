@@ -146,7 +146,7 @@ public enum HLSVariantSelector {
         var deduplicated: [HLSVariant] = []
 
         for variant in variants {
-            let normalizedURI = variant.uri.absoluteString.lowercased()
+            let normalizedURI = BrowserRequestContext.canonicalURLString(for: variant.uri)
             if seenURIs.contains(normalizedURI) {
                 continue
             }
