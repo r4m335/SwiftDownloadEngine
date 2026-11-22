@@ -460,7 +460,7 @@ final class DownloadPersistenceTests: XCTestCase {
             .secure: "TRUE"
         ])!
         KeychainManager.shared.storeCookies([cookie], domain: host)
-        KeychainManager.shared.storeInternetPassword(server: host, user: "admin", password: "saved_password")
+        KeychainManager.shared.storeInternetPassword(server: host, username: "admin", password: "saved_password")
         KeychainManager.shared.storeGenericSecret(key: "app_theme", account: "preferences", data: Data("dark".utf8))
 
         // Perform deleteAll
