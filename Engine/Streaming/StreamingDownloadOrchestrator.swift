@@ -1133,6 +1133,14 @@ public actor StreamingDownloadOrchestrator {
         do {
             _ = try await persistence.updateState(id: id, state: state)
         } catch {
+            if let mapped = registeredTransferIDs[id], mapped != id, (try? await persistence.updateState(id: mapped, state: state)) != nil {
+                return
+            }
+            for (k, v) in registeredTransferIDs where v == id {
+                if (try? await persistence.updateState(id: k, state: state)) != nil {
+                    return
+                }
+            }
             PipelineLogger.shared.log(
                 "[HLS Pipeline] Failed to persist state \(state) for \(id): \(error.localizedDescription)"
             )
@@ -1847,6 +1855,8 @@ public actor StreamingDownloadOrchestrator {
 
             var segmentDir: URL? = nil
             if let hlsRec = try? await hlsPersistenceStore?.load(id: parentID) {
+                segmentDir = hlsRec.segmentDirectoryURL
+            } else if let hlsRec = try? await hlsPersistenceStore?.load(id: id) {
                 segmentDir = hlsRec.segmentDirectoryURL
             } else if let dashRec = try? await dashPersistenceStore?.load(id: proposal.transferID) {
                 segmentDir = dashRec.segmentDirectoryURL

@@ -3752,6 +3752,18 @@ final class StreamingDownloadOrchestratorTests: XCTestCase {
             assemblyState: .notStarted
         )
         try await persistence.save(hlsRec)
+        let urlRec = HLSTransferRecord(
+            id: url.absoluteString,
+            manifestURL: url,
+            outputFilename: "output.mp4",
+            outputDestinationURL: tempDir.appendingPathComponent("output.mp4"),
+            segmentDirectoryURL: segDir,
+            totalSegments: 1,
+            completedSegmentOrders: [],
+            state: .downloading,
+            assemblyState: .notStarted
+        )
+        try await persistence.save(urlRec)
 
         // Simulate active running transfer
         try await orchestrator.resume(transferID: proposal.transferID)
