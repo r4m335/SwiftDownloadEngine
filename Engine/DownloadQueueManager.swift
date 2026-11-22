@@ -664,15 +664,15 @@ public actor DownloadQueueManager {
         item.state = .cancelled
         items[id] = item
 
-        if let task = activeTasks.removeValue(forKey: id) {
-            task.cancel()
-            _ = await task.value
-        }
-
         do {
             try await coordinator.cancel(id: id, deleteDestinationFile: deleteDestinationFile)
         } catch {
             PipelineLogger.shared.log("[DownloadQueueManager] Warning: Coordinator cancel failed for \(id): \(error.localizedDescription)")
+        }
+
+        if let task = activeTasks.removeValue(forKey: id) {
+            task.cancel()
+            _ = await task.value
         }
 
         await cleanupBackgroundTasksAndFiles(for: id, deleteFiles: deleteDestinationFile)
@@ -785,14 +785,14 @@ public actor DownloadQueueManager {
         // Cancel all active tasks
         let activeIDs = Array(activeTasks.keys)
         for id in activeIDs {
-            if let task = activeTasks.removeValue(forKey: id) {
-                task.cancel()
-                _ = await task.value
-            }
             do {
                 try await coordinator.cancel(id: id, deleteDestinationFile: deleteDestinationFiles)
             } catch {
                 PipelineLogger.shared.log("[DownloadQueueManager] Warning: Coordinator cancel failed for \(id): \(error.localizedDescription)")
+            }
+            if let task = activeTasks.removeValue(forKey: id) {
+                task.cancel()
+                _ = await task.value
             }
             await cleanupBackgroundTasksAndFiles(for: id, deleteFiles: deleteDestinationFiles)
         }
@@ -835,15 +835,15 @@ public actor DownloadQueueManager {
             throw DownloadQueueError.downloadNotFound(id: id)
         }
 
-        if let task = activeTasks.removeValue(forKey: id) {
-            task.cancel()
-            _ = await task.value
-        }
-
         do {
             try await coordinator.cancel(id: id, deleteDestinationFile: deleteDestinationFile)
         } catch {
             PipelineLogger.shared.log("[DownloadQueueManager] Warning: Coordinator cancel failed for \(id): \(error.localizedDescription)")
+        }
+
+        if let task = activeTasks.removeValue(forKey: id) {
+            task.cancel()
+            _ = await task.value
         }
 
         await cleanupBackgroundTasksAndFiles(for: id, deleteFiles: deleteDestinationFile)
@@ -1214,6 +1214,14 @@ public actor DownloadQueueManager {
     private func handleDownloadFinished(id: String, error: Error?) {
         let wasActive = (activeTasks.removeValue(forKey: id) != nil)
         guard wasActive else { return }
+
+        // If item was already explicitly cancelled or paused by cancel/cancelAll/pause, do not overwrite state!
+        guard let current = items[id], current.state != .cancelled && current.state != .paused else {
+            persistQueue()
+            processQueue()
+            notifyQueueChanged()
+            return
+        }
 
         if let error = error {
             items[id]?.state = .failed(reason: error.localizedDescription)
