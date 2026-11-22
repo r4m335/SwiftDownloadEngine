@@ -1743,7 +1743,7 @@ public actor StreamingDownloadOrchestrator {
                 if let engine = self.downloadEngine {
                     let estimatedTotal = Int64(record.totalSegments) * 1_000_000
                     let completedBytes = Int64(record.completedSegmentOrders.count) * 1_000_000
-                    await engine.updateStreamingProgress(
+                    await engine.updateStreamingDownloadProgress(
                         id: transferID,
                         completedBytes: completedBytes,
                         totalBytes: estimatedTotal
@@ -1764,12 +1764,12 @@ public actor StreamingDownloadOrchestrator {
             if var record = try? await persistence.load(id: transferID) {
                 if !record.completedSegmentOrders.contains(order) {
                     _ = try? await persistence.updateCompletedSegmentOrders(id: transferID, completedOrders: [order])
-                    record.completedSegmentOrders.append(order)
+                    record.completedSegmentOrders.insert(order)
                 }
                 if let engine = self.downloadEngine {
                     let estimatedTotal = Int64(record.totalSegments) * 1_000_000
                     let completedBytes = Int64(record.completedSegmentOrders.count) * 1_000_000
-                    await engine.updateStreamingProgress(
+                    await engine.updateStreamingDownloadProgress(
                         id: transferID,
                         completedBytes: completedBytes,
                         totalBytes: estimatedTotal

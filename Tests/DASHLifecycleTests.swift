@@ -172,7 +172,7 @@ final class DASHLifecycleTests: XCTestCase {
         await orchestrator.handleSegmentCompleted(transferID: transferID, order: 0, partURL: chunkURL)
 
         let loaded = try await store.load(id: transferID)
-        XCTAssertEqual(loaded?.completedSegmentOrders, [0], "Segment 0 must be added to completedSegmentOrders")
+        XCTAssertEqual(loaded?.completedSegmentOrders, Set([0]), "Segment 0 must be added to completedSegmentOrders")
     }
 
     func testBackgroundStreamingSegmentExecutorFastPath() async throws {
