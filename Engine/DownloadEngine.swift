@@ -354,6 +354,10 @@ public actor DownloadEngine {
         self.streamingOrchestrator = orchestrator
     }
 
+    public func getStreamingOrchestrator() -> StreamingDownloadOrchestrator? {
+        self.streamingOrchestrator
+    }
+
     private var listenersAttached = false
 
     /// Attaches internal listeners to `DownloadQueueManager` for automated event broadcasting.

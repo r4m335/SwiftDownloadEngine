@@ -612,7 +612,7 @@ public final class DownloadManagerViewModel: ObservableObject {
         }
 
         // Automatically restore and recover durable streaming transfers (HLS and DASH)
-        let effectiveOrchestrator = self.streamingOrchestrator ?? (await engine.streamingOrchestrator)
+        let effectiveOrchestrator = await resolveStreamingOrchestrator()
         await effectiveOrchestrator?.restoreStreamingTransfers(resumeInterrupted: true)
 
         // Initialize and start torrent engine if available
@@ -1764,9 +1764,17 @@ public final class DownloadManagerViewModel: ObservableObject {
         }
     }
 
+    /// Resolves the active streaming orchestrator either directly or via the underlying engine.
+    private func resolveStreamingOrchestrator() async -> StreamingDownloadOrchestrator? {
+        if let direct = self.streamingOrchestrator {
+            return direct
+        }
+        return await engine.getStreamingOrchestrator()
+    }
+
     /// Loads the durable HLS parent record used by the segment details UI.
     public func hlsTransferRecord(for id: String) async -> HLSTransferRecord? {
-        guard let orchestrator = await engine.streamingOrchestrator,
+        guard let orchestrator = await resolveStreamingOrchestrator(),
               let store = await orchestrator.hlsPersistenceStore else {
             return nil
         }
@@ -1775,7 +1783,7 @@ public final class DownloadManagerViewModel: ObservableObject {
 
     /// Loads the durable DASH parent record used by the segment details UI.
     public func dashTransferRecord(for id: String) async -> DASHTransferRecord? {
-        guard let orchestrator = await engine.streamingOrchestrator,
+        guard let orchestrator = await resolveStreamingOrchestrator(),
               let store = await orchestrator.dashPersistenceStore else {
             return nil
         }
@@ -1786,7 +1794,7 @@ public final class DownloadManagerViewModel: ObservableObject {
     /// transfer snapshot so progress immediately reflects the new checkpoint.
     @discardableResult
     public func deleteHLSSegments(id: String, orders: Set<Int>) async throws -> Int {
-        guard let orchestrator = await engine.streamingOrchestrator else { return 0 }
+        guard let orchestrator = await resolveStreamingOrchestrator() else { return 0 }
         let deleted = try await orchestrator.deleteHLSSegments(id: id, orders: orders)
         await refreshSnapshots()
         return deleted
@@ -1905,7 +1913,7 @@ public final class DownloadManagerViewModel: ObservableObject {
         if let te = torrentEngine {
             try? await te.updateConfiguration(engineConfig)
         }
-        await engine.streamingOrchestrator?.updateConfiguration(engineConfig)
+        await (await resolveStreamingOrchestrator())?.updateConfiguration(engineConfig)
 
         self.maxConcurrentDownloads = newSettings.maxConcurrentDownloads
         self.maxGlobalRequests = newSettings.maxGlobalRequests
@@ -1952,7 +1960,7 @@ public final class DownloadManagerViewModel: ObservableObject {
     public func restoreQueue(autoStart: Bool = false) async throws {
         do {
             try await engine.restoreQueue(autoStart: autoStart)
-            let effectiveOrchestrator = self.streamingOrchestrator ?? (await engine.streamingOrchestrator)
+            let effectiveOrchestrator = await resolveStreamingOrchestrator()
             await effectiveOrchestrator?.restoreStreamingTransfers(resumeInterrupted: autoStart)
             if let te = torrentEngine {
                 try? await te.start()
