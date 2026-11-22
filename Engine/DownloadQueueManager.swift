@@ -707,11 +707,6 @@ public actor DownloadQueueManager {
         }
     }
 
-        persistQueue()
-        processQueue()
-        notifyQueueChanged()
-    }
-
     /// Retries a failed download.
     public func retry(id: String) throws {
         guard var item = items[id] else {
