@@ -1026,6 +1026,24 @@ public actor DownloadEngine {
         try await queueManager.handoffToBackground(id: id, earliestBeginDate: earliestBeginDate)
     }
 
+    /// Hands off all active foreground HTTP transfers to the background URLSession transport
+    /// so they continue progressing seamlessly when the app enters inactive or background states.
+    public func handoffActiveDownloadsToBackground() async {
+        let snapshot = await queueManager.snapshot()
+        for item in snapshot.items {
+            guard item.request.transportPolicy == .foreground,
+                  item.state == .downloading || item.state == .pending || item.state == .probing else {
+                continue
+            }
+            do {
+                try await queueManager.handoffToBackground(id: item.id, earliestBeginDate: Date())
+                PipelineLogger.shared.log(stage: .coordinator, message: "[DownloadEngine] Successfully handed off active download \(item.id) to background transport.")
+            } catch {
+                PipelineLogger.shared.log(stage: .coordinator, message: "[DownloadEngine] Failed to hand off active download \(item.id) to background: \(error.localizedDescription)")
+            }
+        }
+    }
+
     /// Updates the durable queue and download record network policy.
     public func setDownloadNetworkPolicy(_ policy: DownloadNetworkPolicy, for id: DownloadID) async throws {
         try await queueManager.setNetworkPolicy(policy, for: id)

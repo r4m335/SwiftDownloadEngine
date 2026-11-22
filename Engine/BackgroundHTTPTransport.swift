@@ -76,6 +76,7 @@ public struct BackgroundDownloadTaskRecord: Codable, Equatable, Identifiable, Se
     public var completedBytes: Int64
     public var isCompleted: Bool
     public var errorDescription: String?
+    public var retryCount: Int
 
     public init(
         sessionIdentifier: String,
@@ -93,7 +94,8 @@ public struct BackgroundDownloadTaskRecord: Codable, Equatable, Identifiable, Se
         updatedAt: Date = Date(),
         completedBytes: Int64 = 0,
         isCompleted: Bool = false,
-        errorDescription: String? = nil
+        errorDescription: String? = nil,
+        retryCount: Int = 0
     ) {
         self.sessionIdentifier = sessionIdentifier
         self.taskIdentifier = taskIdentifier
@@ -111,6 +113,56 @@ public struct BackgroundDownloadTaskRecord: Codable, Equatable, Identifiable, Se
         self.completedBytes = completedBytes
         self.isCompleted = isCompleted
         self.errorDescription = errorDescription
+        self.retryCount = retryCount
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case sessionIdentifier, taskIdentifier, downloadID, segmentID, originalURL
+        case startOffset, endOffset, expectedBytes, initialSegmentCompletedBytes
+        case segmentLength, destinationPartURL, createdAt, updatedAt, completedBytes
+        case isCompleted, errorDescription, retryCount
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.sessionIdentifier = try container.decode(String.self, forKey: .sessionIdentifier)
+        self.taskIdentifier = try container.decode(Int.self, forKey: .taskIdentifier)
+        self.downloadID = try container.decode(String.self, forKey: .downloadID)
+        self.segmentID = try container.decode(Int.self, forKey: .segmentID)
+        self.originalURL = try container.decode(URL.self, forKey: .originalURL)
+        self.startOffset = try container.decode(Int64.self, forKey: .startOffset)
+        self.endOffset = try container.decode(Int64.self, forKey: .endOffset)
+        self.expectedBytes = try container.decode(Int64.self, forKey: .expectedBytes)
+        self.initialSegmentCompletedBytes = try container.decodeIfPresent(Int64.self, forKey: .initialSegmentCompletedBytes) ?? 0
+        self.segmentLength = try container.decode(Int64.self, forKey: .segmentLength)
+        self.destinationPartURL = try container.decode(URL.self, forKey: .destinationPartURL)
+        self.createdAt = try container.decode(Date.self, forKey: .createdAt)
+        self.updatedAt = try container.decode(Date.self, forKey: .updatedAt)
+        self.completedBytes = try container.decode(Int64.self, forKey: .completedBytes)
+        self.isCompleted = try container.decode(Bool.self, forKey: .isCompleted)
+        self.errorDescription = try container.decodeIfPresent(String.self, forKey: .errorDescription)
+        self.retryCount = try container.decodeIfPresent(Int.self, forKey: .retryCount) ?? 0
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(sessionIdentifier, forKey: .sessionIdentifier)
+        try container.encode(taskIdentifier, forKey: .taskIdentifier)
+        try container.encode(downloadID, forKey: .downloadID)
+        try container.encode(segmentID, forKey: .segmentID)
+        try container.encode(originalURL, forKey: .originalURL)
+        try container.encode(startOffset, forKey: .startOffset)
+        try container.encode(endOffset, forKey: .endOffset)
+        try container.encode(expectedBytes, forKey: .expectedBytes)
+        try container.encode(initialSegmentCompletedBytes, forKey: .initialSegmentCompletedBytes)
+        try container.encode(segmentLength, forKey: .segmentLength)
+        try container.encode(destinationPartURL, forKey: .destinationPartURL)
+        try container.encode(createdAt, forKey: .createdAt)
+        try container.encode(updatedAt, forKey: .updatedAt)
+        try container.encode(completedBytes, forKey: .completedBytes)
+        try container.encode(isCompleted, forKey: .isCompleted)
+        try container.encodeIfPresent(errorDescription, forKey: .errorDescription)
+        try container.encode(retryCount, forKey: .retryCount)
     }
 
     /// Task description string embedded directly into the URLSessionTask for system-level persistence.
@@ -847,11 +899,15 @@ public final class BackgroundDownloadSessionManager: NSObject, @unchecked Sendab
         config.sessionSendsLaunchEvents = true
         config.shouldUseExtendedBackgroundIdleMode = true
         config.timeoutIntervalForRequest = 60
-        config.timeoutIntervalForResource = 86400 // 24 hours
+        // Set maximum connections per host to manage socket concurrency in the daemon
+        config.httpMaximumConnectionsPerHost = 6
+        // Set resource timeout to 7 days (system default) rather than 24 hours to prevent cutting off slow large transfers
+        config.timeoutIntervalForResource = 604800
 #else
         let config = URLSessionConfiguration.default
         config.timeoutIntervalForRequest = 60
-        config.timeoutIntervalForResource = 86400
+        config.httpMaximumConnectionsPerHost = 6
+        config.timeoutIntervalForResource = 604800
 #endif
         return URLSession(configuration: config, delegate: self, delegateQueue: delegateQueue)
     }
@@ -871,8 +927,8 @@ public final class BackgroundDownloadSessionManager: NSObject, @unchecked Sendab
         request.allowsCellularAccess = download.networkPolicy.allowsCellularAccess
         #if canImport(Darwin)
         if #available(iOS 13.0, macOS 10.15, *) {
-            request.allowsExpensiveNetworkAccess = download.networkPolicy.allowsCellularAccess
-            request.allowsConstrainedNetworkAccess = download.networkPolicy.allowsCellularAccess
+            request.allowsExpensiveNetworkAccess = download.networkPolicy.allowsExpensiveNetworkAccess
+            request.allowsConstrainedNetworkAccess = download.networkPolicy.allowsConstrainedNetworkAccess
         }
         #endif
 
@@ -989,7 +1045,7 @@ public final class BackgroundDownloadSessionManager: NSObject, @unchecked Sendab
                 allowDecrease: true
             )
         } catch {
-            print("[BackgroundDownloadSessionManager] Warning: failed to reconcile task with disk size: \(error)")
+            PipelineLogger.shared.log(stage: .transport, message: "[BackgroundDownloadSessionManager] Warning: failed to reconcile task with disk size: \(error)")
         }
     }
 
@@ -1088,7 +1144,7 @@ public final class BackgroundDownloadSessionManager: NSObject, @unchecked Sendab
                                     allowDecrease: true
                                 )
                             } catch {
-                                print("[BackgroundDownloadSessionManager] Warning: failed to reset corrupted segment in persistence: \(error)")
+                                PipelineLogger.shared.log(stage: .transport, message: "[BackgroundDownloadSessionManager] Warning: failed to reset corrupted segment in persistence: \(error)")
                             }
                         }
                     } else {
@@ -1103,7 +1159,7 @@ public final class BackgroundDownloadSessionManager: NSObject, @unchecked Sendab
                                     allowDecrease: true
                                 )
                             } catch {
-                                print("[BackgroundDownloadSessionManager] Warning: failed to reconcile partial segment progress: \(error)")
+                                PipelineLogger.shared.log(stage: .transport, message: "[BackgroundDownloadSessionManager] Warning: failed to reconcile partial segment progress: \(error)")
                             }
                         }
                     }
@@ -1118,7 +1174,7 @@ public final class BackgroundDownloadSessionManager: NSObject, @unchecked Sendab
                                 allowDecrease: true
                             )
                         } catch {
-                            print("[BackgroundDownloadSessionManager] Warning: failed to reset missing segment progress: \(error)")
+                            PipelineLogger.shared.log(stage: .transport, message: "[BackgroundDownloadSessionManager] Warning: failed to reset missing segment progress: \(error)")
                         }
                     }
                 }
@@ -1172,6 +1228,24 @@ public final class BackgroundDownloadSessionManager: NSObject, @unchecked Sendab
 // MARK: - URLSessionDownloadDelegate Conformance
 
 extension BackgroundDownloadSessionManager: URLSessionDownloadDelegate {
+
+    private func isTransientNetworkError(_ error: NSError) -> Bool {
+        guard error.domain == NSURLErrorDomain else { return false }
+        switch error.code {
+        case NSURLErrorTimedOut,
+             NSURLErrorCannotFindHost,
+             NSURLErrorCannotConnectToHost,
+             NSURLErrorNetworkConnectionLost,
+             NSURLErrorDNSLookupFailed,
+             NSURLErrorNotConnectedToInternet,
+             NSURLErrorInternationalRoamingOff,
+             NSURLErrorCallIsActive,
+             NSURLErrorDataNotAllowed:
+            return true
+        default:
+            return false
+        }
+    }
 
     public func urlSession(
         _ session: URLSession,
@@ -1240,7 +1314,7 @@ extension BackgroundDownloadSessionManager: URLSessionDownloadDelegate {
 
         guard let desc = downloadTask.taskDescription,
               let parsed = BackgroundDownloadTaskRecord.parseSystemTaskDescription(desc) else {
-            print("[BackgroundDownloadSessionManager] Warning: missing or unparseable taskDescription on task \(taskID)")
+            PipelineLogger.shared.log(stage: .transport, message: "[BackgroundDownloadSessionManager] Warning: missing or unparseable taskDescription on task \(taskID)")
             return
         }
 
@@ -1262,7 +1336,7 @@ extension BackgroundDownloadSessionManager: URLSessionDownloadDelegate {
         do {
             try FileManager.default.moveItem(at: location, to: stagingURL)
         } catch {
-            print("[BackgroundDownloadSessionManager] Error staging downloaded file: \(error)")
+            PipelineLogger.shared.log(stage: .transport, message: "[BackgroundDownloadSessionManager] Error staging downloaded file: \(error)")
             Task { [self] in
                 defer { self.trackDelegateTaskFinished() }
                 do {
@@ -1279,7 +1353,7 @@ extension BackgroundDownloadSessionManager: URLSessionDownloadDelegate {
         Task { [self] in
             defer { self.trackDelegateTaskFinished() }
             guard let record = await self.mappingStore.record(sessionIdentifier: sessID, taskIdentifier: taskID) else {
-                print("[BackgroundDownloadSessionManager] Warning: missing task record for task \(taskID)")
+                PipelineLogger.shared.log(stage: .transport, message: "[BackgroundDownloadSessionManager] Warning: missing task record for task \(taskID)")
                 do {
                     try FileManager.default.removeItem(at: stagingURL)
                 } catch {
@@ -1327,7 +1401,7 @@ extension BackgroundDownloadSessionManager: URLSessionDownloadDelegate {
                         do {
                             _ = try await persistence.updateSegmentProgress(tag: downloadID, segmentID: segmentID, completedBytes: 0, allowDecrease: true)
                         } catch {
-                            print("[BackgroundDownloadSessionManager] Warning: failed to reset segment progress on response error: \(error)")
+                            PipelineLogger.shared.log(stage: .transport, message: "[BackgroundDownloadSessionManager] Warning: failed to reset segment progress on response error: \(error)")
                         }
                     }
                     self.notifyFailed(downloadID: downloadID, segmentID: segmentID, error: error)
@@ -1347,7 +1421,7 @@ extension BackgroundDownloadSessionManager: URLSessionDownloadDelegate {
                     append: shouldAppend
                 )
             } catch {
-                print("[BackgroundDownloadSessionManager] Error committing downloaded file: \(error)")
+                PipelineLogger.shared.log(stage: .transport, message: "[BackgroundDownloadSessionManager] Error committing downloaded file: \(error)")
                 do {
                     try FileManager.default.removeItem(at: stagingURL)
                 } catch {
@@ -1363,7 +1437,7 @@ extension BackgroundDownloadSessionManager: URLSessionDownloadDelegate {
                     do {
                         _ = try await persistence.updateSegmentProgress(tag: downloadID, segmentID: segmentID, completedBytes: currentSize, allowDecrease: true)
                     } catch {
-                        print("[BackgroundDownloadSessionManager] Warning: failed to reconcile segment progress after commit error: \(error)")
+                        PipelineLogger.shared.log(stage: .transport, message: "[BackgroundDownloadSessionManager] Warning: failed to reconcile segment progress after commit error: \(error)")
                     }
                 }
                 self.notifyFailed(downloadID: downloadID, segmentID: segmentID, error: error)
@@ -1372,7 +1446,7 @@ extension BackgroundDownloadSessionManager: URLSessionDownloadDelegate {
 
             guard finalSize == record.segmentLength else {
                 let errorMsg = "Final file size mismatch: expected \(record.segmentLength), got \(finalSize)"
-                print("[BackgroundDownloadSessionManager] Error: \(errorMsg)")
+                PipelineLogger.shared.log(stage: .transport, message: "[BackgroundDownloadSessionManager] Error: \(errorMsg)")
                 do {
                     try await self.mappingStore.markFailed(sessionIdentifier: sessID, taskIdentifier: taskID, error: errorMsg)
                 } catch {
@@ -1382,7 +1456,7 @@ extension BackgroundDownloadSessionManager: URLSessionDownloadDelegate {
                     do {
                         _ = try await persistence.updateSegmentProgress(tag: downloadID, segmentID: segmentID, completedBytes: finalSize, allowDecrease: true)
                     } catch {
-                        print("[BackgroundDownloadSessionManager] Warning: failed to persist final size on mismatch: \(error)")
+                        PipelineLogger.shared.log(stage: .transport, message: "[BackgroundDownloadSessionManager] Warning: failed to persist final size on mismatch: \(error)")
                     }
                 }
                 self.notifyFailed(
@@ -1408,7 +1482,7 @@ extension BackgroundDownloadSessionManager: URLSessionDownloadDelegate {
                         completedBytes: record.segmentLength
                     )
                 } catch {
-                    print("[BackgroundDownloadSessionManager] Warning: failed to mark segment completed in persistence: \(error)")
+                    PipelineLogger.shared.log(stage: .transport, message: "[BackgroundDownloadSessionManager] Warning: failed to mark segment completed in persistence: \(error)")
                     do {
                         try await self.mappingStore.markFailed(sessionIdentifier: sessID, taskIdentifier: taskID, error: error.localizedDescription)
                     } catch {
@@ -1443,6 +1517,40 @@ extension BackgroundDownloadSessionManager: URLSessionDownloadDelegate {
         Task { [self] in
             defer { self.trackDelegateTaskFinished() }
             if let rec = await self.mappingStore.record(sessionIdentifier: sessID, taskIdentifier: taskID) {
+                let nsError = rawError as NSError
+                let isTransient = self.isTransientNetworkError(nsError)
+
+                if isTransient && rec.retryCount < 3 {
+                    let nextRetry = rec.retryCount + 1
+                    let backoff = Double(1 << nextRetry) // 2s, 4s, 8s
+                    PipelineLogger.shared.log(
+                        stage: .transport,
+                        message: "[BackgroundDownloadSessionManager] Transient network error on task \(taskID) (download \(rec.downloadID), seg \(rec.segmentID)): \(rawError.localizedDescription). Retrying attempt \(nextRetry)/3 after \(backoff)s backoff."
+                    )
+
+                    await reconcileSegmentWithDisk(downloadID: rec.downloadID, segmentID: rec.segmentID, partURL: rec.destinationPartURL)
+
+                    try? await Task.sleep(nanoseconds: UInt64(backoff * 1_000_000_000))
+
+                    do {
+                        try await self.mappingStore.remove(sessionIdentifier: sessID, taskIdentifier: taskID)
+                        if let dlRecord = try await self.persistenceStore?.fetch(tag: rec.downloadID),
+                           let segRecord = dlRecord.segments.first(where: { $0.id == rec.segmentID }),
+                           !segRecord.isCompleted {
+                            var retryTask = try await self.scheduleSegmentDownload(
+                                download: dlRecord,
+                                segment: segRecord,
+                                earliestBeginDate: Date().addingTimeInterval(backoff)
+                            )
+                            retryTask.retryCount = nextRetry
+                            try await self.mappingStore.save(record: retryTask)
+                            return
+                        }
+                    } catch {
+                        PipelineLogger.shared.log(stage: .transport, message: "[BackgroundDownloadSessionManager] Retry rescheduling failed for task \(taskID): \(error.localizedDescription)")
+                    }
+                }
+
                 do {
                     try await self.mappingStore.markFailed(sessionIdentifier: sessID, taskIdentifier: taskID, error: finalError.localizedDescription)
                 } catch {

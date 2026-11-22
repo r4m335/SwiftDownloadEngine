@@ -1508,5 +1508,62 @@ final class BackgroundHTTPTransportTests: XCTestCase {
 
         await manager.cancelTasks(for: download.id)
     }
+
+    func testBackgroundDownloadTaskRecordRetryCountRoundTrip() throws {
+        let taskRecord = BackgroundDownloadTaskRecord(
+            sessionIdentifier: "sess-test",
+            taskIdentifier: 42,
+            downloadID: "dl-123",
+            segmentID: 1,
+            originalURL: URL(string: "https://example.com/file.mp4")!,
+            startOffset: 0,
+            endOffset: 999,
+            expectedBytes: 1000,
+            segmentLength: 1000,
+            destinationPartURL: storageDirectoryURL.appendingPathComponent("seg-1.part"),
+            retryCount: 2
+        )
+
+        let data = try JSONEncoder().encode(taskRecord)
+        let decoded = try JSONDecoder().decode(BackgroundDownloadTaskRecord.self, from: data)
+        XCTAssertEqual(decoded.retryCount, 2)
+        XCTAssertEqual(decoded.taskIdentifier, 42)
+        XCTAssertEqual(decoded.downloadID, "dl-123")
+
+        // Legacy decode test without retryCount key
+        let legacyJSON = """
+        {
+            "sessionIdentifier": "sess-legacy",
+            "taskIdentifier": 7,
+            "downloadID": "dl-legacy",
+            "segmentID": 0,
+            "originalURL": "https://example.com/test.bin",
+            "startOffset": 0,
+            "endOffset": 499,
+            "expectedBytes": 500,
+            "segmentLength": 500,
+            "destinationPartURL": "file:///tmp/part0",
+            "createdAt": 1700000000,
+            "updatedAt": 1700000000,
+            "completedBytes": 0,
+            "isCompleted": false
+        }
+        """.data(using: .utf8)!
+
+        let legacyDecoded = try JSONDecoder().decode(BackgroundDownloadTaskRecord.self, from: legacyJSON)
+        XCTAssertEqual(legacyDecoded.retryCount, 0, "Missing retryCount in legacy JSON should decode as 0")
+    }
+
+    func testDownloadNetworkPolicyDecouplesExpensiveAndConstrained() {
+        let anyNet = DownloadNetworkPolicy.anyNetwork
+        XCTAssertTrue(anyNet.allowsCellularAccess)
+        XCTAssertTrue(anyNet.allowsExpensiveNetworkAccess)
+        XCTAssertFalse(anyNet.allowsConstrainedNetworkAccess, "AnyNetwork policy should respect Low Data Mode by default")
+
+        let wifiOnly = DownloadNetworkPolicy.wifiOnly
+        XCTAssertFalse(wifiOnly.allowsCellularAccess)
+        XCTAssertFalse(wifiOnly.allowsExpensiveNetworkAccess)
+        XCTAssertFalse(wifiOnly.allowsConstrainedNetworkAccess)
+    }
 }
 

@@ -1012,5 +1012,31 @@ final class DownloadEngineTests: XCTestCase {
         )
         XCTAssertEqual(snapshot.state, .completed)
     }
+
+    func testHandoffActiveDownloadsToBackground() async throws {
+        let size = 128 * 1024
+        let payload = makePayload(size: size, byte: 0x99)
+        server.register(path: "/handoff_test.bin", data: payload)
+
+        let dest = tempDirectory.appendingPathComponent("handoff_test.bin")
+        let req = DownloadRequest(
+            id: "dl-handoff-fg",
+            url: server.baseURL.appendingPathComponent("handoff_test.bin"),
+            destinationURL: dest,
+            transportPolicy: .foreground
+        )
+
+        _ = try await engine.addDownload(req, autoStart: false)
+        let snapBefore = await engine.snapshot(for: req.id)
+        XCTAssertEqual(snapBefore?.transportPolicy, .foreground)
+        XCTAssertEqual(snapBefore?.state, .pending)
+
+        // Trigger handoff
+        await engine.handoffActiveDownloadsToBackground()
+
+        let snapAfter = await engine.snapshot(for: req.id)
+        XCTAssertEqual(snapAfter?.transportPolicy, .background, "Active foreground transfer must be promoted to background transport")
+        XCTAssertEqual(snapAfter?.state, .pending)
+    }
 }
 

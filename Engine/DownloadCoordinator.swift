@@ -40,6 +40,20 @@ public enum DownloadNetworkPolicy: String, Codable, Sendable, Equatable, CaseIte
         case .wifiOnly: return false
         }
     }
+
+    /// Whether transfers are permitted over expensive networks (e.g. personal hotspots, metered Wi-Fi).
+    public var allowsExpensiveNetworkAccess: Bool {
+        switch self {
+        case .anyNetwork: return true
+        case .wifiOnly: return false
+        }
+    }
+
+    /// Whether transfers are permitted when the device is in Low Data Mode (constrained network).
+    /// Defaults to false so user-enabled Low Data Mode is strictly respected.
+    public var allowsConstrainedNetworkAccess: Bool {
+        return false
+    }
 }
 
 /// Request parameters for a download operation coordinated by `DownloadCoordinator`.
@@ -2069,8 +2083,8 @@ public actor DownloadCoordinator {
         urlRequest.allowsCellularAccess = request.networkPolicy.allowsCellularAccess
         #if canImport(Darwin)
         if #available(iOS 13.0, macOS 10.15, *) {
-            urlRequest.allowsExpensiveNetworkAccess = request.networkPolicy.allowsCellularAccess
-            urlRequest.allowsConstrainedNetworkAccess = request.networkPolicy.allowsCellularAccess
+            urlRequest.allowsExpensiveNetworkAccess = request.networkPolicy.allowsExpensiveNetworkAccess
+            urlRequest.allowsConstrainedNetworkAccess = request.networkPolicy.allowsConstrainedNetworkAccess
         }
         #endif
         urlRequest.setValue("identity", forHTTPHeaderField: "Accept-Encoding")
@@ -3129,8 +3143,10 @@ public actor DownloadCoordinator {
                         }
                     }
                     try await persistenceStore.updateState(tag: record.id, state: .completed)
+                    let filename = record.suggestedFilename ?? record.destinationURL.lastPathComponent
+                    DownloadNotificationManager.postDownloadCompletedNotification(filename: filename, downloadID: record.id)
                 } catch {
-                    print("[DownloadCoordinator] Recovery merge deferred for \(record.id): \(error)")
+                    PipelineLogger.shared.log(stage: .coordinator, message: "[DownloadCoordinator] Recovery merge deferred for \(record.id): \(error)")
                 }
             }
         }

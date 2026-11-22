@@ -216,8 +216,8 @@ public final class SegmentDownloader: Sendable {
         request.allowsCellularAccess = networkPolicy.allowsCellularAccess
         #if canImport(Darwin)
         if #available(iOS 13.0, macOS 10.15, *) {
-            request.allowsExpensiveNetworkAccess = networkPolicy.allowsCellularAccess
-            request.allowsConstrainedNetworkAccess = networkPolicy.allowsCellularAccess
+            request.allowsExpensiveNetworkAccess = networkPolicy.allowsExpensiveNetworkAccess
+            request.allowsConstrainedNetworkAccess = networkPolicy.allowsConstrainedNetworkAccess
         }
         #endif
 

@@ -456,6 +456,10 @@ public struct SwiftDownloadEngineApp: App {
                 #endif
 
                 Task { @MainActor in
+                    await viewModel.engine.handoffActiveDownloadsToBackground()
+                    if let orchestrator = viewModel.streamingOrchestrator {
+                        await orchestrator.pauseAll()
+                    }
                     await viewModel.refreshSnapshots()
                     await viewModel.refreshTorrentSnapshots()
                     try? await viewModel.stopTorrentEngine()
@@ -469,7 +473,9 @@ public struct SwiftDownloadEngineApp: App {
                     #endif
                 }
             case .inactive:
-                break
+                Task { @MainActor in
+                    await viewModel.engine.handoffActiveDownloadsToBackground()
+                }
             @unknown default:
                 break
             }
