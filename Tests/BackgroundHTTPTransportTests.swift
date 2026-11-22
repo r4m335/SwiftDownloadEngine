@@ -1064,6 +1064,7 @@ final class BackgroundHTTPTransportTests: XCTestCase {
             id: "dl-recon-stream",
             originalURL: URL(string: "https://example.com/segment.ts")!,
             destinationURL: storageDirectoryURL.appendingPathComponent("segment.ts"),
+            totalSize: 0,
             suggestedFilename: "segment.ts",
             state: .downloading,
             storageMode: .partFiles,
