@@ -447,30 +447,37 @@ public struct SwiftDownloadEngineApp: App {
             case .background:
                 #if canImport(UIKit) && !os(watchOS)
                 var bgTaskID: UIBackgroundTaskIdentifier = .invalid
-                bgTaskID = UIApplication.shared.beginBackgroundTask(withName: "DownloadEngineKit.saveState") {
-                    if bgTaskID != .invalid {
-                        UIApplication.shared.endBackgroundTask(bgTaskID)
-                        bgTaskID = .invalid
+                bgTaskID = UIApplication.shared.beginBackgroundTask(withName: "DownloadEngineKit.backgroundTask") {
+                    Task { @MainActor in
+                        if let orchestrator = viewModel.streamingOrchestrator {
+                            await orchestrator.pauseAll()
+                        }
+                        if bgTaskID != .invalid {
+                            UIApplication.shared.endBackgroundTask(bgTaskID)
+                            bgTaskID = .invalid
+                        }
                     }
                 }
                 #endif
 
                 Task { @MainActor in
                     await viewModel.engine.handoffActiveDownloadsToBackground()
-                    if let orchestrator = viewModel.streamingOrchestrator {
-                        await orchestrator.pauseAll()
+                    let hasActiveStreaming = await viewModel.streamingOrchestrator?.hasActiveTransfers() ?? false
+                    if !hasActiveStreaming {
+                        if let orchestrator = viewModel.streamingOrchestrator {
+                            await orchestrator.pauseAll()
+                        }
+                        #if canImport(UIKit) && !os(watchOS)
+                        if bgTaskID != .invalid {
+                            UIApplication.shared.endBackgroundTask(bgTaskID)
+                            bgTaskID = .invalid
+                        }
+                        #endif
                     }
                     await viewModel.refreshSnapshots()
                     await viewModel.refreshTorrentSnapshots()
                     try? await viewModel.stopTorrentEngine()
                     await viewModel.scheduleCoordinator.prepareForBackground()
-
-                    #if canImport(UIKit) && !os(watchOS)
-                    if bgTaskID != .invalid {
-                        UIApplication.shared.endBackgroundTask(bgTaskID)
-                        bgTaskID = .invalid
-                    }
-                    #endif
                 }
             case .inactive:
                 Task { @MainActor in

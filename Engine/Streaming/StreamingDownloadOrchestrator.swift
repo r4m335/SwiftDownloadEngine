@@ -1019,6 +1019,11 @@ public actor StreamingDownloadOrchestrator {
                registeredTransferIDs.values.contains(id)
     }
 
+    /// Indicates whether any streaming transfers are actively downloading or assembling.
+    public func hasActiveTransfers() -> Bool {
+        return !runningTransfers.isEmpty || !activeAssemblyOperations.isEmpty
+    }
+
     public func pause(transferID: String) async throws {
         runningTransfers.remove(transferID)
         pausedTransfers.insert(transferID)

@@ -639,6 +639,8 @@ public actor DownloadEngine {
             previousStates[item.id] = .completed
             terminalEventsEmitted.insert(item.id)
             broadcast(.completed(snapshot))
+            let filename = snapshot.suggestedFilename ?? localFileURL.lastPathComponent
+            DownloadNotificationManager.postDownloadCompletedNotification(filename: filename, downloadID: id)
             return snapshot
         }
         throw DownloadQueueError.downloadNotFound(id: id)
@@ -1033,6 +1035,10 @@ public actor DownloadEngine {
         for item in snapshot.items {
             guard item.request.transportPolicy == .foreground,
                   item.state == .downloading || item.state == .pending || item.state == .probing else {
+                continue
+            }
+            // Skip streaming parent transfer entries as their segments are orchestrated by StreamingDownloadOrchestrator
+            guard !item.id.hasPrefix("stream-run-") && !item.id.hasPrefix("hls-") && !item.id.hasPrefix("dash-") && !item.request.url.pathExtension.lowercased().contains("m3u8") && !item.request.url.pathExtension.lowercased().contains("mpd") else {
                 continue
             }
             do {

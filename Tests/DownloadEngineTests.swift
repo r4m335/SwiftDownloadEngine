@@ -1038,5 +1038,31 @@ final class DownloadEngineTests: XCTestCase {
         XCTAssertEqual(snapAfter?.transportPolicy, .background, "Active foreground transfer must be promoted to background transport")
         XCTAssertTrue(snapAfter?.state == .pending || snapAfter?.state == .downloading, "State should be pending or downloading in background transport")
     }
+
+    func testHandoffActiveDownloadsPreservesStreamingTransfers() async throws {
+        let manifestURL = URL(string: "https://example.com/live/playlist.m3u8")!
+        let streamDest = tempDirectory.appendingPathComponent("stream_output.mp4")
+
+        _ = try await engine.registerStreamingDownload(
+            id: "stream-run-abc1234",
+            manifestURL: manifestURL,
+            destinationURL: streamDest,
+            filename: "stream_output.mp4",
+            totalBytes: 5_000_000,
+            mimeType: "video/mp4"
+        )
+
+        let snapBefore = await engine.snapshot(for: "stream-run-abc1234")
+        XCTAssertEqual(snapBefore?.state, .downloading)
+        XCTAssertEqual(snapBefore?.transportPolicy, .foreground)
+
+        // Trigger handoff
+        await engine.handoffActiveDownloadsToBackground()
+
+        let snapAfter = await engine.snapshot(for: "stream-run-abc1234")
+        // Streaming download should NOT be handed off as a single-file background request
+        XCTAssertEqual(snapAfter?.transportPolicy, .foreground)
+        XCTAssertEqual(snapAfter?.state, .downloading)
+    }
 }
 
