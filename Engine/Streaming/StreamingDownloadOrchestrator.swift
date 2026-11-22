@@ -808,6 +808,8 @@ public actor StreamingDownloadOrchestrator {
     public var downloadEngine: DownloadEngine?
     /// Durable store for HLS parent-transfer records. `nil` when persistence is unavailable.
     public var hlsPersistenceStore: HLSPersistenceStore?
+    /// Durable store for DASH parent-transfer records. `nil` when persistence is unavailable.
+    public var dashPersistenceStore: DASHPersistenceStore?
     /// Optional dynamic cookie provider for refreshing session cookies on subresource/segment requests.
     public var dynamicCookieProvider: (@Sendable (URL) async -> [BrowserCookie])?
     private var proposals: [String: StreamingTransferProposal] = [:]
@@ -1039,6 +1041,7 @@ public actor StreamingDownloadOrchestrator {
             id: hlsParentID(for: transferID),
             state: .paused
         )
+        _ = try? await dashPersistenceStore?.updateState(id: transferID, state: .paused)
         PipelineLogger.shared.log("[HLS Pipeline] Paused transfer: \(transferID)")
     }
 
@@ -1057,6 +1060,7 @@ public actor StreamingDownloadOrchestrator {
             id: hlsParentID(for: transferID),
             state: .downloading
         )
+        _ = try? await dashPersistenceStore?.updateState(id: transferID, state: .downloading)
         PipelineLogger.shared.log("[HLS Pipeline] Resumed transfer: \(transferID)")
     }
 
@@ -1081,6 +1085,7 @@ public actor StreamingDownloadOrchestrator {
             transferID: parentID,
             proposal: proposal
         )
+        _ = try? await dashPersistenceStore?.updateState(id: transferID, state: .cancelled)
         PipelineLogger.shared.log("[HLS Pipeline] Cancelled transfer: \(transferID)")
     }
 
@@ -1133,6 +1138,7 @@ public actor StreamingDownloadOrchestrator {
         urlResolver: (any BrowserMediaURLResolver)? = nil,
         downloadEngine: DownloadEngine? = nil,
         hlsPersistenceStore: HLSPersistenceStore? = nil,
+        dashPersistenceStore: DASHPersistenceStore? = nil,
         remuxTSToMP4: Bool = true
     ) {
         self.configuration = configuration
@@ -1142,6 +1148,7 @@ public actor StreamingDownloadOrchestrator {
         self.urlResolver = urlResolver
         self.downloadEngine = downloadEngine
         self.hlsPersistenceStore = hlsPersistenceStore
+        self.dashPersistenceStore = dashPersistenceStore
         self.remuxTSToMP4 = remuxTSToMP4
     }
 
@@ -1154,6 +1161,7 @@ public actor StreamingDownloadOrchestrator {
         retryCount: Int? = nil,
         urlResolver: (any BrowserMediaURLResolver)? = nil,
         hlsPersistenceStore: HLSPersistenceStore? = nil,
+        dashPersistenceStore: DASHPersistenceStore? = nil,
         remuxTSToMP4: Bool = true
     ) {
         self.init(
@@ -1167,6 +1175,7 @@ public actor StreamingDownloadOrchestrator {
             urlResolver: urlResolver,
             downloadEngine: downloadEngine,
             hlsPersistenceStore: hlsPersistenceStore,
+            dashPersistenceStore: dashPersistenceStore,
             remuxTSToMP4: remuxTSToMP4
         )
     }
@@ -1185,6 +1194,10 @@ public actor StreamingDownloadOrchestrator {
 
     public func setHLSPersistenceStore(_ store: HLSPersistenceStore?) {
         self.hlsPersistenceStore = store
+    }
+
+    public func setDASHPersistenceStore(_ store: DASHPersistenceStore?) {
+        self.dashPersistenceStore = store
     }
 
     private func purgeInternalStreamingSegmentRecords(in directory: URL? = nil) async {
@@ -1405,6 +1418,134 @@ public actor StreamingDownloadOrchestrator {
         } catch {
             PipelineLogger.shared.log("[HLS Recovery] Could not resume \(record.id): \(error.localizedDescription)")
         }
+    }
+
+    // MARK: - DASH Startup Recovery
+
+    /// Restores durable DASH transfer records into the `DownloadEngine` after an app restart.
+    public func restoreDASHTransfers(resumeInterrupted: Bool = false) async {
+        guard let persistence = dashPersistenceStore else { return }
+        guard let engine = downloadEngine else { return }
+
+        let records: [DASHTransferRecord]
+        do {
+            records = try await persistence.loadAll()
+        } catch {
+            PipelineLogger.shared.log("[DASH Recovery] Failed to load DASH records: \(error.localizedDescription)")
+            return
+        }
+
+        await purgeInternalStreamingSegmentRecords()
+
+        PipelineLogger.shared.log("[DASH Recovery] Found \(records.count) persisted DASH record(s).")
+
+        for record in records {
+            let manifestKey = record.manifestURL.absoluteString
+            registeredTransferIDs[manifestKey] = record.id
+            registeredTransferIDs[record.id] = record.id
+        }
+
+        for record in records where record.state == .downloading || record.state == .paused {
+            let existingSnap = await engine.snapshot(for: record.id)
+            if existingSnap != nil {
+                let manifestKey = record.manifestURL.absoluteString
+                registeredTransferIDs[manifestKey] = record.id
+                registeredTransferIDs[record.id] = record.id
+                PipelineLogger.shared.log("[DASH Recovery] Transfer \(record.id) already in engine queue. Skipping re-registration.")
+                if resumeInterrupted, record.state == .downloading {
+                    let isRunningInMemory = runningTransfers.contains(record.id) || activeAssemblyOperations.contains(record.id)
+                    let isEngineActive = existingSnap?.state == .downloading || existingSnap?.state == .pending || existingSnap?.state == .probing
+                    if isRunningInMemory || isEngineActive {
+                        PipelineLogger.shared.log("[DASH Recovery] Transfer \(record.id) is currently actively executing. Skipping duplicate resume.")
+                    } else {
+                        Task { await self.resumePersistedDASH(record) }
+                    }
+                }
+                continue
+            }
+
+            // Re-register the parent download entry so the UI shows one row.
+            do {
+                let estimatedTotal = Int64(record.totalSegments) * 1_000_000
+                let mimeType = record.isTextOnly ? (record.isTTML ? "application/ttml+xml" : "text/vtt") : "video/mp4"
+                _ = try await engine.registerStreamingDownload(
+                    id: record.id,
+                    manifestURL: record.manifestURL,
+                    destinationURL: record.outputDestinationURL,
+                    filename: record.outputFilename,
+                    totalBytes: estimatedTotal,
+                    mimeType: mimeType
+                )
+
+                let manifestKey = record.manifestURL.absoluteString
+                registeredTransferIDs[manifestKey] = record.id
+                registeredTransferIDs[record.id] = record.id
+
+                if record.state == .paused {
+                    await engine.queueManager.pauseStreaming(id: record.id)
+                    pausedTransfers.insert(record.id)
+                }
+
+                let segsDone = record.completedSegmentOrders.count
+                let segsTotal = record.totalSegments
+                PipelineLogger.shared.log("[DASH Recovery] Re-registered \(record.outputFilename) (\(segsDone)/\(segsTotal) segments).")
+                if resumeInterrupted, record.state == .downloading {
+                    let isRunningInMemory = runningTransfers.contains(record.id) || activeAssemblyOperations.contains(record.id)
+                    if isRunningInMemory {
+                        PipelineLogger.shared.log("[DASH Recovery] Transfer \(record.id) is already running in memory. Skipping duplicate resume.")
+                    } else {
+                        Task { await self.resumePersistedDASH(record) }
+                    }
+                }
+            } catch {
+                PipelineLogger.shared.log("[DASH Recovery] Failed to re-register \(record.id): \(error.localizedDescription)")
+            }
+        }
+
+        // Cleanup records for transfers that have been completed and whose output file has been removed
+        for record in records where record.state == .completed {
+            if !FileManager.default.fileExists(atPath: record.outputDestinationURL.path) {
+                do {
+                    try await persistence.delete(id: record.id)
+                    PipelineLogger.shared.log("[DASH Recovery] Pruned stale completed record: \(record.id)")
+                } catch {
+                    PipelineLogger.shared.log("[DASH Recovery] Warning: Failed to prune stale completed record \(record.id): \(error.localizedDescription)")
+                }
+            }
+        }
+    }
+
+    /// Rebuilds the in-memory proposal from the durable DASH manifest URL and representations.
+    private func resumePersistedDASH(_ record: DASHTransferRecord) async {
+        guard !runningTransfers.contains(record.id), !activeAssemblyOperations.contains(record.id) else {
+            PipelineLogger.shared.log("[DASH Recovery] Transfer \(record.id) is already running or assembling. Aborting duplicate resume.")
+            return
+        }
+        do {
+            let candidate = try StreamingManifestCandidate(
+                url: record.manifestURL,
+                dashVideoRepresentationID: record.videoRepresentationID,
+                dashAudioRepresentationID: record.audioRepresentationID,
+                dashTextRepresentationID: record.textRepresentationID
+            )
+            let proposal = try await prepare(candidate: candidate)
+            guard case .dash = proposal.manifest else { return }
+            _ = try await executeAndAssembleDASH(
+                proposal,
+                approved: true,
+                destinationDirectory: record.segmentDirectoryURL,
+                outputURL: record.outputDestinationURL,
+                runID: record.id
+            )
+        } catch {
+            PipelineLogger.shared.log("[DASH Recovery] Could not resume \(record.id): \(error.localizedDescription)")
+        }
+    }
+
+    /// Restores all durable streaming transfers (both HLS and DASH).
+    public func restoreStreamingTransfers(resumeInterrupted: Bool = false) async {
+        await restoreHLSTransfers(resumeInterrupted: resumeInterrupted)
+        await restoreDASHTransfers(resumeInterrupted: resumeInterrupted)
     }
 
     private func manifestStatusDescription(for error: Error) -> String {
@@ -2460,6 +2601,55 @@ public actor StreamingDownloadOrchestrator {
                     throw error
                 }
             }
+        } else if case .dash(let plan) = proposal.manifest, let persistence = dashPersistenceStore {
+            let existingRecord: DASHTransferRecord?
+            do {
+                existingRecord = try await persistence.load(id: parentID)
+            } catch {
+                PipelineLogger.shared.log("[DASH Pipeline] Warning: Failed to load parent record \(parentID): \(error.localizedDescription)")
+                existingRecord = nil
+            }
+            if existingRecord == nil {
+                let isTextOnly = plan.video == nil && plan.audio == nil && plan.text != nil
+                let isTTML = plan.text?.codecs?.lowercased().contains("ttml") == true ||
+                             plan.text?.codecs?.lowercased().contains("stpp") == true ||
+                             plan.text?.codecs?.lowercased().contains("im1t") == true ||
+                             plan.text?.resources.contains(where: {
+                                 let ext = $0.url.pathExtension.lowercased()
+                                 return ext == "ttml" || ext == "xml"
+                             }) == true
+                let filename: String
+                if isTextOnly {
+                    let baseName = DASHVODReconstructionPlanner.suggestedFilename(for: plan)
+                    let ext = isTTML ? "ttml" : "vtt"
+                    filename = (baseName as NSString).deletingPathExtension + "." + ext
+                } else {
+                    filename = DASHVODReconstructionPlanner.suggestedFilename(for: plan)
+                }
+                let initialRecord = DASHTransferRecord(
+                    id: parentID,
+                    manifestURL: proposal.manifest.manifestURL,
+                    outputFilename: filename,
+                    outputDestinationURL: destinationDirectory.appendingPathComponent(filename),
+                    segmentDirectoryURL: destinationDirectory,
+                    videoRepresentationID: plan.video?.representationID,
+                    audioRepresentationID: plan.audio?.representationID,
+                    textRepresentationID: plan.text?.representationID,
+                    isTextOnly: isTextOnly,
+                    isTTML: isTTML,
+                    totalSegments: totalSegments,
+                    completedSegmentOrders: [],
+                    state: .downloading,
+                    assemblyState: .notStarted
+                )
+                do {
+                    try await persistence.save(initialRecord)
+                    PipelineLogger.shared.log("[DASH Pipeline] Durable parent checkpoint created and verified for: \(parentID)")
+                } catch {
+                    PipelineLogger.shared.log("[DASH Pipeline] Critical: Failed to establish durable parent checkpoint for \(parentID): \(error.localizedDescription)")
+                    throw error
+                }
+            }
         }
         var completedIdentities: [StreamingSegmentIdentity?] = Array(repeating: nil, count: totalSegments)
         var localFiles: [URL?] = Array(repeating: nil, count: totalSegments)
@@ -2469,7 +2659,7 @@ public actor StreamingDownloadOrchestrator {
         var lastSpeedCheckBytes: Int64 = 0
         var currentBytesPerSecond: Double = 0.0
 
-        // Rehydrate the durable HLS checkpoint before creating workers. A
+        // Rehydrate the durable HLS/DASH checkpoint before creating workers. A
         // completed order is reusable only when its file still exists in the
         // same segment directory (and, for ranged resources, has the expected
         // length). This keeps a stale checkpoint from being treated as a
@@ -2478,6 +2668,16 @@ public actor StreamingDownloadOrchestrator {
         var persistedSegmentDirectory: URL?
         if proposal.manifest.kind == .hls,
            let persistence = hlsPersistenceStore {
+            do {
+                if let record = try await persistence.load(id: parentID) {
+                    persistedCompletedOrders = record.completedSegmentOrders
+                    persistedSegmentDirectory = record.segmentDirectoryURL
+                }
+            } catch {
+                throw persistenceFailure(error)
+            }
+        } else if proposal.manifest.kind == .dash,
+                  let persistence = dashPersistenceStore {
             do {
                 if let record = try await persistence.load(id: parentID) {
                     persistedCompletedOrders = record.completedSegmentOrders
@@ -2605,11 +2805,23 @@ public actor StreamingDownloadOrchestrator {
                     }
 
                     // Durably record this segment as completed for crash/restart recovery.
-                    if let persistence = hlsPersistenceStore {
+                    if proposal.manifest.kind == .hls, let persistence = hlsPersistenceStore {
                         do {
                             _ = try await persistence.markSegmentCompleted(
                                 id: parentID,
                                 order: result.identity.order
+                            )
+                        } catch {
+                            PipelineLogger.shared.log(
+                                "\(pipelineTag) Checkpoint write failed for order \(result.identity.order): \(error.localizedDescription)"
+                            )
+                            throw persistenceFailure(error)
+                        }
+                    } else if proposal.manifest.kind == .dash, let persistence = dashPersistenceStore {
+                        do {
+                            _ = try await persistence.updateCompletedSegmentOrders(
+                                id: parentID,
+                                completedOrders: [result.identity.order]
                             )
                         } catch {
                             PipelineLogger.shared.log(
@@ -3442,7 +3654,8 @@ public actor StreamingDownloadOrchestrator {
         approved: Bool,
         destinationDirectory: URL,
         outputURL: URL,
-        progress: (@Sendable (StreamingTransferProgress) -> Void)? = nil
+        progress: (@Sendable (StreamingTransferProgress) -> Void)? = nil,
+        runID: String? = nil
     ) async throws -> MediaAssemblyOutput {
         guard case .dash(let transferPlan) = proposal.manifest else {
             throw StreamingDownloadOrchestratorError.unsupportedManifest(.hls)
@@ -3463,7 +3676,8 @@ public actor StreamingDownloadOrchestrator {
             finalOutputURL = outputURL
         }
         let originalSourceURL = candidatesByTransfer[proposal.transferID]?.url ?? transferPlan.manifestURL
-        let parentID = proposal.transferID
+        let parentID = runID ?? proposal.transferID
+        let runProposal = proposalForRun(proposal, transferID: parentID)
         let manifestKey = originalSourceURL.absoluteString
         registeredTransferIDs[manifestKey] = parentID
         registeredTransferIDs[transferPlan.manifestURL.absoluteString] = parentID
@@ -3492,7 +3706,7 @@ public actor StreamingDownloadOrchestrator {
         let result: StreamingTransferResult
         do {
             result = try await execute(
-                proposal,
+                runProposal,
                 approved: approved,
                 destinationDirectory: destinationDirectory,
                 progress: progress
@@ -3510,7 +3724,8 @@ public actor StreamingDownloadOrchestrator {
                               error is CancellationError
             if isCancelled {
                 await segmentExecutor.cancel(transferID: parentID)
-                await cleanupHLSChildRecords(proposal: proposal)
+                await cleanupHLSChildRecords(proposal: runProposal)
+                _ = try? await dashPersistenceStore?.updateState(id: parentID, state: .cancelled)
                 if let engine = self.downloadEngine {
                     do {
                         try await engine.cancelDownload(id: parentID)
@@ -3520,10 +3735,11 @@ public actor StreamingDownloadOrchestrator {
                 }
                 throw StreamingDownloadOrchestratorError.cancelled
             }
+            _ = try? await dashPersistenceStore?.updateState(id: parentID, state: .failed)
             if let engine = self.downloadEngine {
                 await engine.failStreamingDownload(id: parentID, reason: error.localizedDescription)
             }
-            await cleanupHLSChildRecords(proposal: proposal)
+            await cleanupHLSChildRecords(proposal: runProposal)
             throw error
         }
 
@@ -3531,6 +3747,7 @@ public actor StreamingDownloadOrchestrator {
             DASHCompletedResource(resource: $0.0, fileURL: $0.1)
         }
         do {
+            _ = try? await dashPersistenceStore?.updateAssemblyState(id: parentID, assemblyState: .inProgress)
             let assemblyOutput: MediaAssemblyOutput
             if isTextOnly, let textPlan = transferPlan.text {
                 assemblyOutput = try assembleDASHSubtitles(
@@ -3560,6 +3777,7 @@ public actor StreamingDownloadOrchestrator {
             }
             try Task.checkCancellation()
             if isCancelled(transferID: parentID) {
+                _ = try? await dashPersistenceStore?.updateState(id: parentID, state: .cancelled)
                 if let engine = self.downloadEngine {
                     do {
                         try await engine.cancelDownload(id: parentID)
@@ -3576,6 +3794,7 @@ public actor StreamingDownloadOrchestrator {
                 guard validationReport.outcome.isConfirmedValid else {
                     let failureReason = validationReport.outcome.localizedDescription
                     PipelineLogger.shared.log("[DASH Pipeline] Final output validation failed: \(failureReason). Preserving downloaded segments for recovery.")
+                    _ = try? await dashPersistenceStore?.updateAssemblyState(id: parentID, assemblyState: .failed)
                     throw StreamingDownloadOrchestratorError.dashReconstructionFailed(
                         DASHVODReconstructionError.assemblyFailed(
                             .finalValidationFailed(reason: failureReason)
@@ -3585,6 +3804,7 @@ public actor StreamingDownloadOrchestrator {
             } else {
                 guard FileManager.default.fileExists(atPath: assemblyOutput.destinationURL.path),
                       (FileManager.default.fileSize(atPath: assemblyOutput.destinationURL.path) ?? 0) > 0 else {
+                    _ = try? await dashPersistenceStore?.updateAssemblyState(id: parentID, assemblyState: .failed)
                     throw StreamingDownloadOrchestratorError.dashReconstructionFailed(
                         DASHVODReconstructionError.assemblyFailed(
                             .finalValidationFailed(reason: "Subtitle file is empty or missing.")
@@ -3601,6 +3821,8 @@ public actor StreamingDownloadOrchestrator {
                 )
                 PipelineLogger.shared.log("[DASH Pipeline] Successfully completed stream in DownloadEngine: \(assemblyOutput.destinationURL.path)")
             }
+            _ = try? await dashPersistenceStore?.updateState(id: parentID, state: .completed)
+            _ = try? await dashPersistenceStore?.updateAssemblyState(id: parentID, assemblyState: .completed)
             try Task.checkCancellation()
             if isCancelled(transferID: parentID) {
                 if let engine = self.downloadEngine {

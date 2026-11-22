@@ -31,6 +31,7 @@ public final class AppCompositionRoot {
     // MARK: - Persistence Stores
     public let downloadPersistenceStore: DownloadPersistenceStore
     public let hlsPersistenceStore: HLSPersistenceStore?
+    public let dashPersistenceStore: DASHPersistenceStore?
     public let bookmarkStore: BrowserBookmarkStore
     public let historyStore: BrowserHistoryStore
     public let sessionStore: BrowserSessionStore
@@ -80,6 +81,7 @@ public final class AppCompositionRoot {
         publicSuffixList: PublicSuffixList = .shared,
         downloadPersistenceStore: DownloadPersistenceStore,
         hlsPersistenceStore: HLSPersistenceStore?,
+        dashPersistenceStore: DASHPersistenceStore? = nil,
         bookmarkStore: BrowserBookmarkStore,
         historyStore: BrowserHistoryStore,
         sessionStore: BrowserSessionStore,
@@ -120,6 +122,7 @@ public final class AppCompositionRoot {
         self.publicSuffixList = publicSuffixList
         self.downloadPersistenceStore = downloadPersistenceStore
         self.hlsPersistenceStore = hlsPersistenceStore
+        self.dashPersistenceStore = dashPersistenceStore
         self.bookmarkStore = bookmarkStore
         self.historyStore = historyStore
         self.sessionStore = sessionStore
@@ -207,6 +210,14 @@ public final class AppCompositionRoot {
         } catch {
             pipelineLogger.log(stage: .persistence, message: "Live HLSPersistenceStore init failed: \(error)")
             hlsStore = nil
+        }
+
+        let dashStore: DASHPersistenceStore?
+        do {
+            dashStore = try DASHPersistenceStore(storageDirectoryURL: persistence.storageDirectoryURL)
+        } catch {
+            pipelineLogger.log(stage: .persistence, message: "Live DASHPersistenceStore init failed: \(error)")
+            dashStore = nil
         }
 
         let browserDir = storeDir.appendingPathComponent("Browser", isDirectory: true)
@@ -300,7 +311,8 @@ public final class AppCompositionRoot {
             configuration: config,
             downloadCoordinator: coordinator,
             downloadEngine: downloadEngine,
-            hlsPersistenceStore: hlsStore
+            hlsPersistenceStore: hlsStore,
+            dashPersistenceStore: dashStore
         )
 
         return AppCompositionRoot(
@@ -315,6 +327,7 @@ public final class AppCompositionRoot {
             publicSuffixList: psl,
             downloadPersistenceStore: persistence,
             hlsPersistenceStore: hlsStore,
+            dashPersistenceStore: dashStore,
             bookmarkStore: bookmarkStore,
             historyStore: historyStore,
             sessionStore: sessionStore,
@@ -380,6 +393,7 @@ public final class AppCompositionRoot {
 
         let persistence = try DownloadPersistenceStore(storageDirectoryURL: storeDir)
         let hlsStore = try HLSPersistenceStore(storageDirectoryURL: storeDir)
+        let dashStore = try DASHPersistenceStore(storageDirectoryURL: storeDir)
 
         let bookmarkStore = BrowserBookmarkStore(customStorageURL: browserDir.appendingPathComponent("bookmarks.json"))
         let historyStore = BrowserHistoryStore(customStorageURL: browserDir.appendingPathComponent("history.json"))
@@ -458,7 +472,8 @@ public final class AppCompositionRoot {
             configuration: configuration,
             downloadCoordinator: coordinator,
             downloadEngine: downloadEngine,
-            hlsPersistenceStore: hlsStore
+            hlsPersistenceStore: hlsStore,
+            dashPersistenceStore: dashStore
         )
 
         return AppCompositionRoot(
@@ -473,6 +488,7 @@ public final class AppCompositionRoot {
             publicSuffixList: psl,
             downloadPersistenceStore: persistence,
             hlsPersistenceStore: hlsStore,
+            dashPersistenceStore: dashStore,
             bookmarkStore: bookmarkStore,
             historyStore: historyStore,
             sessionStore: sessionStore,

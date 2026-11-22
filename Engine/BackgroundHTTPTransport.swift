@@ -1013,6 +1013,74 @@ public final class BackgroundDownloadSessionManager: NSObject, @unchecked Sendab
         return taskRecord
     }
 
+    /// Schedules an individual streaming segment chunk using the background URLSession.
+    @discardableResult
+    public func scheduleStreamingSegment(
+        transferID: String,
+        order: Int,
+        url: URL,
+        destinationURL: URL,
+        headers: [String: String]? = nil,
+        byteRange: (start: Int64, end: Int64)? = nil,
+        earliestBeginDate: Date? = nil
+    ) async throws -> BackgroundDownloadTaskRecord {
+        var request = URLRequest(url: url)
+        request.setValue("identity", forHTTPHeaderField: "Accept-Encoding")
+        if let headers {
+            for (k, v) in headers {
+                request.setValue(v, forHTTPHeaderField: k)
+            }
+        }
+        request = DownloadRequestEnricher.enrich(request)
+
+        let expectedBytes: Int64
+        if let byteRange {
+            let rangeHeader = "bytes=\(byteRange.start)-\(byteRange.end)"
+            request.setValue(rangeHeader, forHTTPHeaderField: "Range")
+            expectedBytes = max(0, byteRange.end - byteRange.start + 1)
+        } else {
+            expectedBytes = 0
+        }
+
+        let resumeURL = resumeDataURL(downloadID: transferID, segmentID: order)
+        let task: URLSessionDownloadTask
+        if FileManager.default.fileExists(atPath: resumeURL.path),
+           let resumeData = try? Data(contentsOf: resumeURL) {
+            task = session.downloadTask(withResumeData: resumeData)
+            try? FileManager.default.removeItem(at: resumeURL)
+            PipelineLogger.shared.log(stage: .transport, message: "[BackgroundDownloadSessionManager] Resumed streaming segment task with resumeData for \(transferID), order \(order)")
+        } else {
+            task = session.downloadTask(with: request)
+        }
+
+        #if canImport(Darwin)
+        if #available(iOS 11.0, macOS 10.13, *) {
+            task.earliestBeginDate = earliestBeginDate
+        }
+        #endif
+
+        let taskRecord = BackgroundDownloadTaskRecord(
+            sessionIdentifier: sessionIdentifier,
+            taskIdentifier: task.taskIdentifier,
+            downloadID: transferID,
+            segmentID: order,
+            originalURL: url,
+            startOffset: byteRange?.start ?? 0,
+            endOffset: byteRange?.end ?? 0,
+            expectedBytes: expectedBytes,
+            initialSegmentCompletedBytes: 0,
+            segmentLength: expectedBytes,
+            destinationPartURL: destinationURL,
+            completedBytes: 0
+        )
+
+        task.taskDescription = taskRecord.systemTaskDescription
+        try await mappingStore.save(record: taskRecord)
+        task.resume()
+
+        return taskRecord
+    }
+
     /// Cancels a specific background task.
     public func cancelTask(taskIdentifier: Int) async {
         let task = await findTask(withIdentifier: taskIdentifier)
@@ -1458,7 +1526,23 @@ extension BackgroundDownloadSessionManager: URLSessionDownloadDelegate {
                 return
             }
 
-            guard finalSize == record.segmentLength else {
+            guard finalSize > 0 else {
+                let errorMsg = "Final file size is 0 bytes for task \(taskID)"
+                PipelineLogger.shared.log(stage: .transport, message: "[BackgroundDownloadSessionManager] Error: \(errorMsg)")
+                do {
+                    try await self.mappingStore.markFailed(sessionIdentifier: sessID, taskIdentifier: taskID, error: errorMsg)
+                } catch {
+                    PipelineLogger.shared.log(stage: .transport, message: "Failed to markFailed in mappingStore for task \(taskID): \(error)")
+                }
+                self.notifyFailed(
+                    downloadID: downloadID,
+                    segmentID: segmentID,
+                    error: BackgroundTransportError.bodyLengthMismatch(expected: record.segmentLength, actual: finalSize)
+                )
+                return
+            }
+
+            guard record.segmentLength <= 0 || finalSize == record.segmentLength else {
                 let errorMsg = "Final file size mismatch: expected \(record.segmentLength), got \(finalSize)"
                 PipelineLogger.shared.log(stage: .transport, message: "[BackgroundDownloadSessionManager] Error: \(errorMsg)")
                 do {

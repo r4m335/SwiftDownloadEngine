@@ -440,7 +440,7 @@ public struct SwiftDownloadEngineApp: App {
                         await viewModel.refreshTorrentSnapshots()
                     }
                     if let orchestrator = viewModel.streamingOrchestrator {
-                        await orchestrator.restoreHLSTransfers(resumeInterrupted: true)
+                        await orchestrator.restoreStreamingTransfers(resumeInterrupted: true)
                     }
                     await viewModel.reconcileSchedule()
                 }
