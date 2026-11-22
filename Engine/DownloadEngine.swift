@@ -639,7 +639,7 @@ public actor DownloadEngine {
             previousStates[item.id] = .completed
             terminalEventsEmitted.insert(item.id)
             broadcast(.completed(snapshot))
-            let filename = snapshot.suggestedFilename ?? localFileURL.lastPathComponent
+            let filename = localFileURL.lastPathComponent
             DownloadNotificationManager.postDownloadCompletedNotification(filename: filename, downloadID: id)
             return snapshot
         }
