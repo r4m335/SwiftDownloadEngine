@@ -992,6 +992,7 @@ public actor StreamingDownloadOrchestrator {
     public var hlsPersistenceStore: HLSPersistenceStore?
     /// Durable store for DASH parent-transfer records. `nil` when persistence is unavailable.
     public var dashPersistenceStore: DASHPersistenceStore?
+    public nonisolated let backgroundSessionManager: BackgroundDownloadSessionManager?
     /// Optional dynamic cookie provider for refreshing session cookies on subresource/segment requests.
     public var dynamicCookieProvider: (@Sendable (URL) async -> [BrowserCookie])?
     private var proposals: [String: StreamingTransferProposal] = [:]
@@ -1321,7 +1322,8 @@ public actor StreamingDownloadOrchestrator {
         downloadEngine: DownloadEngine? = nil,
         hlsPersistenceStore: HLSPersistenceStore? = nil,
         dashPersistenceStore: DASHPersistenceStore? = nil,
-        remuxTSToMP4: Bool = true
+        remuxTSToMP4: Bool = true,
+        backgroundSessionManager: BackgroundDownloadSessionManager? = nil
     ) {
         self.configuration = configuration
         self.manifestLoader = manifestLoader
@@ -1332,6 +1334,7 @@ public actor StreamingDownloadOrchestrator {
         self.hlsPersistenceStore = hlsPersistenceStore
         self.dashPersistenceStore = dashPersistenceStore
         self.remuxTSToMP4 = remuxTSToMP4
+        self.backgroundSessionManager = backgroundSessionManager
     }
 
     public init(
@@ -1360,7 +1363,8 @@ public actor StreamingDownloadOrchestrator {
             downloadEngine: downloadEngine,
             hlsPersistenceStore: hlsPersistenceStore,
             dashPersistenceStore: dashPersistenceStore,
-            remuxTSToMP4: remuxTSToMP4
+            remuxTSToMP4: remuxTSToMP4,
+            backgroundSessionManager: backgroundSessionManager
         )
     }
 
