@@ -150,5 +150,56 @@ final class BrowserTabDesktopAndIncognitoTests: XCTestCase {
         XCTAssertFalse(viewModel.tabs.isEmpty)
         XCTAssertFalse(viewModel.isCurrentTabIncognito)
     }
+
+    @MainActor
+    func testTabScopedMediaGrabberIsolationAndSwitching() {
+        let viewModel = BrowserViewModel()
+        guard let tab1ID = viewModel.activeTabID else {
+            XCTFail("Initial active tab must exist")
+            return
+        }
+
+        let res1 = WebpageResource(
+            id: "res-tab1",
+            url: URL(string: "https://tab1.example.com/video1.mp4")!,
+            title: "Tab 1 Video",
+            suggestedFilename: "video1.mp4",
+            resourceType: .video,
+            resolutionText: "1080p",
+            duration: 120.0
+        )
+        viewModel.discoveredResources = [res1]
+        viewModel.tabDiscoveredResources[tab1ID] = [res1]
+
+        // Create and switch to Tab 2
+        let tab2ID = viewModel.createNewTab()
+        XCTAssertEqual(viewModel.activeTabID, tab2ID)
+        XCTAssertTrue(viewModel.discoveredResources.isEmpty, "Tab 2 must start with empty discovered resources")
+
+        let res2 = WebpageResource(
+            id: "res-tab2",
+            url: URL(string: "https://tab2.example.com/audio2.mp3")!,
+            title: "Tab 2 Audio",
+            suggestedFilename: "audio2.mp3",
+            resourceType: .audio
+        )
+        viewModel.discoveredResources = [res2]
+        viewModel.tabDiscoveredResources[tab2ID] = [res2]
+
+        // Switch back to Tab 1
+        XCTAssertTrue(viewModel.selectTab(tab1ID))
+        XCTAssertEqual(viewModel.discoveredResources.count, 1)
+        XCTAssertEqual(viewModel.discoveredResources.first?.id, "res-tab1")
+        XCTAssertEqual(viewModel.discoveredResources.first?.resolutionText, "1080p")
+
+        // Switch to Tab 2
+        XCTAssertTrue(viewModel.selectTab(tab2ID))
+        XCTAssertEqual(viewModel.discoveredResources.count, 1)
+        XCTAssertEqual(viewModel.discoveredResources.first?.id, "res-tab2")
+
+        // Close Tab 2
+        _ = viewModel.closeTab(tab2ID)
+        XCTAssertNil(viewModel.tabDiscoveredResources[tab2ID], "Closing tab must clear its media grabber cache")
+    }
     #endif
 }

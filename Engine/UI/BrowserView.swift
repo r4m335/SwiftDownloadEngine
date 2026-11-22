@@ -121,6 +121,21 @@ public final class BrowserViewModel: NSObject, ObservableObject {
     }
     public let mediaDiscoveryBridge = BrowserMediaDiscoveryBridge()
 
+    // Tab-scoped media grabber candidate & variant caches
+    public var tabDiscoveredResources: [UUID: [WebpageResource]] = [:]
+    public var tabVariantStreamItems: [UUID: [String: HLSVariantStreamItem]] = [:]
+    public var tabSelectedResourceIDs: [UUID: Set<String>] = [:]
+    private var activeProbeTasks: [UUID: [Task<Void, Never>]] = [:]
+
+    /// Cancels all in-flight media probe and manifest expansion tasks associated with a tab.
+    public func cancelInFlightProbes(for tabID: UUID) {
+        if let tasks = activeProbeTasks.removeValue(forKey: tabID) {
+            for task in tasks {
+                task.cancel()
+            }
+        }
+    }
+
     // Streaming proposal/execution state. The orchestrator remains the only
     // owner of transfer execution; the browser owns confirmation presentation.
     @Published public var streamingProposal: StreamingTransferProposal? = nil
@@ -587,9 +602,20 @@ public final class BrowserViewModel: NSObject, ObservableObject {
 
     @discardableResult
     public func selectTab(_ id: UUID) -> Bool {
+        if let current = activeTabID {
+            tabDiscoveredResources[current] = discoveredResources
+            tabVariantStreamItems[current] = variantStreamItems
+            tabSelectedResourceIDs[current] = selectedResourceIDs
+        }
         guard tabManager.selectTab(id) else { return false }
         publishTabState()
         syncActiveTabState()
+
+        // Restore tab-scoped discovered resources and variant items
+        discoveredResources = tabDiscoveredResources[id] ?? []
+        variantStreamItems = tabVariantStreamItems[id] ?? [:]
+        selectedResourceIDs = tabSelectedResourceIDs[id] ?? []
+
         publishMediaCandidates()
         isShowingTabSwitcher = false
         errorMessage = nil
@@ -600,6 +626,10 @@ public final class BrowserViewModel: NSObject, ObservableObject {
     public func closeTab(_ id: UUID) -> UUID? {
         let isIncognito = tabManager.tab(withID: id)?.isIncognito ?? false
         tabPreviewCache.removePreview(for: id)
+        cancelInFlightProbes(for: id)
+        tabDiscoveredResources.removeValue(forKey: id)
+        tabVariantStreamItems.removeValue(forKey: id)
+        tabSelectedResourceIDs.removeValue(forKey: id)
         #if canImport(WebKit)
         cancelBlobCapture(for: id)
         cancelMSECapture(for: id)
@@ -1048,10 +1078,14 @@ public final class BrowserViewModel: NSObject, ObservableObject {
     }
 
     fileprivate func resetMediaDiscovery(for tabID: UUID) {
+        cancelInFlightProbes(for: tabID)
         cancelBlobCapture(for: tabID)
         cancelMSECapture(for: tabID)
         tabSessions[tabID]?.mediaDiscoveryBridge.reset()
         resetMediaCandidateCatalog(for: tabID)
+        tabDiscoveredResources.removeValue(forKey: tabID)
+        tabVariantStreamItems.removeValue(forKey: tabID)
+        tabSelectedResourceIDs.removeValue(forKey: tabID)
         if tabID == activeTabID {
             discoveredResources = []
             selectedResourceIDs = []
@@ -1689,21 +1723,14 @@ public final class BrowserViewModel: NSObject, ObservableObject {
     /// grabbed links immediately without waiting for DOM evaluation or showing a blocking spinner.
     public func syncMediaCandidatesToDiscoveredResources() {
         for candidate in mediaCandidates {
-            guard candidate.kind != .unknown,
-                  candidate.availability != .unsupported,
-                  let url = candidate.url ?? URL(string: candidate.rawURL) else {
-                continue
-            }
-            let ext = url.pathExtension.lowercased()
-            if ext == "ts" || ext == "m4s" { continue }
-            if let mime = candidate.mimeType?.lowercased(), mime.contains("mp2t") || mime.contains("iso.segment") { continue }
-
-            let urlStr = url.absoluteString.lowercased()
+            guard let res = candidate.toWebpageResource() else { continue }
+            let urlStr = res.url.absoluteString.lowercased()
             if let existingIndex = discoveredResources.firstIndex(where: { $0.url.absoluteString.lowercased() == urlStr }) {
-                // If existing resource doesn't have manifestText but candidate does, update it
-                if (discoveredResources[existingIndex].manifestText == nil || discoveredResources[existingIndex].manifestText?.isEmpty == true),
-                   let cachedText = candidate.cachedManifestText, !cachedText.isEmpty {
-                    let old = discoveredResources[existingIndex]
+                let old = discoveredResources[existingIndex]
+                let shouldUpdateManifest = (old.manifestText == nil || old.manifestText?.isEmpty == true) && (candidate.cachedManifestText?.isEmpty == false)
+                let shouldUpdateResolution = old.resolutionText == nil && res.resolutionText != nil
+                let shouldUpdateDuration = old.duration == nil && res.duration != nil
+                if shouldUpdateManifest || shouldUpdateResolution || shouldUpdateDuration {
                     discoveredResources[existingIndex] = WebpageResource(
                         id: old.id,
                         url: old.url,
@@ -1715,7 +1742,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                         isSupported: old.isSupported,
                         unsupportedReason: old.unsupportedReason,
                         requestContext: old.requestContext ?? candidate.requestContext,
-                        manifestText: cachedText,
+                        manifestText: shouldUpdateManifest ? candidate.cachedManifestText : old.manifestText,
                         hlsVariantPreferences: old.hlsVariantPreferences,
                         dashVideoRepresentationID: old.dashVideoRepresentationID,
                         dashAudioRepresentationID: old.dashAudioRepresentationID,
@@ -1723,63 +1750,26 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                         isDRMProtected: old.isDRMProtected,
                         drmProtectionType: old.drmProtectionType,
                         discoveredAt: old.discoveredAt,
-                        isLive: old.isLive
+                        isLive: old.isLive,
+                        resolutionText: res.resolutionText ?? old.resolutionText,
+                        duration: res.duration ?? old.duration,
+                        codecs: res.codecs ?? old.codecs,
+                        audioLanguage: res.audioLanguage ?? old.audioLanguage,
+                        isAudioVideoSplit: old.isAudioVideoSplit
                     )
                 }
                 continue
             }
 
             let knownVariants = HLSResourceGrouping.variantURLs(in: discoveredResources)
-            if HLSResourceGrouping.isVariantOrRenditionURL(url, matchingVariantURLs: knownVariants) {
+            if HLSResourceGrouping.isVariantOrRenditionURL(res.url, matchingVariantURLs: knownVariants) {
                 continue
             }
 
-            let resourceType: WebpageResourceType
-            switch candidate.kind {
-            case .directMedia, .hlsManifest, .dashManifest, .mediaSource, .protectedMedia:
-                resourceType = .video
-            case .completeBlob:
-                if let mime = candidate.mimeType?.lowercased(), mime.contains("audio") {
-                    resourceType = .audio
-                } else {
-                    resourceType = .video
-                }
-            case .directFile:
-                let isAudio = (candidate.mimeType?.lowercased().contains("audio") == true) ||
-                    ["mp3", "m4a", "aac", "wav", "flac", "ogg"].contains(ext)
-                resourceType = isAudio ? .audio : .other
-            case .unknown:
-                continue
-            }
-
-            let isManifest = candidate.kind == .hlsManifest || candidate.kind == .dashManifest
-            let defaultFilename: String
-            if isManifest {
-                defaultFilename = candidate.kind == .dashManifest ? "stream.mpd" : "stream.m3u8"
-            } else {
-                defaultFilename = "video.mp4"
-            }
-
-            let finalFilename = candidate.suggestedFilename.isEmpty ? defaultFilename : candidate.suggestedFilename
-            let title = candidate.suggestedFilename.isEmpty
-                ? (isManifest ? (candidate.kind == .dashManifest ? "DASH Manifest" : "HLS Master Playlist") : "Media Stream")
-                : candidate.suggestedFilename
-            let effectiveMime = candidate.mimeType ?? (isManifest ? (candidate.kind == .dashManifest ? "application/dash+xml" : "application/vnd.apple.mpegurl") : "video/mp4")
-
-            let res = WebpageResource(
-                id: candidate.id,
-                url: url,
-                title: title,
-                suggestedFilename: finalFilename,
-                resourceType: resourceType,
-                mimeType: effectiveMime,
-                estimatedSize: candidate.estimatedSize,
-                isSupported: true,
-                requestContext: candidate.requestContext,
-                manifestText: candidate.cachedManifestText,
-                isDRMProtected: candidate.kind == .protectedMedia
-            )
             discoveredResources.insert(res, at: 0)
+        }
+        if let tabID = activeTabID {
+            tabDiscoveredResources[tabID] = discoveredResources
         }
     }
 
@@ -2452,10 +2442,13 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         }
         guard !targets.isEmpty else { return }
 
-        Task { @MainActor [weak self] in
+        let tabID = activeTabID
+        let expansionTask = Task { @MainActor [weak self] in
             guard let self = self else { return }
             for manifest in targets {
+                if Task.isCancelled { break }
                 let expanded = await self.streamManifestExpander.expand(manifestResource: manifest)
+                if Task.isCancelled { break }
                 guard expanded.count > 1 || (expanded.count == 1 && expanded[0].id != manifest.id) else {
                     continue
                 }
@@ -2572,7 +2565,13 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                     res.hlsVariantPreferences == nil && HLSResourceGrouping.isVariantOrRenditionURL(res.url, matchingVariantURLs: childURLs)
                 }
                 self.discoveredResources = updated
+                if let tID = self.activeTabID {
+                    self.tabDiscoveredResources[tID] = updated
+                }
             }
+        }
+        if let tabID {
+            activeProbeTasks[tabID, default: []].append(expansionTask)
         }
     }
 
@@ -3122,23 +3121,37 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         (function() {
             var candidates = [];
             var seen = {};
-            function add(u, tag, text, type) {
+            function add(u, tag, text, type, w, h, d) {
                 if (!u || seen[u]) return;
                 seen[u] = true;
-                candidates.push({ rawURL: u, tag: tag, text: text || '', declaredType: type || null });
+                candidates.push({
+                    rawURL: u,
+                    tag: tag,
+                    text: text || '',
+                    declaredType: type || null,
+                    width: (w && w > 0) ? w : null,
+                    height: (h && h > 0) ? h : null,
+                    duration: (d && !isNaN(d) && isFinite(d) && d > 0) ? d : null
+                });
             }
             document.querySelectorAll('video').forEach(function(v) {
                 if (v.src) {
                     var isMSE = (window.__grabberBlobRegistry && window.__grabberBlobRegistry[v.src] === 'MediaSource') ||
                                 (v.src.indexOf('blob:') === 0);
-                    add(v.src, 'video', v.title || v.getAttribute('aria-label') || '', isMSE ? 'application/x-mediasource' : null);
+                    var w = (v.videoWidth && v.videoWidth > 0) ? v.videoWidth : null;
+                    var h = (v.videoHeight && v.videoHeight > 0) ? v.videoHeight : null;
+                    var d = (v.duration && !isNaN(v.duration) && isFinite(v.duration) && v.duration > 0) ? v.duration : null;
+                    add(v.src, 'video', v.title || v.getAttribute('aria-label') || '', isMSE ? 'application/x-mediasource' : null, w, h, d);
                 }
             });
             document.querySelectorAll('audio').forEach(function(a) {
-                if (a.src) add(a.src, 'audio', a.title || a.getAttribute('aria-label') || '', null);
+                if (a.src) {
+                    var d = (a.duration && !isNaN(a.duration) && isFinite(a.duration) && a.duration > 0) ? a.duration : null;
+                    add(a.src, 'audio', a.title || a.getAttribute('aria-label') || '', null, null, null, d);
+                }
             });
             document.querySelectorAll('source').forEach(function(s) {
-                if (s.src) add(s.src, 'source', '', s.type || null);
+                if (s.src) add(s.src, 'source', '', s.type || null, null, null, null);
             });
             \(nonVideoClause)
             return JSON.stringify(candidates);
@@ -3177,6 +3190,9 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                     }
                     if !newToInsert.isEmpty {
                         self.discoveredResources.insert(contentsOf: newToInsert, at: 0)
+                        if let tabID = self.activeTabID {
+                            self.tabDiscoveredResources[tabID] = self.discoveredResources
+                        }
                     }
                     if self.selectedResourceIDs.isEmpty,
                        let manifest = self.discoveredResources.first(where: { $0.isStreamingManifest }) {
@@ -3232,7 +3248,10 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         let rawCandidate = WebpageRawResourceCandidate(
             rawURL: resourceURL.absoluteString,
             tag: observation.tag ?? (observation.isManifestSignal ? "video" : nil),
-            declaredType: observation.declaredType
+            declaredType: observation.declaredType,
+            width: observation.width,
+            height: observation.height,
+            duration: observation.duration
         )
         let baseURL = currentURL ?? observation.pageOrigin
         var resources = WebpageResourceExtractor.extractFromRawCandidates(
@@ -3425,6 +3444,9 @@ public final class BrowserViewModel: NSObject, ObservableObject {
             $0.url.absoluteString.lowercased() == immediateResource.url.absoluteString.lowercased()
         }) {
             discoveredResources.insert(immediateResource, at: 0)
+            if let targetTabID = tabID ?? activeTabID {
+                tabDiscoveredResources[targetTabID] = discoveredResources
+            }
             if selectedResourceIDs.isEmpty,
                let manifest = discoveredResources.first(where: { $0.isStreamingManifest }) {
                 selectedResourceIDs.insert(manifest.id)
@@ -3445,6 +3467,9 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                     $0.url.absoluteString.lowercased() == enriched.url.absoluteString.lowercased()
                 }) {
                     self.discoveredResources[idx] = enriched
+                    if let tID = self.activeTabID {
+                        self.tabDiscoveredResources[tID] = self.discoveredResources
+                    }
                 }
             }
         }

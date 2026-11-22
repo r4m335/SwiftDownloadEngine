@@ -55,6 +55,30 @@ public struct WebpageResource: Identifiable, Hashable, Sendable {
     public let discoveredAt: Date
     /// Whether this resource represents a live broadcast or event stream (requiring continuous live recording rather than finite VOD transfer).
     public let isLive: Bool
+    /// Resolution string if known (e.g. "1080p", "1920×1080").
+    public let resolutionText: String?
+    /// Media duration in seconds if known.
+    public let duration: TimeInterval?
+    /// Codecs string if known (e.g. "H.264", "avc1.640028,mp4a.40.2").
+    public let codecs: String?
+    /// Audio language code or name if known (e.g. "en", "English").
+    public let audioLanguage: String?
+    /// Whether this media stream represents an audio-video split representation requiring muxing.
+    public let isAudioVideoSplit: Bool
+
+    /// Formatted duration string for display (e.g. "03:45", "1:15:20").
+    public var formattedDuration: String? {
+        guard let duration, duration > 0, !duration.isNaN, !duration.isInfinite else { return nil }
+        let totalSeconds = Int(duration.rounded())
+        let hours = totalSeconds / 3600
+        let minutes = (totalSeconds % 3600) / 60
+        let seconds = totalSeconds % 60
+        if hours > 0 {
+            return String(format: "%d:%02d:%02d", hours, minutes, seconds)
+        } else {
+            return String(format: "%02d:%02d", minutes, seconds)
+        }
+    }
 
     /// Manifest candidates are intentionally kept outside the ordinary
     /// `isSupported` download path. They require planning and coordinator-
@@ -162,7 +186,12 @@ public struct WebpageResource: Identifiable, Hashable, Sendable {
         isDRMProtected: Bool = false,
         drmProtectionType: String? = nil,
         discoveredAt: Date = Date(),
-        isLive: Bool = false
+        isLive: Bool = false,
+        resolutionText: String? = nil,
+        duration: TimeInterval? = nil,
+        codecs: String? = nil,
+        audioLanguage: String? = nil,
+        isAudioVideoSplit: Bool = false
     ) {
         self.id = id
         self.url = url
@@ -183,6 +212,11 @@ public struct WebpageResource: Identifiable, Hashable, Sendable {
         self.drmProtectionType = drmProtectionType
         self.discoveredAt = discoveredAt
         self.isLive = isLive
+        self.resolutionText = resolutionText
+        self.duration = duration
+        self.codecs = codecs
+        self.audioLanguage = audioLanguage
+        self.isAudioVideoSplit = isAudioVideoSplit
     }
 
     /// Evaluates whether this resource URL or its signed variant URL has already passed its signed expiration timestamp.
@@ -229,12 +263,26 @@ public struct WebpageRawResourceCandidate: Sendable, Codable {
     public let tag: String?
     public let text: String?
     public let declaredType: String?
+    public let width: Int?
+    public let height: Int?
+    public let duration: Double?
 
-    public init(rawURL: String, tag: String? = nil, text: String? = nil, declaredType: String? = nil) {
+    public init(
+        rawURL: String,
+        tag: String? = nil,
+        text: String? = nil,
+        declaredType: String? = nil,
+        width: Int? = nil,
+        height: Int? = nil,
+        duration: Double? = nil
+    ) {
         self.rawURL = rawURL
         self.tag = tag
         self.text = text
         self.declaredType = declaredType
+        self.width = width
+        self.height = height
+        self.duration = duration
     }
 }
 
@@ -543,6 +591,13 @@ public struct WebpageResourceExtractor {
                 title = filename
             }
 
+            let resText: String? = {
+                if let w = candidate.width, let h = candidate.height, w > 0, h > 0 {
+                    return "\(w)×\(h)"
+                }
+                return nil
+            }()
+
             results.append(WebpageResource(
                 url: resolvedURL,
                 title: title,
@@ -550,7 +605,9 @@ public struct WebpageResourceExtractor {
                 resourceType: type,
                 mimeType: declaredMIME,
                 isSupported: isSupported,
-                unsupportedReason: reason
+                unsupportedReason: reason,
+                resolutionText: resText,
+                duration: candidate.duration
             ))
         }
 

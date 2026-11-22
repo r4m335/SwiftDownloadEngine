@@ -326,5 +326,129 @@ final class BrowserMediaCandidateTests: XCTestCase {
             XCTAssertEqual(support.reason, "This site uses MediaSource streaming. You must download the manifest (.m3u8 or .mpd) instead.")
         }
     }
+
+    func testCandidateAndWebpageResourceBidirectionalConversionPreservingMediaSpecs() {
+        let candidate = BrowserMediaCandidate(
+            id: "cand-1080p",
+            url: URL(string: "https://media.example.com/movie.mp4")!,
+            rawURL: "https://media.example.com/movie.mp4",
+            kind: .directMedia,
+            mimeType: "video/mp4",
+            suggestedFilename: "movie.mp4",
+            estimatedSize: 52_428_800,
+            availability: .downloadable,
+            evidence: ["direct media element"],
+            width: 1920,
+            height: 1080,
+            duration: 125.4,
+            codecs: "avc1.640028,mp4a.40.2",
+            audioLanguage: "en"
+        )
+
+        guard let resource = candidate.toWebpageResource() else {
+            XCTFail("Candidate must successfully convert to WebpageResource")
+            return
+        }
+
+        XCTAssertEqual(resource.resolutionText, "1920×1080")
+        XCTAssertEqual(resource.duration, 125.4)
+        XCTAssertEqual(resource.formattedDuration, "02:05")
+        XCTAssertEqual(resource.codecs, "avc1.640028,mp4a.40.2")
+        XCTAssertEqual(resource.audioLanguage, "en")
+        XCTAssertEqual(resource.suggestedFilename, "movie.mp4")
+        XCTAssertTrue(resource.isSupported)
+
+        let roundTripCandidate = BrowserMediaCandidateClassifier.classify(resource: resource)
+        XCTAssertEqual(roundTripCandidate.width, 1920)
+        XCTAssertEqual(roundTripCandidate.height, 1080)
+        XCTAssertEqual(roundTripCandidate.duration, 125.4)
+        XCTAssertEqual(roundTripCandidate.codecs, "avc1.640028,mp4a.40.2")
+        XCTAssertEqual(roundTripCandidate.audioLanguage, "en")
+    }
+
+    func testObservationDimensionsAndDurationClassifiedIntoCandidate() {
+        let observation = BrowserMediaDiscoveryObservation(
+            url: URL(string: "https://stream.example.com/video.mp4")!,
+            rawURL: "https://stream.example.com/video.mp4",
+            source: .mediaElement,
+            tag: "video",
+            declaredType: "video/mp4",
+            contentLength: 104_857_600,
+            pageOrigin: pageURL,
+            frameOrigin: pageURL,
+            mayUseBrowserCredentials: false,
+            width: 3840,
+            height: 2160,
+            duration: 3665.0,
+            codecs: "hev1.1.6.L93.B0"
+        )
+
+        guard let candidate = BrowserMediaCandidateClassifier.classify(observation: observation) else {
+            XCTFail("Observation must classify into candidate")
+            return
+        }
+
+        XCTAssertEqual(candidate.width, 3840)
+        XCTAssertEqual(candidate.height, 2160)
+        XCTAssertEqual(candidate.duration, 3665.0)
+        XCTAssertEqual(candidate.codecs, "hev1.1.6.L93.B0")
+
+        guard let resource = candidate.toWebpageResource() else {
+            XCTFail("Candidate must convert to WebpageResource")
+            return
+        }
+        XCTAssertEqual(resource.resolutionText, "3840×2160")
+        XCTAssertEqual(resource.formattedDuration, "1:01:05")
+    }
+
+    func testResourceSortingAndGroupingOptions() {
+        let r1 = WebpageResource(
+            id: "r1",
+            url: URL(string: "https://cdn.a.com/small.mp4")!,
+            title: "Alpha Video",
+            suggestedFilename: "alpha.mp4",
+            resourceType: .video,
+            estimatedSize: 1_000,
+            discoveredAt: Date(timeIntervalSince1970: 100),
+            resolutionText: "720×480"
+        )
+        let r2 = WebpageResource(
+            id: "r2",
+            url: URL(string: "https://cdn.b.com/large.mp4")!,
+            title: "Beta Video",
+            suggestedFilename: "beta.mp4",
+            resourceType: .video,
+            estimatedSize: 99_000,
+            discoveredAt: Date(timeIntervalSince1970: 200),
+            resolutionText: "1920×1080"
+        )
+        let r3 = WebpageResource(
+            id: "r3",
+            url: URL(string: "https://cdn.a.com/audio.mp3")!,
+            title: "Audio Track",
+            suggestedFilename: "track.mp3",
+            resourceType: .audio,
+            estimatedSize: 5_000,
+            discoveredAt: Date(timeIntervalSince1970: 150)
+        )
+
+        let list = [r1, r2, r3]
+
+        // Sort by Newest: r2 (200), r3 (150), r1 (100)
+        let sortedNewest = BrowserResourceInspectorSheet.sortedResources(list, sortOption: .newest)
+        XCTAssertEqual(sortedNewest.map(\.id), ["r2", "r3", "r1"])
+
+        // Sort by Size: r2 (99000), r3 (5000), r1 (1000)
+        let sortedSize = BrowserResourceInspectorSheet.sortedResources(list, sortOption: .size)
+        XCTAssertEqual(sortedSize.map(\.id), ["r2", "r3", "r1"])
+
+        // Sort by Name: alpha (r1), beta (r2), track (r3)
+        let sortedName = BrowserResourceInspectorSheet.sortedResources(list, sortOption: .name)
+        XCTAssertEqual(sortedName.map(\.id), ["r1", "r2", "r3"])
+
+        // Sort by Quality: r2 (1080p), r1 (480p), r3 (nil)
+        let sortedQuality = BrowserResourceInspectorSheet.sortedResources(list, sortOption: .quality)
+        XCTAssertEqual(sortedQuality.first?.id, "r2")
+    }
 }
 

@@ -74,6 +74,10 @@ public struct BrowserMediaDiscoveryObservation: Codable, Sendable, Equatable {
     public let frameOrigin: URL
     public let mayUseBrowserCredentials: Bool
     public let blobKind: BlobKind?
+    public let width: Int?
+    public let height: Int?
+    public let duration: Double?
+    public let codecs: String?
 
     public var isBlobSignal: Bool {
         url == nil && rawURL.lowercased().hasPrefix("blob:")
@@ -106,7 +110,11 @@ public struct BrowserMediaDiscoveryObservation: Codable, Sendable, Equatable {
         pageOrigin: URL,
         frameOrigin: URL,
         mayUseBrowserCredentials: Bool,
-        blobKind: BlobKind? = nil
+        blobKind: BlobKind? = nil,
+        width: Int? = nil,
+        height: Int? = nil,
+        duration: Double? = nil,
+        codecs: String? = nil
     ) {
         self.eventID = eventID
         self.url = url
@@ -127,6 +135,10 @@ public struct BrowserMediaDiscoveryObservation: Codable, Sendable, Equatable {
         self.frameOrigin = frameOrigin
         self.mayUseBrowserCredentials = mayUseBrowserCredentials
         self.blobKind = blobKind
+        self.width = width
+        self.height = height
+        self.duration = duration
+        self.codecs = codecs
     }
 }
 
@@ -669,7 +681,11 @@ public final class BrowserMediaDiscoveryBridge: NSObject {
                 isPotentiallyProtected: metadata.isPotentiallyProtected === true,
                 manifestKind: kind,
                 manifestPrefix: prefix,
-                blobKind: bKind
+                blobKind: bKind,
+                width: metadata.width || null,
+                height: metadata.height || null,
+                duration: metadata.duration || null,
+                codecs: metadata.codecs || null
             };
                 handler.postMessage(message);
             } catch (_) {}
@@ -707,17 +723,35 @@ public final class BrowserMediaDiscoveryBridge: NSObject {
             var name = element.tagName.toLowerCase();
             var tag = (name === "video" || name === "audio") ? name : "source";
             var type = element.getAttribute("type") || null;
-            if (element.currentSrc) { emit(element.currentSrc, source, { tag: tag, declaredType: type, method: "GET" }); }
-            if (element.src) { emit(element.src, source, { tag: tag, declaredType: type, method: "GET" }); }
+            var w = (element.videoWidth !== undefined && element.videoWidth > 0) ? element.videoWidth : null;
+            var h = (element.videoHeight !== undefined && element.videoHeight > 0) ? element.videoHeight : null;
+            var d = (element.duration !== undefined && !isNaN(element.duration) && isFinite(element.duration) && element.duration > 0) ? element.duration : null;
+            var meta = { tag: tag, declaredType: type, method: "GET", width: w, height: h, duration: d };
+            if (element.currentSrc) { emit(element.currentSrc, source, meta); }
+            if (element.src) { emit(element.src, source, meta); }
             var raw = element.getAttribute("src");
-            if (raw) { emit(raw, source, { tag: tag, declaredType: type, method: "GET" }); }
+            if (raw) { emit(raw, source, meta); }
+        }
+
+        function attachMediaListeners(element) {
+            if (!element || !element.addEventListener || element.__lidListenersAttached) { return; }
+            element.__lidListenersAttached = true;
+            function onMediaReady() {
+                inspectElement(element, "mediaElement");
+            }
+            element.addEventListener("loadedmetadata", onMediaReady, { passive: true });
+            element.addEventListener("canplay", onMediaReady, { passive: true });
         }
 
         function inspectTree(root) {
             if (!root || !root.querySelectorAll) { return; }
-            if (root.tagName) { inspectElement(root, "domMutation"); }
+            if (root.tagName) {
+                inspectElement(root, "domMutation");
+                attachMediaListeners(root);
+            }
             root.querySelectorAll("video, audio, source").forEach(function(element) {
                 inspectElement(element, "domMutation");
+                attachMediaListeners(element);
             });
         }
 
@@ -1260,7 +1294,11 @@ public final class BrowserMediaDiscoveryBridge: NSObject {
             pageOrigin: pageOrigin,
             frameOrigin: frameOrigin,
             mayUseBrowserCredentials: mayUseCredentials,
-            blobKind: observationBlobKind
+            blobKind: observationBlobKind,
+            width: message.width,
+            height: message.height,
+            duration: message.duration,
+            codecs: message.codecs
         )
     }
 
@@ -1573,6 +1611,10 @@ public final class BrowserMediaDiscoveryBridge: NSObject {
         let appendedByteCount: Int64?
         let isPotentiallyProtected: Bool?
         let blobKind: String?
+        let width: Int?
+        let height: Int?
+        let duration: Double?
+        let codecs: String?
     }
 
     private static func normalizedMetadata(_ value: String?) -> String? {

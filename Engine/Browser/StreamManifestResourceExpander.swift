@@ -371,8 +371,10 @@ public actor StreamManifestResourceExpander {
         from options: [StreamQualityOption],
         masterResource: WebpageResource,
         manifestText: String?,
+        durationSeconds: Double? = nil,
         includeIFrameVariants: Bool = false
     ) -> (variants: [WebpageResource], items: [HLSVariantStreamItem]) {
+        let effectiveDuration = durationSeconds ?? masterResource.duration
         let baseStem: String = {
             let raw = (masterResource.suggestedFilename as NSString).deletingPathExtension
             let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -480,7 +482,12 @@ public actor StreamManifestResourceExpander {
                     isDRMProtected: optionDrm.isProtected,
                     drmProtectionType: optionDrm.protectionType,
                     discoveredAt: masterResource.discoveredAt,
-                    isLive: isLive
+                    isLive: isLive,
+                    resolutionText: resText,
+                    duration: effectiveDuration,
+                    codecs: option.codecs ?? option.videoCodec,
+                    audioLanguage: option.audioCodec,
+                    isAudioVideoSplit: option.hasVideo && !option.hasAudio
                 )
                 variants.append(resource)
             } else {
@@ -554,7 +561,12 @@ public actor StreamManifestResourceExpander {
                     isDRMProtected: optionDrm.isProtected,
                     drmProtectionType: optionDrm.protectionType,
                     discoveredAt: masterResource.discoveredAt,
-                    isLive: isLive
+                    isLive: isLive,
+                    resolutionText: resText,
+                    duration: effectiveDuration,
+                    codecs: option.codecs ?? option.videoCodec,
+                    audioLanguage: option.audioCodec,
+                    isAudioVideoSplit: option.hasVideo && !option.hasAudio
                 )
                 variants.append(resource)
             }
@@ -645,6 +657,7 @@ public actor StreamManifestResourceExpander {
             from: options,
             masterResource: masterResource,
             manifestText: manifestText,
+            durationSeconds: durationSeconds,
             includeIFrameVariants: includeIFrameVariants
         )
     }

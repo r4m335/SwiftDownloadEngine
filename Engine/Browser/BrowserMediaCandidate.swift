@@ -52,6 +52,11 @@ public struct BrowserMediaCandidate: Identifiable, Codable, Sendable, Equatable,
     public let associatedManifestURL: URL?
     public let cachedManifestText: String?
     public let lastObserved: Date
+    public let width: Int?
+    public let height: Int?
+    public let duration: Double?
+    public let codecs: String?
+    public let audioLanguage: String?
 
     public init(
         id: String,
@@ -70,7 +75,12 @@ public struct BrowserMediaCandidate: Identifiable, Codable, Sendable, Equatable,
         associatedManifestID: String? = nil,
         associatedManifestURL: URL? = nil,
         cachedManifestText: String? = nil,
-        lastObserved: Date = Date()
+        lastObserved: Date = Date(),
+        width: Int? = nil,
+        height: Int? = nil,
+        duration: Double? = nil,
+        codecs: String? = nil,
+        audioLanguage: String? = nil
     ) {
         self.id = id
         self.url = url
@@ -93,6 +103,80 @@ public struct BrowserMediaCandidate: Identifiable, Codable, Sendable, Equatable,
         self.associatedManifestURL = associatedManifestURL
         self.cachedManifestText = cachedManifestText
         self.lastObserved = lastObserved
+        self.width = width
+        self.height = height
+        self.duration = duration
+        self.codecs = codecs
+        self.audioLanguage = audioLanguage
+    }
+
+    /// Converts this candidate into a `WebpageResource` preserving media specifications.
+    public func toWebpageResource() -> WebpageResource? {
+        guard kind != .unknown, availability != .unsupported,
+              let targetURL = url ?? URL(string: rawURL) else {
+            return nil
+        }
+        let ext = targetURL.pathExtension.lowercased()
+        if ext == "ts" || ext == "m4s" { return nil }
+        if let mime = mimeType?.lowercased(), mime.contains("mp2t") || mime.contains("iso.segment") {
+            return nil
+        }
+
+        let resourceType: WebpageResourceType
+        switch kind {
+        case .directMedia, .hlsManifest, .dashManifest, .mediaSource, .protectedMedia:
+            resourceType = .video
+        case .completeBlob:
+            if let mime = mimeType?.lowercased(), mime.contains("audio") {
+                resourceType = .audio
+            } else {
+                resourceType = .video
+            }
+        case .directFile:
+            let isAudio = (mimeType?.lowercased().contains("audio") == true) ||
+                ["mp3", "m4a", "aac", "wav", "flac", "ogg"].contains(ext)
+            resourceType = isAudio ? .audio : .other
+        case .unknown:
+            return nil
+        }
+
+        let isManifest = kind == .hlsManifest || kind == .dashManifest
+        let defaultFilename: String
+        if isManifest {
+            defaultFilename = kind == .dashManifest ? "stream.mpd" : "stream.m3u8"
+        } else {
+            defaultFilename = (resourceType == .audio) ? "audio.m4a" : "video.mp4"
+        }
+        let finalFilename = suggestedFilename.isEmpty ? defaultFilename : suggestedFilename
+        let title = suggestedFilename.isEmpty
+            ? (isManifest ? (kind == .dashManifest ? "DASH Manifest" : "HLS Master Playlist") : "Media Stream")
+            : suggestedFilename
+        let effectiveMime = mimeType ?? (isManifest ? (kind == .dashManifest ? "application/dash+xml" : "application/vnd.apple.mpegurl") : "video/mp4")
+
+        let resText: String? = {
+            if let w = width, let h = height, w > 0, h > 0 {
+                return "\(w)×\(h)"
+            }
+            return nil
+        }()
+
+        return WebpageResource(
+            id: id,
+            url: targetURL,
+            title: title,
+            suggestedFilename: finalFilename,
+            resourceType: resourceType,
+            mimeType: effectiveMime,
+            estimatedSize: estimatedSize,
+            isSupported: availability == .downloadable || availability == .requiresPlanning || availability == .captureCandidate,
+            requestContext: requestContext,
+            manifestText: cachedManifestText,
+            isDRMProtected: kind == .protectedMedia,
+            resolutionText: resText,
+            duration: duration,
+            codecs: codecs,
+            audioLanguage: audioLanguage
+        )
     }
 
     public var isActionable: Bool {
@@ -336,7 +420,11 @@ public enum BrowserMediaCandidateClassifier {
             availability: .downloadable,
             evidence: evidence,
             documentID: observation.documentID,
-            lastObserved: now
+            lastObserved: now,
+            width: observation.width,
+            height: observation.height,
+            duration: observation.duration,
+            codecs: observation.codecs
         )
     }
 
@@ -412,6 +500,17 @@ public enum BrowserMediaCandidateClassifier {
             blobKind = nil
         }
 
+        let w = resource.hlsVariantPreferences?.maximumWidth ?? resource.resolutionText.flatMap { text -> Int? in
+            let parts = text.split(separator: "×")
+            if parts.count == 2, let width = Int(parts[0].trimmingCharacters(in: .whitespaces)) { return width }
+            return nil
+        }
+        let h = resource.hlsVariantPreferences?.maximumHeight ?? resource.resolutionText.flatMap { text -> Int? in
+            let parts = text.split(separator: "×")
+            if parts.count == 2, let height = Int(parts[1].trimmingCharacters(in: .whitespaces)) { return height }
+            return nil
+        }
+
         return BrowserMediaCandidate(
             id: identity,
             url: resource.url,
@@ -425,7 +524,12 @@ public enum BrowserMediaCandidateClassifier {
             evidence: evidence,
             requestContext: safeRequestContext(resource.requestContext, for: resource.url),
             cachedManifestText: resource.manifestText,
-            lastObserved: now
+            lastObserved: now,
+            width: w,
+            height: h,
+            duration: resource.duration,
+            codecs: resource.codecs,
+            audioLanguage: resource.audioLanguage
         )
     }
 
