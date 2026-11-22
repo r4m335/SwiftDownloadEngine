@@ -493,13 +493,13 @@ final class StreamingManifestTests: XCTestCase {
         XCTAssertEqual(manifest.preloadHints[0].byteRangeStart, 0)
         XCTAssertEqual(manifest.preloadHints[0].byteRangeLength, 1500)
 
-        // Synthesized segments for downstream recorders
-        XCTAssertEqual(manifest.segments.count, 3)
+        // Synthesized segments for downstream recorders (must exclude GAP=YES parts)
+        XCTAssertEqual(manifest.segments.count, 2)
         XCTAssertEqual(manifest.segments[0].sequenceNumber, 100)
         XCTAssertEqual(manifest.segments[0].duration, 0.33334, accuracy: 0.00001)
         XCTAssertEqual(manifest.segments[0].uri.absoluteString, "https://example.com/video/part100.0.ts?session=redacted")
         XCTAssertEqual(manifest.segments[1].sequenceNumber, 101)
-        XCTAssertEqual(manifest.segments[2].sequenceNumber, 102)
+        XCTAssertFalse(manifest.segments.contains { $0.uri.lastPathComponent.contains("part100.1") })
     }
 
     func testLLHLSPlaylistWithBothCompleteSegmentsAndTrailingParts() throws {
@@ -738,5 +738,70 @@ final class StreamingManifestTests: XCTestCase {
         XCTAssertEqual(ranked.count, 2)
         XCTAssertEqual(ranked[0].uri.absoluteString, "https://cdn.example.com/live/Stream_A/playlist.m3u8")
         XCTAssertEqual(ranked[1].uri.absoluteString, "https://cdn.example.com/live/stream_a/playlist.m3u8")
+    }
+
+    func testLLHLSPlaylistDoesNotSynthesizeGapPartsAsDownloadableSegments() throws {
+        let playlist = """
+        #EXTM3U
+        #EXT-X-VERSION:6
+        #EXT-X-TARGETDURATION:2
+        #EXT-X-SERVER-CONTROL:CAN-BLOCK-RELOAD=YES,PART-HOLD-BACK=1.0
+        #EXT-X-PART-INF:PART-TARGET=0.33334
+        #EXT-X-MEDIA-SEQUENCE:500
+        #EXT-X-PART:DURATION=0.33334,URI="part500.0.ts",INDEPENDENT=YES
+        #EXT-X-PART:DURATION=0.33334,URI="part500.1.ts",GAP=YES
+        #EXT-X-PART:DURATION=0.33334,URI="part500.2.ts"
+        """
+
+        let manifest = try HLSManifestParser.parse(playlist, baseURL: hlsURL)
+        XCTAssertEqual(manifest.parts.count, 3)
+        XCTAssertTrue(manifest.parts[1].isGap)
+
+        // GAP=YES part must not be synthesized as a downloadable media segment
+        XCTAssertEqual(manifest.segments.count, 2)
+        XCTAssertEqual(manifest.segments[0].sequenceNumber, 500)
+        XCTAssertEqual(manifest.segments[0].uri.lastPathComponent, "part500.0.ts")
+        XCTAssertEqual(manifest.segments[1].sequenceNumber, 502)
+        XCTAssertEqual(manifest.segments[1].uri.lastPathComponent, "part500.2.ts")
+    }
+
+    func testLLHLSPlaylistWithOnlyGapPartsFallsBackToPreloadHint() throws {
+        let playlist = """
+        #EXTM3U
+        #EXT-X-VERSION:6
+        #EXT-X-TARGETDURATION:2
+        #EXT-X-SERVER-CONTROL:CAN-BLOCK-RELOAD=YES
+        #EXT-X-PART-INF:PART-TARGET=0.5
+        #EXT-X-MEDIA-SEQUENCE:200
+        #EXT-X-PART:DURATION=0.5,URI="part200.0.ts",GAP=YES
+        #EXT-X-PRELOAD-HINT:TYPE=PART,URI="part200.1.ts"
+        """
+
+        let manifest = try HLSManifestParser.parse(playlist, baseURL: hlsURL)
+        XCTAssertEqual(manifest.parts.count, 1)
+        XCTAssertTrue(manifest.parts[0].isGap)
+        XCTAssertEqual(manifest.segments.count, 1)
+        XCTAssertEqual(manifest.segments[0].sequenceNumber, 201)
+        XCTAssertEqual(manifest.segments[0].uri.lastPathComponent, "part200.1.ts")
+    }
+
+    func testLLHLSPlaylistWithOnlyGapPartsAndNoPreloadHintsThrowsNoMediaSegments() {
+        let playlist = """
+        #EXTM3U
+        #EXT-X-VERSION:6
+        #EXT-X-TARGETDURATION:2
+        #EXT-X-SERVER-CONTROL:CAN-BLOCK-RELOAD=YES
+        #EXT-X-PART-INF:PART-TARGET=0.5
+        #EXT-X-MEDIA-SEQUENCE:200
+        #EXT-X-PART:DURATION=0.5,URI="part200.0.ts",GAP=YES
+        """
+
+        XCTAssertThrowsError(try HLSManifestParser.parse(playlist, baseURL: hlsURL)) { error in
+            guard case ManifestParserError.malformed(let reason) = error else {
+                XCTFail("Expected malformed error, got: \(error)")
+                return
+            }
+            XCTAssertTrue(reason.contains("no media segments"))
+        }
     }
 }

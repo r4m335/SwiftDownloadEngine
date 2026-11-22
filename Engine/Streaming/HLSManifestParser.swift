@@ -507,8 +507,11 @@ public enum HLSManifestParser {
         var finalSegments = segments
         var hasSynthesized = false
         if finalSegments.isEmpty && !allParts.isEmpty {
-            // Low-Latency HLS playlist containing only partial segments (no complete media segments yet)
+            // Low-Latency HLS playlist containing only partial segments (no complete media segments yet).
+            // Partial segments marked with GAP=YES indicate unavailable media data (RFC 8216bis Section 4.4.4.9)
+            // and must not be synthesized as downloadable media segments.
             for (index, part) in allParts.enumerated() {
+                guard !part.isGap else { continue }
                 finalSegments.append(HLSMediaSegment(
                     sequenceNumber: mediaSequence + Int64(index),
                     uri: part.uri,
@@ -522,8 +525,12 @@ public enum HLSManifestParser {
                     parts: [part]
                 ))
             }
-            hasSynthesized = true
-        } else if finalSegments.isEmpty && allParts.isEmpty && !preloadHints.isEmpty {
+            if !finalSegments.isEmpty {
+                hasSynthesized = true
+            }
+        }
+
+        if finalSegments.isEmpty && !preloadHints.isEmpty {
             for (index, hint) in preloadHints.enumerated() where hint.type == .part {
                 let range: HLSByteRange?
                 if let len = hint.byteRangeLength {
@@ -532,7 +539,7 @@ public enum HLSManifestParser {
                     range = nil
                 }
                 finalSegments.append(HLSMediaSegment(
-                    sequenceNumber: mediaSequence + Int64(index),
+                    sequenceNumber: mediaSequence + Int64(allParts.count + index),
                     uri: hint.uri,
                     duration: partTargetDuration ?? targetDuration ?? 1.0,
                     title: nil,
