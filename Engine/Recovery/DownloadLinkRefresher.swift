@@ -30,15 +30,18 @@ public enum DownloadRecoveryError: LocalizedError, Equatable {
 public final class DownloadLinkRefresher: Sendable {
     private let session: URLSession
     private let persistenceStore: DownloadPersistenceStore
+    private let queueManager: DownloadQueueManager?
     private let identityVerifier: DownloadIdentityVerifier
 
     public init(
         session: URLSession = .shared,
         persistenceStore: DownloadPersistenceStore,
+        queueManager: DownloadQueueManager? = nil,
         identityVerifier: DownloadIdentityVerifier = DownloadIdentityVerifier()
     ) {
         self.session = session
         self.persistenceStore = persistenceStore
+        self.queueManager = queueManager
         self.identityVerifier = identityVerifier
     }
 
@@ -56,7 +59,7 @@ public final class DownloadLinkRefresher: Sendable {
         }
 
         // Filter and sanitize request headers according to origin security
-        let sanitizedHeaders = sanitizeHeaders(newHeaders, for: newURL, originalURL: record.originalURL)
+        let sanitizedHeaders = sanitizeHeaders(newHeaders, for: newURL, originalURL: record.originalURL, downloadID: id)
 
         // Probe the replacement URL
         let probe = HTTPRangeProbe(session: session)
@@ -86,15 +89,16 @@ public final class DownloadLinkRefresher: Sendable {
             record.originalURL = newURL
             record.resolvedURL = probeResult.finalURL
             if let h = sanitizedHeaders {
-                for (k, v) in h {
-                    record.headers[k] = v
-                }
+                record.updateHeaders(h)
             }
             if let e = probeResult.eTag { record.eTag = e }
             if let lm = probeResult.lastModified { record.lastModified = lm }
             record.state = .paused
             record.updatedAt = Date()
             try await persistenceStore.save(record)
+            if let qm = queueManager {
+                try? await qm.updateRequest(id: id, newURL: newURL, newHeaders: sanitizedHeaders ?? record.securedHeaders)
+            }
             return (record, outcome)
 
         case .requiresRestart(let reason):
@@ -102,9 +106,7 @@ public final class DownloadLinkRefresher: Sendable {
                 record.originalURL = newURL
                 record.resolvedURL = probeResult.finalURL
                 if let h = sanitizedHeaders {
-                    for (k, v) in h {
-                        record.headers[k] = v
-                    }
+                    record.updateHeaders(h)
                 }
                 record.eTag = probeResult.eTag
                 record.lastModified = probeResult.lastModified
@@ -121,6 +123,9 @@ public final class DownloadLinkRefresher: Sendable {
                 record.state = .pending
                 record.updatedAt = Date()
                 try await persistenceStore.save(record)
+                if let qm = queueManager {
+                    try? await qm.updateRequest(id: id, newURL: newURL, newHeaders: sanitizedHeaders ?? record.securedHeaders)
+                }
                 return (record, outcome)
             } else {
                 throw DownloadRecoveryError.restartRequired(reason: reason)
@@ -136,7 +141,8 @@ public final class DownloadLinkRefresher: Sendable {
     private func sanitizeHeaders(
         _ headers: [String: String]?,
         for newURL: URL,
-        originalURL: URL
+        originalURL: URL,
+        downloadID: String
     ) -> [String: String]? {
         guard var h = headers else { return nil }
 
@@ -147,6 +153,7 @@ public final class DownloadLinkRefresher: Sendable {
             h.removeValue(forKey: "authorization")
             h.removeValue(forKey: "Cookie")
             h.removeValue(forKey: "cookie")
+            KeychainManager.shared.deleteCredentials(forDownloadId: downloadID)
         }
 
         return h

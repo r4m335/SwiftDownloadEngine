@@ -254,6 +254,22 @@ public struct DownloadRecord: Codable, Equatable, Identifiable, Sendable, Schema
         return result
     }
 
+    /// Updates headers with Keychain sanitization for sensitive credentials.
+    public mutating func updateHeaders(_ newHeaders: [String: String]) {
+        for (k, v) in newHeaders {
+            let lower = k.lowercased()
+            if lower == "cookie" || lower == "authorization" || lower == "proxy-authorization" {
+                KeychainManager.shared.storeGenericSecret(key: lower, account: "download:\(id)", data: Data(v.utf8))
+                if let host = originalURL.host {
+                    KeychainManager.shared.storeGenericSecret(key: lower, account: host, data: Data(v.utf8))
+                }
+                headers.removeValue(forKey: k)
+            } else {
+                headers[k] = v
+            }
+        }
+    }
+
     enum CodingKeys: String, CodingKey {
         case schemaVersion, id, originalURL, resolvedURL, destinationURL, totalSize, state, storageMode, transportPolicy, networkPolicy
         case eTag, lastModified, suggestedFilename, mimeType, headers, createdAt, updatedAt, segments, isInternalStreamingSegment
@@ -610,8 +626,16 @@ public actor DownloadPersistenceStore {
         KeychainManager.shared.deleteCredentials(forDownloadId: tag)
     }
 
-    /// Deletes all persisted download records.
+    /// Deletes all persisted download records and purges Keychain credentials.
     public func deleteAll() throws {
+        let allRecords = (try? fetchAll()) ?? []
+        for r in allRecords {
+            KeychainManager.shared.deleteCredentials(forDownloadId: r.id)
+        }
+        for (tag, _) in cache {
+            KeychainManager.shared.deleteCredentials(forDownloadId: tag)
+        }
+
         let fileURLs = try FileManager.default.contentsOfDirectory(
             at: storageDirectoryURL,
             includingPropertiesForKeys: nil

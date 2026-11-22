@@ -1140,4 +1140,177 @@ final class DownloadQueueManagerTests: XCTestCase {
         let reconciledB = DownloadCoordinator.reconcilePartialFile(destinationURL: destURL, record: recordB)
         XCTAssertEqual(reconciledB.completedBytes, 250_000, "Checkpoint must be clamped down to physical disk size if disk is smaller")
     }
+
+    // MARK: - 30. Duplicate Destination Path Protection
+
+    func test30_DuplicateDestinationPathProtection() async throws {
+        let req1 = makeRequest(id: "dup-1", path: "/dup.bin")
+        try await queueManager.add(req1, autoStart: false)
+
+        let req2 = DownloadRequest(
+            id: "dup-2",
+            url: server.url(for: "/other.bin"),
+            destinationURL: req1.destinationURL, // exact same destination file path
+            configuredThreadCount: 1
+        )
+
+        do {
+            try await queueManager.add(req2, autoStart: false)
+            XCTFail("Adding a download with an existing destination path must throw destinationPathAlreadyInUse")
+        } catch let err as DownloadQueueError {
+            guard case .destinationPathAlreadyInUse(let path) = err else {
+                return XCTFail("Expected .destinationPathAlreadyInUse, got \(err)")
+            }
+            XCTAssertEqual(path, req1.destinationURL.path)
+        }
+    }
+
+    // MARK: - 31. Atomic Bulk Add Rollback On Invalid Request
+
+    func test31_AtomicBulkAddRollbackOnInvalidRequest() async throws {
+        let req1 = makeRequest(id: "bulk-ok-1", path: "/bulk1.bin")
+        let req2 = makeRequest(id: "bulk-ok-2", path: "/bulk2.bin")
+        let reqInvalid = DownloadRequest(
+            id: "bulk-fail",
+            url: URL(string: "blob:https://example.com/blob-id")!, // invalid scheme for standard queue
+            destinationURL: tempDirectory.appendingPathComponent("bulk-fail.bin")
+        )
+
+        do {
+            try await queueManager.add([req1, req2, reqInvalid], autoStart: false)
+            XCTFail("Bulk add with an invalid scheme must fail")
+        } catch {
+            // Verify neither req1 nor req2 was added
+            let snap = await queueManager.snapshot()
+            XCTAssertNil(await queueManager.item(for: "bulk-ok-1"))
+            XCTAssertNil(await queueManager.item(for: "bulk-ok-2"))
+            XCTAssertNil(await queueManager.item(for: "bulk-fail"))
+            XCTAssertEqual(snap.totalItems, 0, "Bulk add must be atomic: no partial additions if any request is invalid")
+        }
+    }
+
+    // MARK: - 32. Cancel All Covers Paused and Failed Items and Cleans Files
+
+    func test32_CancelAllCoversPausedAndFailedItemsAndCleansFiles() async throws {
+        let reqPaused = makeRequest(id: "cancel-paused", path: "/p.bin")
+        let reqFailed = makeRequest(id: "cancel-failed", path: "/f.bin")
+
+        let itemPaused = try await queueManager.add(reqPaused, autoStart: false)
+        let itemFailed = try await queueManager.add(reqFailed, autoStart: false)
+
+        try await queueManager.pause(id: itemPaused.id)
+        // Mark failed
+        let record = DownloadRecord(
+            id: itemFailed.id,
+            originalURL: reqFailed.url,
+            destinationURL: reqFailed.destinationURL,
+            totalSize: 1000,
+            state: .failed(reason: "Network timeout")
+        )
+        try await persistenceStore.save(record)
+        // Create dummy destination and part files
+        try Data("dummy-paused".utf8).write(to: reqPaused.destinationURL)
+        try Data("dummy-failed".utf8).write(to: reqFailed.destinationURL)
+
+        await queueManager.cancelAll(deleteDestinationFiles: true)
+
+        let afterPaused = await queueManager.item(for: itemPaused.id)
+        let afterFailed = await queueManager.item(for: itemFailed.id)
+
+        XCTAssertEqual(afterPaused?.state, .cancelled)
+        XCTAssertEqual(afterFailed?.state, .cancelled)
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: reqPaused.destinationURL.path), "Paused destination file should be removed on cancelAll")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: reqFailed.destinationURL.path), "Failed destination file should be removed on cancelAll")
+    }
+
+    // MARK: - 33. Queue Restoration Secured Headers From Keychain
+
+    func test33_QueueRestorationSecuredHeadersFromKeychain() async throws {
+        let secretCookie = "auth_session=secret_token_12345"
+        let req = DownloadRequest(
+            id: "secure-restore-id",
+            url: server.url(for: "/secure.bin"),
+            destinationURL: tempDirectory.appendingPathComponent("secure.bin"),
+            headers: ["Cookie": secretCookie, "Accept": "application/octet-stream"]
+        )
+
+        try await queueManager.add(req, autoStart: false)
+
+        // Read the persisted queue_manifest.json directly
+        let manifestData = try Data(contentsOf: queueManager.queueStoreURL)
+        let manifestString = String(data: manifestData, encoding: .utf8) ?? ""
+        XCTAssertFalse(manifestString.contains("secret_token_12345"), "Sensitive cookie must NEVER be persisted in queue_manifest.json")
+
+        // Create a new queue manager and restore
+        let freshQueueManager = DownloadQueueManager(
+            coordinator: coordinator,
+            persistenceStore: persistenceStore,
+            queueStoreURL: queueManager.queueStoreURL
+        )
+        try await freshQueueManager.restoreQueue(autoStart: false)
+
+        let restored = await freshQueueManager.item(for: "secure-restore-id")
+        XCTAssertNotNil(restored)
+        XCTAssertEqual(restored?.request.headers["Cookie"], secretCookie, "Secured headers must be reconstituted from Keychain upon restoration")
+    }
+
+    // MARK: - 34. Queue Resume Synchronizes Refreshed URL And Headers
+
+    func test34_QueueResumeSynchronizesRefreshedURLAndHeaders() async throws {
+        let originalURL = server.url(for: "/old_link.bin")
+        let refreshedURL = server.url(for: "/refreshed_link.bin")
+
+        let req = DownloadRequest(
+            id: "sync-refresh-id",
+            url: originalURL,
+            destinationURL: tempDirectory.appendingPathComponent("sync_refresh.bin"),
+            headers: ["X-Old": "value"]
+        )
+
+        try await queueManager.add(req, autoStart: false)
+        try await queueManager.pause(id: req.id)
+
+        // Simulate link refresh updating persistence record
+        var record = DownloadRecord(
+            id: req.id,
+            originalURL: refreshedURL,
+            resolvedURL: refreshedURL,
+            destinationURL: req.destinationURL,
+            totalSize: 5000,
+            state: .paused,
+            headers: ["X-Refreshed": "new_value"]
+        )
+        try await persistenceStore.save(record)
+
+        // Resume through queue manager
+        try await queueManager.resume(id: req.id)
+
+        let resumedItem = await queueManager.item(for: req.id)
+        XCTAssertEqual(resumedItem?.request.url, refreshedURL, "Queue item URL must synchronize with refreshed persistence record")
+        XCTAssertEqual(resumedItem?.request.headers["X-Refreshed"], "new_value")
+    }
+
+    // MARK: - 35. Delete All Purges Keychain Credentials
+
+    func test35_DeleteAllPurgesKeychainCredentials() async throws {
+        let tag = "keychain-purge-test"
+        let secret = "Bearer token_xyz"
+        let record = DownloadRecord(
+            id: tag,
+            originalURL: URL(string: "https://secure.example.com/data")!,
+            destinationURL: tempDirectory.appendingPathComponent("data.bin"),
+            headers: ["Authorization": secret]
+        )
+        try await persistenceStore.save(record)
+
+        // Verify secret stored in Keychain
+        XCTAssertNotNil(KeychainManager.shared.getGenericSecret(key: "authorization", account: "download:\(tag)"))
+
+        // Delete all
+        try persistenceStore.deleteAll()
+
+        // Verify secret purged
+        XCTAssertNil(KeychainManager.shared.getGenericSecret(key: "authorization", account: "download:\(tag)"), "deleteAll() must purge Keychain credentials")
+    }
 }

@@ -143,9 +143,12 @@ public enum DownloadQueueError: Error, LocalizedError, Equatable, Sendable {
     case rateLimited(url: URL, retryAfter: TimeInterval?)
     case nonResumable(url: URL)
     case outOfDiskSpace(required: Int64, available: Int64)
+    case destinationPathAlreadyInUse(path: String)
 
     public var errorDescription: String? {
         switch self {
+        case .destinationPathAlreadyInUse(let path):
+            return "Destination path '\(path)' is already in use by another download in the queue"
         case .downloadAlreadyExists(let id):
             return "Download with ID '\(id)' already exists in queue"
         case .downloadNotFound(let id):
@@ -282,6 +285,10 @@ public actor DownloadQueueManager {
         guard items[request.id] == nil else {
             throw DownloadQueueError.downloadAlreadyExists(id: request.id)
         }
+        let destPath = request.destinationURL.standardizedFileURL.path
+        if items.values.contains(where: { $0.request.destinationURL.standardizedFileURL.path == destPath && $0.id != request.id }) {
+            throw DownloadQueueError.destinationPathAlreadyInUse(path: request.destinationURL.path)
+        }
         sequenceCounter += 1
         let newItem = QueueItem(
             request: request,
@@ -301,21 +308,63 @@ public actor DownloadQueueManager {
         return newItem
     }
 
-    /// Adds multiple download requests in bulk.
+    /// Adds multiple download requests in bulk with all-or-nothing atomic validation.
     @discardableResult
     public func add(
         _ requests: [DownloadRequest],
         priority: DownloadPriority = .normal,
         autoStart: Bool = true
     ) throws -> [QueueItem] {
+        // Pre-validate all requests before mutating queue state to prevent partial batch failure
+        var seenIDs = Set(items.keys)
+        var seenPaths = Set(items.values.map { $0.request.destinationURL.standardizedFileURL.path })
+
+        for req in requests {
+            switch DownloadURLPolicy.classify(req.url) {
+            case .directHTTP:
+                break
+            case .mustUseBlobCaptureService:
+                throw DownloadQueueError.unsupportedScheme("Unsupported URL scheme 'blob'. Blob URLs must be captured in-browser via BrowserBlobCaptureService.")
+            case .unsupported(let scheme, _):
+                if scheme == "http" || scheme == "https" {
+                    throw DownloadQueueError.invalidURL("Download URL must have a valid non-empty host: \(BrowserURLResolver.sanitizeURLForLogging(req.url))")
+                } else {
+                    let schemeName = scheme.isEmpty ? "unknown" : scheme
+                    throw DownloadQueueError.unsupportedScheme("Unsupported URL scheme '\(schemeName)'. Only HTTP and HTTPS URLs can be downloaded through the standard download engine.")
+                }
+            }
+            guard !seenIDs.contains(req.id) else {
+                throw DownloadQueueError.downloadAlreadyExists(id: req.id)
+            }
+            seenIDs.insert(req.id)
+
+            let destPath = req.destinationURL.standardizedFileURL.path
+            guard !seenPaths.contains(destPath) else {
+                throw DownloadQueueError.destinationPathAlreadyInUse(path: req.destinationURL.path)
+            }
+            seenPaths.insert(destPath)
+        }
+
         var added: [QueueItem] = []
         for req in requests {
-            let item = try add(req, priority: priority, autoStart: false)
-            added.append(item)
+            sequenceCounter += 1
+            let newItem = QueueItem(
+                request: req,
+                priority: priority,
+                sequenceIndex: sequenceCounter,
+                enqueuedAt: Date(),
+                state: .pending
+            )
+            items[req.id] = newItem
+            added.append(newItem)
         }
+        persistQueue()
+
         if autoStart {
             processQueue()
         }
+
+        notifyQueueChanged()
         return added
     }
 
@@ -524,15 +573,44 @@ public actor DownloadQueueManager {
         notifyQueueChanged()
     }
 
+    /// Updates the request URL and headers of an existing queued download.
+    public func updateRequest(
+        id: String,
+        newURL: URL,
+        newHeaders: [String: String]? = nil
+    ) throws {
+        guard var item = items[id] else {
+            throw DownloadQueueError.downloadNotFound(id: id)
+        }
+        item.request.url = newURL
+        if let h = newHeaders {
+            item.request.headers = h
+        }
+        items[id] = item
+        persistQueue()
+        notifyQueueChanged()
+    }
+
     /// Resumes an eligible paused or failed download.
     ///
-    /// Transitions state to `.pending` and triggers queue scheduling.
-    public func resume(id: String) throws {
+    /// Synchronizes request URL and credentials from persistence, transitions state to `.pending`,
+    /// and triggers queue scheduling.
+    public func resume(id: String) async throws {
         guard var item = items[id] else {
             throw DownloadQueueError.downloadNotFound(id: id)
         }
         guard item.state == .paused || item.state.canResume else {
             return
+        }
+
+        if let record = try? await persistenceStore.fetch(tag: id) {
+            if record.originalURL != item.request.url {
+                item.request.url = record.originalURL
+            }
+            item.request.headers = record.securedHeaders
+            if let total = record.totalExpectedLength ?? (record.totalSize > 0 ? record.totalSize : nil) {
+                item.request.expectedContentLength = total
+            }
         }
 
         item.state = .pending
@@ -549,27 +627,22 @@ public actor DownloadQueueManager {
         }
 
         if let task = activeTasks.removeValue(forKey: id) {
-            do {
-                try await coordinator.cancel(id: id, deleteDestinationFile: true)
-            } catch {
-                PipelineLogger.shared.log("[DownloadQueueManager] Warning: Coordinator cancel failed for \(id): \(error.localizedDescription)")
-            }
             task.cancel()
             _ = await task.value
-        } else {
-            if FileManager.default.fileExists(atPath: item.request.destinationURL.path) {
-                do {
-                    try FileManager.default.removeItem(at: item.request.destinationURL)
-                } catch {
-                    PipelineLogger.shared.log("[DownloadQueueManager] Warning: Failed to remove destination file \(item.request.destinationURL.path): \(error.localizedDescription)")
-                }
-            }
-            do {
-                try await persistenceStore.delete(tag: id)
-            } catch {
-                PipelineLogger.shared.log("[DownloadQueueManager] Warning: Failed to delete persistence record for \(id): \(error.localizedDescription)")
-            }
         }
+
+        do {
+            try await coordinator.cancel(id: id, deleteDestinationFile: true)
+        } catch {
+            PipelineLogger.shared.log("[DownloadQueueManager] Warning: Coordinator cancel failed for \(id): \(error.localizedDescription)")
+        }
+
+        await cleanupBackgroundTasksAndFiles(for: id, deleteFiles: true)
+
+        if FileManager.default.fileExists(atPath: item.request.destinationURL.path) {
+            try? FileManager.default.removeItem(at: item.request.destinationURL)
+        }
+        try? await persistenceStore.delete(tag: id)
 
         item.completedBytes = 0
         item.state = .pending
@@ -592,55 +665,47 @@ public actor DownloadQueueManager {
         items[id] = item
 
         if let task = activeTasks.removeValue(forKey: id) {
-            do {
-                try await coordinator.cancel(id: id, deleteDestinationFile: deleteDestinationFile)
-            } catch {
-                PipelineLogger.shared.log("[DownloadQueueManager] Warning: Coordinator cancel failed for \(id): \(error.localizedDescription)")
-            }
             task.cancel()
             _ = await task.value
+        }
+
+        do {
+            try await coordinator.cancel(id: id, deleteDestinationFile: deleteDestinationFile)
+        } catch {
+            PipelineLogger.shared.log("[DownloadQueueManager] Warning: Coordinator cancel failed for \(id): \(error.localizedDescription)")
+        }
+
+        await cleanupBackgroundTasksAndFiles(for: id, deleteFiles: deleteDestinationFile)
+
+        if deleteDestinationFile {
+            if FileManager.default.fileExists(atPath: item.request.destinationURL.path) {
+                try? FileManager.default.removeItem(at: item.request.destinationURL)
+            }
+            try? await persistenceStore.delete(tag: id)
+            KeychainManager.shared.deleteCredentials(forDownloadId: id)
         } else {
-            if deleteDestinationFile {
-                do {
-                    if let record = try await persistenceStore.fetch(tag: id) {
-                        do {
-                            try FileManager.default.removeItem(at: record.destinationURL)
-                        } catch {
-                            PipelineLogger.shared.log("[DownloadQueueManager] Warning: Failed removing destination \(record.destinationURL.path): \(error.localizedDescription)")
-                        }
-                        let parentDir = record.destinationURL.deletingLastPathComponent()
-                        let tempDir = parentDir.appendingPathComponent(".tmp", isDirectory: true)
-                        for seg in record.segments {
-                            let part = tempDir.appendingPathComponent("segment-\(seg.id).part")
-                            do {
-                                try FileManager.default.removeItem(at: part)
-                            } catch {
-                                PipelineLogger.shared.log("[DownloadQueueManager] Warning: Failed removing part file \(part.path): \(error.localizedDescription)")
-                            }
-                        }
-                    } else if FileManager.default.fileExists(atPath: item.request.destinationURL.path) {
-                        do {
-                            try FileManager.default.removeItem(at: item.request.destinationURL)
-                        } catch {
-                            PipelineLogger.shared.log("[DownloadQueueManager] Warning: Failed removing destination file \(item.request.destinationURL.path): \(error.localizedDescription)")
-                        }
+            _ = try? await persistenceStore.updateState(tag: id, state: .cancelled)
+        }
+
+        persistQueue()
+        processQueue()
+        notifyQueueChanged()
+    }
+
+    /// Cancels mapped background session tasks and removes temporary part files from PartStaging.
+    private func cleanupBackgroundTasksAndFiles(for id: String, deleteFiles: Bool) async {
+        if let bgManager = coordinator.getBackgroundSessionManager() {
+            await bgManager.cancelTasks(for: id)
+            if deleteFiles {
+                let stagingDir = bgManager.temporaryDirectoryURL
+                if let files = try? FileManager.default.contentsOfDirectory(at: stagingDir, includingPropertiesForKeys: nil) {
+                    for file in files where file.lastPathComponent.hasPrefix("\(id)_segment-") {
+                        try? FileManager.default.removeItem(at: file)
                     }
-                } catch {
-                    PipelineLogger.shared.log("[DownloadQueueManager] Warning: Failed fetching persistence record for \(id): \(error.localizedDescription)")
-                }
-                do {
-                    try await persistenceStore.delete(tag: id)
-                } catch {
-                    PipelineLogger.shared.log("[DownloadQueueManager] Warning: Failed deleting persistence record for \(id): \(error.localizedDescription)")
-                }
-            } else {
-                do {
-                    _ = try await persistenceStore.updateState(tag: id, state: .cancelled)
-                } catch {
-                    PipelineLogger.shared.log("[DownloadQueueManager] Warning: Failed updating state to .cancelled for \(id): \(error.localizedDescription)")
                 }
             }
         }
+    }
 
         persistQueue()
         processQueue()
@@ -700,47 +765,28 @@ public actor DownloadQueueManager {
     }
 
     /// Resumes all eligible paused downloads.
-    public func resumeAll() {
+    public func resumeAll() async {
         for (id, item) in items where item.state == .paused {
-            items[id]?.state = .pending
+            do {
+                try await resume(id: id)
+            } catch {
+                items[id]?.state = .pending
+            }
         }
         persistQueue()
         processQueue()
         notifyQueueChanged()
     }
 
-    /// Cancels all active and queued downloads.
+    /// Cancels all active and queued downloads, including paused and failed items.
     public func cancelAll(deleteDestinationFiles: Bool = false) async {
-        // Mark all pending items as cancelled first so processQueue will not pick them up
-        for (id, item) in items where item.state == .pending {
-            items[id]?.state = .cancelled
-            if deleteDestinationFiles {
-                do {
-                    try await persistenceStore.delete(tag: id)
-                } catch {
-                    PipelineLogger.shared.log("[DownloadQueueManager] Warning: Failed to delete persistence record for \(id): \(error.localizedDescription)")
-                }
-            } else {
-                do {
-                    _ = try await persistenceStore.updateState(tag: id, state: .cancelled)
-                } catch {
-                    PipelineLogger.shared.log("[DownloadQueueManager] Warning: Failed to update state to .cancelled for \(id): \(error.localizedDescription)")
-                }
-            }
-        }
-
-        // Cancel all active tasks
-        let activeIDs = Array(activeTasks.keys)
-        for id in activeIDs {
-            items[id]?.state = .cancelled
-            if let task = activeTasks.removeValue(forKey: id) {
-                do {
-                    try await coordinator.cancel(id: id, deleteDestinationFile: deleteDestinationFiles)
-                } catch {
-                    PipelineLogger.shared.log("[DownloadQueueManager] Warning: Coordinator cancel failed for \(id): \(error.localizedDescription)")
-                }
-                task.cancel()
-                _ = await task.value
+        let allIDs = Array(items.keys)
+        for id in allIDs {
+            guard let item = items[id], item.state != .completed else { continue }
+            do {
+                try await cancel(id: id, deleteDestinationFile: deleteDestinationFiles)
+            } catch {
+                PipelineLogger.shared.log("[DownloadQueueManager] Warning: cancelAll failed for \(id): \(error.localizedDescription)")
             }
         }
 
@@ -769,34 +815,27 @@ public actor DownloadQueueManager {
         }
 
         if let task = activeTasks.removeValue(forKey: id) {
-            do {
-                try await coordinator.cancel(id: id, deleteDestinationFile: deleteDestinationFile)
-            } catch {
-                PipelineLogger.shared.log("[DownloadQueueManager] Warning: Coordinator cancel failed for \(id): \(error.localizedDescription)")
-            }
             task.cancel()
             _ = await task.value
-        } else if deleteDestinationFile {
-            do {
-                if let record = try await persistenceStore.fetch(tag: id) {
-                    do {
-                        try FileManager.default.removeItem(at: record.destinationURL)
-                    } catch {
-                        PipelineLogger.shared.log("[DownloadQueueManager] Warning: Failed to remove destination \(record.destinationURL.path): \(error.localizedDescription)")
-                    }
-                } else if FileManager.default.fileExists(atPath: item.request.destinationURL.path) {
-                    do {
-                        try FileManager.default.removeItem(at: item.request.destinationURL)
-                    } catch {
-                        PipelineLogger.shared.log("[DownloadQueueManager] Warning: Failed to remove destination file \(item.request.destinationURL.path): \(error.localizedDescription)")
-                    }
-                }
-            } catch {
-                PipelineLogger.shared.log("[DownloadQueueManager] Warning: Failed fetching persistence record for \(id): \(error.localizedDescription)")
+        }
+
+        do {
+            try await coordinator.cancel(id: id, deleteDestinationFile: deleteDestinationFile)
+        } catch {
+            PipelineLogger.shared.log("[DownloadQueueManager] Warning: Coordinator cancel failed for \(id): \(error.localizedDescription)")
+        }
+
+        await cleanupBackgroundTasksAndFiles(for: id, deleteFiles: deleteDestinationFile)
+
+        if deleteDestinationFile {
+            if FileManager.default.fileExists(atPath: item.request.destinationURL.path) {
+                try? FileManager.default.removeItem(at: item.request.destinationURL)
             }
         }
+
         do {
             try await persistenceStore.delete(tag: id)
+            KeychainManager.shared.deleteCredentials(forDownloadId: id)
         } catch {
             PipelineLogger.shared.log("[DownloadQueueManager] Error deleting item \(id) from persistenceStore: \(error.localizedDescription)")
             throw error
@@ -917,7 +956,18 @@ public actor DownloadQueueManager {
                     self.sequenceCounter = max(self.sequenceCounter, manifest.sequenceCounter)
                     for item in manifest.items where !Self.isInternalStreamingSegmentID(item.id) {
                         if activeTasks[item.id] == nil {
-                            self.items[item.id] = item
+                            var restoredItem = item
+                            for key in ["cookie", "authorization", "proxy-authorization"] {
+                                if let data = KeychainManager.shared.getGenericSecret(key: key, account: "download:\(restoredItem.id)"),
+                                   let val = String(data: data, encoding: .utf8), !val.isEmpty {
+                                    restoredItem.request.headers[key.capitalized] = val
+                                } else if let host = restoredItem.request.url.host,
+                                          let data = KeychainManager.shared.getGenericSecret(key: key, account: host),
+                                          let val = String(data: data, encoding: .utf8), !val.isEmpty {
+                                    restoredItem.request.headers[key.capitalized] = val
+                                }
+                            }
+                            self.items[item.id] = restoredItem
                         }
                     }
                 }
@@ -957,6 +1007,7 @@ public actor DownloadQueueManager {
                     if record.totalSize > 0 {
                         existing.totalBytes = record.totalSize
                     }
+                    existing.request.headers = record.securedHeaders
 
                     // Reconcile state
                     switch record.state {
@@ -980,7 +1031,7 @@ public actor DownloadQueueManager {
                         id: record.id,
                         url: record.originalURL,
                         destinationURL: record.destinationURL,
-                        headers: record.headers,
+                        headers: record.securedHeaders,
                         configuredThreadCount: max(1, record.segments.count),
                         storageMode: record.storageMode,
                         transportPolicy: record.transportPolicy,
@@ -1171,11 +1222,30 @@ public actor DownloadQueueManager {
     }
 
     private func persistQueue() {
+        let sanitizedItems = items.values.map { item -> QueueItem in
+            var copy = item
+            if !copy.request.persistSensitiveHeaders {
+                var strippedHeaders = copy.request.headers
+                for (k, v) in copy.request.headers {
+                    let lower = k.lowercased()
+                    if lower == "cookie" || lower == "authorization" || lower == "proxy-authorization" {
+                        KeychainManager.shared.storeGenericSecret(key: lower, account: "download:\(copy.id)", data: Data(v.utf8))
+                        if let host = copy.request.url.host {
+                            KeychainManager.shared.storeGenericSecret(key: lower, account: host, data: Data(v.utf8))
+                        }
+                        strippedHeaders.removeValue(forKey: k)
+                    }
+                }
+                copy.request.headers = strippedHeaders
+            }
+            return copy
+        }
+
         let manifest = QueueManifest(
             schemaVersion: QueueManifest.currentSchemaVersion,
             maxConcurrentDownloads: maxConcurrentDownloads,
             sequenceCounter: sequenceCounter,
-            items: Array(items.values)
+            items: sanitizedItems
         )
         do {
             let data = try encoder.encode(manifest)

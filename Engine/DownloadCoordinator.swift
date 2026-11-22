@@ -45,7 +45,7 @@ public enum DownloadNetworkPolicy: String, Codable, Sendable, Equatable, CaseIte
 /// Request parameters for a download operation coordinated by `DownloadCoordinator`.
 public struct DownloadRequest: Sendable, Equatable, Codable {
     public let id: String
-    public let url: URL
+    public var url: URL
     public let destinationURL: URL
     public var headers: [String: String]
     /// Runtime headers may include browser credentials; this controls whether those
@@ -687,9 +687,7 @@ public actor DownloadCoordinator {
         record.originalURL = newURL
         record.resolvedURL = probeResult.finalURL
         if let h = newHeaders {
-            for (k, v) in h {
-                record.headers[k] = v
-            }
+            record.updateHeaders(h)
         }
         record.eTag = probeResult.eTag ?? record.eTag
         record.lastModified = probeResult.lastModified ?? record.lastModified
@@ -2731,11 +2729,12 @@ public actor DownloadCoordinator {
 
             let completedSoFar = initialCompletedMap[segment.id] ?? 0
             let segRec = SegmentRecord(segment: segment, completedBytes: completedSoFar)
+            let mergedHeaders = currentRecord.securedHeaders.merging(request.headers) { (secured, _) in secured }
             try await bgManager.scheduleSegmentDownload(
                 download: currentRecord,
                 segment: segRec,
                 customHeaders: self.mergeValidatorHeaders(
-                    original: request.headers,
+                    original: mergedHeaders,
                     eTag: probeResult.eTag,
                     lastModified: probeResult.lastModified
                 ),
@@ -2834,11 +2833,12 @@ public actor DownloadCoordinator {
                         if let seg = segments.first(where: { $0.id == segID }) {
                             let segRec = SegmentRecord(segment: seg, completedBytes: 0)
                             do {
+                                let mergedHeaders = currentRecord.securedHeaders.merging(request.headers) { (secured, _) in secured }
                                 _ = try await bgManager.scheduleSegmentDownload(
                                     download: currentRecord,
                                     segment: segRec,
                                     customHeaders: self.mergeValidatorHeaders(
-                                        original: request.headers,
+                                        original: mergedHeaders,
                                         eTag: probeResult.eTag,
                                         lastModified: probeResult.lastModified
                                     ),

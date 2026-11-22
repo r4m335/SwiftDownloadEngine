@@ -47,7 +47,8 @@ public final class DownloadRecoveryManager: ObservableObject {
         self.streamingOrchestrator = streamingOrchestrator
         self.linkRefresher = DownloadLinkRefresher(
             session: .shared,
-            persistenceStore: persistenceStore
+            persistenceStore: persistenceStore,
+            queueManager: engine.queueManager
         )
         self.hlsRecoveryCoordinator = HLSRecoveryCoordinator(
             hlsPersistenceStore: hlsPersistenceStore,
@@ -90,11 +91,16 @@ public final class DownloadRecoveryManager: ObservableObject {
             )
             try await engine.resumeDownload(id: transferID)
         } else {
-            _ = try await linkRefresher.refresh(
+            let (record, _) = try await linkRefresher.refresh(
                 id: transferID,
                 newURL: url,
                 newHeaders: newHeaders,
                 forceRestartIfNonResumable: forceRestartIfNonResumable
+            )
+            try? await engine.queueManager.updateRequest(
+                id: transferID,
+                newURL: url,
+                newHeaders: newHeaders ?? record.securedHeaders
             )
             try await engine.resumeDownload(id: transferID)
         }

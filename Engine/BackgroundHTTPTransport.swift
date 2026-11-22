@@ -876,7 +876,7 @@ public final class BackgroundDownloadSessionManager: NSObject, @unchecked Sendab
         }
         #endif
 
-        if let headers = customHeaders ?? (download.headers.isEmpty ? nil : download.headers) {
+        if let headers = customHeaders ?? (download.securedHeaders.isEmpty ? nil : download.securedHeaders) {
             for (k, v) in headers {
                 request.setValue(v, forHTTPHeaderField: k)
             }

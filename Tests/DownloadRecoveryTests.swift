@@ -417,7 +417,8 @@ final class DownloadRecoveryTests: XCTestCase {
         XCTAssertEqual(updated.segments.count, 2)
         XCTAssertEqual(updated.segments[0].completedBytes, 500, "Compatible completed segment bytes must be preserved")
         XCTAssertEqual(updated.segments[1].completedBytes, 0)
-        XCTAssertEqual(updated.headers["Cookie"], "sid=123")
+        XCTAssertEqual(updated.securedHeaders["Cookie"], "sid=123")
+        XCTAssertNil(updated.headers["Cookie"], "Sensitive cookie must not be stored in plain text headers")
     }
 
     func testDownloadLinkRefresherRejectsIncompatibleFileWithoutWiping() async throws {
