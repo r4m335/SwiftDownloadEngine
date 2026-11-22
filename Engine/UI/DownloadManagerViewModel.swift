@@ -611,6 +611,10 @@ public final class DownloadManagerViewModel: ObservableObject {
             PipelineLogger.shared.log(stage: .viewmodel, message: "Failed to restore queue on boot: \(error)")
         }
 
+        // Automatically restore and recover durable streaming transfers (HLS and DASH)
+        let effectiveOrchestrator = self.streamingOrchestrator ?? (await engine.streamingOrchestrator)
+        await effectiveOrchestrator?.restoreStreamingTransfers(resumeInterrupted: true)
+
         // Initialize and start torrent engine if available
         if let te = torrentEngine {
             do {
@@ -1769,6 +1773,15 @@ public final class DownloadManagerViewModel: ObservableObject {
         return try? await store.load(id: id)
     }
 
+    /// Loads the durable DASH parent record used by the segment details UI.
+    public func dashTransferRecord(for id: String) async -> DASHTransferRecord? {
+        guard let orchestrator = await engine.streamingOrchestrator,
+              let store = await orchestrator.dashPersistenceStore else {
+            return nil
+        }
+        return try? await store.load(id: id)
+    }
+
     /// Deletes selected completed HLS segment files and refreshes the parent
     /// transfer snapshot so progress immediately reflects the new checkpoint.
     @discardableResult
@@ -1939,6 +1952,8 @@ public final class DownloadManagerViewModel: ObservableObject {
     public func restoreQueue(autoStart: Bool = false) async throws {
         do {
             try await engine.restoreQueue(autoStart: autoStart)
+            let effectiveOrchestrator = self.streamingOrchestrator ?? (await engine.streamingOrchestrator)
+            await effectiveOrchestrator?.restoreStreamingTransfers(resumeInterrupted: autoStart)
             if let te = torrentEngine {
                 try? await te.start()
             }

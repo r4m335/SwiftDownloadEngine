@@ -315,6 +315,14 @@ public final class AppCompositionRoot {
             dashPersistenceStore: dashStore
         )
 
+        if let bgManager = backgroundSessionManager ?? coordinator.getBackgroundSessionManager() {
+            bgManager.onSegmentCompleted = { [weak streamingOrchestrator] downloadID, segmentID, partURL in
+                Task { [weak streamingOrchestrator] in
+                    await streamingOrchestrator?.handleSegmentCompleted(transferID: downloadID, order: segmentID, partURL: partURL)
+                }
+            }
+        }
+
         return AppCompositionRoot(
             baseStorageDirectory: storeDir,
             downloadsDirectory: resolvedDownloads,

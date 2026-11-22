@@ -1052,6 +1052,67 @@ final class BackgroundHTTPTransportTests: XCTestCase {
         XCTAssertFalse(fetched!.segments[0].isCompleted)
     }
 
+    /// 4b. An indeterminate streaming segment (segmentLength <= 0) with physical file > 0: MUST complete and NOT be purged as oversized.
+    func testReconcileStreamingSegmentIndeterminateLengthCompletesSuccessfully() async throws {
+        let manager = try BackgroundDownloadSessionManager(
+            sessionIdentifier: "test.recon.streaming.\(UUID().uuidString)",
+            storageDirectoryURL: storageDirectoryURL,
+            persistenceStore: persistenceStore
+        )
+
+        let download = DownloadRecord(
+            id: "dl-recon-stream",
+            originalURL: URL(string: "https://example.com/segment.ts")!,
+            destinationURL: storageDirectoryURL.appendingPathComponent("segment.ts"),
+            suggestedFilename: "segment.ts",
+            state: .downloading,
+            storageMode: .partFiles,
+            segments: [
+                SegmentRecord(id: 0, startOffset: 0, endOffset: 0, length: 0, completedBytes: 0)
+            ]
+        )
+        try await persistenceStore.save(download)
+
+        let partURL = storageDirectoryURL.appendingPathComponent("segment_0.part")
+        try Data(repeating: 0x47, count: 1880).write(to: partURL) // 10 MPEG-TS packets
+
+        let taskRecord = BackgroundDownloadTaskRecord(
+            sessionIdentifier: manager.sessionIdentifier,
+            taskIdentifier: 9912,
+            downloadID: "dl-recon-stream",
+            segmentID: 0,
+            originalURL: URL(string: "https://example.com/segment.ts")!,
+            startOffset: 0,
+            endOffset: 0,
+            expectedBytes: 0,
+            initialSegmentCompletedBytes: 0,
+            segmentLength: 0,
+            destinationPartURL: partURL,
+            completedBytes: 0
+        )
+        try await manager.mappingStore.save(record: taskRecord)
+
+        var notifiedDownloadID: String?
+        var notifiedSegmentID: Int?
+        var notifiedURL: URL?
+        manager.onSegmentCompleted = { dID, sID, url in
+            notifiedDownloadID = dID
+            notifiedSegmentID = sID
+            notifiedURL = url
+        }
+
+        let report = try await manager.reconcileActiveTasks()
+
+        XCTAssertEqual(report.completedRecords.count, 1, "Streaming segment with indeterminate length must be marked completed when file size > 0")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: partURL.path), "Physical chunk file must be preserved on disk")
+        XCTAssertEqual(notifiedDownloadID, "dl-recon-stream")
+        XCTAssertEqual(notifiedSegmentID, 0)
+        XCTAssertEqual(notifiedURL, partURL)
+
+        let fetched = try await persistenceStore.fetch(tag: "dl-recon-stream")
+        XCTAssertEqual(fetched?.segments[0].completedBytes, 1880)
+    }
+
     /// 5. A normal fresh request completes correctly.
     func testNormalFreshRequestCompletesCorrectly() throws {
         let sourceURL = storageDirectoryURL.appendingPathComponent("fresh_temp.bin")

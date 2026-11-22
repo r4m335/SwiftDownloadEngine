@@ -1185,12 +1185,17 @@ public final class BackgroundDownloadSessionManager: NSObject, @unchecked Sendab
                 if FileManager.default.fileExists(atPath: partPath) {
                     let size = FileManager.default.fileSize(atPath: partPath) ?? 0
 
-                    if size == r.segmentLength && r.segmentLength > 0 {
-                        // Invariant holds: part file strictly equals absolute segment length
+                    let isIndeterminate = r.segmentLength <= 0
+                    let isCompleted = isIndeterminate ? (size > 0) : (size == r.segmentLength && r.segmentLength > 0)
+                    let isOversized = !isIndeterminate && (size > r.segmentLength)
+
+                    if isCompleted {
+                        // Invariant holds: part file strictly equals absolute segment length (or non-empty for streaming)
+                        let finalBytes = isIndeterminate ? size : r.segmentLength
                         try await mappingStore.markCompleted(
                             sessionIdentifier: r.sessionIdentifier,
                             taskIdentifier: r.taskIdentifier,
-                            finalBytes: r.segmentLength
+                            finalBytes: finalBytes
                         )
 
                         // Reconcile DownloadPersistenceStore segment record.
@@ -1199,13 +1204,14 @@ public final class BackgroundDownloadSessionManager: NSObject, @unchecked Sendab
                             _ = try await persistence.updateSegmentProgress(
                                 tag: r.downloadID,
                                 segmentID: r.segmentID,
-                                completedBytes: r.segmentLength
+                                completedBytes: finalBytes
                             )
                         }
 
+                        self.notifyCompleted(downloadID: r.downloadID, segmentID: r.segmentID, partURL: r.destinationPartURL)
                         completed.append(r)
                         continue
-                    } else if size > r.segmentLength {
+                    } else if isOversized {
                         // Corrupted or oversized part file: purge corrupted file safely
                         do {
                             try FileManager.default.removeItem(at: r.destinationPartURL)

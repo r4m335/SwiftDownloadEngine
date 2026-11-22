@@ -142,4 +142,68 @@ final class DASHLifecycleTests: XCTestCase {
         let store = DASHPersistenceStore(inMemory: true)
         await orchestrator.setDASHPersistenceStore(store)
     }
+
+    func testHandleSegmentCompletedUpdatesDASHCheckpoint() async throws {
+        let store = DASHPersistenceStore(inMemory: true)
+        let transferID = "dash-bg-complete-\(UUID().uuidString)"
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(transferID, isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let record = DASHTransferRecord(
+            id: transferID,
+            manifestURL: URL(string: "https://example.com/stream.mpd")!,
+            outputFilename: "stream.mp4",
+            outputDestinationURL: tempDir.appendingPathComponent("stream.mp4"),
+            segmentDirectoryURL: tempDir,
+            totalSegments: 3,
+            completedSegmentOrders: []
+        )
+        try await store.save(record)
+
+        let orchestrator = StreamingDownloadOrchestrator(
+            segmentExecutor: URLSessionStreamingSegmentExecutor(),
+            dashPersistenceStore: store
+        )
+
+        let chunkURL = tempDir.appendingPathComponent("chunk-0.part")
+        try Data(repeating: 0x00, count: 512).write(to: chunkURL)
+
+        await orchestrator.handleSegmentCompleted(transferID: transferID, order: 0, partURL: chunkURL)
+
+        let loaded = try await store.load(id: transferID)
+        XCTAssertEqual(loaded?.completedSegmentOrders, [0], "Segment 0 must be added to completedSegmentOrders")
+    }
+
+    func testBackgroundStreamingSegmentExecutorFastPath() async throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent("bg_exec_fast_\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let chunkFile = tempDir.appendingPathComponent("seg-1.part")
+        let dummyData = Data(repeating: 0xAA, count: 1024)
+        try dummyData.write(to: chunkFile)
+
+        let manager = try BackgroundDownloadSessionManager(
+            sessionIdentifier: "test.bg.fast.\(UUID().uuidString)",
+            storageDirectoryURL: tempDir
+        )
+        let executor = BackgroundStreamingSegmentExecutor(backgroundSessionManager: manager)
+
+        let req = StreamingSegmentTransferRequest(
+            identity: StreamingSegmentIdentity(transferID: "test-fast", order: 1, value: "seg-1"),
+            url: URL(string: "https://example.com/seg1.mp4")!,
+            headers: [:],
+            byteRange: nil,
+            destinationURL: chunkFile,
+            transportPolicy: .background
+        )
+
+        var reportedProgress: Double?
+        try await executor.execute(req) { p in
+            reportedProgress = p
+        }
+
+        XCTAssertEqual(reportedProgress, 1.0, "Fast path must immediately report 1.0 progress for existing chunk")
+    }
 }

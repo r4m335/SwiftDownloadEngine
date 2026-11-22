@@ -16,6 +16,7 @@ public struct StreamingManifestCandidate: Sendable, Equatable {
     public let dashVideoRepresentationID: String?
     public let dashAudioRepresentationID: String?
     public let dashTextRepresentationID: String?
+    public var transportPolicy: HTTPTransportPolicy
 
     public init(
         url: URL,
@@ -26,13 +27,15 @@ public struct StreamingManifestCandidate: Sendable, Equatable {
         cachedManifestText: String? = nil,
         dashVideoRepresentationID: String? = nil,
         dashAudioRepresentationID: String? = nil,
-        dashTextRepresentationID: String? = nil
+        dashTextRepresentationID: String? = nil,
+        transportPolicy: HTTPTransportPolicy = .foreground
     ) throws {
         guard BrowserURLResolver.isValidDownloadURL(url) else {
             throw StreamingDownloadOrchestratorError.invalidManifestURL
         }
         self.url = url
         self.mimeType = mimeType
+        self.transportPolicy = transportPolicy
         let snapshot = browserSessionSnapshot
         self.browserSessionSnapshot = snapshot
         if let browserRequestContext {
@@ -70,7 +73,8 @@ public struct StreamingManifestCandidate: Sendable, Equatable {
             cachedManifestText: cachedManifestText,
             dashVideoRepresentationID: dashVideoRepresentationID,
             dashAudioRepresentationID: dashAudioRepresentationID,
-            dashTextRepresentationID: dashTextRepresentationID
+            dashTextRepresentationID: dashTextRepresentationID,
+            transportPolicy: transportPolicy
         )
     }
 
@@ -399,6 +403,7 @@ public struct StreamingTransferProposal: Sendable, Equatable {
     public let manifest: StreamingTransferManifest
     public let resources: [StreamingTransferResource]
     public let estimatedTransferBytes: Int64?
+    public var transportPolicy: HTTPTransportPolicy
     public var estimatedTotalBytes: Int64? { estimatedTransferBytes }
 
     public var browserRequestContext: BrowserRequestContext? {
@@ -415,13 +420,15 @@ public struct StreamingTransferProposal: Sendable, Equatable {
         manifestID: String,
         manifest: StreamingTransferManifest,
         resources: [StreamingTransferResource],
-        estimatedTransferBytes: Int64?
+        estimatedTransferBytes: Int64?,
+        transportPolicy: HTTPTransportPolicy = .foreground
     ) {
         self.transferID = transferID
         self.manifestID = manifestID
         self.manifest = manifest
         self.resources = resources
         self.estimatedTransferBytes = estimatedTransferBytes
+        self.transportPolicy = transportPolicy
     }
 }
 
@@ -432,6 +439,7 @@ public struct StreamingSegmentTransferRequest: Sendable, Equatable {
     public let byteRange: StreamingByteRange?
     public let destinationURL: URL
     public let allowedCredentialOrigins: Set<String>
+    public let transportPolicy: HTTPTransportPolicy
 
     public init(
         identity: StreamingSegmentIdentity,
@@ -439,7 +447,8 @@ public struct StreamingSegmentTransferRequest: Sendable, Equatable {
         headers: [String: String],
         byteRange: StreamingByteRange?,
         destinationURL: URL,
-        allowedCredentialOrigins: Set<String> = []
+        allowedCredentialOrigins: Set<String> = [],
+        transportPolicy: HTTPTransportPolicy = .foreground
     ) {
         self.identity = identity
         self.url = url
@@ -447,6 +456,7 @@ public struct StreamingSegmentTransferRequest: Sendable, Equatable {
         self.byteRange = byteRange
         self.destinationURL = destinationURL
         self.allowedCredentialOrigins = allowedCredentialOrigins
+        self.transportPolicy = transportPolicy
     }
 }
 
@@ -488,10 +498,23 @@ public actor DownloadCoordinatorSegmentExecutor: StreamingSegmentExecutor {
     private let coordinator: DownloadCoordinator
     private let retryCount: Int
     private var activeRequestIDs: [String: Set<String>] = [:]
+    private let backgroundExecutor: BackgroundStreamingSegmentExecutor?
 
-    public init(coordinator: DownloadCoordinator, retryCount: Int = 2) {
+    public init(
+        coordinator: DownloadCoordinator,
+        retryCount: Int = 2,
+        backgroundSessionManager: BackgroundDownloadSessionManager? = nil
+    ) {
         self.coordinator = coordinator
         self.retryCount = max(0, retryCount)
+        if let bgManager = backgroundSessionManager ?? coordinator.getBackgroundSessionManager() {
+            self.backgroundExecutor = BackgroundStreamingSegmentExecutor(
+                backgroundSessionManager: bgManager,
+                retryCount: retryCount
+            )
+        } else {
+            self.backgroundExecutor = nil
+        }
     }
 
     private func registerActiveRequest(transferID: String, requestID: String) {
@@ -513,6 +536,10 @@ public actor DownloadCoordinatorSegmentExecutor: StreamingSegmentExecutor {
         _ request: StreamingSegmentTransferRequest,
         progress: (@Sendable (Double) -> Void)? = nil
     ) async throws {
+        if request.transportPolicy == .background, let bgExec = self.backgroundExecutor {
+            try await bgExec.execute(request, progress: progress)
+            return
+        }
         PipelineLogger.shared.log("[DownloadCoordinatorSegmentExecutor] Starting segment \(request.identity.order) (\(request.identity.value)) -> \(request.destinationURL.lastPathComponent)")
         let downloadRequest = DownloadRequest(
             id: request.identity.value,
@@ -569,6 +596,9 @@ public actor DownloadCoordinatorSegmentExecutor: StreamingSegmentExecutor {
     }
 
     public func cancel(transferID: String) async {
+        if let bgExec = self.backgroundExecutor {
+            await bgExec.cancel(transferID: transferID)
+        }
         let ids = getActiveRequestIDs(for: transferID)
         for id in ids {
             do {
@@ -577,6 +607,156 @@ public actor DownloadCoordinatorSegmentExecutor: StreamingSegmentExecutor {
                 PipelineLogger.shared.log(stage: .coordinator, message: "Failed to cancel segment \(id): \(error)")
             }
         }
+    }
+}
+
+/// Standalone segment executor using Apple's BackgroundDownloadSessionManager for out-of-process background streaming.
+public actor BackgroundStreamingSegmentExecutor: StreamingSegmentExecutor {
+    private let backgroundSessionManager: BackgroundDownloadSessionManager
+    private let retryCount: Int
+    private var pendingContinuations: [String: [Int: CheckedContinuation<Void, Error>]] = [:]
+    private var registeredTransferIDs: Set<String> = []
+
+    public init(backgroundSessionManager: BackgroundDownloadSessionManager, retryCount: Int = 2) {
+        self.backgroundSessionManager = backgroundSessionManager
+        self.retryCount = max(0, retryCount)
+    }
+
+    private func ensureObserverRegistered(for transferID: String, progress: (@Sendable (Double) -> Void)? = nil) {
+        guard !registeredTransferIDs.contains(transferID) else { return }
+        registeredTransferIDs.insert(transferID)
+        backgroundSessionManager.addObserver(
+            for: transferID,
+            onProgress: { [weak self] segID, completed, total in
+                if total > 0 {
+                    let fraction = min(1.0, max(0.0, Double(completed) / Double(total)))
+                    progress?(fraction)
+                }
+            },
+            onCompleted: { [weak self] segID, partURL in
+                guard let self else { return }
+                Task {
+                    await self.completeSegment(transferID: transferID, order: segID)
+                }
+            },
+            onFailed: { [weak self] segID, error in
+                guard let self else { return }
+                Task {
+                    await self.failSegment(transferID: transferID, order: segID, error: error)
+                }
+            }
+        )
+    }
+
+    private func completeSegment(transferID: String, order: Int) {
+        if let cont = pendingContinuations[transferID]?.removeValue(forKey: order) {
+            cont.resume(returning: ())
+        }
+        if pendingContinuations[transferID]?.isEmpty == true {
+            pendingContinuations.removeValue(forKey: transferID)
+        }
+    }
+
+    private func failSegment(transferID: String, order: Int, error: Error) {
+        if let cont = pendingContinuations[transferID]?.removeValue(forKey: order) {
+            cont.resume(throwing: error)
+        }
+        if pendingContinuations[transferID]?.isEmpty == true {
+            pendingContinuations.removeValue(forKey: transferID)
+        }
+    }
+
+    public func execute(
+        _ request: StreamingSegmentTransferRequest,
+        progress: (@Sendable (Double) -> Void)? = nil
+    ) async throws {
+        // Fast-path: Check if chunk already exists and is non-empty
+        if FileManager.default.fileExists(atPath: request.destinationURL.path),
+           let fileSize = FileManager.default.fileSize(atPath: request.destinationURL.path),
+           fileSize > 0 {
+            let matchesByteRange = request.byteRange.map { $0.length == fileSize } ?? true
+            if matchesByteRange {
+                progress?(1.0)
+                return
+            }
+        }
+
+        let transferID = request.identity.transferID
+        let order = request.identity.order
+
+        let parentDir = request.destinationURL.deletingLastPathComponent()
+        try DownloadManagerViewModel.ensureDirectoryExistsAndWritable(parentDir)
+
+        ensureObserverRegistered(for: transferID, progress: progress)
+
+        var attempts = 0
+        let maxAttempts = max(1, retryCount + 1)
+        while true {
+            attempts += 1
+            do {
+                try await withTaskCancellationHandler {
+                    try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                        self.pendingContinuations[transferID, default: [:]][order] = continuation
+                        Task {
+                            do {
+                                _ = try await self.backgroundSessionManager.scheduleStreamingSegment(
+                                    transferID: transferID,
+                                    order: order,
+                                    url: request.url,
+                                    destinationURL: request.destinationURL,
+                                    headers: request.headers,
+                                    byteRange: request.byteRange.map { ($0.start, $0.end) }
+                                )
+                            } catch {
+                                await self.failSegment(transferID: transferID, order: order, error: error)
+                            }
+                        }
+                    }
+                } onCancel: {
+                    Task {
+                        await self.failSegment(transferID: transferID, order: order, error: CancellationError())
+                    }
+                }
+
+                guard FileManager.default.fileExists(atPath: request.destinationURL.path) else {
+                    PipelineLogger.shared.log("[BackgroundStreamingSegmentExecutor] Missing output file for segment \(order) at \(request.destinationURL.path)")
+                    throw StreamingDownloadOrchestratorError.segmentTransferFailed(order: order)
+                }
+                let finalSize = FileManager.default.fileSize(atPath: request.destinationURL.path) ?? 0
+                guard finalSize > 0 else {
+                    PipelineLogger.shared.log("[BackgroundStreamingSegmentExecutor] Empty output file (0 bytes) for segment \(order)")
+                    throw StreamingDownloadOrchestratorError.segmentTransferFailed(order: order)
+                }
+                if let byteRange = request.byteRange, finalSize != byteRange.length {
+                    PipelineLogger.shared.log("[BackgroundStreamingSegmentExecutor] Byte range mismatch for segment \(order): expected \(byteRange.length), got \(finalSize)")
+                    throw StreamingDownloadOrchestratorError.segmentTransferFailed(order: order)
+                }
+                progress?(1.0)
+                return
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                if attempts < maxAttempts && HTTPRetryPolicy.isRetryable(error) {
+                    PipelineLogger.shared.log("[BackgroundStreamingSegmentExecutor] Segment \(order) encountered retryable error (\(error.localizedDescription)). Retrying attempt \(attempts + 1)/\(maxAttempts)...")
+                    let delay = min(2.0, Double(attempts) * 0.5)
+                    try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                    continue
+                }
+                PipelineLogger.shared.log("[BackgroundStreamingSegmentExecutor] Failed segment \(order): \(error)")
+                throw error
+            }
+        }
+    }
+
+    public func cancel(transferID: String) async {
+        await backgroundSessionManager.cancelTasks(for: transferID)
+        if let continuations = pendingContinuations.removeValue(forKey: transferID) {
+            for (_, cont) in continuations {
+                cont.resume(throwing: CancellationError())
+            }
+        }
+        registeredTransferIDs.remove(transferID)
+        backgroundSessionManager.removeObservers(for: transferID)
     }
 }
 
@@ -1162,14 +1342,17 @@ public actor StreamingDownloadOrchestrator {
         urlResolver: (any BrowserMediaURLResolver)? = nil,
         hlsPersistenceStore: HLSPersistenceStore? = nil,
         dashPersistenceStore: DASHPersistenceStore? = nil,
-        remuxTSToMP4: Bool = true
+        remuxTSToMP4: Bool = true,
+        backgroundSessionManager: BackgroundDownloadSessionManager? = nil
     ) {
+        let bgManager = backgroundSessionManager ?? downloadCoordinator.getBackgroundSessionManager()
         self.init(
             configuration: configuration,
             manifestLoader: manifestLoader,
             segmentExecutor: DownloadCoordinatorSegmentExecutor(
                 coordinator: downloadCoordinator,
-                retryCount: retryCount ?? configuration.maxRetryAttempts
+                retryCount: retryCount ?? configuration.maxRetryAttempts,
+                backgroundSessionManager: bgManager
             ),
             parsingLimits: parsingLimits,
             urlResolver: urlResolver,
@@ -1548,6 +1731,89 @@ public actor StreamingDownloadOrchestrator {
         await restoreDASHTransfers(resumeInterrupted: resumeInterrupted)
     }
 
+    /// Handles asynchronous background segment completion from BackgroundDownloadSessionManager.
+    /// Checkpoints completed chunk into persistent store and triggers assembly when all segments are present.
+    public func handleSegmentCompleted(transferID: String, order: Int, partURL: URL) async {
+        // 1. Check HLS Store
+        if let persistence = hlsPersistenceStore {
+            if var record = try? await persistence.load(id: transferID) {
+                if !record.completedSegmentOrders.contains(order) {
+                    _ = try? await persistence.appendCompletedSegment(id: transferID, order: order)
+                    record.completedSegmentOrders.append(order)
+                }
+                if let engine = self.downloadEngine {
+                    let estimatedTotal = Int64(record.totalSegments) * 1_000_000
+                    let completedBytes = Int64(record.completedSegmentOrders.count) * 1_000_000
+                    await engine.updateProgress(
+                        id: transferID,
+                        bytesReceived: completedBytes,
+                        totalBytes: estimatedTotal,
+                        state: record.completedSegmentOrders.count >= record.totalSegments ? .processing : .downloading
+                    )
+                }
+                if record.completedSegmentOrders.count >= record.totalSegments,
+                   !runningTransfers.contains(transferID),
+                   !activeAssemblyOperations.contains(transferID) {
+                    PipelineLogger.shared.log("[HLS Background] All \(record.totalSegments) segments downloaded for \(transferID). Triggering assembly...")
+                    await self.resumePersistedHLS(record)
+                }
+                return
+            }
+        }
+
+        // 2. Check DASH Store
+        if let persistence = dashPersistenceStore {
+            if var record = try? await persistence.load(id: transferID) {
+                if !record.completedSegmentOrders.contains(order) {
+                    _ = try? await persistence.appendCompletedSegment(id: transferID, order: order)
+                    record.completedSegmentOrders.append(order)
+                }
+                if let engine = self.downloadEngine {
+                    let estimatedTotal = Int64(record.totalSegments) * 1_000_000
+                    let completedBytes = Int64(record.completedSegmentOrders.count) * 1_000_000
+                    await engine.updateProgress(
+                        id: transferID,
+                        bytesReceived: completedBytes,
+                        totalBytes: estimatedTotal,
+                        state: record.completedSegmentOrders.count >= record.totalSegments ? .processing : .downloading
+                    )
+                }
+                if record.completedSegmentOrders.count >= record.totalSegments,
+                   !runningTransfers.contains(transferID),
+                   !activeAssemblyOperations.contains(transferID) {
+                    PipelineLogger.shared.log("[DASH Background] All \(record.totalSegments) segments downloaded for \(transferID). Triggering assembly...")
+                    await self.resumePersistedDASH(record)
+                }
+                return
+            }
+        }
+    }
+
+    /// Schedules all segments of a streaming proposal using the background URLSession transport.
+    @discardableResult
+    public func scheduleBackgroundStreaming(
+        proposal: StreamingTransferProposal,
+        destinationDirectory: URL,
+        backgroundManager: BackgroundDownloadSessionManager
+    ) async throws -> [BackgroundDownloadTaskRecord] {
+        try DownloadManagerViewModel.ensureDirectoryExistsAndWritable(destinationDirectory)
+        var records: [BackgroundDownloadTaskRecord] = []
+        for resource in proposal.resources {
+            let destURL = destinationDirectory.appendingPathComponent("\(resource.identity.value).part", isDirectory: false)
+            let headers = await segmentRequestHeaders(for: resource, manifest: proposal.manifest, transferID: proposal.transferID)
+            let rec = try await backgroundManager.scheduleStreamingSegment(
+                transferID: proposal.transferID,
+                order: resource.identity.order,
+                url: resource.url,
+                destinationURL: destURL,
+                headers: headers,
+                byteRange: resource.byteRange.map { ($0.start, $0.end) }
+            )
+            records.append(rec)
+        }
+        return records
+    }
+
     private func manifestStatusDescription(for error: Error) -> String {
         if let manifestErr = error as? StreamingManifestLoadError {
             switch manifestErr {
@@ -1886,7 +2152,8 @@ public actor StreamingDownloadOrchestrator {
             manifestID: EngineSHA256.hash(data: finalData),
             manifest: manifest,
             resources: resources,
-            estimatedTransferBytes: estimatedBytes(for: manifest)
+            estimatedTransferBytes: estimatedBytes(for: manifest),
+            transportPolicy: candidate.transportPolicy
         )
         proposals[metadataFingerprint] = proposal
         proposals[proposal.transferID] = proposal
@@ -2963,6 +3230,26 @@ public actor StreamingDownloadOrchestrator {
             }
         }
 
+        // A completed DASH segment is atomically written before its parent
+        // checkpoint is committed. Reuse it on restart.
+        if let persistence = dashPersistenceStore,
+           proposal.manifest.kind == .dash,
+           let record = try? await persistence.load(id: proposal.transferID),
+           record.segmentDirectoryURL.standardizedFileURL.path == destinationDirectory.standardizedFileURL.path,
+           record.completedSegmentOrders.contains(resource.identity.order),
+           FileManager.default.fileExists(atPath: destinationURL.path) {
+            let size = FileManager.default.fileSize(atPath: destinationURL.path) ?? 0
+            let hasExpectedLength = resource.byteRange.map { $0.length == size } ?? true
+            if size > 0 && hasExpectedLength {
+                return DownloadedSegmentResult(
+                    index: index,
+                    identity: resource.identity,
+                    destinationURL: destinationURL,
+                    downloadedBytes: size
+                )
+            }
+        }
+
         if let range = resource.byteRange,
            FileManager.default.fileExists(atPath: destinationURL.path),
            let size = FileManager.default.fileSize(atPath: destinationURL.path),
@@ -2989,7 +3276,8 @@ public actor StreamingDownloadOrchestrator {
             headers: await segmentRequestHeaders(for: resource, manifest: proposal.manifest, transferID: proposal.transferID),
             byteRange: resource.byteRange,
             destinationURL: destinationURL,
-            allowedCredentialOrigins: proposal.browserRequestContext?.allowedCredentialOrigins ?? []
+            allowedCredentialOrigins: proposal.browserRequestContext?.allowedCredentialOrigins ?? [],
+            transportPolicy: proposal.transportPolicy
         )
 
         var attempts = 0
@@ -3048,7 +3336,8 @@ public actor StreamingDownloadOrchestrator {
                             headers: freshHeaders,
                             byteRange: freshResource.byteRange,
                             destinationURL: destinationURL,
-                            allowedCredentialOrigins: freshProposal.browserRequestContext?.allowedCredentialOrigins ?? proposal.browserRequestContext?.allowedCredentialOrigins ?? []
+                            allowedCredentialOrigins: freshProposal.browserRequestContext?.allowedCredentialOrigins ?? proposal.browserRequestContext?.allowedCredentialOrigins ?? [],
+                            transportPolicy: proposal.transportPolicy
                         )
                         do {
                             try await segmentExecutor.execute(freshRequest, progress: nil)
