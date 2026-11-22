@@ -366,10 +366,14 @@ public enum MediaIntegrityValidator {
             }
             return validateISOBMFF(fileURL: fileURL, requiredBoxes: ["ftyp", "moov", "moof", "mdat"])
         case .ttml, .webVTT, .text, .rawText:
-            guard let size = FileManager.default.fileSize(atPath: fileURL.path), size > 0 else {
-                return .unreadable(reason: "Text document file is empty or missing.")
+            guard let size = FileManager.default.fileSize(atPath: fileURL.path) else {
+                return .unreadable
             }
-            return .confirmedValid(format: container.rawValue)
+            guard size > 0 else {
+                return .emptyFile
+            }
+            let detected = FileTypeDetector.detect(at: fileURL)
+            return .validated(detectedType: detected)
         }
     }
 

@@ -1963,6 +1963,8 @@ public enum MediaAssembler {
             guard validateISOBaseMediaFile(segment.fileURL, requiredBoxes: required) else {
                 throw MediaAssemblyError.invalidMediaData(container)
             }
+        case .ttml, .webVTT, .text, .rawText:
+            break
         }
 
         guard let input = try? FileHandle(forReadingFrom: segment.fileURL) else {
