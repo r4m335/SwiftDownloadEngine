@@ -507,7 +507,7 @@ public actor DownloadCoordinatorSegmentExecutor: StreamingSegmentExecutor {
     ) {
         self.coordinator = coordinator
         self.retryCount = max(0, retryCount)
-        if let bgManager = backgroundSessionManager ?? coordinator.getBackgroundSessionManager() {
+        if let bgManager = backgroundSessionManager {
             self.backgroundExecutor = BackgroundStreamingSegmentExecutor(
                 backgroundSessionManager: bgManager,
                 retryCount: retryCount
@@ -1345,14 +1345,13 @@ public actor StreamingDownloadOrchestrator {
         remuxTSToMP4: Bool = true,
         backgroundSessionManager: BackgroundDownloadSessionManager? = nil
     ) {
-        let bgManager = backgroundSessionManager ?? downloadCoordinator.getBackgroundSessionManager()
         self.init(
             configuration: configuration,
             manifestLoader: manifestLoader,
             segmentExecutor: DownloadCoordinatorSegmentExecutor(
                 coordinator: downloadCoordinator,
                 retryCount: retryCount ?? configuration.maxRetryAttempts,
-                backgroundSessionManager: bgManager
+                backgroundSessionManager: backgroundSessionManager
             ),
             parsingLimits: parsingLimits,
             urlResolver: urlResolver,
@@ -1738,17 +1737,16 @@ public actor StreamingDownloadOrchestrator {
         if let persistence = hlsPersistenceStore {
             if var record = try? await persistence.load(id: transferID) {
                 if !record.completedSegmentOrders.contains(order) {
-                    _ = try? await persistence.appendCompletedSegment(id: transferID, order: order)
-                    record.completedSegmentOrders.append(order)
+                    _ = try? await persistence.markSegmentCompleted(id: transferID, order: order)
+                    record.completedSegmentOrders.insert(order)
                 }
                 if let engine = self.downloadEngine {
                     let estimatedTotal = Int64(record.totalSegments) * 1_000_000
                     let completedBytes = Int64(record.completedSegmentOrders.count) * 1_000_000
-                    await engine.updateProgress(
+                    await engine.updateStreamingProgress(
                         id: transferID,
-                        bytesReceived: completedBytes,
-                        totalBytes: estimatedTotal,
-                        state: record.completedSegmentOrders.count >= record.totalSegments ? .processing : .downloading
+                        completedBytes: completedBytes,
+                        totalBytes: estimatedTotal
                     )
                 }
                 if record.completedSegmentOrders.count >= record.totalSegments,
@@ -1765,17 +1763,16 @@ public actor StreamingDownloadOrchestrator {
         if let persistence = dashPersistenceStore {
             if var record = try? await persistence.load(id: transferID) {
                 if !record.completedSegmentOrders.contains(order) {
-                    _ = try? await persistence.appendCompletedSegment(id: transferID, order: order)
+                    _ = try? await persistence.updateCompletedSegmentOrders(id: transferID, completedOrders: [order])
                     record.completedSegmentOrders.append(order)
                 }
                 if let engine = self.downloadEngine {
                     let estimatedTotal = Int64(record.totalSegments) * 1_000_000
                     let completedBytes = Int64(record.completedSegmentOrders.count) * 1_000_000
-                    await engine.updateProgress(
+                    await engine.updateStreamingProgress(
                         id: transferID,
-                        bytesReceived: completedBytes,
-                        totalBytes: estimatedTotal,
-                        state: record.completedSegmentOrders.count >= record.totalSegments ? .processing : .downloading
+                        completedBytes: completedBytes,
+                        totalBytes: estimatedTotal
                     )
                 }
                 if record.completedSegmentOrders.count >= record.totalSegments,

@@ -312,10 +312,11 @@ public final class AppCompositionRoot {
             downloadCoordinator: coordinator,
             downloadEngine: downloadEngine,
             hlsPersistenceStore: hlsStore,
-            dashPersistenceStore: dashStore
+            dashPersistenceStore: dashStore,
+            backgroundSessionManager: backgroundSessionManager
         )
 
-        if let bgManager = backgroundSessionManager ?? coordinator.getBackgroundSessionManager() {
+        if let bgManager = backgroundSessionManager {
             bgManager.onSegmentCompleted = { [weak streamingOrchestrator] downloadID, segmentID, partURL in
                 Task { [weak streamingOrchestrator] in
                     await streamingOrchestrator?.handleSegmentCompleted(transferID: downloadID, order: segmentID, partURL: partURL)
