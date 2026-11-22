@@ -4042,7 +4042,7 @@ public actor StreamingDownloadOrchestrator {
         completedResources: [DASHCompletedResource],
         destinationURL: URL
     ) throws -> MediaAssemblyOutput {
-        let textCompleted = completedResources.filter { $0.resource.mediaType == .text }
+        let textCompleted = completedResources.filter { $0.resource.mediaType == .text && $0.resource.kind == .mediaSegment }
         guard !textCompleted.isEmpty else {
             throw DASHVODReconstructionError.noMediaSegments
         }
@@ -4098,7 +4098,7 @@ public actor StreamingDownloadOrchestrator {
             }
         }
 
-        if isAllWebVTT && !downloadedSegments.isEmpty {
+        if !downloadedSegments.isEmpty && (isAllWebVTT || destinationURL.pathExtension.lowercased() == "vtt") {
             let combinedVTT = HLSWebVTTAssembler.assemble(segments: downloadedSegments)
             try Data(combinedVTT.utf8).write(to: destinationURL, options: .atomic)
             PipelineLogger.shared.log("[DASH Pipeline] Assembled \(downloadedSegments.count) subtitle segments into: \(destinationURL.path)")

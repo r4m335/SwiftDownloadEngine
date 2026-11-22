@@ -3420,6 +3420,69 @@ final class StreamingDownloadOrchestratorTests: XCTestCase {
         let sidecarContent = try String(contentsOf: sidecarVTT, encoding: .utf8)
         XCTAssertTrue(sidecarContent.contains("WEBVTT"))
     }
+
+    func testDASHExecutionWithTextRepresentationContainingInitializationSegmentDoesNotConcatenateInitData() async throws {
+        let url = URL(string: "https://video.example/vod/subtitles-with-init.mpd")!
+        let mpd = """
+        <MPD type="static" mediaPresentationDuration="PT4S">
+          <Period duration="PT4S">
+            <AdaptationSet contentType="video" mimeType="video/mp4" codecs="avc1">
+              <Representation id="v1" bandwidth="1000">
+                <SegmentTemplate timescale="1" duration="2" initialization="init.mp4" media="segment-$Number$.m4s"/>
+              </Representation>
+            </AdaptationSet>
+            <AdaptationSet contentType="text" mimeType="text/vtt" lang="en">
+              <Representation id="sub_en" bandwidth="1000">
+                <SegmentTemplate timescale="1" duration="2" initialization="init-sub.mp4" media="sub-$Number$.vtt"/>
+              </Representation>
+            </AdaptationSet>
+          </Period>
+        </MPD>
+        """
+        let orchestrator = StreamingDownloadOrchestrator(
+            manifestLoader: RecordingManifestLoader(
+                data: Data(mpd.utf8),
+                finalURL: url,
+                mimeType: "application/dash+xml"
+            ),
+            segmentExecutor: DASHWritingSegmentExecutor()
+        )
+
+        // Text-only download with initialization segment
+        let candidate = try StreamingManifestCandidate(
+            url: url,
+            dashTextRepresentationID: "sub_en"
+        )
+        let proposal = try await orchestrator.prepare(candidate: candidate)
+        // Proposal should include 1 init + 2 media segments = 3 resources
+        XCTAssertEqual(proposal.resources.count, 3)
+
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("dash-sub-init-execution-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let output = directory.appendingPathComponent("subtitles.vtt")
+
+        let result = try await orchestrator.executeAndAssembleDASH(
+            proposal,
+            approved: true,
+            destinationDirectory: directory,
+            outputURL: output
+        )
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: output.path))
+        XCTAssertEqual(result.destinationURL.pathExtension, "vtt")
+        XCTAssertEqual(result.validation.mediaSegmentCount, 2)
+
+        let outputData = try Data(contentsOf: output)
+        // The output must start with WEBVTT header and not contain binary MP4 box headers
+        let content = try String(contentsOf: output, encoding: .utf8)
+        XCTAssertTrue(content.hasPrefix("WEBVTT"))
+        XCTAssertTrue(content.contains("Hello DASH Subtitles"))
+        XCTAssertFalse(outputData.prefix(4).elementsEqual([0x00, 0x00, 0x00, 0x09]))
+        let contentRaw = String(decoding: outputData, as: UTF8.self)
+        XCTAssertFalse(contentRaw.contains("ftyp"))
+        XCTAssertFalse(contentRaw.contains("moov"))
+    }
 }
 
 private final class DummyAuthSender: NSObject, URLAuthenticationChallengeSender {
