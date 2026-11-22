@@ -4,6 +4,19 @@ import Foundation
 public enum MediaAssemblyContainer: String, Codable, Sendable, Equatable {
     case mpegTS
     case fragmentedMP4
+    case ttml
+    case webVTT
+    case text
+    case rawText
+
+    public var isTextDocument: Bool {
+        switch self {
+        case .ttml, .webVTT, .text, .rawText:
+            return true
+        case .mpegTS, .fragmentedMP4:
+            return false
+        }
+    }
 }
 
 public enum MediaAssemblyTrackKind: String, Codable, Sendable, Equatable {

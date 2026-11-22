@@ -1634,7 +1634,7 @@ public enum MediaAssembler {
 
     private static func isSupported(_ container: MediaAssemblyContainer) -> Bool {
         switch container {
-        case .mpegTS, .fragmentedMP4:
+        case .mpegTS, .fragmentedMP4, .ttml, .webVTT, .text, .rawText:
             return true
         }
     }

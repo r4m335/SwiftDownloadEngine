@@ -4114,7 +4114,7 @@ public actor StreamingDownloadOrchestrator {
             PipelineLogger.shared.log("[DASH Pipeline] Preserved single TTML subtitle track into: \(targetURL.path)")
             let finalSize = fileManager.fileSize(atPath: targetURL.path) ?? Int64(rawContentBuffers[0].count)
             let validationReport = MediaAssemblyValidationReport(
-                container: .fragmentedMP4,
+                container: .ttml,
                 trackCount: 1,
                 mediaSegmentCount: 1,
                 totalInputBytes: finalSize,
@@ -4126,7 +4126,7 @@ public actor StreamingDownloadOrchestrator {
             )
             return MediaAssemblyOutput(
                 destinationURL: targetURL,
-                container: .fragmentedMP4,
+                container: .ttml,
                 trackCount: 1,
                 byteCount: finalSize,
                 validation: validationReport
@@ -4184,19 +4184,21 @@ public actor StreamingDownloadOrchestrator {
         }
 
         let finalSize = fileManager.fileSize(atPath: destinationURL.path) ?? 0
+        let containerType: MediaAssemblyContainer = (destinationURL.pathExtension.lowercased() == "vtt" || isAllWebVTT) ? .webVTT : .rawText
         let validationReport = MediaAssemblyValidationReport(
-            container: .fragmentedMP4,
+            container: containerType,
             trackCount: 1,
             mediaSegmentCount: textCompleted.count,
             totalInputBytes: finalSize,
             isReadyForAssembly: true,
             isStructurallyValid: true,
             isPlayableConfirmed: true,
+            validationDetails: containerType == .webVTT ? "Assembled WebVTT subtitle track." : "Saved raw subtitle text.",
             state: .assemblyCompleted
         )
         return MediaAssemblyOutput(
             destinationURL: destinationURL,
-            container: .fragmentedMP4,
+            container: containerType,
             trackCount: 1,
             byteCount: finalSize,
             validation: validationReport

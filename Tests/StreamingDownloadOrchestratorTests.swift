@@ -3527,6 +3527,9 @@ final class StreamingDownloadOrchestratorTests: XCTestCase {
 
         // Output file must be preserved as .ttml and NOT converted or written as .vtt
         XCTAssertEqual(result.destinationURL.pathExtension, "ttml")
+        XCTAssertEqual(result.container, .ttml)
+        XCTAssertTrue(result.container.isTextDocument)
+        XCTAssertEqual(result.validation.container, .ttml)
         XCTAssertTrue(FileManager.default.fileExists(atPath: result.destinationURL.path))
         let content = try String(contentsOf: result.destinationURL, encoding: .utf8)
         XCTAssertTrue(content.contains("<tt"))
