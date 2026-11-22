@@ -846,6 +846,9 @@ public actor BrowserMSECaptureWriter {
         switch assemblyContainer {
         case .fragmentedMP4: filename = "mse-capture.mp4"
         case .mpegTS: filename = "mse-capture.ts"
+        case .ttml: filename = "mse-capture.ttml"
+        case .webVTT: filename = "mse-capture.vtt"
+        case .text, .rawText: filename = "mse-capture.txt"
         }
         let destination = uniqueURL(directory: destinationDirectoryURL, filename: filename)
 
