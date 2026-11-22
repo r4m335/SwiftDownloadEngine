@@ -685,7 +685,11 @@ final class DownloadRecoveryTests: XCTestCase {
             return (resp, Data(repeating: 0x44, count: 1000))
         }
 
-        let recoveryManager = await DownloadRecoveryManager(engine: engine, persistenceStore: persistenceStore)
+        let recoveryManager = await DownloadRecoveryManager(
+            engine: engine,
+            persistenceStore: persistenceStore,
+            session: session
+        )
 
         // User supplies new headers to updateDownloadLink with credentials, but to a cross-origin host
         try await recoveryManager.updateDownloadLink(

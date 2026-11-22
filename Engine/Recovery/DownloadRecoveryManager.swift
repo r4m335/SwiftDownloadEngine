@@ -40,13 +40,14 @@ public final class DownloadRecoveryManager: ObservableObject {
         engine: DownloadEngine,
         persistenceStore: DownloadPersistenceStore,
         hlsPersistenceStore: HLSPersistenceStore? = nil,
-        streamingOrchestrator: StreamingDownloadOrchestrator? = nil
+        streamingOrchestrator: StreamingDownloadOrchestrator? = nil,
+        session: URLSession = .shared
     ) {
         self.engine = engine
         self.persistenceStore = persistenceStore
         self.streamingOrchestrator = streamingOrchestrator
         self.linkRefresher = DownloadLinkRefresher(
-            session: .shared,
+            session: session,
             persistenceStore: persistenceStore,
             queueManager: engine.queueManager
         )

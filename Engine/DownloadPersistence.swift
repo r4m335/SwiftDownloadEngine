@@ -245,7 +245,8 @@ public struct DownloadRecord: Codable, Equatable, Identifiable, Sendable, Schema
             if let data = KeychainManager.shared.getGenericSecret(key: key, account: "download:\(id)"),
                let value = String(data: data, encoding: .utf8), !value.isEmpty {
                 result[key.capitalized] = value
-            } else if let host = originalURL.host,
+            } else if originalURL.scheme?.lowercased() == "https",
+                      let host = originalURL.host,
                       let data = KeychainManager.shared.getGenericSecret(key: key, account: host),
                       let value = String(data: data, encoding: .utf8), !value.isEmpty {
                 result[key.capitalized] = value

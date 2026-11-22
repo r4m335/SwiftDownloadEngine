@@ -61,6 +61,9 @@ public final class DownloadLinkRefresher: Sendable {
         let sameOrigin = isSameOrigin(record.originalURL, newURL)
         if !sameOrigin {
             KeychainManager.shared.deleteCredentials(forDownloadId: id)
+            if let host = record.originalURL.host {
+                KeychainManager.shared.deleteCredentials(forHost: host)
+            }
             for k in Array(record.headers.keys) {
                 let lower = k.lowercased()
                 if lower == "authorization" || lower == "cookie" || lower == "proxy-authorization" {
@@ -203,6 +206,9 @@ public final class DownloadLinkRefresher: Sendable {
         let sameOrigin = isSameOrigin(originalURL, newURL)
         if !sameOrigin {
             KeychainManager.shared.deleteCredentials(forDownloadId: downloadID)
+            if let host = originalURL.host {
+                KeychainManager.shared.deleteCredentials(forHost: host)
+            }
         }
 
         guard let h = headers else { return nil }
