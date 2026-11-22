@@ -90,7 +90,10 @@ public struct SegmentRecord: Codable, Equatable, Identifiable, Sendable {
     public var completedBytes: Int64
 
     public var isCompleted: Bool {
-        completedBytes >= length
+        if length <= 0 {
+            return completedBytes > 0
+        }
+        return completedBytes >= length
     }
 
     public var remainingBytes: Int64 {
@@ -540,7 +543,7 @@ public actor DownloadPersistenceStore {
         }
 
         let segment = record.segments[segmentIndex]
-        guard completedBytes <= segment.length else {
+        guard segment.length <= 0 || completedBytes <= segment.length else {
             throw DownloadPersistenceError.invalidCompletedBytes(
                 provided: completedBytes,
                 segmentLength: segment.length
