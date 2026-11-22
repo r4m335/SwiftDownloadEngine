@@ -419,4 +419,70 @@ final class DownloadPersistenceTests: XCTestCase {
         let candidate2 = FileConflictResolver.uniqueDestinationURL(desiredFilename: "video.mp4", directory: testDir)
         XCTAssertEqual(candidate2.lastPathComponent, "video (2).mp4")
     }
+
+    // MARK: - 9. Keychain Host-Scoped and Download-Scoped Credentials Purge
+
+    func testDeleteAllPurgesBothDownloadAndHostScopedKeychainCredentials() async throws {
+        KeychainManager.shared.resetFallbackStore()
+
+        let host = "secure.example.com"
+        let record = DownloadRecord(
+            id: "dl-keychain-test",
+            originalURL: URL(string: "https://\(host)/data.bin")!,
+            destinationURL: URL(fileURLWithPath: "/tmp/data.bin"),
+            totalSize: 1000,
+            headers: [
+                "Cookie": "session_token=secret123",
+                "Authorization": "Bearer secret_jwt",
+                "Proxy-Authorization": "Basic proxysecret"
+            ]
+        )
+
+        try await store.save(record)
+
+        // Verify credentials exist under both download-ID and host-scoped accounts
+        let dlCookie = KeychainManager.shared.getGenericSecret(key: "cookie", account: "download:\(record.id)")
+        let hostCookie = KeychainManager.shared.getGenericSecret(key: "cookie", account: host)
+        let dlAuth = KeychainManager.shared.getGenericSecret(key: "authorization", account: "download:\(record.id)")
+        let hostAuth = KeychainManager.shared.getGenericSecret(key: "authorization", account: host)
+
+        XCTAssertNotNil(dlCookie, "Download-scoped cookie should be saved in Keychain")
+        XCTAssertNotNil(hostCookie, "Host-scoped cookie fallback should be saved in Keychain")
+        XCTAssertNotNil(dlAuth, "Download-scoped auth should be saved in Keychain")
+        XCTAssertNotNil(hostAuth, "Host-scoped auth fallback should be saved in Keychain")
+
+        // Perform deleteAll
+        try await store.deleteAll()
+
+        // Verify all credentials under both download-scoped and host-scoped accounts are gone
+        let dlCookieAfter = KeychainManager.shared.getGenericSecret(key: "cookie", account: "download:\(record.id)")
+        let hostCookieAfter = KeychainManager.shared.getGenericSecret(key: "cookie", account: host)
+        let dlAuthAfter = KeychainManager.shared.getGenericSecret(key: "authorization", account: "download:\(record.id)")
+        let hostAuthAfter = KeychainManager.shared.getGenericSecret(key: "authorization", account: host)
+
+        XCTAssertNil(dlCookieAfter, "Download-scoped credentials must be purged after deleteAll")
+        XCTAssertNil(hostCookieAfter, "Host-scoped credentials must be purged after deleteAll")
+        XCTAssertNil(dlAuthAfter, "Download-scoped auth must be purged after deleteAll")
+        XCTAssertNil(hostAuthAfter, "Host-scoped auth must be purged after deleteAll")
+    }
+
+    func testDeleteTagPurgesHostCredentialsWhenNoOtherRecordsShareHost() async throws {
+        KeychainManager.shared.resetFallbackStore()
+
+        let hostUnique = "unique.example.com"
+        let r1 = DownloadRecord(
+            id: "dl-host-1",
+            originalURL: URL(string: "https://\(hostUnique)/data1.bin")!,
+            destinationURL: URL(fileURLWithPath: "/tmp/data1.bin"),
+            totalSize: 500,
+            headers: ["Authorization": "Bearer secret1"]
+        )
+
+        try await store.save(r1)
+        XCTAssertNotNil(KeychainManager.shared.getGenericSecret(key: "authorization", account: hostUnique))
+
+        try await store.delete(tag: "dl-host-1")
+        XCTAssertNil(KeychainManager.shared.getGenericSecret(key: "authorization", account: hostUnique),
+                     "Host credentials must be deleted when the last download for that host is deleted")
+    }
 }

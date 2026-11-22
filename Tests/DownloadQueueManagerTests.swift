@@ -587,6 +587,44 @@ final class DownloadQueueManagerTests: XCTestCase {
         XCTAssertEqual(snap.cancelledCount, 4, "All non-completed downloads must be cancelled")
     }
 
+    func test14B_CancelAllCleansForegroundPartFiles() async throws {
+        let dest = destinationDirectory.appendingPathComponent("part_cleanup_test.bin")
+        let tempDir = destinationDirectory.appendingPathComponent(".tmp", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+
+        let part0 = tempDir.appendingPathComponent("segment-0.part")
+        let part1 = tempDir.appendingPathComponent("segment-1.part")
+        try Data("part0_bytes".utf8).write(to: part0)
+        try Data("part1_bytes".utf8).write(to: part1)
+        try Data("dest_bytes".utf8).write(to: dest)
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: part0.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: part1.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: dest.path))
+
+        let record = DownloadRecord(
+            id: "call-part-cleanup",
+            originalURL: URL(string: "https://example.com/file.bin")!,
+            destinationURL: dest,
+            totalSize: 1000,
+            state: .paused,
+            segments: [
+                SegmentRecord(id: 0, startOffset: 0, endOffset: 499, length: 500, completedBytes: 100),
+                SegmentRecord(id: 1, startOffset: 500, endOffset: 999, length: 500, completedBytes: 0)
+            ]
+        )
+        try await persistenceStore.save(record)
+
+        let req = DownloadRequest(id: "call-part-cleanup", url: record.originalURL, destinationURL: dest)
+        try await queueManager.add(req)
+
+        await queueManager.cancelAll(deleteDestinationFiles: true)
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: dest.path), "Destination file must be removed by cancelAll")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: part0.path), "Foreground part file 0 must be removed by cancelAll")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: part1.path), "Foreground part file 1 must be removed by cancelAll")
+    }
+
     // MARK: - 15. Retry a Failed Download
 
     func test15_RetryFailedDownload() async throws {

@@ -100,7 +100,7 @@ public final class DownloadRecoveryManager: ObservableObject {
             try? await engine.queueManager.updateRequest(
                 id: transferID,
                 newURL: url,
-                newHeaders: newHeaders ?? record.securedHeaders
+                newHeaders: record.securedHeaders
             )
             try await engine.resumeDownload(id: transferID)
         }

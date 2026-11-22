@@ -58,6 +58,17 @@ public final class DownloadLinkRefresher: Sendable {
             throw DownloadRecoveryError.recordNotFound(id: id)
         }
 
+        let sameOrigin = isSameOrigin(record.originalURL, newURL)
+        if !sameOrigin {
+            KeychainManager.shared.deleteCredentials(forDownloadId: id)
+            for k in Array(record.headers.keys) {
+                let lower = k.lowercased()
+                if lower == "authorization" || lower == "cookie" || lower == "proxy-authorization" {
+                    record.headers.removeValue(forKey: k)
+                }
+            }
+        }
+
         // Filter and sanitize request headers according to origin security
         let sanitizedHeaders = sanitizeHeaders(newHeaders, for: newURL, originalURL: record.originalURL, downloadID: id)
 
@@ -97,7 +108,7 @@ public final class DownloadLinkRefresher: Sendable {
             record.updatedAt = Date()
             try await persistenceStore.save(record)
             if let qm = queueManager {
-                try? await qm.updateRequest(id: id, newURL: newURL, newHeaders: sanitizedHeaders ?? record.securedHeaders)
+                try? await qm.updateRequest(id: id, newURL: newURL, newHeaders: record.securedHeaders)
             }
             return (record, outcome)
 
@@ -124,7 +135,7 @@ public final class DownloadLinkRefresher: Sendable {
                 record.updatedAt = Date()
                 try await persistenceStore.save(record)
                 if let qm = queueManager {
-                    try? await qm.updateRequest(id: id, newURL: newURL, newHeaders: sanitizedHeaders ?? record.securedHeaders)
+                    try? await qm.updateRequest(id: id, newURL: newURL, newHeaders: record.securedHeaders)
                 }
                 return (record, outcome)
             } else {
@@ -137,23 +148,67 @@ public final class DownloadLinkRefresher: Sendable {
         }
     }
 
-    /// Strips authorization headers and cookies if host origin has changed.
+    /// Evaluates same-origin policy including scheme, host, port, and prevention of HTTPS -> HTTP downgrade.
+    private func isSameOrigin(_ url1: URL, _ url2: URL) -> Bool {
+        guard let host1 = url1.host?.lowercased(),
+              let host2 = url2.host?.lowercased(),
+              host1 == host2 else {
+            return false
+        }
+
+        let scheme1 = url1.scheme?.lowercased() ?? "http"
+        let scheme2 = url2.scheme?.lowercased() ?? "http"
+
+        // HTTPS -> HTTP downgrade is never same origin / violates security boundary
+        if scheme1 == "https" && scheme2 == "http" {
+            return false
+        }
+
+        // Scheme boundary
+        if scheme1 != scheme2 {
+            return false
+        }
+
+        // Effective ports must match
+        let defaultPort1 = (scheme1 == "https" ? 443 : 80)
+        let defaultPort2 = (scheme2 == "https" ? 443 : 80)
+        let port1 = url1.port ?? defaultPort1
+        let port2 = url2.port ?? defaultPort2
+        if port1 != port2 {
+            return false
+        }
+
+        return true
+    }
+
+    /// Strips case-insensitive sensitive credential headers (Authorization, Cookie, Proxy-Authorization).
+    private func stripSensitiveHeaders(from headers: [String: String]) -> [String: String] {
+        var h = headers
+        for k in Array(h.keys) {
+            let lower = k.lowercased()
+            if lower == "authorization" || lower == "cookie" || lower == "proxy-authorization" {
+                h.removeValue(forKey: k)
+            }
+        }
+        return h
+    }
+
+    /// Strips authorization headers, proxy-authorization, and cookies if host origin has changed or downgraded.
     private func sanitizeHeaders(
         _ headers: [String: String]?,
         for newURL: URL,
         originalURL: URL,
         downloadID: String
     ) -> [String: String]? {
-        guard var h = headers else { return nil }
-
-        let sameOrigin = newURL.host?.lowercased() == originalURL.host?.lowercased()
+        let sameOrigin = isSameOrigin(originalURL, newURL)
         if !sameOrigin {
-            // Strip sensitive credentials when redirecting or refreshing to a foreign origin
-            h.removeValue(forKey: "Authorization")
-            h.removeValue(forKey: "authorization")
-            h.removeValue(forKey: "Cookie")
-            h.removeValue(forKey: "cookie")
             KeychainManager.shared.deleteCredentials(forDownloadId: downloadID)
+        }
+
+        guard let h = headers else { return nil }
+
+        if !sameOrigin {
+            return stripSensitiveHeaders(from: h)
         }
 
         return h

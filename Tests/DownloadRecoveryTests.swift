@@ -531,4 +531,181 @@ final class DownloadRecoveryTests: XCTestCase {
             }
         }
     }
+
+    // MARK: - 5. Cross-Origin and Protocol Downgrade Credential Sanitization
+
+    func testDownloadLinkRefresherStripsCredentialsOnCrossOriginOrDowngrade() async throws {
+        KeychainManager.shared.resetFallbackStore()
+
+        let destination = tempDirectory.appendingPathComponent("downgrade_target.mp4")
+        let httpsURL = URL(string: "https://secure.example.com/video.mp4")!
+        let httpDowngradeURL = URL(string: "http://secure.example.com/video.mp4")!
+        let crossOriginURL = URL(string: "https://other.example.com/video.mp4")!
+        let portMismatchURL = URL(string: "https://secure.example.com:8443/video.mp4")!
+
+        let seg = SegmentRecord(id: 0, startOffset: 0, endOffset: 999, length: 1000, completedBytes: 500)
+        let record = DownloadRecord(
+            id: "id_cred_strip",
+            originalURL: httpsURL,
+            resolvedURL: httpsURL,
+            destinationURL: destination,
+            totalSize: 1000,
+            state: .failed(reason: "HTTP 403"),
+            storageMode: .directSeek,
+            headers: [
+                "Cookie": "sess=old_secret",
+                "Authorization": "Bearer old_token",
+                "Proxy-Authorization": "Basic old_proxy",
+                "User-Agent": "SafeClient/1.0"
+            ],
+            segments: [seg]
+        )
+        try await persistenceStore.save(record)
+
+        // Mock response for probe
+        let probeHandler: (URLRequest) -> (HTTPURLResponse, Data) = { req in
+            let resp = HTTPURLResponse(
+                url: req.url!,
+                statusCode: 200,
+                httpVersion: "HTTP/1.1",
+                headerFields: [
+                    "Content-Length": "1000",
+                    "Accept-Ranges": "bytes",
+                    "Content-Type": "video/mp4"
+                ]
+            )!
+            return (resp, Data(repeating: 0x55, count: 1000))
+        }
+        MockURLProtocol.setHandler(for: httpDowngradeURL, handler: probeHandler)
+        MockURLProtocol.setHandler(for: crossOriginURL, handler: probeHandler)
+        MockURLProtocol.setHandler(for: portMismatchURL, handler: probeHandler)
+
+        let refresher = DownloadLinkRefresher(session: session, persistenceStore: persistenceStore)
+
+        // Case 1: HTTPS -> HTTP Downgrade
+        let (updatedDowngrade, _) = try await refresher.refresh(
+            id: "id_cred_strip",
+            newURL: httpDowngradeURL,
+            newHeaders: [
+                "Authorization": "Bearer new_leak",
+                "Cookie": "new_cookie=123",
+                "Proxy-Authorization": "Basic new_proxy",
+                "User-Agent": "SafeClient/2.0"
+            ]
+        )
+
+        XCTAssertEqual(updatedDowngrade.securedHeaders["User-Agent"], "SafeClient/2.0")
+        XCTAssertNil(updatedDowngrade.securedHeaders["Authorization"], "Authorization must be stripped on HTTPS->HTTP downgrade")
+        XCTAssertNil(updatedDowngrade.securedHeaders["Cookie"], "Cookie must be stripped on HTTPS->HTTP downgrade")
+        XCTAssertNil(updatedDowngrade.securedHeaders["Proxy-Authorization"], "Proxy-Authorization must be stripped on HTTPS->HTTP downgrade")
+        XCTAssertNil(KeychainManager.shared.getGenericSecret(key: "authorization", account: "download:id_cred_strip"))
+
+        // Reset record with credentials
+        var r2 = record
+        r2.updateHeaders([
+            "Cookie": "sess=old_secret2",
+            "Authorization": "Bearer old_token2",
+            "Proxy-Authorization": "Basic old_proxy2",
+            "User-Agent": "SafeClient/1.0"
+        ])
+        try await persistenceStore.save(r2)
+
+        // Case 2: Cross Origin Host
+        let (updatedCrossHost, _) = try await refresher.refresh(
+            id: "id_cred_strip",
+            newURL: crossOriginURL,
+            newHeaders: [
+                "Authorization": "Bearer foreign_leak",
+                "Cookie": "foreign_cookie=456",
+                "Proxy-Authorization": "Basic foreign_proxy"
+            ]
+        )
+        XCTAssertNil(updatedCrossHost.securedHeaders["Authorization"], "Authorization must be stripped on cross-origin refresh")
+        XCTAssertNil(updatedCrossHost.securedHeaders["Cookie"], "Cookie must be stripped on cross-origin refresh")
+        XCTAssertNil(updatedCrossHost.securedHeaders["Proxy-Authorization"], "Proxy-Authorization must be stripped on cross-origin refresh")
+
+        // Reset record with credentials
+        var r3 = record
+        r3.updateHeaders([
+            "Cookie": "sess=old_secret3",
+            "Authorization": "Bearer old_token3",
+            "Proxy-Authorization": "Basic old_proxy3"
+        ])
+        try await persistenceStore.save(r3)
+
+        // Case 3: Port Mismatch
+        let (updatedPortMismatch, _) = try await refresher.refresh(
+            id: "id_cred_strip",
+            newURL: portMismatchURL
+        )
+        XCTAssertNil(updatedPortMismatch.securedHeaders["Authorization"], "Authorization must be stripped on port change")
+        XCTAssertNil(updatedPortMismatch.securedHeaders["Cookie"], "Cookie must be stripped on port change")
+        XCTAssertNil(updatedPortMismatch.securedHeaders["Proxy-Authorization"], "Proxy-Authorization must be stripped on port change")
+    }
+
+    func testDownloadRecoveryManagerUpdateDownloadLinkDoesNotReintroduceCredentials() async throws {
+        KeychainManager.shared.resetFallbackStore()
+
+        let oldURL = URL(string: "https://media.example.com/video.mp4")!
+        let crossURL = URL(string: "https://untrusted.example.com/video.mp4")!
+        let dest = tempDirectory.appendingPathComponent("recovery_cred_test.mp4")
+
+        let qm = try DownloadQueueManager(coordinator: coordinator, persistenceStore: persistenceStore)
+        let engine = DownloadEngine(queueManager: qm, coordinator: coordinator, persistenceStore: persistenceStore)
+
+        let initialRecord = DownloadRecord(
+            id: "recov_t1",
+            originalURL: oldURL,
+            destinationURL: dest,
+            totalSize: 1000,
+            state: .failed(reason: "HTTP 403"),
+            headers: ["Authorization": "Bearer original_secret"]
+        )
+        try await persistenceStore.save(initialRecord)
+
+        let req = DownloadRequest(
+            id: "recov_t1",
+            url: oldURL,
+            destinationURL: dest,
+            headers: ["Authorization": "Bearer original_secret"]
+        )
+        try await qm.add(req)
+
+        MockURLProtocol.setHandler(for: crossURL) { req in
+            let resp = HTTPURLResponse(
+                url: crossURL,
+                statusCode: 200,
+                httpVersion: "HTTP/1.1",
+                headerFields: [
+                    "Content-Length": "1000",
+                    "Accept-Ranges": "bytes",
+                    "Content-Type": "video/mp4"
+                ]
+            )!
+            return (resp, Data(repeating: 0x44, count: 1000))
+        }
+
+        let recoveryManager = await DownloadRecoveryManager(engine: engine, persistenceStore: persistenceStore)
+
+        // User supplies new headers to updateDownloadLink with credentials, but to a cross-origin host
+        try await recoveryManager.updateDownloadLink(
+            transferID: "recov_t1",
+            newURLText: crossURL.absoluteString,
+            newHeaders: [
+                "Authorization": "Bearer leaked_to_cross_origin",
+                "Cookie": "leaked_cookie=123",
+                "Proxy-Authorization": "Basic leaked_proxy",
+                "User-Agent": "CustomSafeAgent"
+            ],
+            forceRestartIfNonResumable: false
+        )
+
+        let item = await qm.item(for: "recov_t1")
+        XCTAssertNotNil(item)
+        XCTAssertEqual(item?.request.url, crossURL)
+        XCTAssertEqual(item?.request.headers["User-Agent"], "CustomSafeAgent")
+        XCTAssertNil(item?.request.headers["Authorization"], "Cross-origin refresh must not reintroduce Authorization into queue item")
+        XCTAssertNil(item?.request.headers["Cookie"], "Cross-origin refresh must not reintroduce Cookie into queue item")
+        XCTAssertNil(item?.request.headers["Proxy-Authorization"], "Cross-origin refresh must not reintroduce Proxy-Authorization into queue item")
+    }
 }

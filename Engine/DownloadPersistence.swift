@@ -618,12 +618,22 @@ public actor DownloadPersistenceStore {
 
     /// Deletes a download record from memory and disk.
     public func delete(tag: String) throws {
+        let record = try? fetch(tag: tag)
         let fileURL = recordFileURL(tag: tag)
         if FileManager.default.fileExists(atPath: fileURL.path) {
             try FileManager.default.removeItem(at: fileURL)
         }
         cache.removeValue(forKey: tag)
         KeychainManager.shared.deleteCredentials(forDownloadId: tag)
+
+        // If no other record uses this host, clean up host-scoped credentials as well
+        if let host = record?.originalURL.host {
+            let all = (try? fetchAll()) ?? []
+            let otherRecordHasHost = all.contains { $0.id != tag && $0.originalURL.host?.lowercased() == host.lowercased() }
+            if !otherRecordHasHost {
+                KeychainManager.shared.deleteCredentials(forHost: host)
+            }
+        }
     }
 
     /// Deletes all persisted download records and purges Keychain credentials.
@@ -631,10 +641,19 @@ public actor DownloadPersistenceStore {
         let allRecords = (try? fetchAll()) ?? []
         for r in allRecords {
             KeychainManager.shared.deleteCredentials(forDownloadId: r.id)
+            if let host = r.originalURL.host {
+                KeychainManager.shared.deleteCredentials(forHost: host)
+            }
         }
-        for (tag, _) in cache {
+        for (tag, record) in cache {
             KeychainManager.shared.deleteCredentials(forDownloadId: tag)
+            if let host = record.originalURL.host {
+                KeychainManager.shared.deleteCredentials(forHost: host)
+            }
         }
+
+        // Purge all remaining credentials from Keychain
+        KeychainManager.shared.deleteAllCredentials()
 
         let fileURLs = try FileManager.default.contentsOfDirectory(
             at: storageDirectoryURL,

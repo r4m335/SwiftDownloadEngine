@@ -637,11 +637,7 @@ public actor DownloadQueueManager {
             PipelineLogger.shared.log("[DownloadQueueManager] Warning: Coordinator cancel failed for \(id): \(error.localizedDescription)")
         }
 
-        await cleanupBackgroundTasksAndFiles(for: id, deleteFiles: true)
-
-        if FileManager.default.fileExists(atPath: item.request.destinationURL.path) {
-            try? FileManager.default.removeItem(at: item.request.destinationURL)
-        }
+        await cleanupDiskFiles(for: id, destinationURL: item.request.destinationURL, deleteFiles: true)
         try? await persistenceStore.delete(tag: id)
 
         item.completedBytes = 0
@@ -675,12 +671,9 @@ public actor DownloadQueueManager {
             _ = await task.value
         }
 
-        await cleanupBackgroundTasksAndFiles(for: id, deleteFiles: deleteDestinationFile)
+        await cleanupDiskFiles(for: id, destinationURL: item.request.destinationURL, deleteFiles: deleteDestinationFile)
 
         if deleteDestinationFile {
-            if FileManager.default.fileExists(atPath: item.request.destinationURL.path) {
-                try? FileManager.default.removeItem(at: item.request.destinationURL)
-            }
             try? await persistenceStore.delete(tag: id)
             KeychainManager.shared.deleteCredentials(forDownloadId: id)
         } else {
@@ -702,6 +695,34 @@ public actor DownloadQueueManager {
                     for file in files where file.lastPathComponent.hasPrefix("\(id)_segment-") {
                         try? FileManager.default.removeItem(at: file)
                     }
+                }
+            }
+        }
+    }
+
+    /// Cleans up disk files including destination file, foreground `.tmp/segment-*.part` files, and background PartStaging files.
+    private func cleanupDiskFiles(for id: String, destinationURL: URL, deleteFiles: Bool) async {
+        await cleanupBackgroundTasksAndFiles(for: id, deleteFiles: deleteFiles)
+        guard deleteFiles else { return }
+
+        // Remove destination file
+        if FileManager.default.fileExists(atPath: destinationURL.path) {
+            try? FileManager.default.removeItem(at: destinationURL)
+        }
+
+        // Clean foreground segment part files from parentDir/.tmp
+        let parentDir = destinationURL.deletingLastPathComponent()
+        let tempDir = parentDir.appendingPathComponent(".tmp", isDirectory: true)
+
+        if let files = try? FileManager.default.contentsOfDirectory(at: tempDir, includingPropertiesForKeys: nil) {
+            if let record = try? await persistenceStore.fetch(tag: id), !record.segments.isEmpty {
+                let segPartNames = Set(record.segments.map { "segment-\($0.id).part" })
+                for file in files where segPartNames.contains(file.lastPathComponent) {
+                    try? FileManager.default.removeItem(at: file)
+                }
+            } else {
+                for file in files where file.pathExtension == "part" && file.lastPathComponent.hasPrefix("segment-") {
+                    try? FileManager.default.removeItem(at: file)
                 }
             }
         }
@@ -794,16 +815,15 @@ public actor DownloadQueueManager {
                 task.cancel()
                 _ = await task.value
             }
-            await cleanupBackgroundTasksAndFiles(for: id, deleteFiles: deleteDestinationFiles)
+            if let dest = items[id]?.request.destinationURL {
+                await cleanupDiskFiles(for: id, destinationURL: dest, deleteFiles: deleteDestinationFiles)
+            }
         }
 
         // Clean up remaining non-active cancelled items
         for (id, item) in items where item.state == .cancelled {
-            await cleanupBackgroundTasksAndFiles(for: id, deleteFiles: deleteDestinationFiles)
+            await cleanupDiskFiles(for: id, destinationURL: item.request.destinationURL, deleteFiles: deleteDestinationFiles)
             if deleteDestinationFiles {
-                if FileManager.default.fileExists(atPath: item.request.destinationURL.path) {
-                    try? FileManager.default.removeItem(at: item.request.destinationURL)
-                }
                 try? await persistenceStore.delete(tag: id)
                 KeychainManager.shared.deleteCredentials(forDownloadId: id)
             } else {
@@ -846,13 +866,7 @@ public actor DownloadQueueManager {
             _ = await task.value
         }
 
-        await cleanupBackgroundTasksAndFiles(for: id, deleteFiles: deleteDestinationFile)
-
-        if deleteDestinationFile {
-            if FileManager.default.fileExists(atPath: item.request.destinationURL.path) {
-                try? FileManager.default.removeItem(at: item.request.destinationURL)
-            }
-        }
+        await cleanupDiskFiles(for: id, destinationURL: item.request.destinationURL, deleteFiles: deleteDestinationFile)
 
         do {
             try await persistenceStore.delete(tag: id)
