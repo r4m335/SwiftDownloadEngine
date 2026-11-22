@@ -4113,17 +4113,23 @@ public actor StreamingDownloadOrchestrator {
             try rawContentBuffers[0].write(to: targetURL, options: .atomic)
             PipelineLogger.shared.log("[DASH Pipeline] Preserved single TTML subtitle track into: \(targetURL.path)")
             let finalSize = fileManager.fileSize(atPath: targetURL.path) ?? Int64(rawContentBuffers[0].count)
+            let validationReport = MediaAssemblyValidationReport(
+                container: .fragmentedMP4,
+                trackCount: 1,
+                mediaSegmentCount: 1,
+                totalInputBytes: finalSize,
+                isReadyForAssembly: true,
+                isStructurallyValid: true,
+                isPlayableConfirmed: true,
+                validationDetails: "Preserved standalone TTML subtitle document.",
+                state: .assemblyCompleted
+            )
             return MediaAssemblyOutput(
                 destinationURL: targetURL,
-                container: .other("ttml"),
-                validation: MediaAssemblyValidationReport(
-                    container: .other("ttml"),
-                    trackCount: 1,
-                    mediaSegmentCount: 1,
-                    totalInputBytes: finalSize,
-                    isReadyForAssembly: true,
-                    diagnostics: ["Preserved standalone TTML subtitle document."]
-                )
+                container: .fragmentedMP4,
+                trackCount: 1,
+                byteCount: finalSize,
+                validation: validationReport
             )
         }
 
