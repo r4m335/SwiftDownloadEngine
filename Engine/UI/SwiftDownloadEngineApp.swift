@@ -125,6 +125,7 @@ public final class ContinuedProcessingTaskCoordinator {
                 PipelineLogger.shared.log(stage: .coordinator, message: "Failed to handoff download \(id) to background after expiration: \(error)")
             }
         }
+        await engine.streamingOrchestrator?.handoffActiveStreamingToBackground()
         UserDefaults.standard.removeObject(forKey: Self.pendingIDsKey)
         Self.didSubmit = false
     }
@@ -476,6 +477,7 @@ public struct SwiftDownloadEngineApp: App {
 
                 Task { @MainActor in
                     await viewModel.engine.handoffActiveDownloadsToBackground()
+                    await viewModel.handoffActiveStreamingToBackground()
                     let hasActiveStreaming = await viewModel.streamingOrchestrator?.hasActiveTransfers() ?? false
                     if !hasActiveStreaming {
                         if let orchestrator = viewModel.streamingOrchestrator {
@@ -496,6 +498,7 @@ public struct SwiftDownloadEngineApp: App {
             case .inactive:
                 Task { @MainActor in
                     await viewModel.engine.handoffActiveDownloadsToBackground()
+                    await viewModel.handoffActiveStreamingToBackground()
                 }
             @unknown default:
                 break

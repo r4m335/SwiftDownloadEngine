@@ -3646,6 +3646,131 @@ final class StreamingDownloadOrchestratorTests: XCTestCase {
         let sidecarContent = try String(contentsOf: sidecarTTML, encoding: .utf8)
         XCTAssertTrue(sidecarContent.contains("<tt"))
     }
+
+    func testStreamingManifestCandidateBackgroundTransportPolicyPropagatesToProposal() async throws {
+        let manifestData = """
+        #EXTM3U
+        #EXT-X-VERSION:3
+        #EXT-X-TARGETDURATION:10
+        #EXTINF:10.0,
+        seg0.ts
+        #EXT-X-ENDLIST
+        """.data(using: .utf8)!
+        let url = URL(string: "https://example.com/playlist.m3u8")!
+        let loader = MockStreamingManifestLoader(data: manifestData, finalURL: url, mimeType: "application/vnd.apple.mpegurl")
+        let orchestrator = StreamingDownloadOrchestrator(
+            manifestLoader: loader,
+            segmentExecutor: MockStreamingSegmentExecutor()
+        )
+
+        let candidate = try StreamingManifestCandidate(
+            url: url,
+            mimeType: "application/vnd.apple.mpegurl",
+            transportPolicy: .background
+        )
+        let proposal = try await orchestrator.prepare(candidate: candidate)
+        XCTAssertEqual(proposal.transportPolicy, .background)
+    }
+
+    @MainActor
+    func testBrowserViewPrepareStreamingProposalPropagatesBackgroundPolicy() async throws {
+        let manifestData = """
+        #EXTM3U
+        #EXT-X-VERSION:3
+        #EXT-X-TARGETDURATION:10
+        #EXTINF:10.0,
+        seg0.ts
+        #EXT-X-ENDLIST
+        """.data(using: .utf8)!
+        let url = URL(string: "https://example.com/video.m3u8")!
+        let loader = MockStreamingManifestLoader(data: manifestData, finalURL: url, mimeType: "application/vnd.apple.mpegurl")
+        let orchestrator = StreamingDownloadOrchestrator(
+            manifestLoader: loader,
+            segmentExecutor: MockStreamingSegmentExecutor()
+        )
+
+        let browserVM = BrowserViewModel()
+        let resource = WebpageResource(
+            id: UUID(),
+            url: url,
+            title: "Video Stream",
+            suggestedFilename: "video.mp4",
+            resourceType: .video,
+            mimeType: "application/vnd.apple.mpegurl",
+            estimatedSize: nil,
+            isSupported: true,
+            unsupportedReason: nil
+        )
+
+        // 1. Explicit transport policy .background
+        let proposal1 = try await browserVM.prepareStreamingProposal(for: resource, using: orchestrator, transportPolicy: .background)
+        XCTAssertEqual(proposal1.transportPolicy, .background)
+
+        // 2. BrowserViewModel preferred transport policy .background
+        browserVM.preferredStreamingTransportPolicy = .background
+        let proposal2 = try await browserVM.prepareStreamingProposal(for: resource, using: orchestrator)
+        XCTAssertEqual(proposal2.transportPolicy, .background)
+    }
+
+    func testStreamingOrchestratorHandoffActiveStreamingToBackground() async throws {
+        let manifestData = """
+        #EXTM3U
+        #EXT-X-VERSION:3
+        #EXT-X-TARGETDURATION:10
+        #EXTINF:10.0,
+        seg0.ts
+        #EXT-X-ENDLIST
+        """.data(using: .utf8)!
+        let url = URL(string: "https://example.com/stream.m3u8")!
+        let loader = MockStreamingManifestLoader(data: manifestData, finalURL: url, mimeType: "application/vnd.apple.mpegurl")
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent("test-handoff-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+
+        let bgManager = try BackgroundDownloadSessionManager(
+            sessionIdentifier: "test.handoff.streaming.\(UUID().uuidString)",
+            storageDirectoryURL: tempDir
+        )
+        let persistence = try HLSPersistenceStore(storageDirectoryURL: tempDir)
+        let orchestrator = StreamingDownloadOrchestrator(
+            manifestLoader: loader,
+            segmentExecutor: MockStreamingSegmentExecutor(),
+            hlsPersistenceStore: persistence,
+            backgroundSessionManager: bgManager
+        )
+
+        let candidate = try StreamingManifestCandidate(url: url, transportPolicy: .foreground)
+        let proposal = try await orchestrator.prepare(candidate: candidate)
+        XCTAssertEqual(proposal.transportPolicy, .foreground)
+
+        let segDir = tempDir.appendingPathComponent("segments", isDirectory: true)
+        try FileManager.default.createDirectory(at: segDir, withIntermediateDirectories: true)
+        let hlsRec = HLSTransferRecord(
+            id: proposal.transferID,
+            manifestURL: url,
+            outputFilename: "output.mp4",
+            outputDestinationURL: tempDir.appendingPathComponent("output.mp4"),
+            segmentDirectoryURL: segDir,
+            totalSegments: 1,
+            completedSegmentOrders: [],
+            state: .downloading,
+            assemblyState: .notStarted
+        )
+        try await persistence.save(hlsRec)
+
+        // Simulate active running transfer
+        try await orchestrator.resume(transferID: proposal.transferID)
+
+        // Trigger handoff
+        await orchestrator.handoffActiveStreamingToBackground()
+
+        // Verify task was scheduled in BackgroundDownloadSessionManager
+        let records = bgManager.mappingStore.records(forDownloadID: proposal.transferID)
+        XCTAssertEqual(records.count, 1)
+        XCTAssertEqual(records.first?.segmentID, 0)
+        let activeProposal = await orchestrator.activeProposal(for: proposal.transferID)
+        XCTAssertEqual(activeProposal?.transportPolicy, .background)
+    }
 }
 
 private final class DummyAuthSender: NSObject, URLAuthenticationChallengeSender {

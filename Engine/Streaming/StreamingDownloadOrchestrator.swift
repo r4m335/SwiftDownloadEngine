@@ -121,7 +121,8 @@ public struct StreamingManifestCandidate: Sendable, Equatable {
 
     public init(
         resource: WebpageResource,
-        browserSessionSnapshot: BrowserSessionSnapshot? = nil
+        browserSessionSnapshot: BrowserSessionSnapshot? = nil,
+        transportPolicy: HTTPTransportPolicy = .foreground
     ) throws {
         try self.init(
             url: resource.url,
@@ -132,7 +133,8 @@ public struct StreamingManifestCandidate: Sendable, Equatable {
             cachedManifestText: resource.manifestText,
             dashVideoRepresentationID: resource.dashVideoRepresentationID,
             dashAudioRepresentationID: resource.dashAudioRepresentationID,
-            dashTextRepresentationID: resource.dashTextRepresentationID
+            dashTextRepresentationID: resource.dashTextRepresentationID,
+            transportPolicy: transportPolicy
         )
     }
 }
@@ -1587,7 +1589,8 @@ public actor StreamingDownloadOrchestrator {
             return
         }
         do {
-            let candidate = try StreamingManifestCandidate(url: record.manifestURL)
+            let policy: HTTPTransportPolicy = (backgroundSessionManager != nil) ? .background : .foreground
+            let candidate = try StreamingManifestCandidate(url: record.manifestURL, transportPolicy: policy)
             let proposal = try await prepare(candidate: candidate)
             guard case .hls = proposal.manifest else { return }
             _ = try await executeAndAssembleHLS(
@@ -1704,11 +1707,13 @@ public actor StreamingDownloadOrchestrator {
             return
         }
         do {
+            let policy: HTTPTransportPolicy = (backgroundSessionManager != nil) ? .background : .foreground
             let candidate = try StreamingManifestCandidate(
                 url: record.manifestURL,
                 dashVideoRepresentationID: record.videoRepresentationID,
                 dashAudioRepresentationID: record.audioRepresentationID,
-                dashTextRepresentationID: record.textRepresentationID
+                dashTextRepresentationID: record.textRepresentationID,
+                transportPolicy: policy
             )
             let proposal = try await prepare(candidate: candidate)
             guard case .dash = proposal.manifest else { return }
@@ -1791,14 +1796,26 @@ public actor StreamingDownloadOrchestrator {
     public func scheduleBackgroundStreaming(
         proposal: StreamingTransferProposal,
         destinationDirectory: URL,
-        backgroundManager: BackgroundDownloadSessionManager
+        backgroundManager: BackgroundDownloadSessionManager? = nil
     ) async throws -> [BackgroundDownloadTaskRecord] {
+        guard let manager = backgroundManager ?? self.backgroundSessionManager else {
+            throw StreamingDownloadOrchestratorError.transferFailed(reason: "No backgroundSessionManager available")
+        }
         try DownloadManagerViewModel.ensureDirectoryExistsAndWritable(destinationDirectory)
+
+        let parentHLS = hlsParentID(for: proposal)
+        let hlsRec = try? await hlsPersistenceStore?.load(id: parentHLS)
+        let dashRec = try? await dashPersistenceStore?.load(id: proposal.transferID)
+        let completedOrders = hlsRec?.completedSegmentOrders ?? dashRec?.completedSegmentOrders ?? []
+
         var records: [BackgroundDownloadTaskRecord] = []
         for resource in proposal.resources {
             let destURL = destinationDirectory.appendingPathComponent("\(resource.identity.value).part", isDirectory: false)
+            if completedOrders.contains(resource.identity.order) && FileManager.default.fileExists(atPath: destURL.path) {
+                continue
+            }
             let headers = await segmentRequestHeaders(for: resource, manifest: proposal.manifest, transferID: proposal.transferID)
-            let rec = try await backgroundManager.scheduleStreamingSegment(
+            let rec = try await manager.scheduleStreamingSegment(
                 transferID: proposal.transferID,
                 order: resource.identity.order,
                 url: resource.url,
@@ -1809,6 +1826,49 @@ public actor StreamingDownloadOrchestrator {
             records.append(rec)
         }
         return records
+    }
+
+    /// Hands off all active foreground streaming downloads to the background URLSession transport
+    /// so they continue progressing seamlessly when the app enters inactive or background states.
+    public func handoffActiveStreamingToBackground() async {
+        guard let manager = self.backgroundSessionManager else {
+            PipelineLogger.shared.log("[StreamingOrchestrator] No backgroundSessionManager available for handoff.")
+            return
+        }
+        let activeIDs = Array(runningTransfers)
+        for id in activeIDs {
+            let parentID = hlsParentID(for: id)
+            guard var proposal = proposals[parentID] ?? proposals[id] else { continue }
+            guard proposal.transportPolicy == .foreground else { continue }
+
+            var segmentDir: URL? = nil
+            if let hlsRec = try? await hlsPersistenceStore?.load(id: parentID) {
+                segmentDir = hlsRec.segmentDirectoryURL
+            } else if let dashRec = try? await dashPersistenceStore?.load(id: proposal.transferID) {
+                segmentDir = dashRec.segmentDirectoryURL
+            }
+            guard let dir = segmentDir else { continue }
+
+            do {
+                proposal.transportPolicy = .background
+                self.proposals[parentID] = proposal
+                self.proposals[id] = proposal
+                let scheduled = try await scheduleBackgroundStreaming(
+                    proposal: proposal,
+                    destinationDirectory: dir,
+                    backgroundManager: manager
+                )
+                PipelineLogger.shared.log("[StreamingOrchestrator] Successfully handed off streaming transfer \(id) (\(scheduled.count) segments) to background transport.")
+            } catch {
+                PipelineLogger.shared.log("[StreamingOrchestrator] Failed to hand off streaming transfer \(id) to background: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    /// Returns the cached active proposal for a given transfer ID.
+    public func activeProposal(for id: String) -> StreamingTransferProposal? {
+        let parentID = hlsParentID(for: id)
+        return proposals[parentID] ?? proposals[id]
     }
 
     private func manifestStatusDescription(for error: Error) -> String {
@@ -2233,7 +2293,8 @@ public actor StreamingDownloadOrchestrator {
                 browserRequestContext: currentContext?.redirectResolved(to: effectiveAudioURI) ?? candidate.browserRequestContext,
                 browserSessionSnapshot: candidate.browserSessionSnapshot,
                 hlsVariantPreferences: candidate.hlsVariantPreferences,
-                cachedManifestText: audioCachedText
+                cachedManifestText: audioCachedText,
+                transportPolicy: candidate.transportPolicy
             ).withRefreshedCookies()
             do {
                 let audioSubResponse = try await loadManifestResponse(
@@ -2363,7 +2424,8 @@ public actor StreamingDownloadOrchestrator {
                 browserRequestContext: currentContext?.redirectResolved(to: variantURI) ?? candidate.browserRequestContext,
                 browserSessionSnapshot: candidate.browserSessionSnapshot,
                 hlsVariantPreferences: candidate.hlsVariantPreferences,
-                cachedManifestText: variantCachedText
+                cachedManifestText: variantCachedText,
+                transportPolicy: candidate.transportPolicy
             ).withRefreshedCookies()
 
             let subResponse: StreamingManifestResponse
@@ -2511,7 +2573,8 @@ public actor StreamingDownloadOrchestrator {
                     mimeType: "application/vnd.apple.mpegurl",
                     browserRequestContext: childContext?.redirectResolved(to: audioFinalURI) ?? currentContext?.redirectResolved(to: audioFinalURI) ?? candidate.browserRequestContext,
                     browserSessionSnapshot: candidate.browserSessionSnapshot,
-                    hlsVariantPreferences: candidate.hlsVariantPreferences
+                    hlsVariantPreferences: candidate.hlsVariantPreferences,
+                    transportPolicy: candidate.transportPolicy
                 )
                 let audioResponse: StreamingManifestResponse
                 do {
@@ -3864,7 +3927,8 @@ public actor StreamingDownloadOrchestrator {
             manifestID: proposal.manifestID,
             manifest: proposal.manifest,
             resources: resources,
-            estimatedTransferBytes: proposal.estimatedTransferBytes
+            estimatedTransferBytes: proposal.estimatedTransferBytes,
+            transportPolicy: proposal.transportPolicy
         )
     }
 
@@ -3968,6 +4032,8 @@ public actor StreamingDownloadOrchestrator {
         registeredTransferIDs[manifestKey] = parentID
         registeredTransferIDs[transferPlan.manifestURL.absoluteString] = parentID
         registeredTransferIDs[parentID] = manifestKey
+        proposals[parentID] = runProposal
+        proposals[proposal.transferID] = runProposal
 
         if let engine = self.downloadEngine {
             let estimated = proposal.estimatedTransferBytes ?? (Int64(proposal.resources.count) * 1_000_000)
@@ -4169,13 +4235,16 @@ public actor StreamingDownloadOrchestrator {
         destinationDirectory: URL? = nil,
         outputURL: URL? = nil,
         browserSessionSnapshot: BrowserSessionSnapshot? = nil,
+        transportPolicy: HTTPTransportPolicy? = nil,
         progress: (@Sendable (StreamingTransferProgress) -> Void)? = nil
     ) async throws -> MediaAssemblyOutput {
         PipelineLogger.shared.log("[HLS Pipeline] downloadHLS started for manifest: \(manifestURL.absoluteString)")
         do {
+            let effectivePolicy = transportPolicy ?? (backgroundSessionManager != nil ? .background : .foreground)
             let candidate = try StreamingManifestCandidate(
                 url: manifestURL,
-                browserSessionSnapshot: browserSessionSnapshot
+                browserSessionSnapshot: browserSessionSnapshot,
+                transportPolicy: effectivePolicy
             )
             PipelineLogger.shared.log("[HLS Pipeline] 1. Manifest candidate created. Fetching and preparing proposal...")
             let proposal = try await prepare(candidate: candidate)
@@ -4211,13 +4280,16 @@ public actor StreamingDownloadOrchestrator {
         destinationDirectory: URL? = nil,
         outputURL: URL? = nil,
         browserSessionSnapshot: BrowserSessionSnapshot? = nil,
+        transportPolicy: HTTPTransportPolicy? = nil,
         progress: (@Sendable (StreamingTransferProgress) -> Void)? = nil
     ) async throws -> MediaAssemblyOutput {
         PipelineLogger.shared.log("[DASH Pipeline] downloadDASH started for manifest: \(manifestURL.absoluteString)")
         do {
+            let effectivePolicy = transportPolicy ?? (backgroundSessionManager != nil ? .background : .foreground)
             let candidate = try StreamingManifestCandidate(
                 url: manifestURL,
-                browserSessionSnapshot: browserSessionSnapshot
+                browserSessionSnapshot: browserSessionSnapshot,
+                transportPolicy: effectivePolicy
             )
             PipelineLogger.shared.log("[DASH Pipeline] 1. Manifest candidate created. Fetching and preparing proposal...")
             let proposal = try await prepare(candidate: candidate)

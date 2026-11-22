@@ -1024,6 +1024,11 @@ public final class BackgroundDownloadSessionManager: NSObject, @unchecked Sendab
         byteRange: (start: Int64, end: Int64)? = nil,
         earliestBeginDate: Date? = nil
     ) async throws -> BackgroundDownloadTaskRecord {
+        if let existing = mappingStore.record(forDownloadID: transferID, segmentID: order),
+           existing.state == .downloading || existing.state == .pending {
+            return existing
+        }
+
         var request = URLRequest(url: url)
         request.setValue("identity", forHTTPHeaderField: "Accept-Encoding")
         if let headers {

@@ -1052,6 +1052,7 @@ public actor DownloadEngine {
                 PipelineLogger.shared.log(stage: .coordinator, message: "[DownloadEngine] Failed to hand off active download \(item.id) to background: \(error.localizedDescription)")
             }
         }
+        await streamingOrchestrator?.handoffActiveStreamingToBackground()
     }
 
     /// Updates the durable queue and download record network policy.

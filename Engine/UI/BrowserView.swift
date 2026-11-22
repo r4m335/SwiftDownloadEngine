@@ -234,6 +234,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
     public var onDownloadInitiated: (() -> Void)? = nil
     public var onOpenAddDownload: ((URL) -> Void)? = nil
     public var onOpenDownloads: (() -> Void)? = nil
+    @Published public var preferredStreamingTransportPolicy: HTTPTransportPolicy? = nil
 
     private var tabManager = BrowserTabManager()
     private var mediaCandidateCatalogs: [UUID: BrowserMediaCandidateCatalog] = [:]
@@ -2073,7 +2074,11 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         }
     }
 
-    public func promptStreamingDownload(for resource: WebpageResource, customFilename: String? = nil) {
+    public func promptStreamingDownload(
+        for resource: WebpageResource,
+        customFilename: String? = nil,
+        transportPolicy: HTTPTransportPolicy? = nil
+    ) {
         print("[HLS Pipeline] promptStreamingDownload invoked for resource: \(resource.url.absoluteString)")
         if let custom = customFilename?.trimmingCharacters(in: .whitespacesAndNewlines), !custom.isEmpty {
             self.activeStreamingFilename = custom
@@ -2218,9 +2223,11 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                 }
 
                 print("[HLS Pipeline] Creating StreamingManifestCandidate and preparing proposal with orchestrator...")
+                let effectivePolicy = transportPolicy ?? self.preferredStreamingTransportPolicy ?? (orchestrator.backgroundSessionManager != nil ? .background : .foreground)
                 let candidate = try StreamingManifestCandidate(
                     resource: effectiveResource,
-                    browserSessionSnapshot: sessionSnapshot
+                    browserSessionSnapshot: sessionSnapshot,
+                    transportPolicy: effectivePolicy
                 )
                 let proposal = try await orchestrator.prepare(candidate: candidate)
                 print("[HLS Pipeline] Proposal prepared successfully. Automatically starting streaming download in background...")
@@ -2364,7 +2371,8 @@ public final class BrowserViewModel: NSObject, ObservableObject {
     public func startStreamingTransfer(
         for resource: WebpageResource,
         customFilename: String? = nil,
-        sessionSnapshot: BrowserSessionSnapshot? = nil
+        sessionSnapshot: BrowserSessionSnapshot? = nil,
+        transportPolicy: HTTPTransportPolicy? = nil
     ) {
         let effectiveOrchestrator = streamingOrchestrator ?? (downloadDelegate as? DownloadManagerViewModel)?.streamingOrchestrator
         guard let orchestrator = effectiveOrchestrator else {
@@ -2378,9 +2386,11 @@ public final class BrowserViewModel: NSObject, ObservableObject {
             guard let self = self else { return }
             do {
                 await orchestrator.setURLResolver(self)
+                let effectivePolicy = transportPolicy ?? self.preferredStreamingTransportPolicy ?? (orchestrator.backgroundSessionManager != nil ? .background : .foreground)
                 let candidate = try StreamingManifestCandidate(
                     resource: resource,
-                    browserSessionSnapshot: sessionSnapshot
+                    browserSessionSnapshot: sessionSnapshot,
+                    transportPolicy: effectivePolicy
                 )
                 let proposal = try await orchestrator.prepare(candidate: candidate)
                 let destination = self.streamingDestinationDirectoryURL
@@ -3785,9 +3795,11 @@ public final class BrowserViewModel: NSObject, ObservableObject {
     /// using `downloadSelectedResources()` and the existing download delegate.
     public func prepareStreamingProposal(
         for resource: WebpageResource,
-        using orchestrator: StreamingDownloadOrchestrator
+        using orchestrator: StreamingDownloadOrchestrator,
+        transportPolicy: HTTPTransportPolicy? = nil
     ) async throws -> StreamingTransferProposal {
-        let candidate = try StreamingManifestCandidate(resource: resource)
+        let effectivePolicy = transportPolicy ?? preferredStreamingTransportPolicy ?? (orchestrator.backgroundSessionManager != nil ? .background : .foreground)
+        let candidate = try StreamingManifestCandidate(resource: resource, transportPolicy: effectivePolicy)
         return try await orchestrator.prepare(candidate: candidate)
     }
 

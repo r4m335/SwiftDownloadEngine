@@ -1772,6 +1772,11 @@ public final class DownloadManagerViewModel: ObservableObject {
         return await engine.getStreamingOrchestrator()
     }
 
+    /// Hands off active streaming transfers to background transport on lifecycle transitions.
+    public func handoffActiveStreamingToBackground() async {
+        await resolveStreamingOrchestrator()?.handoffActiveStreamingToBackground()
+    }
+
     /// Loads the durable HLS parent record used by the segment details UI.
     public func hlsTransferRecord(for id: String) async -> HLSTransferRecord? {
         guard let orchestrator = await resolveStreamingOrchestrator(),
