@@ -407,6 +407,7 @@ public final class ScheduleCoordinator: ObservableObject {
 
     public func updateNotifications(for rule: ScheduleRule, requestPermission: Bool = false) async {
         #if os(iOS) || os(tvOS) || os(watchOS)
+        guard Bundle.main.bundleIdentifier != nil, NSClassFromString("XCTest") == nil else { return }
         let center = UNUserNotificationCenter.current()
         let identifierPrefix = "schedule-\(rule.id)"
 
@@ -476,6 +477,7 @@ public final class ScheduleCoordinator: ObservableObject {
 
     public func cancelNotifications(for ruleID: String) async {
         #if os(iOS) || os(tvOS) || os(watchOS)
+        guard Bundle.main.bundleIdentifier != nil, NSClassFromString("XCTest") == nil else { return }
         let center = UNUserNotificationCenter.current()
         let identifierPrefix = "schedule-\(ruleID)"
         let pending = await center.pendingNotificationRequests()

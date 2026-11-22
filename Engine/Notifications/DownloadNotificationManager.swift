@@ -8,6 +8,12 @@ public enum DownloadNotificationManager: Sendable {
     /// Dispatches a local user notification when a download completes.
     public static func postDownloadCompletedNotification(filename: String, downloadID: String) {
         #if canImport(UserNotifications)
+        // Guard against CLI test runners (e.g. xctest or swift test) where UNUserNotificationCenter throws NSInternalInconsistencyException
+        guard Bundle.main.bundleIdentifier != nil,
+              NSClassFromString("XCTest") == nil,
+              !Bundle.main.bundlePath.contains("Developer/usr/bin") else {
+            return
+        }
         let center = UNUserNotificationCenter.current()
         let content = UNMutableNotificationContent()
         content.title = "Download Complete"
