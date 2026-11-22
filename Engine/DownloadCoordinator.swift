@@ -74,7 +74,7 @@ public struct DownloadRequest: Sendable, Equatable, Codable {
         url: URL,
         destinationURL: URL,
         headers: [String: String] = [:],
-        persistSensitiveHeaders: Bool = true,
+        persistSensitiveHeaders: Bool = false,
         configuredThreadCount: Int = 10,
         advancedMode: Bool = false,
         storageMode: DownloadStorageMode = .directSeek,

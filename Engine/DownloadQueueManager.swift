@@ -775,13 +775,39 @@ public actor DownloadQueueManager {
 
     /// Cancels all active and queued downloads, including paused and failed items.
     public func cancelAll(deleteDestinationFiles: Bool = false) async {
-        let allIDs = Array(items.keys)
-        for id in allIDs {
-            guard let item = items[id], item.state != .completed else { continue }
+        // Mark all non-completed items as cancelled upfront so processQueue will not pick them up
+        for id in items.keys {
+            if items[id]?.state != .completed {
+                items[id]?.state = .cancelled
+            }
+        }
+
+        // Cancel all active tasks
+        let activeIDs = Array(activeTasks.keys)
+        for id in activeIDs {
+            if let task = activeTasks.removeValue(forKey: id) {
+                task.cancel()
+                _ = await task.value
+            }
             do {
-                try await cancel(id: id, deleteDestinationFile: deleteDestinationFiles)
+                try await coordinator.cancel(id: id, deleteDestinationFile: deleteDestinationFiles)
             } catch {
-                PipelineLogger.shared.log("[DownloadQueueManager] Warning: cancelAll failed for \(id): \(error.localizedDescription)")
+                PipelineLogger.shared.log("[DownloadQueueManager] Warning: Coordinator cancel failed for \(id): \(error.localizedDescription)")
+            }
+            await cleanupBackgroundTasksAndFiles(for: id, deleteFiles: deleteDestinationFiles)
+        }
+
+        // Clean up remaining non-active cancelled items
+        for (id, item) in items where item.state == .cancelled {
+            await cleanupBackgroundTasksAndFiles(for: id, deleteFiles: deleteDestinationFiles)
+            if deleteDestinationFiles {
+                if FileManager.default.fileExists(atPath: item.request.destinationURL.path) {
+                    try? FileManager.default.removeItem(at: item.request.destinationURL)
+                }
+                try? await persistenceStore.delete(tag: id)
+                KeychainManager.shared.deleteCredentials(forDownloadId: id)
+            } else {
+                _ = try? await persistenceStore.updateState(tag: id, state: .cancelled)
             }
         }
 
@@ -1219,20 +1245,18 @@ public actor DownloadQueueManager {
     private func persistQueue() {
         let sanitizedItems = items.values.map { item -> QueueItem in
             var copy = item
-            if !copy.request.persistSensitiveHeaders {
-                var strippedHeaders = copy.request.headers
-                for (k, v) in copy.request.headers {
-                    let lower = k.lowercased()
-                    if lower == "cookie" || lower == "authorization" || lower == "proxy-authorization" {
-                        KeychainManager.shared.storeGenericSecret(key: lower, account: "download:\(copy.id)", data: Data(v.utf8))
-                        if let host = copy.request.url.host {
-                            KeychainManager.shared.storeGenericSecret(key: lower, account: host, data: Data(v.utf8))
-                        }
-                        strippedHeaders.removeValue(forKey: k)
+            var strippedHeaders = copy.request.headers
+            for (k, v) in copy.request.headers {
+                let lower = k.lowercased()
+                if lower == "cookie" || lower == "authorization" || lower == "proxy-authorization" {
+                    KeychainManager.shared.storeGenericSecret(key: lower, account: "download:\(copy.id)", data: Data(v.utf8))
+                    if let host = copy.request.url.host {
+                        KeychainManager.shared.storeGenericSecret(key: lower, account: host, data: Data(v.utf8))
                     }
+                    strippedHeaders.removeValue(forKey: k)
                 }
-                copy.request.headers = strippedHeaders
             }
+            copy.request.headers = strippedHeaders
             return copy
         }
 
