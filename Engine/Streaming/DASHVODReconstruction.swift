@@ -9,6 +9,7 @@ public enum DASHVODReconstructionError: Error, LocalizedError, Sendable, Equatab
     case noMediaSegments
     case unsupportedEncryption
     case unsupportedTrackLayout
+    case unsupportedSubtitleFormat(String)
     case assemblyFailed(MediaAssemblyError)
 
     public var errorDescription: String? {
@@ -29,6 +30,8 @@ public enum DASHVODReconstructionError: Error, LocalizedError, Sendable, Equatab
             return "This DASH reconstruction path supports clear media only."
         case .unsupportedTrackLayout:
             return "The DASH track layout cannot be represented by the available media muxer."
+        case .unsupportedSubtitleFormat(let format):
+            return "Segmented \(format) subtitle tracks cannot be concatenated or assembled."
         case .assemblyFailed(let error):
             return error.localizedDescription
         }

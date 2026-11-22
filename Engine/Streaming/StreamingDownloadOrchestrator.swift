@@ -3443,9 +3443,17 @@ public actor StreamingDownloadOrchestrator {
             throw StreamingDownloadOrchestratorError.unsupportedManifest(.hls)
         }
         let isTextOnly = transferPlan.video == nil && transferPlan.audio == nil && transferPlan.text != nil
+        let isTTML = transferPlan.text?.codecs?.lowercased().contains("ttml") == true ||
+                     transferPlan.text?.codecs?.lowercased().contains("stpp") == true ||
+                     transferPlan.text?.codecs?.lowercased().contains("im1t") == true ||
+                     transferPlan.text?.resources.contains(where: {
+                         let ext = $0.url.pathExtension.lowercased()
+                         return ext == "ttml" || ext == "xml"
+                     }) == true
         let finalOutputURL: URL
         if isTextOnly && outputURL.pathExtension.lowercased() == "mp4" {
-            finalOutputURL = outputURL.deletingPathExtension().appendingPathExtension("vtt")
+            let ext = isTTML ? "ttml" : "vtt"
+            finalOutputURL = outputURL.deletingPathExtension().appendingPathExtension(ext)
         } else {
             finalOutputURL = outputURL
         }
@@ -3458,7 +3466,8 @@ public actor StreamingDownloadOrchestrator {
 
         if let engine = self.downloadEngine {
             let estimated = proposal.estimatedTransferBytes ?? (Int64(proposal.resources.count) * 1_000_000)
-            let mimeType = isTextOnly ? "text/vtt" : "video/mp4"
+            let textMime = isTTML ? "application/ttml+xml" : "text/vtt"
+            let mimeType = isTextOnly ? textMime : "video/mp4"
             do {
                 _ = try await engine.registerStreamingDownload(
                     id: parentID,
@@ -3535,7 +3544,8 @@ public actor StreamingDownloadOrchestrator {
                     )
                 )
                 if let textPlan = transferPlan.text {
-                    let sidecarURL = finalOutputURL.deletingPathExtension().appendingPathExtension("vtt")
+                    let sidecarExt = isTTML ? "ttml" : "vtt"
+                    let sidecarURL = finalOutputURL.deletingPathExtension().appendingPathExtension(sidecarExt)
                     _ = try? assembleDASHSubtitles(
                         textPlan: textPlan,
                         completedResources: completed,
@@ -4037,6 +4047,33 @@ public actor StreamingDownloadOrchestrator {
         }
     }
 
+    private func isTTMLContent(
+        textPlan: DASHRepresentationTransferPlan,
+        completedResources: [DASHCompletedResource],
+        rawBuffers: [Data]
+    ) -> Bool {
+        if let codecs = textPlan.codecs?.lowercased(),
+           codecs.contains("ttml") || codecs.contains("stpp") || codecs.contains("im1t") {
+            return true
+        }
+        if completedResources.contains(where: {
+            let ext = $0.resource.url.pathExtension.lowercased()
+            return ext == "ttml" || ext == "xml"
+        }) {
+            return true
+        }
+        for buffer in rawBuffers {
+            let sample = String(decoding: buffer.prefix(2048), as: UTF8.self).lowercased()
+            if sample.contains("<tt") ||
+               sample.contains("http://www.w3.org/ns/ttml") ||
+               sample.contains("xmlns:tt") ||
+               sample.contains("ebutt") {
+                return true
+            }
+        }
+        return false
+    }
+
     private func assembleDASHSubtitles(
         textPlan: DASHRepresentationTransferPlan,
         completedResources: [DASHCompletedResource],
@@ -4053,11 +4090,7 @@ public actor StreamingDownloadOrchestrator {
             try fileManager.createDirectory(at: parentDir, withIntermediateDirectories: true)
         }
 
-        var downloadedSegments: [WebVTTSegmentInput] = []
-        var cumulativeTime: Double = 0.0
-        var isAllWebVTT = true
         var rawContentBuffers: [Data] = []
-
         for item in textCompleted {
             guard item.fileURL.isFileURL,
                   fileManager.fileExists(atPath: item.fileURL.path),
@@ -4066,7 +4099,40 @@ public actor StreamingDownloadOrchestrator {
                 throw DASHVODReconstructionError.invalidResourceFile
             }
             rawContentBuffers.append(data)
+        }
 
+        // Handle TTML text tracks: preserve standalone single-document TTML; reject unsupported segmented TTML.
+        if isTTMLContent(textPlan: textPlan, completedResources: textCompleted, rawBuffers: rawContentBuffers) {
+            if textCompleted.count > 1 {
+                PipelineLogger.shared.log("[DASH Pipeline] Segmented TTML subtitle track (\(textCompleted.count) segments) cannot be concatenated or assembled.")
+                throw DASHVODReconstructionError.unsupportedSubtitleFormat("TTML")
+            }
+            let targetURL = destinationURL.pathExtension.lowercased() == "vtt"
+                ? destinationURL.deletingPathExtension().appendingPathExtension("ttml")
+                : destinationURL
+            try rawContentBuffers[0].write(to: targetURL, options: .atomic)
+            PipelineLogger.shared.log("[DASH Pipeline] Preserved single TTML subtitle track into: \(targetURL.path)")
+            let finalSize = fileManager.fileSize(atPath: targetURL.path) ?? Int64(rawContentBuffers[0].count)
+            return MediaAssemblyOutput(
+                destinationURL: targetURL,
+                container: .other("ttml"),
+                validation: MediaAssemblyValidationReport(
+                    container: .other("ttml"),
+                    trackCount: 1,
+                    mediaSegmentCount: 1,
+                    totalInputBytes: finalSize,
+                    isReadyForAssembly: true,
+                    diagnostics: ["Preserved standalone TTML subtitle document."]
+                )
+            )
+        }
+
+        var downloadedSegments: [WebVTTSegmentInput] = []
+        var cumulativeTime: Double = 0.0
+        var isAllWebVTT = true
+
+        for (index, item) in textCompleted.enumerated() {
+            let data = rawContentBuffers[index]
             let contentString = String(decoding: data, as: UTF8.self)
             if contentString.contains("WEBVTT") || contentString.contains("-->") {
                 let timescale = item.resource.timescale > 0 ? Double(item.resource.timescale) : 1000.0

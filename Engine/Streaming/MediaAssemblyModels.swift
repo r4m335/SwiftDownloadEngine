@@ -349,6 +349,7 @@ public enum MediaAssemblyError: Error, LocalizedError, Equatable, Sendable {
     case invalidMediaData(MediaAssemblyContainer)
     case fileOperationFailed
     case differingInitializationSegmentsNotSupported(MediaAssemblyTrackKind)
+    case unsupportedSubtitleFormat(String)
 
     public var errorDescription: String? {
         switch self {
@@ -420,6 +421,8 @@ public enum MediaAssemblyError: Error, LocalizedError, Equatable, Sendable {
             return "Media assembly could not safely create or publish the output file."
         case .differingInitializationSegmentsNotSupported(let kind):
             return "Multi-period track for \(kind.rawValue) has differing initialization segments across periods and cannot be assembled without structural remuxing."
+        case .unsupportedSubtitleFormat(let format):
+            return "Subtitle format '\(format)' is not supported for media assembly."
         }
     }
 }

@@ -3483,6 +3483,166 @@ final class StreamingDownloadOrchestratorTests: XCTestCase {
         XCTAssertFalse(contentRaw.contains("ftyp"))
         XCTAssertFalse(contentRaw.contains("moov"))
     }
+
+    func testDASHExecutionWithSingleTTMLTextTrackPreservesTTMLDocumentAndExtension() async throws {
+        let url = URL(string: "https://video.example/vod/subtitles-ttml.mpd")!
+        let mpd = """
+        <MPD type="static" mediaPresentationDuration="PT10S">
+          <Period duration="PT10S">
+            <AdaptationSet contentType="text" mimeType="application/ttml+xml" lang="es">
+              <Representation id="ttml_es" bandwidth="1000">
+                <SegmentTemplate timescale="1" duration="10" media="captions.ttml"/>
+              </Representation>
+            </AdaptationSet>
+          </Period>
+        </MPD>
+        """
+        let orchestrator = StreamingDownloadOrchestrator(
+            manifestLoader: RecordingManifestLoader(
+                data: Data(mpd.utf8),
+                finalURL: url,
+                mimeType: "application/dash+xml"
+            ),
+            segmentExecutor: DASHWritingSegmentExecutor()
+        )
+
+        let candidate = try StreamingManifestCandidate(
+            url: url,
+            dashTextRepresentationID: "ttml_es"
+        )
+        let proposal = try await orchestrator.prepare(candidate: candidate)
+        XCTAssertEqual(proposal.resources.count, 1)
+
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("dash-ttml-single-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let output = directory.appendingPathComponent("captions.mp4")
+
+        let result = try await orchestrator.executeAndAssembleDASH(
+            proposal,
+            approved: true,
+            destinationDirectory: directory,
+            outputURL: output
+        )
+
+        // Output file must be preserved as .ttml and NOT converted or written as .vtt
+        XCTAssertEqual(result.destinationURL.pathExtension, "ttml")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: result.destinationURL.path))
+        let content = try String(contentsOf: result.destinationURL, encoding: .utf8)
+        XCTAssertTrue(content.contains("<tt"))
+        XCTAssertFalse(content.contains("WEBVTT"))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: directory.appendingPathComponent("captions.vtt").path))
+    }
+
+    func testDASHExecutionWithSegmentedTTMLTextTrackRejectsUnsupportedTTML() async throws {
+        let url = URL(string: "https://video.example/vod/segmented-ttml.mpd")!
+        let mpd = """
+        <MPD type="static" mediaPresentationDuration="PT4S">
+          <Period duration="PT4S">
+            <AdaptationSet contentType="text" mimeType="application/ttml+xml" lang="es">
+              <Representation id="ttml_es" bandwidth="1000">
+                <SegmentTemplate timescale="1" duration="2" media="chunk-$Number$.ttml"/>
+              </Representation>
+            </AdaptationSet>
+          </Period>
+        </MPD>
+        """
+        let orchestrator = StreamingDownloadOrchestrator(
+            manifestLoader: RecordingManifestLoader(
+                data: Data(mpd.utf8),
+                finalURL: url,
+                mimeType: "application/dash+xml"
+            ),
+            segmentExecutor: DASHWritingSegmentExecutor()
+        )
+
+        let candidate = try StreamingManifestCandidate(
+            url: url,
+            dashTextRepresentationID: "ttml_es"
+        )
+        let proposal = try await orchestrator.prepare(candidate: candidate)
+        // 2 segments
+        XCTAssertEqual(proposal.resources.count, 2)
+
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("dash-ttml-multi-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let output = directory.appendingPathComponent("captions.vtt")
+
+        do {
+            _ = try await orchestrator.executeAndAssembleDASH(
+                proposal,
+                approved: true,
+                destinationDirectory: directory,
+                outputURL: output
+            )
+            XCTFail("Expected segmented TTML subtitle track to be rejected, but it succeeded")
+        } catch let error as StreamingDownloadOrchestratorError {
+            if case .dashReconstructionFailed(let inner) = error {
+                XCTAssertEqual(inner, .unsupportedSubtitleFormat("TTML"))
+            } else {
+                XCTFail("Expected dashReconstructionFailed(.unsupportedSubtitleFormat), got \(error)")
+            }
+        }
+
+        // Verify no concatenated file was written as .vtt
+        XCTAssertFalse(FileManager.default.fileExists(atPath: output.path))
+    }
+
+    func testDASHExecutionWithVideoAndSingleTTMLSidecarPreservesTTMLSidecar() async throws {
+        let url = URL(string: "https://video.example/vod/combo-ttml.mpd")!
+        let mpd = """
+        <MPD type="static" mediaPresentationDuration="PT2S">
+          <Period duration="PT2S">
+            <AdaptationSet contentType="video" mimeType="video/mp4" codecs="avc1">
+              <Representation id="v1" bandwidth="1000">
+                <SegmentTemplate timescale="1" duration="2" initialization="init.mp4" media="seg.m4s"/>
+              </Representation>
+            </AdaptationSet>
+            <AdaptationSet contentType="text" mimeType="application/ttml+xml" lang="es">
+              <Representation id="ttml_es" bandwidth="1000">
+                <SegmentTemplate timescale="1" duration="2" media="subtitles.ttml"/>
+              </Representation>
+            </AdaptationSet>
+          </Period>
+        </MPD>
+        """
+        let orchestrator = StreamingDownloadOrchestrator(
+            manifestLoader: RecordingManifestLoader(
+                data: Data(mpd.utf8),
+                finalURL: url,
+                mimeType: "application/dash+xml"
+            ),
+            segmentExecutor: DASHWritingSegmentExecutor()
+        )
+
+        let candidate = try StreamingManifestCandidate(
+            url: url,
+            dashVideoRepresentationID: "v1",
+            dashTextRepresentationID: "ttml_es"
+        )
+        let proposal = try await orchestrator.prepare(candidate: candidate)
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("dash-ttml-sidecar-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let output = directory.appendingPathComponent("movie.mp4")
+
+        let result = try await orchestrator.executeAndAssembleDASH(
+            proposal,
+            approved: true,
+            destinationDirectory: directory,
+            outputURL: output
+        )
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: result.destinationURL.path))
+        // Sidecar must be .ttml, not .vtt
+        let sidecarTTML = result.destinationURL.deletingPathExtension().appendingPathExtension("ttml")
+        let sidecarVTT = result.destinationURL.deletingPathExtension().appendingPathExtension("vtt")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: sidecarTTML.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: sidecarVTT.path))
+        let sidecarContent = try String(contentsOf: sidecarTTML, encoding: .utf8)
+        XCTAssertTrue(sidecarContent.contains("<tt"))
+    }
 }
 
 private final class DummyAuthSender: NSObject, URLAuthenticationChallengeSender {
@@ -3633,6 +3793,8 @@ private actor DASHWritingSegmentExecutor: StreamingSegmentExecutor {
         let bytes: Data
         if request.url.path.contains("init") {
             bytes = isoBox("ftyp", payload: Data([1])) + isoBox("moov", payload: Data([2]))
+        } else if request.url.path.hasSuffix(".ttml") || request.url.path.contains("ttml") {
+            bytes = Data("<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<tt xmlns=\"http://www.w3.org/ns/ttml\"><body/></tt>\n".utf8)
         } else if request.url.path.hasSuffix(".vtt") || request.url.path.contains("sub") {
             bytes = Data("WEBVTT\n\n00:00:00.000 --> 00:00:02.000\nHello DASH Subtitles\n".utf8)
         } else {
