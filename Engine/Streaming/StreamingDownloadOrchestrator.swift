@@ -1803,7 +1803,7 @@ public actor StreamingDownloadOrchestrator {
         backgroundManager: BackgroundDownloadSessionManager? = nil
     ) async throws -> [BackgroundDownloadTaskRecord] {
         guard let manager = backgroundManager ?? self.backgroundSessionManager else {
-            throw StreamingDownloadOrchestratorError.transferFailed(reason: "No backgroundSessionManager available")
+            throw StreamingDownloadOrchestratorError.persistenceFailed("No backgroundSessionManager available")
         }
         try DownloadManagerViewModel.ensureDirectoryExistsAndWritable(destinationDirectory)
 
