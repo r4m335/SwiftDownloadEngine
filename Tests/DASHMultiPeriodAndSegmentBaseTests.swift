@@ -755,7 +755,10 @@ final class DASHMultiPeriodAndSegmentBaseTests: XCTestCase {
         )
 
         // Must NOT fall back to concatenating Period 0's initialization with Period 1's media segments!
-        await assertThrowsAsyncError(try await MediaAssembler.assemble(reconPlan.assemblyRequest)) { error in
+        do {
+            _ = try await MediaAssembler.assemble(reconPlan.assemblyRequest)
+            XCTFail("Expected assemble to throw when differing initialization segments cannot be remuxed")
+        } catch {
             #if canImport(AVFoundation)
             XCTAssertEqual(error as? MediaAssemblyError, .differingInitializationSegmentsNotSupported(.video))
             #else
