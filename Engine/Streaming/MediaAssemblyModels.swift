@@ -348,6 +348,7 @@ public enum MediaAssemblyError: Error, LocalizedError, Equatable, Sendable {
     case incompleteMultiTrackAssembly(expectedTracks: Int, availableTracks: Int)
     case invalidMediaData(MediaAssemblyContainer)
     case fileOperationFailed
+    case differingInitializationSegmentsNotSupported(MediaAssemblyTrackKind)
 
     public var errorDescription: String? {
         switch self {
@@ -417,6 +418,8 @@ public enum MediaAssemblyError: Error, LocalizedError, Equatable, Sendable {
             return "Downloaded media does not contain a valid \(container.rawValue) structure."
         case .fileOperationFailed:
             return "Media assembly could not safely create or publish the output file."
+        case .differingInitializationSegmentsNotSupported(let kind):
+            return "Multi-period track for \(kind.rawValue) has differing initialization segments across periods and cannot be assembled without structural remuxing."
         }
     }
 }

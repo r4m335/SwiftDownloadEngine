@@ -707,7 +707,7 @@ final class DASHMultiPeriodAndSegmentBaseTests: XCTestCase {
         XCTAssertEqual(track.periods[1].mediaSegments.map(\.fileURL.lastPathComponent), ["res-4.bin", "res-5.bin"])
     }
 
-    func testMultiPeriodMediaWithDifferingInitSegmentsAcrossPeriodsAssemblesWithoutMidStreamInitBoxes() async throws {
+    func testMultiPeriodMediaWithDifferingInitSegmentsAcrossPeriodsThrowsWhenStructuralRemuxingFails() async throws {
         let multiPeriodMPD = """
         <MPD type="static" mediaPresentationDuration="PT4S">
           <Period id="p1" duration="PT2S">
@@ -748,6 +748,65 @@ final class DASHMultiPeriodAndSegmentBaseTests: XCTestCase {
         }
 
         let outputURL = directory.appendingPathComponent("assembled-diff-inits.mp4")
+        let reconPlan = try DASHVODReconstructionPlanner.makePlan(
+            from: transferPlan,
+            completedResources: completed,
+            destinationURL: outputURL
+        )
+
+        // Must NOT fall back to concatenating Period 0's initialization with Period 1's media segments!
+        await assertThrowsAsyncError(try await MediaAssembler.assemble(reconPlan.assemblyRequest)) { error in
+            #if canImport(AVFoundation)
+            XCTAssertEqual(error as? MediaAssemblyError, .differingInitializationSegmentsNotSupported(.video))
+            #else
+            XCTAssertEqual(error as? MediaAssemblyError, .muxingUnavailable)
+            #endif
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: outputURL.path))
+    }
+
+    func testMultiPeriodMediaWithIdenticalInitSegmentsAcrossPeriodsAssemblesWithoutMidStreamInitBoxes() async throws {
+        let multiPeriodMPD = """
+        <MPD type="static" mediaPresentationDuration="PT4S">
+          <Period id="p1" duration="PT2S">
+            <AdaptationSet contentType="video" mimeType="video/mp4" codecs="avc1">
+              <Representation id="v1" bandwidth="1000">
+                <SegmentTemplate timescale="1" duration="1" initialization="init-p1.mp4" media="p1-s$Number$.m4s"/>
+              </Representation>
+            </AdaptationSet>
+          </Period>
+          <Period id="p2" duration="PT2S">
+            <AdaptationSet contentType="video" mimeType="video/mp4" codecs="avc1">
+              <Representation id="v2" bandwidth="2000">
+                <SegmentTemplate timescale="1" duration="1" initialization="init-p2.mp4" media="p2-s$Number$.m4s"/>
+              </Representation>
+            </AdaptationSet>
+          </Period>
+        </MPD>
+        """
+
+        let manifest = try DASHManifestParser.parse(multiPeriodMPD, baseURL: manifestURL)
+        let transferPlan = try DASHTransferPlanner.makeVODPlan(from: manifest)
+
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("dash-multiperiod-same-inits-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let sharedInitData = isoBox("ftyp", payload: Data([0, 0, 0, 1])) + isoBox("moov", payload: Data([0, 0, 0, 2]))
+        let completed = try transferPlan.resources.enumerated().map { index, resource in
+            let fileURL = directory.appendingPathComponent("res-\(index).bin")
+            let data: Data
+            if resource.kind == .initialization {
+                data = sharedInitData
+            } else {
+                data = isoBox("moof", payload: Data([UInt8(index)])) + isoBox("mdat", payload: Data([UInt8(index)]))
+            }
+            try data.write(to: fileURL)
+            return DASHCompletedResource(resource: resource, fileURL: fileURL)
+        }
+
+        let outputURL = directory.appendingPathComponent("assembled-same-inits.mp4")
         let reconPlan = try DASHVODReconstructionPlanner.makePlan(
             from: transferPlan,
             completedResources: completed,

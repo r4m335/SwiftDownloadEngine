@@ -1703,6 +1703,27 @@ public enum MediaAssembler {
         segment.actualByteCount ?? segment.expectedByteCount
     }
 
+    private static func hasDifferingInitializationSegments(in periods: [MediaAssemblyTrackPeriod]) -> Bool {
+        guard periods.count > 1 else { return false }
+        guard let firstInit = periods.first?.initializationSegment else { return false }
+        let fileManager = FileManager.default
+        let firstSize = fileManager.fileSize(atPath: firstInit.fileURL.path) ?? firstInit.actualByteCount ?? firstInit.expectedByteCount
+        guard let firstData = try? Data(contentsOf: firstInit.fileURL) else { return true }
+
+        for period in periods.dropFirst() {
+            guard let nextInit = period.initializationSegment else { return true }
+            let nextSize = fileManager.fileSize(atPath: nextInit.fileURL.path) ?? nextInit.actualByteCount ?? nextInit.expectedByteCount
+            if let firstSize, let nextSize, firstSize != nextSize {
+                return true
+            }
+            guard let nextData = try? Data(contentsOf: nextInit.fileURL) else { return true }
+            if firstData != nextData {
+                return true
+            }
+        }
+        return false
+    }
+
     private static func assembleTrack(
         _ track: MediaAssemblyTrack,
         container: MediaAssemblyContainer,
@@ -1713,6 +1734,8 @@ public enum MediaAssembler {
         let periods = track.periods
 
         if container == .fragmentedMP4 && periods.count > 1 {
+            let differingInits = hasDifferingInitializationSegments(in: periods)
+
             var periodPartURLs: [URL] = []
             defer {
                 for partURL in periodPartURLs {
@@ -1761,12 +1784,22 @@ public enum MediaAssembler {
                     return
                 }
             } catch {
-                PipelineLogger.shared.log("[MediaAssembler] remuxPeriodFilesWithAVFoundation failed: \(error.localizedDescription). Falling back to box-level transition remuxing.")
+                PipelineLogger.shared.log("[MediaAssembler] remuxPeriodFilesWithAVFoundation failed: \(error.localizedDescription)")
             }
             #endif
 
-            // Box-level structural remuxing fallback:
-            // Write period 0 init + media, then subsequent periods' media only (no mid-stream ftyp/moov)
+            // If periods have differing initialization segments (differing codecs or track parameters),
+            // we must NOT fall back to concatenating Period 0's initialization with other periods' media segments.
+            // That would produce an invalid or misleading output file.
+            if differingInits {
+                #if canImport(AVFoundation)
+                throw MediaAssemblyError.differingInitializationSegmentsNotSupported(track.kind)
+                #else
+                throw MediaAssemblyError.muxingUnavailable
+                #endif
+            }
+
+            // Box-level structural assembly is only valid when initialization segments across all periods are identical:
             guard fileManager.createFile(atPath: destinationURL.path, contents: nil) else {
                 throw MediaAssemblyError.fileOperationFailed
             }
@@ -1775,17 +1808,15 @@ public enum MediaAssembler {
                 try? outputHandle.close()
             }
 
-            for (idx, period) in periods.enumerated() {
-                if idx == 0 {
-                    if let initSeg = period.initializationSegment {
-                        try copyValidatedSegment(
-                            initSeg,
-                            kind: track.kind,
-                            container: container,
-                            output: outputHandle
-                        )
-                    }
-                }
+            if let initSeg = periods[0].initializationSegment {
+                try copyValidatedSegment(
+                    initSeg,
+                    kind: track.kind,
+                    container: container,
+                    output: outputHandle
+                )
+            }
+            for period in periods {
                 for seg in period.mediaSegments {
                     try copyValidatedSegment(
                         seg,
