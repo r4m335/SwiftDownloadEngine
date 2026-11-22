@@ -588,8 +588,8 @@ final class DownloadQueueManagerTests: XCTestCase {
     }
 
     func test14B_CancelAllCleansForegroundPartFiles() async throws {
-        let dest = destinationDirectory.appendingPathComponent("part_cleanup_test.bin")
-        let tempDir = destinationDirectory.appendingPathComponent(".tmp", isDirectory: true)
+        let dest = tempDirectory.appendingPathComponent("part_cleanup_test.bin")
+        let tempDir = tempDirectory.appendingPathComponent(".tmp", isDirectory: true)
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
 
         let part0 = tempDir.appendingPathComponent("segment-0.part")
