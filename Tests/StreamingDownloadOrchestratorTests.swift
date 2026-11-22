@@ -3765,7 +3765,7 @@ final class StreamingDownloadOrchestratorTests: XCTestCase {
         await orchestrator.handoffActiveStreamingToBackground()
 
         // Verify task was scheduled in BackgroundDownloadSessionManager
-        let records = bgManager.mappingStore.records(forDownloadID: proposal.transferID)
+        let records = await bgManager.mappingStore.records(forDownloadID: proposal.transferID)
         XCTAssertEqual(records.count, 1)
         XCTAssertEqual(records.first?.segmentID, 0)
         let activeProposal = await orchestrator.activeProposal(for: proposal.transferID)
