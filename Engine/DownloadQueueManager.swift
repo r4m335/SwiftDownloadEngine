@@ -608,8 +608,8 @@ public actor DownloadQueueManager {
                 item.request.url = record.originalURL
             }
             item.request.headers = record.securedHeaders
-            if let total = record.totalExpectedLength ?? (record.totalSize > 0 ? record.totalSize : nil) {
-                item.request.expectedContentLength = total
+            if record.totalSize > 0 {
+                item.totalBytes = record.totalSize
             }
         }
 
@@ -694,7 +694,7 @@ public actor DownloadQueueManager {
 
     /// Cancels mapped background session tasks and removes temporary part files from PartStaging.
     private func cleanupBackgroundTasksAndFiles(for id: String, deleteFiles: Bool) async {
-        if let bgManager = coordinator.getBackgroundSessionManager() {
+        if let bgManager = await coordinator.getBackgroundSessionManager() {
             await bgManager.cancelTasks(for: id)
             if deleteFiles {
                 let stagingDir = bgManager.temporaryDirectoryURL
