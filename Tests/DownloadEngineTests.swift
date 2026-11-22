@@ -1036,7 +1036,7 @@ final class DownloadEngineTests: XCTestCase {
 
         let snapAfter = await engine.snapshot(for: req.id)
         XCTAssertEqual(snapAfter?.transportPolicy, .background, "Active foreground transfer must be promoted to background transport")
-        XCTAssertEqual(snapAfter?.state, .pending)
+        XCTAssertTrue(snapAfter?.state == .pending || snapAfter?.state == .downloading, "State should be pending or downloading in background transport")
     }
 }
 

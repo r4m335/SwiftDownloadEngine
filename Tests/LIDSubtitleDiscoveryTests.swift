@@ -297,38 +297,35 @@ final class LIDSubtitleDiscoveryTests: XCTestCase {
         let mockProvider = MockSubtitleProvider(name: "Mock Sub Provider", results: [mockResult], mockData: srtData)
         let customManager = LIDSubtitleSearchManager(providers: [mockProvider])
 
-        await MainActor.run {
-            let engine = LIDPlaybackEngine()
+        let engine = await MainActor.run {
+            let eng = LIDPlaybackEngine()
             let dummyURL = tempDirectory.appendingPathComponent("movie.mp4")
             try? Data([0x00, 0x00, 0x00, 0x20]).write(to: dummyURL)
-            engine.load(source: .localFile(url: dummyURL, title: "Test Movie"), autoPlay: false, resumeFromHistory: false)
+            eng.load(source: .localFile(url: dummyURL, title: "Test Movie"), autoPlay: false, resumeFromHistory: false)
+            return eng
+        }
 
-            Task {
-                do {
-                    // Download and apply subtitle
-                    let data = try await customManager.download(result: mockResult)
-                    let store = LIDSubtitleStore(storageDirectory: self.tempDirectory)
-                    let savedURL = try await store.saveSubtitle(
-                        data: data,
-                        mediaTitle: "Test Movie",
-                        languageCode: mockResult.languageCode,
-                        releaseName: mockResult.releaseName
-                    )
+        // Download and apply subtitle
+        let data = try await customManager.download(result: mockResult)
+        let store = LIDSubtitleStore(storageDirectory: self.tempDirectory)
+        let savedURL = try await store.saveSubtitle(
+            data: data,
+            mediaTitle: "Test Movie",
+            languageCode: mockResult.languageCode,
+            releaseName: mockResult.releaseName
+        )
 
-                    engine.addExternalSubtitle(url: savedURL, displayName: mockResult.displayTitle)
-                    XCTAssertTrue(engine.trackManager.selectedSubtitleTrack.isExternal)
+        await MainActor.run {
+            engine.addExternalSubtitle(url: savedURL, displayName: mockResult.displayTitle)
+            XCTAssertTrue(engine.trackManager.selectedSubtitleTrack.isExternal)
 
-                    // Verify cue position lookup at 2.5s
-                    engine.trackManager.updatePosition(2.5)
-                    XCTAssertEqual(engine.trackManager.activeCueText, "Testing live subtitle cue synchronization.")
+            // Verify cue position lookup at 2.5s
+            engine.trackManager.updatePosition(2.5)
+            XCTAssertEqual(engine.trackManager.activeCueText, "Testing live subtitle cue synchronization.")
 
-                    // Position after 5.0s should clear cue
-                    engine.trackManager.updatePosition(6.0)
-                    XCTAssertNil(engine.trackManager.activeCueText)
-                } catch {
-                    XCTFail("Unexpected error: \(error)")
-                }
-            }
+            // Position after 5.0s should clear cue
+            engine.trackManager.updatePosition(6.0)
+            XCTAssertNil(engine.trackManager.activeCueText)
         }
     }
 }

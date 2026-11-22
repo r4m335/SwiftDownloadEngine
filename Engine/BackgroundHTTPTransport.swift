@@ -973,14 +973,23 @@ public final class BackgroundDownloadSessionManager: NSObject, @unchecked Sendab
             request.setValue(validator, forHTTPHeaderField: "If-Range")
         }
 
-        let task = session.downloadTask(with: request)
+        let partURL = partFileURL(downloadID: download.id, segmentID: segment.id)
+        let resumeURL = resumeDataURL(downloadID: download.id, segmentID: segment.id)
+        let task: URLSessionDownloadTask
+        if FileManager.default.fileExists(atPath: resumeURL.path),
+           let resumeData = try? Data(contentsOf: resumeURL) {
+            task = session.downloadTask(withResumeData: resumeData)
+            try? FileManager.default.removeItem(at: resumeURL)
+            PipelineLogger.shared.log(stage: .transport, message: "[BackgroundDownloadSessionManager] Resumed download task with resumeData for download \(download.id), segment \(segment.id)")
+        } else {
+            task = session.downloadTask(with: request)
+        }
         // This scheduling hint is reliable only when assigned before resume().
         #if canImport(Darwin)
         if #available(iOS 11.0, macOS 10.13, *) {
             task.earliestBeginDate = earliestBeginDate
         }
         #endif
-        let partURL = partFileURL(downloadID: download.id, segmentID: segment.id)
 
         let taskRecord = BackgroundDownloadTaskRecord(
             sessionIdentifier: sessionIdentifier,
@@ -1207,6 +1216,11 @@ public final class BackgroundDownloadSessionManager: NSObject, @unchecked Sendab
     public func partFileURL(downloadID: String, segmentID: Int) -> URL {
         temporaryDirectoryURL
             .appendingPathComponent("\(downloadID)_segment-\(segmentID).part")
+    }
+
+    public func resumeDataURL(downloadID: String, segmentID: Int) -> URL {
+        temporaryDirectoryURL
+            .appendingPathComponent("\(downloadID)_segment-\(segmentID).resumeData")
     }
 
     private func findTask(withIdentifier id: Int) async -> URLSessionTask? {
@@ -1518,36 +1532,13 @@ extension BackgroundDownloadSessionManager: URLSessionDownloadDelegate {
             defer { self.trackDelegateTaskFinished() }
             if let rec = await self.mappingStore.record(sessionIdentifier: sessID, taskIdentifier: taskID) {
                 let nsError = rawError as NSError
-                let isTransient = self.isTransientNetworkError(nsError)
-
-                if isTransient && rec.retryCount < 3 {
-                    let nextRetry = rec.retryCount + 1
-                    let backoff = Double(1 << nextRetry) // 2s, 4s, 8s
-                    PipelineLogger.shared.log(
-                        stage: .transport,
-                        message: "[BackgroundDownloadSessionManager] Transient network error on task \(taskID) (download \(rec.downloadID), seg \(rec.segmentID)): \(rawError.localizedDescription). Retrying attempt \(nextRetry)/3 after \(backoff)s backoff."
-                    )
-
-                    await reconcileSegmentWithDisk(downloadID: rec.downloadID, segmentID: rec.segmentID, partURL: rec.destinationPartURL)
-
-                    try? await Task.sleep(nanoseconds: UInt64(backoff * 1_000_000_000))
-
+                if let resumeData = nsError.userInfo[NSURLSessionDownloadTaskResumeData] as? Data {
+                    let resumeURL = self.resumeDataURL(downloadID: rec.downloadID, segmentID: rec.segmentID)
                     do {
-                        try await self.mappingStore.remove(sessionIdentifier: sessID, taskIdentifier: taskID)
-                        if let dlRecord = try await self.persistenceStore?.fetch(tag: rec.downloadID),
-                           let segRecord = dlRecord.segments.first(where: { $0.id == rec.segmentID }),
-                           !segRecord.isCompleted {
-                            var retryTask = try await self.scheduleSegmentDownload(
-                                download: dlRecord,
-                                segment: segRecord,
-                                earliestBeginDate: Date().addingTimeInterval(backoff)
-                            )
-                            retryTask.retryCount = nextRetry
-                            try await self.mappingStore.save(record: retryTask)
-                            return
-                        }
+                        try resumeData.write(to: resumeURL)
+                        PipelineLogger.shared.log(stage: .transport, message: "[BackgroundDownloadSessionManager] Saved resumeData for download \(rec.downloadID), segment \(rec.segmentID) (\(resumeData.count) bytes)")
                     } catch {
-                        PipelineLogger.shared.log(stage: .transport, message: "[BackgroundDownloadSessionManager] Retry rescheduling failed for task \(taskID): \(error.localizedDescription)")
+                        PipelineLogger.shared.log(stage: .transport, message: "[BackgroundDownloadSessionManager] Failed to save resumeData for task \(taskID): \(error.localizedDescription)")
                     }
                 }
 
