@@ -966,8 +966,6 @@ public struct ResourceRowView: View {
                                     .cornerRadius(3)
                                     .foregroundColor(.secondary)
                             }
-                                    .foregroundColor(.purple)
-                            }
                         }
 
                         // Line 3: Format Badge, DRM, Expiration, & Host
