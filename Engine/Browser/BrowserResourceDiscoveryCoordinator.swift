@@ -296,22 +296,24 @@ public final class BrowserResourceDiscoveryCoordinator: ObservableObject {
         candidate.evidence.contains(where: { $0.localizedCaseInsensitiveContains("live") })
     }
 
-    public func resetMediaCandidateCatalog(for tabID: UUID?, activeTabID: UUID?) {
-        guard let tabID else {
+    public func resetMediaCandidateCatalog(for tabID: UUID? = nil, activeTabID: UUID? = nil) {
+        let targetID = tabID ?? activeTabID
+        guard let targetID else {
             mediaCandidates = mediaCandidates.filter {
                 Self.isPreservedCandidateOnRescan($0)
             }
             return
         }
-        let preserved = mediaCandidateCatalogs[tabID]?.candidates.filter {
+        let preserved = mediaCandidateCatalogs[targetID]?.candidates.filter {
             Self.isPreservedCandidateOnRescan($0)
         } ?? []
         var catalog = BrowserMediaCandidateCatalog()
         for cand in preserved {
             catalog.merge(cand)
         }
-        mediaCandidateCatalogs[tabID] = catalog
-        if tabID == activeTabID { publishMediaCandidates(activeTabID: activeTabID) }
+        mediaCandidateCatalogs[targetID] = catalog
+        let effectiveActive = activeTabID ?? targetID
+        if targetID == effectiveActive { publishMediaCandidates(activeTabID: effectiveActive) }
     }
 
     public func syncMediaCandidatesToDiscoveredResources(for tabID: UUID? = nil, activeTabID: UUID? = nil) {
@@ -679,7 +681,7 @@ public final class BrowserResourceDiscoveryCoordinator: ObservableObject {
     ) {
         guard let url = currentURL else {
             resourceScanError = "No active webpage is currently loaded."
-            resetMediaCandidateCatalog(for: activeTabID)
+            resetMediaCandidateCatalog(for: activeTabID, activeTabID: activeTabID)
             if let activeTabID {
                 let liveResources = (tabDiscoveredResources[activeTabID] ?? []).filter {
                     $0.isLive || $0.isStreamingManifest || $0.isBlobResource || $0.isMediaSourceBlob
