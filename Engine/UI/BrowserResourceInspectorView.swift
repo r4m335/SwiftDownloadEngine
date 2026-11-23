@@ -217,6 +217,22 @@ public struct BrowserResourceInspectorSheet: View {
         eligibleResources.map { $0.toMediaCandidate() }
     }
 
+    private static func extractHeight(from resource: WebpageResource, variantMetadataMap: [String: HLSVariantStreamItem]) -> Int {
+        if let h = variantMetadataMap[resource.id]?.resolution?.height, h > 0 {
+            return h
+        }
+        if let h = resource.hlsVariantPreferences?.maximumHeight, h > 0 {
+            return h
+        }
+        if let text = resource.resolutionText {
+            let digits = text.components(separatedBy: CharacterSet.decimalDigits.inverted).filter { !$0.isEmpty }
+            if let last = digits.last, let parsed = Int(last), parsed > 0 {
+                return parsed
+            }
+        }
+        return 0
+    }
+
     public static func sortedResources(
         _ resources: [WebpageResource],
         sortOption: ResourceSortOption,
@@ -255,8 +271,8 @@ public struct BrowserResourceInspectorSheet: View {
             }
         case .quality:
             return resources.sorted { (lhs: WebpageResource, rhs: WebpageResource) -> Bool in
-                let h0 = variantMetadataMap[lhs.id]?.resolution?.height ?? lhs.hlsVariantPreferences?.maximumHeight ?? lhs.height ?? 0
-                let h1 = variantMetadataMap[rhs.id]?.resolution?.height ?? rhs.hlsVariantPreferences?.maximumHeight ?? rhs.height ?? 0
+                let h0 = extractHeight(from: lhs, variantMetadataMap: variantMetadataMap)
+                let h1 = extractHeight(from: rhs, variantMetadataMap: variantMetadataMap)
                 if h0 != h1 {
                     return h0 > h1
                 }
