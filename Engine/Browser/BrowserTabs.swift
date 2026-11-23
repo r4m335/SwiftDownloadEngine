@@ -58,6 +58,24 @@ public struct BrowserTabState: Identifiable, Equatable, Sendable, Codable {
     }
 }
 
+/// Retains tab-scoped resource discovery, variant stream items, and selections
+/// so that switching tabs preserves each tab's individual resource inspector state.
+public struct BrowserTabResourceState: Sendable, Equatable {
+    public var discoveredResources: [WebpageResource]
+    public var variantStreamItems: [String: HLSVariantStreamItem]
+    public var selectedResourceIDs: Set<String>
+
+    public init(
+        discoveredResources: [WebpageResource] = [],
+        variantStreamItems: [String: HLSVariantStreamItem] = [:],
+        selectedResourceIDs: Set<String> = []
+    ) {
+        self.discoveredResources = discoveredResources
+        self.variantStreamItems = variantStreamItems
+        self.selectedResourceIDs = selectedResourceIDs
+    }
+}
+
 /// Pure tab-selection state. It deliberately has no download or WebKit
 /// responsibilities, so closing a tab cannot cancel managed downloads.
 public struct BrowserTabManager: Sendable, Equatable {

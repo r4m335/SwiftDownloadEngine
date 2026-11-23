@@ -1048,6 +1048,115 @@ extension BrowserToDownloadWorkflowTests {
         vm.selectTab(tab1)
         XCTAssertEqual(vm.activeTabID, tab1)
         XCTAssertEqual(vm.detectedMediaCount, 1)
+        XCTAssertEqual(vm.discoveredResources.count, 1)
+        XCTAssertEqual(vm.discoveredResources.first?.url, mediaURL1)
+    }
+
+    // MARK: - Test 19: Tab Switching Restores Tab-Scoped Resources, Variants, and Selections
+
+    @MainActor
+    func test19_TabSwitching_RestoresTabScopedResourcesVariantsAndSelections() {
+        let vm = BrowserViewModel()
+        let tabA = vm.createNewTab()
+        let tabB = vm.createNewTab()
+
+        // Tab A setup
+        vm.selectTab(tabA)
+        let resA1 = WebpageResource(
+            id: "resA1",
+            url: URL(string: "https://example.com/streamA.m3u8")!,
+            title: "Stream A",
+            suggestedFilename: "streamA.m3u8",
+            resourceType: .video,
+            manifestText: "#EXTM3U"
+        )
+        let itemA = HLSVariantStreamItem(
+            id: "resA1",
+            masterURL: resA1.url,
+            variantURL: resA1.url,
+            bandwidth: 5_000_000,
+            resolution: HLSStreamResolution(width: 1920, height: 1080),
+            qualityLabel: "1080p"
+        )
+        vm.ingestMediaResources([resA1], tabID: tabA)
+        vm.variantStreamItems[resA1.id] = itemA
+        vm.selectResource(resA1.id, tabID: tabA)
+
+        XCTAssertEqual(vm.discoveredResources.count, 1)
+        XCTAssertEqual(vm.discoveredResources.first?.id, "resA1")
+        XCTAssertEqual(vm.variantStreamItems["resA1"]?.qualityLabel, "1080p")
+        XCTAssertTrue(vm.isResourceSelected("resA1", tabID: tabA))
+
+        // Background ingestion for Tab B while Tab A is currently active
+        let resB1 = WebpageResource(
+            id: "resB1",
+            url: URL(string: "https://example.com/videoB1.mp4")!,
+            title: "Video B1",
+            suggestedFilename: "videoB1.mp4",
+            resourceType: .video
+        )
+        let resB2 = WebpageResource(
+            id: "resB2",
+            url: URL(string: "https://example.com/videoB2.mp4")!,
+            title: "Video B2",
+            suggestedFilename: "videoB2.mp4",
+            resourceType: .video
+        )
+        vm.ingestMediaResources([resB1, resB2], tabID: tabB)
+        vm.selectResource(resB2.id, tabID: tabB)
+
+        // Tab A active state must NOT be polluted by Tab B's background ingestion
+        XCTAssertEqual(vm.discoveredResources.count, 1)
+        XCTAssertEqual(vm.discoveredResources.first?.id, "resA1")
+        XCTAssertEqual(vm.discoveredResources(for: tabB).count, 2)
+        XCTAssertTrue(vm.isResourceSelected(resB2.id, tabID: tabB))
+
+        // Switch to Tab B
+        vm.selectTab(tabB)
+        XCTAssertEqual(vm.activeTabID, tabB)
+        XCTAssertEqual(vm.discoveredResources.count, 2)
+        XCTAssertTrue(vm.discoveredResources.contains(where: { $0.id == "resB1" }))
+        XCTAssertTrue(vm.discoveredResources.contains(where: { $0.id == "resB2" }))
+        XCTAssertTrue(vm.selectedResourceIDs.contains("resB2"))
+        XCTAssertFalse(vm.selectedResourceIDs.contains("resA1"))
+
+        // Add Tab B variant item
+        let itemB = HLSVariantStreamItem(
+            id: "resB1",
+            masterURL: resB1.url,
+            variantURL: resB1.url,
+            bandwidth: 2_000_000,
+            resolution: HLSStreamResolution(width: 1280, height: 720),
+            qualityLabel: "720p"
+        )
+        vm.variantStreamItems[resB1.id] = itemB
+
+        // Switch back to Tab A
+        vm.selectTab(tabA)
+        XCTAssertEqual(vm.activeTabID, tabA)
+        XCTAssertEqual(vm.discoveredResources.count, 1)
+        XCTAssertEqual(vm.discoveredResources.first?.id, "resA1")
+        XCTAssertEqual(vm.variantStreamItems["resA1"]?.qualityLabel, "1080p")
+        XCTAssertNil(vm.variantStreamItems["resB1"])
+        XCTAssertTrue(vm.selectedResourceIDs.contains("resA1"))
+        XCTAssertFalse(vm.selectedResourceIDs.contains("resB2"))
+
+        // Switch back to Tab B
+        vm.selectTab(tabB)
+        XCTAssertEqual(vm.activeTabID, tabB)
+        XCTAssertEqual(vm.discoveredResources.count, 2)
+        XCTAssertEqual(vm.variantStreamItems["resB1"]?.qualityLabel, "720p")
+        XCTAssertNil(vm.variantStreamItems["resA1"])
+        XCTAssertTrue(vm.selectedResourceIDs.contains("resB2"))
+
+        // Close Tab B - Tab A should become active with all its resources and selections restored
+        let replacement = vm.closeTab(tabB)
+        XCTAssertEqual(replacement, tabA)
+        XCTAssertEqual(vm.activeTabID, tabA)
+        XCTAssertEqual(vm.discoveredResources.count, 1)
+        XCTAssertEqual(vm.discoveredResources.first?.id, "resA1")
+        XCTAssertEqual(vm.variantStreamItems["resA1"]?.qualityLabel, "1080p")
+        XCTAssertTrue(vm.selectedResourceIDs.contains("resA1"))
     }
 }
 #endif

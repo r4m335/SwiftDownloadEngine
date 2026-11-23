@@ -122,10 +122,197 @@ public final class BrowserViewModel: NSObject, ObservableObject {
     public let mediaDiscoveryBridge = BrowserMediaDiscoveryBridge()
 
     // Tab-scoped media grabber candidate & variant caches
+    public var tabResourceStates: [UUID: BrowserTabResourceState] = [:]
     public var tabDiscoveredResources: [UUID: [WebpageResource]] = [:]
     public var tabVariantStreamItems: [UUID: [String: HLSVariantStreamItem]] = [:]
     public var tabSelectedResourceIDs: [UUID: Set<String>] = [:]
     private var activeProbeTasks: [UUID: [Task<Void, Never>]] = [:]
+
+    /// Persists the active tab's resource inspector state into its tab-scoped caches.
+    public func saveActiveTabResourceState() {
+        guard let current = activeTabID else { return }
+        tabDiscoveredResources[current] = discoveredResources
+        tabVariantStreamItems[current] = variantStreamItems
+        tabSelectedResourceIDs[current] = selectedResourceIDs
+        tabResourceStates[current] = BrowserTabResourceState(
+            discoveredResources: discoveredResources,
+            variantStreamItems: variantStreamItems,
+            selectedResourceIDs: selectedResourceIDs
+        )
+    }
+
+    /// Restores a given tab's resource inspector state into the published properties.
+    public func restoreTabResourceState(for tabID: UUID?) {
+        guard let targetID = tabID else {
+            discoveredResources = []
+            variantStreamItems = [:]
+            selectedResourceIDs = []
+            return
+        }
+        let restoredResources = tabDiscoveredResources[targetID] ?? tabResourceStates[targetID]?.discoveredResources ?? []
+        let restoredVariants = tabVariantStreamItems[targetID] ?? tabResourceStates[targetID]?.variantStreamItems ?? [:]
+        let restoredSelections = tabSelectedResourceIDs[targetID] ?? tabResourceStates[targetID]?.selectedResourceIDs ?? []
+
+        discoveredResources = restoredResources
+        variantStreamItems = restoredVariants
+        selectedResourceIDs = restoredSelections
+
+        tabDiscoveredResources[targetID] = restoredResources
+        tabVariantStreamItems[targetID] = restoredVariants
+        tabSelectedResourceIDs[targetID] = restoredSelections
+        tabResourceStates[targetID] = BrowserTabResourceState(
+            discoveredResources: restoredResources,
+            variantStreamItems: restoredVariants,
+            selectedResourceIDs: restoredSelections
+        )
+    }
+
+    /// Returns the comprehensive tab-scoped resource state for a given tab (or the active tab).
+    public func resourceState(for tabID: UUID? = nil) -> BrowserTabResourceState {
+        let targetID = tabID ?? activeTabID
+        if let targetID, targetID == activeTabID {
+            return BrowserTabResourceState(
+                discoveredResources: discoveredResources,
+                variantStreamItems: variantStreamItems,
+                selectedResourceIDs: selectedResourceIDs
+            )
+        } else if let targetID {
+            return tabResourceStates[targetID] ?? BrowserTabResourceState(
+                discoveredResources: tabDiscoveredResources[targetID] ?? [],
+                variantStreamItems: tabVariantStreamItems[targetID] ?? [:],
+                selectedResourceIDs: tabSelectedResourceIDs[targetID] ?? []
+            )
+        }
+        return BrowserTabResourceState(
+            discoveredResources: discoveredResources,
+            variantStreamItems: variantStreamItems,
+            selectedResourceIDs: selectedResourceIDs
+        )
+    }
+
+    /// Returns discovered resources for a specific tab without requiring a tab switch.
+    public func discoveredResources(for tabID: UUID? = nil) -> [WebpageResource] {
+        let targetID = tabID ?? activeTabID
+        if let targetID, targetID == activeTabID {
+            return discoveredResources
+        } else if let targetID {
+            return tabDiscoveredResources[targetID] ?? tabResourceStates[targetID]?.discoveredResources ?? []
+        }
+        return discoveredResources
+    }
+
+    /// Returns variant stream items for a specific tab without requiring a tab switch.
+    public func variantStreamItems(for tabID: UUID? = nil) -> [String: HLSVariantStreamItem] {
+        let targetID = tabID ?? activeTabID
+        if let targetID, targetID == activeTabID {
+            return variantStreamItems
+        } else if let targetID {
+            return tabVariantStreamItems[targetID] ?? tabResourceStates[targetID]?.variantStreamItems ?? [:]
+        }
+        return variantStreamItems
+    }
+
+    /// Returns selected resource IDs for a specific tab without requiring a tab switch.
+    public func selectedResourceIDs(for tabID: UUID? = nil) -> Set<String> {
+        let targetID = tabID ?? activeTabID
+        if let targetID, targetID == activeTabID {
+            return selectedResourceIDs
+        } else if let targetID {
+            return tabSelectedResourceIDs[targetID] ?? tabResourceStates[targetID]?.selectedResourceIDs ?? []
+        }
+        return selectedResourceIDs
+    }
+
+    /// Checks if a resource ID is selected in the given tab (or active tab).
+    public func isResourceSelected(_ id: String, tabID: UUID? = nil) -> Bool {
+        selectedResourceIDs(for: tabID).contains(id)
+    }
+
+    /// Toggles resource selection for the given tab (or active tab).
+    public func toggleResourceSelection(_ id: String, tabID: UUID? = nil) {
+        let targetID = tabID ?? activeTabID
+        if let targetID {
+            var selections = tabSelectedResourceIDs[targetID] ?? tabResourceStates[targetID]?.selectedResourceIDs ?? (targetID == activeTabID ? selectedResourceIDs : [])
+            if selections.contains(id) {
+                selections.remove(id)
+            } else {
+                selections.insert(id)
+            }
+            tabSelectedResourceIDs[targetID] = selections
+            tabResourceStates[targetID, default: BrowserTabResourceState()].selectedResourceIDs = selections
+            if targetID == activeTabID {
+                selectedResourceIDs = selections
+            }
+        } else {
+            if selectedResourceIDs.contains(id) {
+                selectedResourceIDs.remove(id)
+            } else {
+                selectedResourceIDs.insert(id)
+            }
+        }
+    }
+
+    /// Selects a resource ID for the given tab (or active tab).
+    public func selectResource(_ id: String, tabID: UUID? = nil) {
+        let targetID = tabID ?? activeTabID
+        if let targetID {
+            var selections = tabSelectedResourceIDs[targetID] ?? tabResourceStates[targetID]?.selectedResourceIDs ?? (targetID == activeTabID ? selectedResourceIDs : [])
+            selections.insert(id)
+            tabSelectedResourceIDs[targetID] = selections
+            tabResourceStates[targetID, default: BrowserTabResourceState()].selectedResourceIDs = selections
+            if targetID == activeTabID {
+                selectedResourceIDs = selections
+            }
+        } else {
+            selectedResourceIDs.insert(id)
+        }
+    }
+
+    /// Deselects a resource ID for the given tab (or active tab).
+    public func deselectResource(_ id: String, tabID: UUID? = nil) {
+        let targetID = tabID ?? activeTabID
+        if let targetID {
+            var selections = tabSelectedResourceIDs[targetID] ?? tabResourceStates[targetID]?.selectedResourceIDs ?? (targetID == activeTabID ? selectedResourceIDs : [])
+            selections.remove(id)
+            tabSelectedResourceIDs[targetID] = selections
+            tabResourceStates[targetID, default: BrowserTabResourceState()].selectedResourceIDs = selections
+            if targetID == activeTabID {
+                selectedResourceIDs = selections
+            }
+        } else {
+            selectedResourceIDs.remove(id)
+        }
+    }
+
+    /// Selects all discovered resources for the given tab (or active tab).
+    public func selectAllResources(tabID: UUID? = nil) {
+        let targetID = tabID ?? activeTabID
+        let resources = discoveredResources(for: targetID)
+        let allIDs = Set(resources.map(\.id))
+        if let targetID {
+            tabSelectedResourceIDs[targetID] = allIDs
+            tabResourceStates[targetID, default: BrowserTabResourceState()].selectedResourceIDs = allIDs
+            if targetID == activeTabID {
+                selectedResourceIDs = allIDs
+            }
+        } else {
+            selectedResourceIDs = allIDs
+        }
+    }
+
+    /// Deselects all resources for the given tab (or active tab).
+    public func deselectAllResources(tabID: UUID? = nil) {
+        let targetID = tabID ?? activeTabID
+        if let targetID {
+            tabSelectedResourceIDs[targetID] = []
+            tabResourceStates[targetID, default: BrowserTabResourceState()].selectedResourceIDs = []
+            if targetID == activeTabID {
+                selectedResourceIDs = []
+            }
+        } else {
+            selectedResourceIDs = []
+        }
+    }
 
     /// Cancels all in-flight media probe and manifest expansion tasks associated with a tab.
     public func cancelInFlightProbes(for tabID: UUID) {
@@ -456,11 +643,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         isIncognito: Bool = false,
         isDesktopMode: Bool = false
     ) -> UUID {
-        if let current = activeTabID {
-            tabDiscoveredResources[current] = discoveredResources
-            tabVariantStreamItems[current] = variantStreamItems
-            tabSelectedResourceIDs[current] = selectedResourceIDs
-        }
+        saveActiveTabResourceState()
         let id = tabManager.createTab(
             select: true,
             isIncognito: isIncognito,
@@ -472,6 +655,10 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         discoveredResources = []
         variantStreamItems = [:]
         selectedResourceIDs = []
+        tabDiscoveredResources[id] = []
+        tabVariantStreamItems[id] = [:]
+        tabSelectedResourceIDs[id] = []
+        tabResourceStates[id] = BrowserTabResourceState()
 
         publishMediaCandidates()
         isShowingTabSwitcher = false
@@ -613,19 +800,13 @@ public final class BrowserViewModel: NSObject, ObservableObject {
 
     @discardableResult
     public func selectTab(_ id: UUID) -> Bool {
-        if let current = activeTabID {
-            tabDiscoveredResources[current] = discoveredResources
-            tabVariantStreamItems[current] = variantStreamItems
-            tabSelectedResourceIDs[current] = selectedResourceIDs
-        }
+        saveActiveTabResourceState()
         guard tabManager.selectTab(id) else { return false }
         publishTabState()
         syncActiveTabState()
 
-        // Restore tab-scoped discovered resources and variant items
-        discoveredResources = tabDiscoveredResources[id] ?? []
-        variantStreamItems = tabVariantStreamItems[id] ?? [:]
-        selectedResourceIDs = tabSelectedResourceIDs[id] ?? []
+        // Restore tab-scoped discovered resources, variant items, and selections
+        restoreTabResourceState(for: id)
 
         publishMediaCandidates()
         isShowingTabSwitcher = false
@@ -641,6 +822,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         tabDiscoveredResources.removeValue(forKey: id)
         tabVariantStreamItems.removeValue(forKey: id)
         tabSelectedResourceIDs.removeValue(forKey: id)
+        tabResourceStates.removeValue(forKey: id)
         #if canImport(WebKit)
         cancelBlobCapture(for: id)
         cancelMSECapture(for: id)
@@ -663,6 +845,10 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         let replacement = tabManager.closeTab(id)
         publishTabState()
         syncActiveTabState()
+
+        // Restore tab-scoped discovered resources, variant items, and selections for the replacement tab
+        restoreTabResourceState(for: replacement)
+
         publishMediaCandidates()
         if replacement == nil {
             isShowingTabSwitcher = false
@@ -1097,6 +1283,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         tabDiscoveredResources.removeValue(forKey: tabID)
         tabVariantStreamItems.removeValue(forKey: tabID)
         tabSelectedResourceIDs.removeValue(forKey: tabID)
+        tabResourceStates.removeValue(forKey: tabID)
         if tabID == activeTabID {
             discoveredResources = []
             selectedResourceIDs = []
@@ -1746,17 +1933,27 @@ public final class BrowserViewModel: NSObject, ObservableObject {
     /// Synchronizes all media candidates captured dynamically during video playback
     /// directly into discoveredResources, ensuring the resource grabber can display
     /// grabbed links immediately without waiting for DOM evaluation or showing a blocking spinner.
-    public func syncMediaCandidatesToDiscoveredResources() {
-        for candidate in mediaCandidates {
+    public func syncMediaCandidatesToDiscoveredResources(for tabID: UUID? = nil) {
+        guard let targetTabID = tabID ?? activeTabID else { return }
+        var currentResources = (targetTabID == activeTabID)
+            ? discoveredResources
+            : (tabDiscoveredResources[targetTabID] ?? tabResourceStates[targetTabID]?.discoveredResources ?? [])
+
+        let candidates = (targetTabID == activeTabID)
+            ? mediaCandidates
+            : (mediaCandidateCatalogs[targetTabID]?.candidates ?? [])
+
+        var modified = false
+        for candidate in candidates {
             guard let res = candidate.toWebpageResource() else { continue }
             let urlStr = res.url.absoluteString.lowercased()
-            if let existingIndex = discoveredResources.firstIndex(where: { $0.url.absoluteString.lowercased() == urlStr }) {
-                let old = discoveredResources[existingIndex]
+            if let existingIndex = currentResources.firstIndex(where: { $0.url.absoluteString.lowercased() == urlStr }) {
+                let old = currentResources[existingIndex]
                 let shouldUpdateManifest = (old.manifestText == nil || old.manifestText?.isEmpty == true) && (candidate.cachedManifestText?.isEmpty == false)
                 let shouldUpdateResolution = old.resolutionText == nil && res.resolutionText != nil
                 let shouldUpdateDuration = old.duration == nil && res.duration != nil
                 if shouldUpdateManifest || shouldUpdateResolution || shouldUpdateDuration {
-                    discoveredResources[existingIndex] = WebpageResource(
+                    currentResources[existingIndex] = WebpageResource(
                         id: old.id,
                         url: old.url,
                         title: old.title,
@@ -1782,19 +1979,26 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                         audioLanguage: res.audioLanguage ?? old.audioLanguage,
                         isAudioVideoSplit: old.isAudioVideoSplit
                     )
+                    modified = true
                 }
                 continue
             }
 
-            let knownVariants = HLSResourceGrouping.variantURLs(in: discoveredResources)
+            let knownVariants = HLSResourceGrouping.variantURLs(in: currentResources)
             if HLSResourceGrouping.isVariantOrRenditionURL(res.url, matchingVariantURLs: knownVariants) {
                 continue
             }
 
-            discoveredResources.insert(res, at: 0)
+            currentResources.insert(res, at: 0)
+            modified = true
         }
-        if let tabID = activeTabID {
-            tabDiscoveredResources[tabID] = discoveredResources
+
+        if modified || tabDiscoveredResources[targetTabID] == nil {
+            tabDiscoveredResources[targetTabID] = currentResources
+            tabResourceStates[targetTabID, default: BrowserTabResourceState()].discoveredResources = currentResources
+            if targetTabID == activeTabID {
+                discoveredResources = currentResources
+            }
         }
     }
 
@@ -2526,13 +2730,16 @@ public final class BrowserViewModel: NSObject, ObservableObject {
 
     /// Asynchronously inspects and expands streaming master manifests (HLS and DASH)
     /// into individual selectable video and audio quality resources directly in `discoveredResources`.
-    public func expandStreamingManifests(in resources: [WebpageResource]? = nil) {
-        let targets = (resources ?? discoveredResources).filter {
+    public func expandStreamingManifests(in resources: [WebpageResource]? = nil, tabID: UUID? = nil) {
+        let targetTabID = tabID ?? activeTabID
+        let currentResources = (targetTabID == activeTabID)
+            ? discoveredResources
+            : (targetTabID.flatMap { tabDiscoveredResources[$0] ?? tabResourceStates[$0]?.discoveredResources } ?? [])
+        let targets = (resources ?? currentResources).filter {
             $0.isStreamingManifest && $0.hlsVariantPreferences == nil && $0.dashVideoRepresentationID == nil && $0.dashTextRepresentationID == nil
         }
         guard !targets.isEmpty else { return }
 
-        let tabID = activeTabID
         let expansionTask = Task { @MainActor [weak self] in
             guard let self = self else { return }
             for manifest in targets {
@@ -2543,9 +2750,23 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                     continue
                 }
 
-                for variant in expanded {
-                    if let item = await self.streamManifestExpander.variantItem(for: variant.id) {
-                        self.variantStreamItems[variant.id] = item
+                if let targetTabID {
+                    var tabVariants = self.tabVariantStreamItems[targetTabID] ?? self.tabResourceStates[targetTabID]?.variantStreamItems ?? [:]
+                    for variant in expanded {
+                        if let item = await self.streamManifestExpander.variantItem(for: variant.id) {
+                            tabVariants[variant.id] = item
+                            if targetTabID == self.activeTabID {
+                                self.variantStreamItems[variant.id] = item
+                            }
+                        }
+                    }
+                    self.tabVariantStreamItems[targetTabID] = tabVariants
+                    self.tabResourceStates[targetTabID, default: BrowserTabResourceState()].variantStreamItems = tabVariants
+                } else {
+                    for variant in expanded {
+                        if let item = await self.streamManifestExpander.variantItem(for: variant.id) {
+                            self.variantStreamItems[variant.id] = item
+                        }
                     }
                 }
 
@@ -2578,11 +2799,14 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                         }
                     }
                 }
-                childURLs.formUnion(HLSResourceGrouping.variantURLs(in: self.discoveredResources))
+                let baseResources = (targetTabID == self.activeTabID)
+                    ? self.discoveredResources
+                    : (targetTabID.flatMap { self.tabDiscoveredResources[$0] ?? self.tabResourceStates[$0]?.discoveredResources } ?? [])
+                childURLs.formUnion(HLSResourceGrouping.variantURLs(in: baseResources))
 
                 var updated: [WebpageResource] = []
                 var inserted = false
-                for res in self.discoveredResources {
+                for res in baseResources {
                     if res.id == manifest.id || (res.url == manifest.url && res.hlsVariantPreferences == nil && res.dashVideoRepresentationID == nil) {
                         if !inserted {
                             for v in expanded {
@@ -2654,14 +2878,19 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                 updated.removeAll { res in
                     res.hlsVariantPreferences == nil && HLSResourceGrouping.isVariantOrRenditionURL(res.url, matchingVariantURLs: childURLs)
                 }
-                self.discoveredResources = updated
-                if let tID = self.activeTabID {
-                    self.tabDiscoveredResources[tID] = updated
+                if let targetTabID {
+                    self.tabDiscoveredResources[targetTabID] = updated
+                    self.tabResourceStates[targetTabID, default: BrowserTabResourceState()].discoveredResources = updated
+                    if targetTabID == self.activeTabID {
+                        self.discoveredResources = updated
+                    }
+                } else {
+                    self.discoveredResources = updated
                 }
             }
         }
-        if let tabID {
-            activeProbeTasks[tabID, default: []].append(expansionTask)
+        if let targetTabID {
+            activeProbeTasks[targetTabID, default: []].append(expansionTask)
         }
     }
 
@@ -3172,6 +3401,12 @@ public final class BrowserViewModel: NSObject, ObservableObject {
             discoveredResources = []
             selectedResourceIDs = []
             resetMediaCandidateCatalog(for: activeTabID)
+            if let activeTabID {
+                tabDiscoveredResources.removeValue(forKey: activeTabID)
+                tabVariantStreamItems.removeValue(forKey: activeTabID)
+                tabSelectedResourceIDs.removeValue(forKey: activeTabID)
+                tabResourceStates.removeValue(forKey: activeTabID)
+            }
             return
         }
 
@@ -3283,14 +3518,19 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                         self.discoveredResources.insert(contentsOf: newToInsert, at: 0)
                         if let tabID = self.activeTabID {
                             self.tabDiscoveredResources[tabID] = self.discoveredResources
+                            self.tabResourceStates[tabID, default: BrowserTabResourceState()].discoveredResources = self.discoveredResources
                         }
                     }
                     if self.selectedResourceIDs.isEmpty,
                        let manifest = self.discoveredResources.first(where: { $0.isStreamingManifest }) {
                         self.selectedResourceIDs.insert(manifest.id)
+                        if let tabID = self.activeTabID {
+                            self.tabSelectedResourceIDs[tabID] = self.selectedResourceIDs
+                            self.tabResourceStates[tabID, default: BrowserTabResourceState()].selectedResourceIDs = self.selectedResourceIDs
+                        }
                     }
                     self.ingestMediaResources(contextualResources, tabID: self.activeTabID)
-                    self.expandStreamingManifests(in: contextualResources)
+                    self.expandStreamingManifests(in: contextualResources, tabID: self.activeTabID)
                 }
             }
         }
@@ -3537,10 +3777,15 @@ public final class BrowserViewModel: NSObject, ObservableObject {
             discoveredResources.insert(immediateResource, at: 0)
             if let targetTabID = tabID ?? activeTabID {
                 tabDiscoveredResources[targetTabID] = discoveredResources
+                tabResourceStates[targetTabID, default: BrowserTabResourceState()].discoveredResources = discoveredResources
             }
             if selectedResourceIDs.isEmpty,
                let manifest = discoveredResources.first(where: { $0.isStreamingManifest }) {
                 selectedResourceIDs.insert(manifest.id)
+                if let targetTabID = tabID ?? activeTabID {
+                    tabSelectedResourceIDs[targetTabID] = selectedResourceIDs
+                    tabResourceStates[targetTabID, default: BrowserTabResourceState()].selectedResourceIDs = selectedResourceIDs
+                }
             }
             ingestMediaResource(immediateResource, tabID: tabID ?? activeTabID)
         }
@@ -3560,6 +3805,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                     self.discoveredResources[idx] = enriched
                     if let tID = self.activeTabID {
                         self.tabDiscoveredResources[tID] = self.discoveredResources
+                        self.tabResourceStates[tID, default: BrowserTabResourceState()].discoveredResources = self.discoveredResources
                     }
                 }
             }
@@ -3598,11 +3844,20 @@ public final class BrowserViewModel: NSObject, ObservableObject {
     ) {
         guard let targetTabID = tabID ?? activeTabID else { return }
         var catalog = mediaCandidateCatalogs[targetTabID] ?? BrowserMediaCandidateCatalog()
-        var newToInsert: [WebpageResource] = []
-        var seenURLs = Set(discoveredResources.map { $0.url })
-        let knownVariants = HLSResourceGrouping.variantURLs(in: discoveredResources)
         for resource in resources {
             _ = catalog.ingest(resource: resource)
+        }
+        mediaCandidateCatalogs[targetTabID] = catalog
+
+        var targetResources = (targetTabID == activeTabID)
+            ? discoveredResources
+            : (tabDiscoveredResources[targetTabID] ?? tabResourceStates[targetTabID]?.discoveredResources ?? [])
+
+        var seenURLs = Set(targetResources.map { $0.url })
+        let knownVariants = HLSResourceGrouping.variantURLs(in: targetResources)
+        var newToInsert: [WebpageResource] = []
+
+        for resource in resources {
             if !seenURLs.contains(resource.url) {
                 if resource.hlsVariantPreferences == nil && HLSResourceGrouping.isVariantOrRenditionURL(resource.url, matchingVariantURLs: knownVariants) {
                     continue
@@ -3611,17 +3866,33 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                 newToInsert.append(resource)
             }
         }
+
         if !newToInsert.isEmpty {
-            discoveredResources.insert(contentsOf: newToInsert, at: 0)
+            targetResources.insert(contentsOf: newToInsert, at: 0)
+            tabDiscoveredResources[targetTabID] = targetResources
+            tabResourceStates[targetTabID, default: BrowserTabResourceState()].discoveredResources = targetResources
+            if targetTabID == activeTabID {
+                discoveredResources = targetResources
+            }
         }
-        mediaCandidateCatalogs[targetTabID] = catalog
-        if selectedResourceIDs.isEmpty,
-           let manifest = discoveredResources.first(where: { $0.isStreamingManifest }) {
-            selectedResourceIDs.insert(manifest.id)
+
+        var targetSelections = (targetTabID == activeTabID)
+            ? selectedResourceIDs
+            : (tabSelectedResourceIDs[targetTabID] ?? tabResourceStates[targetTabID]?.selectedResourceIDs ?? [])
+
+        if targetSelections.isEmpty,
+           let manifest = targetResources.first(where: { $0.isStreamingManifest }) {
+            targetSelections.insert(manifest.id)
+            tabSelectedResourceIDs[targetTabID] = targetSelections
+            tabResourceStates[targetTabID, default: BrowserTabResourceState()].selectedResourceIDs = targetSelections
+            if targetTabID == activeTabID {
+                selectedResourceIDs = targetSelections
+            }
         }
+
         if targetTabID == activeTabID { publishMediaCandidates() }
         if resources.contains(where: { $0.isStreamingManifest && $0.hlsVariantPreferences == nil && $0.dashVideoRepresentationID == nil }) {
-            expandStreamingManifests(in: resources)
+            expandStreamingManifests(in: resources, tabID: targetTabID)
         }
     }
 
