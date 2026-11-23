@@ -3375,20 +3375,11 @@ public final class BrowserViewModel: NSObject, ObservableObject {
     }
 
     public static func isPreservedCandidateOnRescan(_ candidate: BrowserMediaCandidate) -> Bool {
-        candidate.blobKind == .mediaSource ||
-        candidate.kind == .mediaSource ||
-        candidate.blobKind == .blob ||
-        candidate.kind == .completeBlob ||
-        candidate.associatedManifestURL != nil ||
-        candidate.isLive ||
-        candidate.isLiveStream ||
-        candidate.kind == .hlsManifest ||
-        candidate.kind == .dashManifest ||
-        candidate.evidence.contains(where: { $0.localizedCaseInsensitiveContains("live") })
+        BrowserResourceDiscoveryCoordinator.isPreservedCandidateOnRescan(candidate)
     }
 
     public func resetMediaCandidateCatalog(for tabID: UUID? = nil) {
-        discoveryCoordinator.resetMediaCandidateCatalog(for: tabID)
+        discoveryCoordinator.resetMediaCandidateCatalog(for: tabID, activeTabID: activeTabID)
     }
 
         #if canImport(WebKit)

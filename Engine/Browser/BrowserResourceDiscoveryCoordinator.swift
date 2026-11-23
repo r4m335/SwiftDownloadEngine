@@ -283,9 +283,35 @@ public final class BrowserResourceDiscoveryCoordinator: ObservableObject {
         syncMediaCandidatesToDiscoveredResources(for: activeTabID, activeTabID: activeTabID)
     }
 
-    public func resetMediaCandidateCatalog(for tabID: UUID?) {
-        guard let tabID else { return }
-        mediaCandidateCatalogs.removeValue(forKey: tabID)
+    public static func isPreservedCandidateOnRescan(_ candidate: BrowserMediaCandidate) -> Bool {
+        candidate.blobKind == .mediaSource ||
+        candidate.kind == .mediaSource ||
+        candidate.blobKind == .blob ||
+        candidate.kind == .completeBlob ||
+        candidate.associatedManifestURL != nil ||
+        candidate.isLive ||
+        candidate.isLiveStream ||
+        candidate.kind == .hlsManifest ||
+        candidate.kind == .dashManifest ||
+        candidate.evidence.contains(where: { $0.localizedCaseInsensitiveContains("live") })
+    }
+
+    public func resetMediaCandidateCatalog(for tabID: UUID?, activeTabID: UUID?) {
+        guard let tabID else {
+            mediaCandidates = mediaCandidates.filter {
+                Self.isPreservedCandidateOnRescan($0)
+            }
+            return
+        }
+        let preserved = mediaCandidateCatalogs[tabID]?.candidates.filter {
+            Self.isPreservedCandidateOnRescan($0)
+        } ?? []
+        var catalog = BrowserMediaCandidateCatalog()
+        for cand in preserved {
+            catalog.merge(cand)
+        }
+        mediaCandidateCatalogs[tabID] = catalog
+        if tabID == activeTabID { publishMediaCandidates(activeTabID: activeTabID) }
     }
 
     public func syncMediaCandidatesToDiscoveredResources(for tabID: UUID? = nil, activeTabID: UUID? = nil) {
