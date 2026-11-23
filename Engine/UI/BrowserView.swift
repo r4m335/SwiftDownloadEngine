@@ -492,6 +492,75 @@ public final class BrowserViewModel: NSObject, ObservableObject {
     private var pendingNavigationURLs: [UUID: URL] = [:]
     private var tabSessions: [UUID: BrowserWebViewSession] = [:]
 
+    // Navigation generation tracking to prevent stale callbacks from race conditions
+    private var tabNavigationGenerations: [UUID: UInt64] = [:]
+    private var tabNavigationTargets: [UUID: URL] = [:]
+
+    // Memory pressure management & LRU tab eviction
+    private var tabLastAccessed: [UUID: Date] = [:]
+    public var maxInactiveWebViews: Int = 3
+
+    @discardableResult
+    public func nextNavigationGeneration(for tabID: UUID, target: URL? = nil) -> UInt64 {
+        let next = tabNavigationGenerations[tabID, default: 0] &+ 1
+        tabNavigationGenerations[tabID] = next
+        tabNavigationTargets[tabID] = target
+        return next
+    }
+
+    public func currentNavigationGeneration(for tabID: UUID) -> UInt64 {
+        tabNavigationGenerations[tabID, default: 0]
+    }
+
+    public func isNavigationCurrent(tabID: UUID, generation: UInt64, url: URL?) -> Bool {
+        guard let current = tabNavigationGenerations[tabID] else {
+            // First navigation or unregistered
+            return true
+        }
+        return current == generation
+    }
+
+    public func recordTabAccess(_ tabID: UUID) {
+        tabLastAccessed[tabID] = Date()
+    }
+
+    public func handleMemoryWarning() {
+        PipelineLogger.shared.log(stage: .browser, message: "[BrowserViewModel] Memory warning received. Evicting inactive WebViews.")
+        evictInactiveWebViews(maxKeepInactive: 0)
+    }
+
+    public func evictInactiveWebViews(keepingActive activeID: UUID? = nil, maxKeepInactive: Int = 2) {
+        let keepID = activeID ?? self.activeTabID
+        let candidateIDs = tabSessions.keys.filter { $0 != keepID }
+        guard candidateIDs.count > maxKeepInactive else { return }
+
+        let sortedCandidates = candidateIDs.sorted { id1, id2 in
+            let d1 = tabLastAccessed[id1] ?? .distantPast
+            let d2 = tabLastAccessed[id2] ?? .distantPast
+            return d1 < d2
+        }
+
+        let evictCount = candidateIDs.count - maxKeepInactive
+        let toEvict = sortedCandidates.prefix(evictCount)
+
+        for tabID in toEvict {
+            if let session = tabSessions.removeValue(forKey: tabID) {
+                session.tearDown()
+                PipelineLogger.shared.log(stage: .browser, message: "[BrowserViewModel] Evicted inactive WebView session for tab \(tabID).")
+            }
+        }
+    }
+
+    public func ensureRestoredTabLoaded(for tabID: UUID) {
+        guard let tab = tabManager.tab(withID: tabID),
+              let url = tab.url,
+              url.absoluteString != "about:blank" else { return }
+        let session = webViewSession(for: tabID)
+        if session.webView.url == nil {
+            session.webView.load(URLRequest(url: url))
+        }
+    }
+
     /// Attaches the WebKit instance created by SwiftUI and delivers the
     /// navigation requested while the home view was being replaced.
     func attachWebView(_ webView: WKWebView, for tabID: UUID? = nil) {
@@ -500,8 +569,12 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         if targetTabID == activeTabID {
             self.webView = webView
         }
-        _ = consumePendingNavigation(for: targetTabID) { request in
+        recordTabAccess(targetTabID)
+        let consumed = consumePendingNavigation(for: targetTabID) { request in
             webView.load(request)
+        }
+        if !consumed, webView.url == nil, let tab = tabManager.tab(withID: targetTabID), let url = tab.url, url.absoluteString != "about:blank" {
+            webView.load(URLRequest(url: url))
         }
     }
 
@@ -656,6 +729,23 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                 self?.load(url: url)
             }
         }
+
+        #if os(iOS)
+        NotificationCenter.default.addObserver(
+            forName: UIApplication.didReceiveMemoryWarningNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.handleMemoryWarning()
+        }
+        #endif
+
+        #if canImport(WebKit)
+        if let activeID = activeTabID {
+            recordTabAccess(activeID)
+            ensureRestoredTabLoaded(for: activeID)
+        }
+        #endif
     }
 
     private func publishTabState() {
@@ -743,6 +833,10 @@ public final class BrowserViewModel: NSObject, ObservableObject {
 
         publishMediaCandidates()
         isShowingTabSwitcher = false
+        recordTabAccess(id)
+        #if canImport(WebKit)
+        evictInactiveWebViews(keepingActive: id, maxKeepInactive: maxInactiveWebViews)
+        #endif
         if let url = url {
             #if canImport(WebKit)
             let session = webViewSession(for: id)
@@ -883,6 +977,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
     public func selectTab(_ id: UUID) -> Bool {
         saveActiveTabResourceState()
         guard tabManager.selectTab(id) else { return false }
+        recordTabAccess(id)
         publishTabState()
         syncActiveTabState()
 
@@ -892,6 +987,9 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         publishMediaCandidates()
         isShowingTabSwitcher = false
         errorMessage = nil
+        #if canImport(WebKit)
+        ensureRestoredTabLoaded(for: id)
+        #endif
         return true
     }
 
@@ -908,10 +1006,11 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         cancelBlobCapture(for: id)
         cancelMSECapture(for: id)
         pendingNavigationURLs.removeValue(forKey: id)
+        tabNavigationGenerations.removeValue(forKey: id)
+        tabNavigationTargets.removeValue(forKey: id)
+        tabLastAccessed.removeValue(forKey: id)
         if let session = tabSessions.removeValue(forKey: id) {
-            session.webView.stopLoading()
-            session.webView.navigationDelegate = nil
-            session.webView.uiDelegate = nil
+            session.tearDown()
             if isIncognito {
                 let store = session.webView.configuration.websiteDataStore
                 let dataTypes = WKWebsiteDataStore.allWebsiteDataTypes()
@@ -1276,6 +1375,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
 
     #if canImport(WebKit)
     func webViewSession(for tabID: UUID) -> BrowserWebViewSession {
+        recordTabAccess(tabID)
         if let existing = tabSessions[tabID] { return existing }
         let session = BrowserWebViewSession(tabID: tabID, viewModel: self)
         tabSessions[tabID] = session
@@ -1287,8 +1387,20 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         webView: WKWebView,
         url: URL?,
         title: String?,
-        isLoading: Bool
+        isLoading: Bool,
+        generation: UInt64? = nil
     ) {
+        if let generation {
+            guard isNavigationCurrent(tabID: tabID, generation: generation, url: url) else {
+                BrowserDiagnosticLogger.shared.log(
+                    category: .navigation,
+                    message: "updateWebViewState dropped stale callback for tab \(tabID) (gen: \(generation))",
+                    url: url,
+                    tabID: tabID
+                )
+                return
+            }
+        }
         guard var tab = tabManager.tab(withID: tabID) else { return }
         if let url, url.absoluteString != "about:blank" {
             tab.url = url
@@ -1336,14 +1448,21 @@ public final class BrowserViewModel: NSObject, ObservableObject {
     fileprivate func handleWebViewError(
         _ error: Error,
         for tabID: UUID,
-        webView: WKWebView
+        webView: WKWebView,
+        generation: UInt64? = nil
     ) {
+        if let generation {
+            guard isNavigationCurrent(tabID: tabID, generation: generation, url: webView.url) else {
+                return
+            }
+        }
         updateWebViewState(
             for: tabID,
             webView: webView,
             url: tabManager.tab(withID: tabID)?.url,
             title: nil,
-            isLoading: false
+            isLoading: false,
+            generation: generation
         )
         if tabID == activeTabID {
             let nsError = error as NSError
@@ -3644,6 +3763,10 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         syncActiveTabState()
 
         #if canImport(WebKit)
+        let gen = nextNavigationGeneration(for: targetTabID, target: url)
+        if let session = tabSessions[targetTabID] {
+            session.coordinator.startNavigation(generation: gen, target: url)
+        }
         pendingNavigationURLs[targetTabID] = url
         if let webView {
             _ = consumePendingNavigation(for: targetTabID) { request in
@@ -6106,6 +6229,7 @@ public struct PlatformWebView: UIViewRepresentable {
         let webView = viewModel.webViewSession(for: tabID).webView
         container.setWebView(webView)
         viewModel.attachWebView(webView, for: tabID)
+        viewModel.ensureRestoredTabLoaded(for: tabID)
         return container
     }
 
@@ -6152,6 +6276,7 @@ public struct PlatformWebView: NSViewRepresentable {
         let webView = viewModel.webViewSession(for: tabID).webView
         container.setWebView(webView)
         viewModel.attachWebView(webView, for: tabID)
+        viewModel.ensureRestoredTabLoaded(for: tabID)
         return container
     }
 
@@ -6165,7 +6290,9 @@ public struct PlatformWebView: NSViewRepresentable {
 
 @MainActor
 final class BrowserWebViewSession {
-    private static let sharedProcessPool = WKProcessPool()
+    // Process isolation: dedicated process pools for standard vs incognito tabs
+    private static let standardProcessPool = WKProcessPool()
+    private static let incognitoProcessPool = WKProcessPool()
 
     let tabID: UUID
     let mediaDiscoveryBridge: BrowserMediaDiscoveryBridge
@@ -6181,7 +6308,8 @@ final class BrowserWebViewSession {
         let isDesktop = tab?.isDesktopMode ?? false
 
         let config = WKWebViewConfiguration()
-        config.processPool = Self.sharedProcessPool
+        // Strict privacy isolation: use dedicated process pool and non-persistent store for incognito
+        config.processPool = isIncognito ? Self.incognitoProcessPool : Self.standardProcessPool
         config.websiteDataStore = isIncognito ? WKWebsiteDataStore.nonPersistent() : .default()
         config.defaultWebpagePreferences.allowsContentJavaScript = true
         config.preferences.javaScriptCanOpenWindowsAutomatically = !viewModel.isPopupBlockerEnabled
@@ -6260,6 +6388,23 @@ final class BrowserWebViewSession {
         webView.navigationDelegate = coordinator
         webView.uiDelegate = coordinator
         coordinator.setupProgressObserver(for: webView)
+
+        // Automatically load restored URL exactly once
+        if let url = tab?.url,
+           webView.url == nil,
+           url.absoluteString != "about:blank" {
+            webView.load(URLRequest(url: url))
+        }
+    }
+
+    func tearDown() {
+        webView.stopLoading()
+        webView.navigationDelegate = nil
+        webView.uiDelegate = nil
+        webView.configuration.userContentController.removeAllUserScripts()
+        mediaDiscoveryBridge.reset()
+        blobCaptureService.receiver.reset()
+        mseCaptureService.receiver.reset()
     }
 }
 
@@ -6271,6 +6416,10 @@ public final class BrowserWebViewCoordinator: NSObject, WKNavigationDelegate, WK
     private var progressObserver: NSKeyValueObservation?
     private let redirectLoopDetector = BrowserRedirectLoopDetector()
 
+    // Navigation generation to drop late/stale callbacks from superseded navigations
+    public private(set) var navigationGeneration: UInt64 = 0
+    public private(set) var activeNavigationTarget: URL?
+
     public init(viewModel: BrowserViewModel, tabID: UUID? = nil) {
         self.viewModel = viewModel
         self.tabID = tabID
@@ -6279,6 +6428,11 @@ public final class BrowserWebViewCoordinator: NSObject, WKNavigationDelegate, WK
 
     deinit {
         progressObserver?.invalidate()
+    }
+
+    public func startNavigation(generation: UInt64, target: URL?) {
+        self.navigationGeneration = generation
+        self.activeNavigationTarget = target
     }
 
     public func setupProgressObserver(for webView: WKWebView) {
@@ -6295,21 +6449,35 @@ public final class BrowserWebViewCoordinator: NSObject, WKNavigationDelegate, WK
     }
 
     public func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+        let gen: UInt64
+        if let vm = self.viewModel, let tabID = self.tabID {
+            gen = vm.nextNavigationGeneration(for: tabID, target: webView.url)
+        } else {
+            navigationGeneration &+= 1
+            gen = navigationGeneration
+        }
+        self.navigationGeneration = gen
+        self.activeNavigationTarget = webView.url
+        let capturedGen = gen
+
         BrowserDiagnosticLogger.shared.log(
             category: .navigation,
-            message: "Provisional navigation started",
+            message: "Provisional navigation started (gen \(gen))",
             url: webView.url,
             tabID: tabID
         )
         DispatchQueue.main.async { [weak self] in
             guard let self = self, let vm = self.viewModel else { return }
+            guard self.navigationGeneration == capturedGen else { return }
             if let tabID = self.tabID {
+                guard vm.isNavigationCurrent(tabID: tabID, generation: capturedGen, url: webView.url) else { return }
                 vm.updateWebViewState(
                     for: tabID,
                     webView: webView,
                     url: webView.url,
                     title: nil,
-                    isLoading: true
+                    isLoading: true,
+                    generation: capturedGen
                 )
                 vm.resetMediaDiscovery(for: tabID)
                 vm.errorMessage = nil
@@ -6343,9 +6511,10 @@ public final class BrowserWebViewCoordinator: NSObject, WKNavigationDelegate, WK
     }
 
     public func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+        let capturedGen = self.navigationGeneration
         BrowserDiagnosticLogger.shared.log(
             category: .navigation,
-            message: "Navigation content committed",
+            message: "Navigation content committed (gen \(capturedGen))",
             url: webView.url,
             tabID: tabID
         )
@@ -6353,6 +6522,9 @@ public final class BrowserWebViewCoordinator: NSObject, WKNavigationDelegate, WK
         redirectLoopDetector.reset()
 
         if let host = webView.url?.host, let vm = viewModel {
+            if let tabID = self.tabID {
+                guard vm.isNavigationCurrent(tabID: tabID, generation: capturedGen, url: webView.url) else { return }
+            }
             vm.recordTabOrigin(host, for: tabID)
             let isWhitelisted = BrowserDomainMatcher.isDomainWhitelisted(
                 host,
@@ -6371,9 +6543,10 @@ public final class BrowserWebViewCoordinator: NSObject, WKNavigationDelegate, WK
 
     public func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         let currentURL = webView.url
+        let capturedGen = self.navigationGeneration
         BrowserDiagnosticLogger.shared.log(
             category: .navigation,
-            message: "Navigation finished: \(webView.title ?? "")",
+            message: "Navigation finished (gen \(capturedGen)): \(webView.title ?? "")",
             url: currentURL,
             tabID: tabID,
             details: ["title": webView.title ?? ""]
@@ -6381,25 +6554,29 @@ public final class BrowserWebViewCoordinator: NSObject, WKNavigationDelegate, WK
 
         // Inspect and capture session snapshot (User-Agent, language, and all cookies by domain)
         Task { @MainActor [weak self] in
+            guard let self, self.navigationGeneration == capturedGen else { return }
             let snapshot = await DownloadRequestEnricher.snapshot(from: webView)
             BrowserDiagnosticLogger.shared.log(
                 category: .cookie,
                 message: "Browser session snapshot captured with \(snapshot.allCookies.count) cookies across \(snapshot.cookiesByDomain.count) domains and UA: \(snapshot.userAgent)",
                 url: currentURL,
-                tabID: self?.tabID,
+                tabID: self.tabID,
                 details: ["domains": snapshot.cookiesByDomain.keys.joined(separator: ", ")]
             )
         }
 
         DispatchQueue.main.async { [weak self] in
             guard let self = self, let vm = self.viewModel else { return }
+            guard self.navigationGeneration == capturedGen else { return }
             if let tabID = self.tabID {
+                guard vm.isNavigationCurrent(tabID: tabID, generation: capturedGen, url: webView.url) else { return }
                 vm.updateWebViewState(
                     for: tabID,
                     webView: webView,
                     url: webView.url,
                     title: webView.title,
-                    isLoading: false
+                    isLoading: false,
+                    generation: capturedGen
                 )
                 return
             }
@@ -6476,9 +6653,10 @@ public final class BrowserWebViewCoordinator: NSObject, WKNavigationDelegate, WK
 
     public func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
         let nsError = error as NSError
+        let capturedGen = self.navigationGeneration
         BrowserDiagnosticLogger.shared.log(
             category: .navigation,
-            message: "Navigation failed: \(error.localizedDescription)",
+            message: "Navigation failed (gen \(capturedGen)): \(error.localizedDescription)",
             url: webView.url,
             tabID: tabID,
             details: [
@@ -6487,14 +6665,26 @@ public final class BrowserWebViewCoordinator: NSObject, WKNavigationDelegate, WK
                 "isCancelled": "\(nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled)"
             ]
         )
-        handleNavigationError(error, webView: webView)
+        if let vm = self.viewModel, let tabID = self.tabID {
+            guard vm.isNavigationCurrent(tabID: tabID, generation: capturedGen, url: webView.url) else {
+                BrowserDiagnosticLogger.shared.log(
+                    category: .navigation,
+                    message: "Ignored didFail from stale navigation generation \(capturedGen)",
+                    url: webView.url,
+                    tabID: tabID
+                )
+                return
+            }
+        }
+        handleNavigationError(error, webView: webView, generation: capturedGen)
     }
 
     public func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
         let nsError = error as NSError
+        let capturedGen = self.navigationGeneration
         BrowserDiagnosticLogger.shared.log(
             category: .navigation,
-            message: "Provisional navigation failed: \(error.localizedDescription)",
+            message: "Provisional navigation failed (gen \(capturedGen)): \(error.localizedDescription)",
             url: webView.url,
             tabID: tabID,
             details: [
@@ -6503,7 +6693,18 @@ public final class BrowserWebViewCoordinator: NSObject, WKNavigationDelegate, WK
                 "isCancelled": "\(nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled)"
             ]
         )
-        handleNavigationError(error, webView: webView)
+        if let vm = self.viewModel, let tabID = self.tabID {
+            guard vm.isNavigationCurrent(tabID: tabID, generation: capturedGen, url: webView.url) else {
+                BrowserDiagnosticLogger.shared.log(
+                    category: .navigation,
+                    message: "Ignored didFailProvisionalNavigation from stale navigation generation \(capturedGen)",
+                    url: webView.url,
+                    tabID: tabID
+                )
+                return
+            }
+        }
+        handleNavigationError(error, webView: webView, generation: capturedGen)
     }
 
     public func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
@@ -6539,10 +6740,10 @@ public final class BrowserWebViewCoordinator: NSObject, WKNavigationDelegate, WK
         }
     }
 
-    private func handleNavigationError(_ error: Error, webView: WKWebView) {
+    private func handleNavigationError(_ error: Error, webView: WKWebView, generation: UInt64? = nil) {
         if let tabID {
             DispatchQueue.main.async { [weak self] in
-                self?.viewModel?.handleWebViewError(error, for: tabID, webView: webView)
+                self?.viewModel?.handleWebViewError(error, for: tabID, webView: webView, generation: generation)
             }
         } else {
             handleErrorInternal(error)
