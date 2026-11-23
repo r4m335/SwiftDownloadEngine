@@ -875,7 +875,9 @@ public final class BackgroundDownloadSessionManager: NSObject, @unchecked Sendab
         sessionIdentifier: String = BackgroundDownloadSessionManager.defaultSessionIdentifier,
         storageDirectoryURL: URL,
         persistenceStore: DownloadPersistenceStore? = nil,
-        temporaryDirectoryURL: URL? = nil
+        temporaryDirectoryURL: URL? = nil,
+        maximumConnectionsPerHost: Int = 6,
+        resourceTimeoutInterval: TimeInterval = 604800
     ) throws {
         self.sessionIdentifier = sessionIdentifier
         self.mappingStore = try BackgroundDownloadTaskMappingStore(storageDirectoryURL: storageDirectoryURL)
@@ -891,10 +893,23 @@ public final class BackgroundDownloadSessionManager: NSObject, @unchecked Sendab
         super.init()
 
         try FileManager.default.createDirectory(at: self.temporaryDirectoryURL, withIntermediateDirectories: true)
-        self.session = createSession(identifier: sessionIdentifier)
+        self.session = createSession(
+            identifier: sessionIdentifier,
+            maximumConnectionsPerHost: maximumConnectionsPerHost,
+            resourceTimeoutInterval: resourceTimeoutInterval
+        )
     }
 
-    private func createSession(identifier: String) -> URLSession {
+    /// Exposes the underlying URLSession configuration for inspection and diagnostics.
+    public var sessionConfiguration: URLSessionConfiguration {
+        session.configuration
+    }
+
+    private func createSession(
+        identifier: String,
+        maximumConnectionsPerHost: Int = 6,
+        resourceTimeoutInterval: TimeInterval = 604800
+    ) -> URLSession {
 #if canImport(Darwin)
         let config = URLSessionConfiguration.background(withIdentifier: identifier)
         config.isDiscretionary = false
@@ -902,14 +917,14 @@ public final class BackgroundDownloadSessionManager: NSObject, @unchecked Sendab
         config.shouldUseExtendedBackgroundIdleMode = true
         config.timeoutIntervalForRequest = 60
         // Set maximum connections per host to manage socket concurrency in the daemon
-        config.httpMaximumConnectionsPerHost = 6
-        // Set resource timeout to 7 days (system default) rather than 24 hours to prevent cutting off slow large transfers
-        config.timeoutIntervalForResource = 604800
+        config.httpMaximumConnectionsPerHost = max(1, maximumConnectionsPerHost)
+        // Set resource timeout to 7 days (604800s) rather than 24 hours (86400s) to prevent cutting off slow large transfers
+        config.timeoutIntervalForResource = max(60, resourceTimeoutInterval)
 #else
         let config = URLSessionConfiguration.default
         config.timeoutIntervalForRequest = 60
-        config.httpMaximumConnectionsPerHost = 6
-        config.timeoutIntervalForResource = 604800
+        config.httpMaximumConnectionsPerHost = max(1, maximumConnectionsPerHost)
+        config.timeoutIntervalForResource = max(60, resourceTimeoutInterval)
 #endif
         return URLSession(configuration: config, delegate: self, delegateQueue: delegateQueue)
     }

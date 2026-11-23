@@ -1694,5 +1694,28 @@ final class BackgroundHTTPTransportTests: XCTestCase {
 
         await manager.cancelTasks(for: download.id)
     }
+
+    func testBackgroundDownloadSessionConfigurationSettings() throws {
+        // 1. Default configuration: 6 connections per host, 604,800s (7 days) resource timeout
+        let manager = try BackgroundDownloadSessionManager(
+            sessionIdentifier: "test.config.default.\(UUID().uuidString)",
+            storageDirectoryURL: storageDirectoryURL
+        )
+        let config = manager.sessionConfiguration
+        XCTAssertEqual(config.httpMaximumConnectionsPerHost, 6, "Background session must manage socket concurrency with httpMaximumConnectionsPerHost = 6")
+        XCTAssertEqual(config.timeoutIntervalForResource, 604800, "Background session must use 7 days (604,800s) instead of 24 hours (86,400s) to avoid killing slow large transfers")
+        XCTAssertNotEqual(config.timeoutIntervalForResource, 86400, "timeoutIntervalForResource must not remain capped at 86,400 seconds (24 hours)")
+
+        // 2. Custom configuration parameters
+        let customManager = try BackgroundDownloadSessionManager(
+            sessionIdentifier: "test.config.custom.\(UUID().uuidString)",
+            storageDirectoryURL: storageDirectoryURL,
+            maximumConnectionsPerHost: 4,
+            resourceTimeoutInterval: 1209600 // 14 days
+        )
+        let customConfig = customManager.sessionConfiguration
+        XCTAssertEqual(customConfig.httpMaximumConnectionsPerHost, 4)
+        XCTAssertEqual(customConfig.timeoutIntervalForResource, 1209600)
+    }
 }
 
