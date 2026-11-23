@@ -98,10 +98,15 @@ public final class DownloadRecoveryManager: ObservableObject {
                 newHeaders: newHeaders,
                 forceRestartIfNonResumable: forceRestartIfNonResumable
             )
+            let sameOrigin = (record.originalURL.host?.lowercased() == url.host?.lowercased() && record.originalURL.scheme?.lowercased() == url.scheme?.lowercased())
+            let headersToUpdate = sameOrigin ? record.securedHeaders : record.headers.filter {
+                let l = $0.key.lowercased()
+                return l != "authorization" && l != "cookie" && l != "proxy-authorization"
+            }
             try? await engine.queueManager.updateRequest(
                 id: transferID,
                 newURL: url,
-                newHeaders: record.securedHeaders
+                newHeaders: headersToUpdate
             )
             try await engine.resumeDownload(id: transferID)
         }

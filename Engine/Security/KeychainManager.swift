@@ -266,6 +266,14 @@ public final class KeychainManager: @unchecked Sendable {
 
         #if canImport(Security) && !os(Linux)
         let accountPrefix = "download:\(downloadId)"
+        for key in ["cookie", "authorization", "proxy-authorization"] {
+            let delQuery: [String: Any] = [
+                kSecClass as String: kSecClassGenericPassword,
+                kSecAttrService as String: serviceName,
+                kSecAttrAccount as String: "\(accountPrefix):\(key)"
+            ]
+            SecItemDelete(delQuery as CFDictionary)
+        }
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: serviceName,

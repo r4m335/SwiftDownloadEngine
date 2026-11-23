@@ -743,10 +743,6 @@ final class BrowserMediaCandidateTests: XCTestCase {
         viewModel.setDiscoveredResources([liveRes, nonLiveRes], for: tabID)
         viewModel.setVariantStreamItems([liveVariant, nonLiveVariant], for: tabID)
 
-        // Explicit rescan APIs are available
-        viewModel.rescanResources(includeNonVideo: false)
-        viewModel.rescanCurrentPageResources(includeNonVideo: true)
-
         // Reset media discovery preserves live stream resources and variants
         viewModel.resetMediaDiscovery(for: tabID)
 
@@ -757,6 +753,12 @@ final class BrowserMediaCandidateTests: XCTestCase {
         let variants = viewModel.variantStreamItems(for: tabID)
         XCTAssertNotNil(variants["var-live"])
         XCTAssertNil(variants["var-vod"])
+
+        // Explicit rescan APIs are callable and preserve live results
+        viewModel.rescanResources(includeNonVideo: false)
+        viewModel.rescanCurrentPageResources(includeNonVideo: true)
+        let rescanned = viewModel.discoveredResources(for: tabID)
+        XCTAssertTrue(rescanned.contains(where: { $0.id == "res-live" }))
     }
 }
 

@@ -3455,14 +3455,28 @@ public final class BrowserViewModel: NSObject, ObservableObject {
     public func inspectCurrentPageResources(includeNonVideo: Bool = false) {
         guard let url = currentURL else {
             resourceScanError = "No active webpage is currently loaded."
-            discoveredResources = []
-            selectedResourceIDs = []
             resetMediaCandidateCatalog(for: activeTabID)
             if let activeTabID {
-                tabDiscoveredResources.removeValue(forKey: activeTabID)
-                tabVariantStreamItems.removeValue(forKey: activeTabID)
-                tabSelectedResourceIDs.removeValue(forKey: activeTabID)
-                tabResourceStates.removeValue(forKey: activeTabID)
+                let liveResources = (tabDiscoveredResources[activeTabID] ?? []).filter {
+                    $0.isLive || $0.isStreamingManifest || $0.isBlobResource || $0.isMediaSourceBlob
+                }
+                let liveVariants = (tabVariantStreamItems[activeTabID] ?? [:]).filter { $1.isLive }
+                let preservedIDs = Set(liveResources.map { $0.id })
+                let selectedIDs = (tabSelectedResourceIDs[activeTabID] ?? []).filter { preservedIDs.contains($0) }
+                tabDiscoveredResources[activeTabID] = liveResources
+                tabVariantStreamItems[activeTabID] = liveVariants
+                tabSelectedResourceIDs[activeTabID] = selectedIDs
+                tabResourceStates[activeTabID] = BrowserTabResourceState(
+                    discoveredResources: liveResources,
+                    variantStreamItems: liveVariants,
+                    selectedResourceIDs: selectedIDs
+                )
+                discoveredResources = liveResources
+                variantStreamItems = liveVariants
+                selectedResourceIDs = selectedIDs
+            } else {
+                discoveredResources = []
+                selectedResourceIDs = []
             }
             return
         }
@@ -3897,14 +3911,17 @@ public final class BrowserViewModel: NSObject, ObservableObject {
 
     public func ingestMediaResources(
         _ resources: [WebpageResource],
-        tabID: UUID? = nil
+        tabID: UUID? = nil,
+        updateCatalog: Bool = true
     ) {
         guard let targetTabID = tabID ?? activeTabID else { return }
-        var catalog = mediaCandidateCatalogs[targetTabID] ?? BrowserMediaCandidateCatalog()
-        for resource in resources {
-            _ = catalog.ingest(resource: resource)
+        if updateCatalog {
+            var catalog = mediaCandidateCatalogs[targetTabID] ?? BrowserMediaCandidateCatalog()
+            for resource in resources {
+                _ = catalog.ingest(resource: resource)
+            }
+            mediaCandidateCatalogs[targetTabID] = catalog
         }
-        mediaCandidateCatalogs[targetTabID] = catalog
 
         var targetResources = (targetTabID == activeTabID)
             ? discoveredResources
@@ -3974,7 +3991,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
 
         let resources = candidates.compactMap { $0.toWebpageResource() }
         if !resources.isEmpty {
-            ingestMediaResources(resources, tabID: targetTabID)
+            ingestMediaResources(resources, tabID: targetTabID, updateCatalog: false)
         }
     }
 
