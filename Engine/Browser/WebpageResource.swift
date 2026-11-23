@@ -23,6 +23,27 @@ public enum WebpageResourceType: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
+/// Explicit sorting options for discovered media and downloadable resources.
+public enum ResourceSortOption: String, CaseIterable, Identifiable, Sendable {
+    case newest = "Newest"
+    case size = "Size"
+    case quality = "Quality"
+    case name = "Name"
+    case type = "Type"
+
+    public var id: String { rawValue }
+
+    public var iconName: String {
+        switch self {
+        case .newest: return "clock"
+        case .size: return "arrow.down.circle"
+        case .quality: return "sparkles"
+        case .name: return "textformat"
+        case .type: return "folder"
+        }
+    }
+}
+
 /// Represents an identifiable resource discovered within a webpage's HTML or DOM tree.
 public struct WebpageResource: Identifiable, Hashable, Sendable {
     public let id: String

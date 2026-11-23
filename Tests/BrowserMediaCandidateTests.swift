@@ -772,5 +772,223 @@ final class BrowserMediaCandidateTests: XCTestCase {
         let rescanned = viewModel.discoveredResources(for: tabID)
         XCTAssertTrue(rescanned.contains(where: { $0.id == "res-live" }))
     }
+
+    // MARK: - Resource & Candidate Explicit Sorting Tests (Newest, Size, Quality, Name)
+
+    func testResourceSortingByNewest() {
+        let t0 = Date(timeIntervalSince1970: 1_000)
+        let t1 = Date(timeIntervalSince1970: 2_000)
+        let t2 = Date(timeIntervalSince1970: 3_000)
+
+        let rOld = WebpageResource(
+            id: "old",
+            url: URL(string: "https://example.com/old.mp4")!,
+            title: "Old Video",
+            suggestedFilename: "old.mp4",
+            resourceType: .video,
+            discoveredAt: t0
+        )
+        let rMid = WebpageResource(
+            id: "mid",
+            url: URL(string: "https://example.com/mid.mp4")!,
+            title: "Mid Video",
+            suggestedFilename: "mid.mp4",
+            resourceType: .video,
+            discoveredAt: t1
+        )
+        let rNew = WebpageResource(
+            id: "new",
+            url: URL(string: "https://example.com/new.mp4")!,
+            title: "New Video",
+            suggestedFilename: "new.mp4",
+            resourceType: .video,
+            discoveredAt: t2
+        )
+
+        let sorted = BrowserResourceInspectorSheet.sortedResources(
+            [rOld, rNew, rMid],
+            sortOption: .newest
+        )
+        XCTAssertEqual(sorted.map { $0.id }, ["new", "mid", "old"], "Newest sort must order by discoveredAt descending")
+    }
+
+    func testResourceSortingBySize() {
+        let rSmall = WebpageResource(
+            id: "small",
+            url: URL(string: "https://example.com/small.mp4")!,
+            title: "Small",
+            suggestedFilename: "small.mp4",
+            resourceType: .video,
+            estimatedSize: 10_000_000 // 10 MB
+        )
+        let rMedium = WebpageResource(
+            id: "med",
+            url: URL(string: "https://example.com/med.mp4")!,
+            title: "Medium",
+            suggestedFilename: "med.mp4",
+            resourceType: .video,
+            estimatedSize: 250_000_000 // 250 MB
+        )
+        let rLarge = WebpageResource(
+            id: "large",
+            url: URL(string: "https://example.com/large.mp4")!,
+            title: "Large",
+            suggestedFilename: "large.mp4",
+            resourceType: .video,
+            estimatedSize: 1_500_000_000 // 1.5 GB
+        )
+
+        let sorted = BrowserResourceInspectorSheet.sortedResources(
+            [rSmall, rLarge, rMedium],
+            sortOption: .size
+        )
+        XCTAssertEqual(sorted.map { $0.id }, ["large", "med", "small"], "Size sort must order by estimated size descending")
+    }
+
+    func testResourceSortingByName() {
+        let rZ = WebpageResource(
+            id: "z",
+            url: URL(string: "https://example.com/zebra.mp4")!,
+            title: "Zebra",
+            suggestedFilename: "zebra.mp4",
+            resourceType: .video
+        )
+        let rA = WebpageResource(
+            id: "a",
+            url: URL(string: "https://example.com/apple.mp4")!,
+            title: "Apple",
+            suggestedFilename: "apple.mp4",
+            resourceType: .video
+        )
+        let rM = WebpageResource(
+            id: "m",
+            url: URL(string: "https://example.com/mango.mp4")!,
+            title: "Mango",
+            suggestedFilename: "mango.mp4",
+            resourceType: .video
+        )
+
+        let sorted = BrowserResourceInspectorSheet.sortedResources(
+            [rZ, rM, rA],
+            sortOption: .name
+        )
+        XCTAssertEqual(sorted.map { $0.id }, ["a", "m", "z"], "Name sort must order alphabetically by filename")
+    }
+
+    func testResourceSortingByQuality() {
+        let r360 = WebpageResource(
+            id: "360",
+            url: URL(string: "https://example.com/video.m3u8")!,
+            title: "360p",
+            suggestedFilename: "360.mp4",
+            resourceType: .video,
+            hlsVariantPreferences: HLSVariantSelectionPreferences(maximumBandwidth: 800_000, maximumHeight: 360)
+        )
+        let r720 = WebpageResource(
+            id: "720",
+            url: URL(string: "https://example.com/video.m3u8")!,
+            title: "720p",
+            suggestedFilename: "720.mp4",
+            resourceType: .video,
+            hlsVariantPreferences: HLSVariantSelectionPreferences(maximumBandwidth: 2_500_000, maximumHeight: 720)
+        )
+        let r1080 = WebpageResource(
+            id: "1080",
+            url: URL(string: "https://example.com/video.m3u8")!,
+            title: "1080p",
+            suggestedFilename: "1080.mp4",
+            resourceType: .video,
+            hlsVariantPreferences: HLSVariantSelectionPreferences(maximumBandwidth: 6_000_000, maximumHeight: 1080)
+        )
+
+        let sorted = BrowserResourceInspectorSheet.sortedResources(
+            [r360, r1080, r720],
+            sortOption: .quality
+        )
+        XCTAssertEqual(sorted.map { $0.id }, ["1080", "720", "360"], "Quality sort must order by highest resolution/bandwidth first")
+    }
+
+    @MainActor
+    func testBrowserViewModelSortingControls() {
+        let viewModel = BrowserViewModel()
+        let tabID = viewModel.activeTabID ?? viewModel.createNewTab()
+
+        let rSmall = WebpageResource(
+            id: "b-small",
+            url: URL(string: "https://example.com/b_small.mp4")!,
+            title: "B Small",
+            suggestedFilename: "b_small.mp4",
+            resourceType: .video,
+            estimatedSize: 10_000_000,
+            discoveredAt: Date(timeIntervalSince1970: 100)
+        )
+        let rLarge = WebpageResource(
+            id: "a-large",
+            url: URL(string: "https://example.com/a_large.mp4")!,
+            title: "A Large",
+            suggestedFilename: "a_large.mp4",
+            resourceType: .video,
+            estimatedSize: 900_000_000,
+            discoveredAt: Date(timeIntervalSince1970: 500)
+        )
+
+        viewModel.setDiscoveredResources([rSmall, rLarge], for: tabID)
+
+        // 1. Newest
+        viewModel.resourceSortOption = .newest
+        let newestSorted = viewModel.sortedDiscoveredResources()
+        XCTAssertEqual(newestSorted.map { $0.id }, ["a-large", "b-small"])
+
+        // 2. Size
+        viewModel.resourceSortOption = .size
+        let sizeSorted = viewModel.sortedDiscoveredResources()
+        XCTAssertEqual(sizeSorted.map { $0.id }, ["a-large", "b-small"])
+
+        // 3. Name (a_large < b_small)
+        viewModel.resourceSortOption = .name
+        let nameSorted = viewModel.sortedDiscoveredResources()
+        XCTAssertEqual(nameSorted.map { $0.id }, ["a-large", "b-small"])
+
+        // Test sorted candidates
+        let candidates = viewModel.sortedMediaCandidates(by: .name)
+        XCTAssertEqual(candidates.count, 2)
+        XCTAssertEqual(candidates[0].suggestedFilename, "a_large.mp4")
+        XCTAssertEqual(candidates[1].suggestedFilename, "b_small.mp4")
+    }
+
+    func testBrowserMediaCandidateDirectSorting() {
+        let c1 = BrowserMediaCandidate(
+            id: "c1",
+            url: URL(string: "https://example.com/1.mp4"),
+            rawURL: "https://example.com/1.mp4",
+            kind: .directMedia,
+            suggestedFilename: "zebra.mp4",
+            estimatedSize: 50_000,
+            availability: .downloadable,
+            lastObserved: Date(timeIntervalSince1970: 100)
+        )
+        let c2 = BrowserMediaCandidate(
+            id: "c2",
+            url: URL(string: "https://example.com/2.mp4"),
+            rawURL: "https://example.com/2.mp4",
+            kind: .directMedia,
+            suggestedFilename: "alpha.mp4",
+            estimatedSize: 500_000,
+            availability: .downloadable,
+            lastObserved: Date(timeIntervalSince1970: 200)
+        )
+
+        // Sort by name
+        let byName = BrowserMediaCandidate.sorted([c1, c2], by: .name)
+        XCTAssertEqual(byName.map { $0.id }, ["c2", "c1"])
+
+        // Sort by size
+        let bySize = BrowserMediaCandidate.sorted([c1, c2], by: .size)
+        XCTAssertEqual(bySize.map { $0.id }, ["c2", "c1"])
+
+        // Sort by newest
+        let byNewest = BrowserMediaCandidate.sorted([c1, c2], by: .newest)
+        XCTAssertEqual(byNewest.map { $0.id }, ["c2", "c1"])
+    }
 }
 

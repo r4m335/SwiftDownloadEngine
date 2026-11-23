@@ -111,6 +111,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
     // Resource discovery state (Milestone 7D)
     @Published public var isShowingResourceInspector: Bool = false
     @Published public var isScanningResources: Bool = false
+    @Published public var resourceSortOption: ResourceSortOption = .newest
     @Published public var discoveredResources: [WebpageResource] = []
     @Published public var variantStreamItems: [String: HLSVariantStreamItem] = [:]
     @Published public var selectedResourceIDs: Set<String> = []
@@ -120,6 +121,41 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         self.mediaCandidates = candidates
     }
     public let mediaDiscoveryBridge = BrowserMediaDiscoveryBridge()
+
+    /// Returns discovered resources for the active tab sorted by the specified or active sort option.
+    public func sortedDiscoveredResources(
+        by sortOption: ResourceSortOption? = nil,
+        selectedCategory: WebpageResourceType? = nil,
+        showsAllResources: Bool = false,
+        searchText: String = ""
+    ) -> [WebpageResource] {
+        let option = sortOption ?? resourceSortOption
+        return BrowserResourceInspectorSheet.filteredResources(
+            in: discoveredResources,
+            variantURLs: HLSResourceGrouping.variantURLs(in: discoveredResources),
+            selectedCategory: selectedCategory,
+            showsAllResources: showsAllResources,
+            searchText: searchText,
+            sortOption: option,
+            variantMetadataMap: variantStreamItems
+        )
+    }
+
+    /// Returns media candidates for the active tab sorted by the specified or active sort option.
+    public func sortedMediaCandidates(
+        by sortOption: ResourceSortOption? = nil,
+        selectedCategory: WebpageResourceType? = nil,
+        showsAllResources: Bool = false,
+        searchText: String = ""
+    ) -> [BrowserMediaCandidate] {
+        let sorted = sortedDiscoveredResources(
+            by: sortOption,
+            selectedCategory: selectedCategory,
+            showsAllResources: showsAllResources,
+            searchText: searchText
+        )
+        return sorted.map { $0.toMediaCandidate() }
+    }
 
     // Tab-scoped media grabber candidate & variant caches
     public var tabResourceStates: [UUID: BrowserTabResourceState] = [:]

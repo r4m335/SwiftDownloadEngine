@@ -13,26 +13,6 @@ public struct MediaPreviewItem: Identifiable {
     }
 }
 
-public enum ResourceSortOption: String, CaseIterable, Identifiable, Sendable {
-    case newest = "Newest"
-    case size = "File Size"
-    case name = "Name"
-    case quality = "Quality"
-    case type = "Type"
-
-    public var id: String { rawValue }
-
-    public var iconName: String {
-        switch self {
-        case .newest: return "clock"
-        case .size: return "arrow.down.circle"
-        case .name: return "textformat"
-        case .quality: return "sparkles"
-        case .type: return "folder"
-        }
-    }
-}
-
 public enum ResourceGroupingOption: String, CaseIterable, Identifiable, Sendable {
     case none = "None (Flat List)"
     case domain = "By Domain"
@@ -64,6 +44,7 @@ public struct BrowserResourceInspectorSheet: View {
 
     public init(viewModel: BrowserViewModel) {
         self.viewModel = viewModel
+        _sortOption = State(initialValue: viewModel.resourceSortOption)
     }
 
     private var variantMetadataMap: [String: HLSVariantStreamItem] {
@@ -188,7 +169,9 @@ public struct BrowserResourceInspectorSheet: View {
         variantURLs: Set<String>? = nil,
         selectedCategory: WebpageResourceType? = nil,
         showsAllResources: Bool = false,
-        searchText: String = ""
+        searchText: String = "",
+        sortOption: ResourceSortOption = .newest,
+        variantMetadataMap: [String: HLSVariantStreamItem] = [:]
     ) -> [WebpageResource] {
         let base = eligibleResources(in: discoveredResources, variantURLs: variantURLs, showsAllResources: showsAllResources)
         let hasStreamingManifest = base.contains(where: { $0.isStreamingManifest })
@@ -205,17 +188,7 @@ public struct BrowserResourceInspectorSheet: View {
                 res.url.absoluteString.localizedCaseInsensitiveContains(cleanSearch)
             return matchesCategory && matchesDefaultMedia && matchesSearch
         }
-        return resources.sorted {
-            // Always put newest capture on top
-            if $0.discoveredAt != $1.discoveredAt {
-                return $0.discoveredAt > $1.discoveredAt
-            }
-            // Prioritize streaming manifests over single segment / generic files
-            if $0.isStreamingManifest != $1.isStreamingManifest {
-                return $0.isStreamingManifest && !$1.isStreamingManifest
-            }
-            return $0.suggestedFilename.localizedCaseInsensitiveCompare($1.suggestedFilename) == .orderedAscending
-        }
+        return sortedResources(resources, sortOption: sortOption, variantMetadataMap: variantMetadataMap)
     }
 
     public var filteredResources: [WebpageResource] {
@@ -224,16 +197,14 @@ public struct BrowserResourceInspectorSheet: View {
             variantURLs: knownHLSVariantURLs,
             selectedCategory: selectedCategory,
             showsAllResources: showsAllResources,
-            searchText: searchText
+            searchText: searchText,
+            sortOption: sortOption,
+            variantMetadataMap: variantMetadataMap
         )
     }
 
     public var displayedSortedResources: [WebpageResource] {
-        Self.sortedResources(
-            filteredResources,
-            sortOption: sortOption,
-            variantMetadataMap: variantMetadataMap
-        )
+        filteredResources
     }
 
     /// Associated `BrowserMediaCandidate` representations for all displayed resources.
@@ -269,25 +240,35 @@ public struct BrowserResourceInspectorSheet: View {
                 if size0 != size1 {
                     return size0 > size1
                 }
+                if $0.discoveredAt != $1.discoveredAt {
+                    return $0.discoveredAt > $1.discoveredAt
+                }
                 return $0.suggestedFilename.localizedCaseInsensitiveCompare($1.suggestedFilename) == .orderedAscending
             }
         case .name:
             return resources.sorted {
-                $0.suggestedFilename.localizedCaseInsensitiveCompare($1.suggestedFilename) == .orderedAscending
+                let cmp = $0.suggestedFilename.localizedCaseInsensitiveCompare($1.suggestedFilename)
+                if cmp != .orderedSame {
+                    return cmp == .orderedAscending
+                }
+                return $0.discoveredAt > $1.discoveredAt
             }
         case .quality:
             return resources.sorted {
+                let h0 = variantMetadataMap[$0.id]?.resolution?.height ?? ($0.hlsVariantPreferences?.maximumHeight ?? ($0.height ?? 0))
+                let h1 = variantMetadataMap[$1.id]?.resolution?.height ?? ($1.hlsVariantPreferences?.maximumHeight ?? ($1.height ?? 0))
+                if h0 != h1 {
+                    return h0 > h1
+                }
                 let bw0 = variantMetadataMap[$0.id]?.bandwidth ?? ($0.hlsVariantPreferences?.maximumBandwidth ?? 0)
                 let bw1 = variantMetadataMap[$1.id]?.bandwidth ?? ($1.hlsVariantPreferences?.maximumBandwidth ?? 0)
                 if bw0 != bw1 {
                     return bw0 > bw1
                 }
-                let h0 = variantMetadataMap[$0.id]?.resolution?.height ?? ($0.hlsVariantPreferences?.maximumHeight ?? 0)
-                let h1 = variantMetadataMap[$1.id]?.resolution?.height ?? ($1.hlsVariantPreferences?.maximumHeight ?? 0)
-                if h0 != h1 {
-                    return h0 > h1
+                if $0.discoveredAt != $1.discoveredAt {
+                    return $0.discoveredAt > $1.discoveredAt
                 }
-                return $0.discoveredAt > $1.discoveredAt
+                return $0.suggestedFilename.localizedCaseInsensitiveCompare($1.suggestedFilename) == .orderedAscending
             }
         case .type:
             return resources.sorted {
@@ -335,6 +316,9 @@ public struct BrowserResourceInspectorSheet: View {
 
                 // Search & Quick Selection Bar
                 searchAndSelectionHeader
+
+                // Explicit Sort Controls (Newest, Size, Quality, Name)
+                sortControlBar
 
                 // Main Content: List, Loading, Empty, or Error
                 if !filteredResources.isEmpty {
@@ -422,7 +406,37 @@ public struct BrowserResourceInspectorSheet: View {
                     dismissButton: .default(Text("OK"))
                 )
             }
+            .onChange(of: sortOption) { newOption in
+                viewModel.resourceSortOption = newOption
+            }
         }
+    }
+
+    // MARK: - Explicit Sort Controls
+
+    private var sortControlBar: some View {
+        HStack(spacing: 8) {
+            Text("Sort:")
+                .font(.subheadline)
+                .fontWeight(.medium)
+                .foregroundColor(.secondary)
+
+            Picker("Sort Order", selection: $sortOption) {
+                Text(ResourceSortOption.newest.rawValue).tag(ResourceSortOption.newest)
+                Text(ResourceSortOption.size.rawValue).tag(ResourceSortOption.size)
+                Text(ResourceSortOption.quality.rawValue).tag(ResourceSortOption.quality)
+                Text(ResourceSortOption.name.rawValue).tag(ResourceSortOption.name)
+            }
+            .pickerStyle(.segmented)
+            .accessibilityLabel("Resource Sort Order")
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 6)
+        #if canImport(UIKit)
+        .background(Color(UIColor.secondarySystemBackground))
+        #else
+        .background(Color.secondary.opacity(0.06))
+        #endif
     }
 
     // MARK: - Category Filter Bar
