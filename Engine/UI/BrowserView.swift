@@ -2667,13 +2667,6 @@ public final class BrowserViewModel: NSObject, ObservableObject {
 
     // MARK: - Interactive Stream Quality Picker (Phase 3 Milestone 3.1)
 
-    public func presentQualityPicker(for candidate: BrowserMediaCandidate, preloadedOptions: [StreamQualityOption]? = nil) {
-        if let resource = candidate.toWebpageResource() {
-            presentQualityPicker(for: resource, preloadedOptions: preloadedOptions)
-            qualityPickerTargetCandidate = candidate
-        }
-    }
-
     public func presentQualityPicker(for resource: WebpageResource, preloadedOptions: [StreamQualityOption]? = nil) {
         qualityPickerTargetResource = resource
         qualityPickerTargetCandidate = nil
@@ -2714,6 +2707,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
 
     public func presentQualityPicker(for candidate: BrowserMediaCandidate, preloadedOptions: [StreamQualityOption]? = nil) {
         qualityPickerTargetCandidate = candidate
+        qualityPickerTargetResource = candidate.toWebpageResource()
         let url = candidate.url ?? URL(string: candidate.rawURL)
         let baseFilename = candidate.suggestedFilename.isEmpty ? (url.map { BrowserURLResolver.suggestedFilename(from: $0) } ?? "video.mp4") : candidate.suggestedFilename
         qualityPickerFilename = baseFilename
