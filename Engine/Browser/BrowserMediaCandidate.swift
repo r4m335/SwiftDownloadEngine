@@ -113,6 +113,11 @@ public struct BrowserMediaCandidate: Identifiable, Codable, Sendable, Equatable,
         self.audioLanguage = audioLanguage
     }
 
+    /// Whether this media candidate represents a streaming master playlist or manifest (HLS or DASH).
+    public var isStreamingManifest: Bool {
+        kind == .hlsManifest || kind == .dashManifest
+    }
+
     /// Converts this candidate into a `WebpageResource` preserving media specifications.
     public func toWebpageResource() -> WebpageResource? {
         guard kind != .unknown, availability != .unsupported,
