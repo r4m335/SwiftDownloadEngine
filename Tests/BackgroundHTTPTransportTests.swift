@@ -1648,7 +1648,7 @@ final class BackgroundHTTPTransportTests: XCTestCase {
             persistenceStore: persistenceStore
         )
 
-        let taskRecord = try await manager.scheduleSegmentTask(
+        let taskRecord = try await manager.scheduleSegmentDownload(
             download: download,
             segment: download.segments[0]
         )
@@ -1670,7 +1670,7 @@ final class BackgroundHTTPTransportTests: XCTestCase {
 
         // Simulate Apple task interruption
         manager.urlSession(
-            manager.session,
+            URLSession.shared,
             task: initialTask,
             didCompleteWithError: interruptionError
         )
