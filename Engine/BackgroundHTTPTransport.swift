@@ -1629,7 +1629,8 @@ extension BackgroundDownloadSessionManager: URLSessionDownloadDelegate {
             defer { self.trackDelegateTaskFinished() }
             if let rec = await self.mappingStore.record(sessionIdentifier: sessID, taskIdentifier: taskID) {
                 let nsError = rawError as NSError
-                if let resumeData = nsError.userInfo[NSURLSessionDownloadTaskResumeData] as? Data {
+                let resumeData = nsError.userInfo[NSURLSessionDownloadTaskResumeData] as? Data
+                if let resumeData {
                     let resumeURL = self.resumeDataURL(downloadID: rec.downloadID, segmentID: rec.segmentID)
                     do {
                         try resumeData.write(to: resumeURL)
