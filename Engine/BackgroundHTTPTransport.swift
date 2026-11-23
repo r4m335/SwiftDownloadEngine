@@ -756,6 +756,9 @@ public final class BackgroundDownloadSessionManager: NSObject, @unchecked Sendab
     /// Failure notification hook: (downloadID, segmentID, error)
     public var onSegmentFailed: (@Sendable (String, Int, Error) -> Void)?
 
+    /// Completion notification hook for an entire download: (downloadID, destinationURL)
+    public var onDownloadCompleted: (@Sendable (String, URL) -> Void)?
+
     /// Enables automatic in-transport task interruption recovery via resumeData and exponential backoff
     public var autoRetryOnInterruption: Bool = true
 
@@ -1617,6 +1620,11 @@ extension BackgroundDownloadSessionManager: URLSessionDownloadDelegate {
                         segmentID: segmentID,
                         completedBytes: record.segmentLength
                     )
+                    if let dlRec = try? await persistence.fetch(tag: downloadID), dlRec.isAllSegmentsCompleted {
+                        let filename = dlRec.suggestedFilename ?? dlRec.destinationURL.lastPathComponent
+                        DownloadNotificationManager.postDownloadCompletedNotification(filename: filename, downloadID: downloadID)
+                        self.onDownloadCompleted?(downloadID, dlRec.destinationURL)
+                    }
                 } catch {
                     PipelineLogger.shared.log(stage: .transport, message: "[BackgroundDownloadSessionManager] Warning: failed to mark segment completed in persistence: \(error)")
                     do {

@@ -932,6 +932,8 @@ public actor DownloadEngine {
                     if !terminalEventsEmitted.contains(id) {
                         terminalEventsEmitted.insert(id)
                         broadcast(.completed(snap))
+                        let filename = snap.destinationURL.lastPathComponent
+                        DownloadNotificationManager.postDownloadCompletedNotification(filename: filename, downloadID: id)
                         let outcome = await coordinator.checksumOutcome(for: id)
                         if outcome != .notChecked {
                             broadcast(.integrityVerified(id: id, outcome: outcome))

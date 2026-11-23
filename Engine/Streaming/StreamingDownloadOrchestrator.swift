@@ -3750,6 +3750,8 @@ public actor StreamingDownloadOrchestrator {
             // Mark the HLS record as fully completed.
             try await persistHLSAssemblyState(id: parentID, state: .completed)
             try await persistHLSState(id: parentID, state: .completed)
+            let hlsFilename = finalOutputURL.lastPathComponent
+            DownloadNotificationManager.postDownloadCompletedNotification(filename: hlsFilename, downloadID: parentID)
 
             // Segment records and raw files are implementation details. Keep
             // the completed parent record for lifecycle/reconciliation, but
@@ -4217,6 +4219,8 @@ public actor StreamingDownloadOrchestrator {
             }
             _ = try? await dashPersistenceStore?.updateState(id: parentID, state: .completed)
             _ = try? await dashPersistenceStore?.updateAssemblyState(id: parentID, assemblyState: .completed)
+            let dashFilename = assemblyOutput.destinationURL.lastPathComponent
+            DownloadNotificationManager.postDownloadCompletedNotification(filename: dashFilename, downloadID: parentID)
             try Task.checkCancellation()
             if isCancelled(transferID: parentID) {
                 if let engine = self.downloadEngine {

@@ -3,10 +3,40 @@ import Foundation
 import UserNotifications
 #endif
 
-/// Manages local user notifications for completed downloads.
+/// Manages local user notifications and system broadcast events for completed downloads.
 public enum DownloadNotificationManager: Sendable {
-    /// Dispatches a local user notification when a download completes.
+    /// Notification name broadcast via NotificationCenter when any download completes in the download/transport layer.
+    public static let downloadDidCompleteNotification = Notification.Name("DownloadEngineKit.DownloadDidComplete")
+
+    /// Key in Notification userInfo containing the download identifier.
+    public static let downloadIDUserInfoKey = "downloadID"
+
+    /// Key in Notification userInfo containing the final filename.
+    public static let filenameUserInfoKey = "filename"
+
+    private static let lock = NSLock()
+    private static var notifiedIDs: Set<String> = []
+
+    /// Dispatches a local user notification and broadcasts an in-process notification when a download completes.
     public static func postDownloadCompletedNotification(filename: String, downloadID: String) {
+        lock.lock()
+        if notifiedIDs.contains(downloadID) {
+            lock.unlock()
+            return
+        }
+        notifiedIDs.insert(downloadID)
+        lock.unlock()
+
+        // Broadcast in-process notification for UI, observers, and integration tests
+        NotificationCenter.default.post(
+            name: downloadDidCompleteNotification,
+            object: nil,
+            userInfo: [
+                downloadIDUserInfoKey: downloadID,
+                filenameUserInfoKey: filename
+            ]
+        )
+
         #if canImport(UserNotifications)
         // Guard against CLI test runners (e.g. xctest or swift test) where UNUserNotificationCenter throws NSInternalInconsistencyException
         guard Bundle.main.bundleIdentifier != nil,
@@ -32,5 +62,12 @@ public enum DownloadNotificationManager: Sendable {
             }
         }
         #endif
+    }
+
+    /// Resets the notified download tracking (primarily for unit tests).
+    public static func resetNotifiedIDs() {
+        lock.lock()
+        defer { lock.unlock() }
+        notifiedIDs.removeAll()
     }
 }

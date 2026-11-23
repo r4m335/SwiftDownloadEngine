@@ -1975,6 +1975,8 @@ public actor DownloadCoordinator {
 
         // 11. Finalize completed status
         try await persistenceStore.updateState(tag: request.id, state: .completed)
+        let completedFilename = request.destinationURL.lastPathComponent
+        DownloadNotificationManager.postDownloadCompletedNotification(filename: completedFilename, downloadID: request.id)
         let finalMetrics = speedTracker.snapshot(expectedTotalBytes: totalSize)
         updateProgress(
             downloadID: request.id,
@@ -2407,6 +2409,8 @@ public actor DownloadCoordinator {
 
             try await persistenceStore.updateSegmentProgress(tag: request.id, segmentID: 0, completedBytes: totalWritten)
             try await persistenceStore.updateState(tag: request.id, state: .completed)
+            let fallbackFilename = request.destinationURL.lastPathComponent
+            DownloadNotificationManager.postDownloadCompletedNotification(filename: fallbackFilename, downloadID: request.id)
 
             let finalMetrics = speedTracker.snapshot(expectedTotalBytes: expectedTotal)
             updateProgress(
@@ -3074,6 +3078,8 @@ public actor DownloadCoordinator {
 
         // 7. Mark download completed
         try await persistenceStore.updateState(tag: request.id, state: .completed)
+        let resumedFilename = request.destinationURL.lastPathComponent
+        DownloadNotificationManager.postDownloadCompletedNotification(filename: resumedFilename, downloadID: request.id)
         let finalMetrics = speedTracker.snapshot(expectedTotalBytes: totalSize)
         updateProgress(
             downloadID: request.id,
