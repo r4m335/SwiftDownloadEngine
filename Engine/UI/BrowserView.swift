@@ -1844,7 +1844,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                 $0.id == candidate.id ||
                 $0.url.absoluteString.caseInsensitiveCompare(candidate.rawURL) == .orderedSame ||
                 (candidate.url != nil && $0.url == candidate.url)
-            }
+            } ?? candidate.toWebpageResource()
         }
         let url = candidate.url ?? URL(string: candidate.rawURL)
         downloadCandidateURL = url
@@ -2014,6 +2014,8 @@ public final class BrowserViewModel: NSObject, ObservableObject {
 
     public func promptDownloadFromInspector(for candidate: BrowserMediaCandidate) {
         if let res = candidate.toWebpageResource() {
+            activeDownloadResource = res
+            activeDownloadCandidate = candidate
             promptDownloadFromInspector(for: res)
         } else {
             promptDownload(for: candidate)
@@ -2021,6 +2023,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
     }
 
     public func promptDownloadFromInspector(for resource: WebpageResource) {
+        activeDownloadResource = resource
         // Evaluate against existing transfers to avoid duplicates and handle link recovery
         if let match = matchingTransfer(for: resource) {
             // Case 1: In active link-refresh session or matched transfer failed -> Reconnect & resume in-place!

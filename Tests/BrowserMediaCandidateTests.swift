@@ -503,7 +503,7 @@ final class BrowserMediaCandidateTests: XCTestCase {
     @MainActor
     func testBrowserViewModelCandidateWorkflowsAndCatalogSync() {
         let viewModel = BrowserViewModel()
-        let tabID = UUID()
+        let tabID = viewModel.activeTabID ?? viewModel.createNewTab()
 
         let candidate = BrowserMediaCandidate(
             id: "cand-sync-1",
