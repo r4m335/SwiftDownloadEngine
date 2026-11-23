@@ -474,7 +474,7 @@ public enum BrowserMediaCandidateClassifier {
         resource: WebpageResource,
         now: Date = Date()
     ) -> BrowserMediaCandidate {
-        let identity = !resource.id.isEmpty ? resource.id : stableIdentity(rawURL: resource.url.absoluteString, url: resource.url)
+        let identity = stableIdentity(rawURL: resource.url.absoluteString, url: resource.url)
         let mime = normalizedMIME(resource.mimeType)
         let manifest = StreamingManifestClassifier.classify(url: resource.url, mimeType: mime)
         let kind: BrowserMediaCandidateKind

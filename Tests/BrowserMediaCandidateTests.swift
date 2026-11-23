@@ -612,10 +612,12 @@ final class BrowserMediaCandidateTests: XCTestCase {
         let viewModel = BrowserViewModel()
         let tabID = viewModel.activeTabID ?? viewModel.createNewTab()
 
+        let mseRawURL = "blob:https://example.com/mse-uuid"
+        let mseID = BrowserMediaCandidateClassifier.stableIdentity(rawURL: mseRawURL, url: nil)
         let mseCand = BrowserMediaCandidate(
-            id: "cand-mse",
+            id: mseID,
             url: nil,
-            rawURL: "blob:https://example.com/mse-uuid",
+            rawURL: mseRawURL,
             kind: .mediaSource,
             blobKind: .mediaSource,
             mimeType: "video/mp4",
@@ -623,10 +625,12 @@ final class BrowserMediaCandidateTests: XCTestCase {
             availability: .captureCandidate
         )
 
+        let blobRawURL = "blob:https://example.com/blob-uuid"
+        let blobID = BrowserMediaCandidateClassifier.stableIdentity(rawURL: blobRawURL, url: nil)
         let blobCand = BrowserMediaCandidate(
-            id: "cand-blob",
+            id: blobID,
             url: nil,
-            rawURL: "blob:https://example.com/blob-uuid",
+            rawURL: blobRawURL,
             kind: .completeBlob,
             blobKind: .blob,
             mimeType: "video/mp4",
@@ -634,40 +638,48 @@ final class BrowserMediaCandidateTests: XCTestCase {
             availability: .captureCandidate
         )
 
+        let assocURL = URL(string: "https://example.com/chunk.mp4")!
+        let assocID = BrowserMediaCandidateClassifier.stableIdentity(rawURL: assocURL.absoluteString, url: assocURL)
         let assocManifestCand = BrowserMediaCandidate(
-            id: "cand-assoc",
-            url: URL(string: "https://example.com/chunk.mp4")!,
-            rawURL: "https://example.com/chunk.mp4",
+            id: assocID,
+            url: assocURL,
+            rawURL: assocURL.absoluteString,
             kind: .directMedia,
             suggestedFilename: "chunk.mp4",
             availability: .downloadable,
             associatedManifestURL: URL(string: "https://example.com/stream.m3u8")!
         )
 
+        let liveHLSURL = URL(string: "https://example.com/live_broadcast.m3u8")!
+        let liveHLSID = BrowserMediaCandidateClassifier.stableIdentity(rawURL: liveHLSURL.absoluteString, url: liveHLSURL)
         let ordinaryLiveManifestCand = BrowserMediaCandidate(
-            id: "cand-live-hls",
-            url: URL(string: "https://example.com/live_broadcast.m3u8")!,
-            rawURL: "https://example.com/live_broadcast.m3u8",
+            id: liveHLSID,
+            url: liveHLSURL,
+            rawURL: liveHLSURL.absoluteString,
             kind: .hlsManifest,
             suggestedFilename: "live_broadcast.m3u8",
             availability: .requiresPlanning,
             isLive: true
         )
 
+        let liveDirectURL = URL(string: "https://example.com/live/feed.flv")!
+        let liveDirectID = BrowserMediaCandidateClassifier.stableIdentity(rawURL: liveDirectURL.absoluteString, url: liveDirectURL)
         let ordinaryLiveDirectCand = BrowserMediaCandidate(
-            id: "cand-live-direct",
-            url: URL(string: "https://example.com/live/feed.flv")!,
-            rawURL: "https://example.com/live/feed.flv",
+            id: liveDirectID,
+            url: liveDirectURL,
+            rawURL: liveDirectURL.absoluteString,
             kind: .directMedia,
             suggestedFilename: "feed.flv",
             availability: .downloadable,
             isLive: true
         )
 
+        let staticDocURL = URL(string: "https://example.com/manual.pdf")!
+        let staticDocID = BrowserMediaCandidateClassifier.stableIdentity(rawURL: staticDocURL.absoluteString, url: staticDocURL)
         let normalStaticFileCand = BrowserMediaCandidate(
-            id: "cand-static-doc",
-            url: URL(string: "https://example.com/manual.pdf")!,
-            rawURL: "https://example.com/manual.pdf",
+            id: staticDocID,
+            url: staticDocURL,
+            rawURL: staticDocURL.absoluteString,
             kind: .directFile,
             suggestedFilename: "manual.pdf",
             availability: .downloadable,
@@ -687,12 +699,12 @@ final class BrowserMediaCandidateTests: XCTestCase {
 
         // Verify ordinary live streams, manifests, MSE, and blob candidates are all preserved, while ordinary static file is dropped
         let remainingIDs = Set(viewModel.mediaCandidates.map(\.id))
-        XCTAssertTrue(remainingIDs.contains("cand-mse"), "MSE candidate must be preserved")
-        XCTAssertTrue(remainingIDs.contains("cand-blob"), "Complete blob candidate must be preserved")
-        XCTAssertTrue(remainingIDs.contains("cand-assoc"), "Candidate with associated manifest must be preserved")
-        XCTAssertTrue(remainingIDs.contains("cand-live-hls"), "Ordinary live HLS manifest candidate must be preserved")
-        XCTAssertTrue(remainingIDs.contains("cand-live-direct"), "Ordinary live direct stream candidate must be preserved")
-        XCTAssertFalse(remainingIDs.contains("cand-static-doc"), "Ordinary static non-live file must be dropped")
+        XCTAssertTrue(remainingIDs.contains(mseID), "MSE candidate must be preserved")
+        XCTAssertTrue(remainingIDs.contains(blobID), "Complete blob candidate must be preserved")
+        XCTAssertTrue(remainingIDs.contains(assocID), "Candidate with associated manifest must be preserved")
+        XCTAssertTrue(remainingIDs.contains(liveHLSID), "Ordinary live HLS manifest candidate must be preserved")
+        XCTAssertTrue(remainingIDs.contains(liveDirectID), "Ordinary live direct stream candidate must be preserved")
+        XCTAssertFalse(remainingIDs.contains(staticDocID), "Ordinary static non-live file must be dropped")
     }
 
     @MainActor
