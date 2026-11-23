@@ -52,6 +52,7 @@ public struct BrowserMediaCandidate: Identifiable, Codable, Sendable, Equatable,
     public let associatedManifestURL: URL?
     public let cachedManifestText: String?
     public let lastObserved: Date
+    public let isLive: Bool
     public let width: Int?
     public let height: Int?
     public let duration: Double?
@@ -76,6 +77,7 @@ public struct BrowserMediaCandidate: Identifiable, Codable, Sendable, Equatable,
         associatedManifestURL: URL? = nil,
         cachedManifestText: String? = nil,
         lastObserved: Date = Date(),
+        isLive: Bool = false,
         width: Int? = nil,
         height: Int? = nil,
         duration: Double? = nil,
@@ -103,6 +105,7 @@ public struct BrowserMediaCandidate: Identifiable, Codable, Sendable, Equatable,
         self.associatedManifestURL = associatedManifestURL
         self.cachedManifestText = cachedManifestText
         self.lastObserved = lastObserved
+        self.isLive = isLive
         self.width = width
         self.height = height
         self.duration = duration
@@ -172,11 +175,34 @@ public struct BrowserMediaCandidate: Identifiable, Codable, Sendable, Equatable,
             requestContext: requestContext,
             manifestText: cachedManifestText,
             isDRMProtected: kind == .protectedMedia,
+            isLive: isLive || isLiveStream,
             resolutionText: resText,
             duration: duration,
             codecs: codecs,
             audioLanguage: audioLanguage
         )
+    }
+
+    /// Evaluates whether this candidate represents a live broadcast, event stream, or dynamic live manifest.
+    public var isLiveStream: Bool {
+        if isLive { return true }
+        if evidence.contains(where: { $0.localizedCaseInsensitiveContains("live") }) { return true }
+        if let manifest = cachedManifestText {
+            if manifest.contains("#EXT-X-TARGETDURATION") && !manifest.contains("#EXT-X-ENDLIST") {
+                return true
+            }
+        }
+        if let targetURL = url ?? finalURL {
+            let path = targetURL.path.lowercased()
+            if path.contains("/live/") || path.contains("_live") || path.contains("-live") || path.hasPrefix("live") {
+                return true
+            }
+        }
+        let fn = suggestedFilename.lowercased()
+        if fn.contains("[live]") || fn.contains("_live") || fn.contains("-live") || fn.hasPrefix("live") {
+            return true
+        }
+        return false
     }
 
     public var isActionable: Bool {
@@ -418,6 +444,11 @@ public enum BrowserMediaCandidateClassifier {
             return values.isEmpty ? ["browser resource observation"] : values
         }()
 
+        let isLive = (observation.duration == nil || observation.duration?.isInfinite == true) &&
+            ((observation.manifestPrefix?.contains("#EXT-X-TARGETDURATION") == true && observation.manifestPrefix?.contains("#EXT-X-ENDLIST") == false) ||
+             url.absoluteString.localizedCaseInsensitiveContains("/live/") ||
+             url.absoluteString.localizedCaseInsensitiveContains("_live"))
+
         return BrowserMediaCandidate(
             id: identity,
             url: url,
@@ -431,6 +462,7 @@ public enum BrowserMediaCandidateClassifier {
             evidence: evidence,
             documentID: observation.documentID,
             lastObserved: now,
+            isLive: isLive,
             width: observation.width,
             height: observation.height,
             duration: observation.duration,
@@ -521,6 +553,10 @@ public enum BrowserMediaCandidateClassifier {
             return nil
         }
 
+        let isLive = resource.isLive || (resource.manifestText.flatMap {
+            $0.contains("#EXT-X-TARGETDURATION") && !$0.contains("#EXT-X-ENDLIST")
+        } ?? false) || resource.title.hasPrefix("[LIVE]")
+
         return BrowserMediaCandidate(
             id: identity,
             url: resource.url,
@@ -535,6 +571,7 @@ public enum BrowserMediaCandidateClassifier {
             requestContext: safeRequestContext(resource.requestContext, for: resource.url),
             cachedManifestText: resource.manifestText,
             lastObserved: now,
+            isLive: isLive,
             width: w,
             height: h,
             duration: resource.duration,
@@ -565,7 +602,11 @@ public enum BrowserMediaCandidateClassifier {
         cachedManifestText: String? = nil,
         lastObserved: Date
     ) -> BrowserMediaCandidate {
-        BrowserMediaCandidate(
+        let isLive = (cachedManifestText?.contains("#EXT-X-TARGETDURATION") == true && cachedManifestText?.contains("#EXT-X-ENDLIST") == false) ||
+            url.absoluteString.localizedCaseInsensitiveContains("/live/") ||
+            url.absoluteString.localizedCaseInsensitiveContains("_live") ||
+            (finalURL?.absoluteString.localizedCaseInsensitiveContains("/live/") == true)
+        return BrowserMediaCandidate(
             id: identity,
             url: url,
             rawURL: rawURL,
@@ -574,10 +615,11 @@ public enum BrowserMediaCandidateClassifier {
             mimeType: mimeType,
             suggestedFilename: BrowserDownloadClassifier.suggestedFilenameFromURL(finalURL ?? url, mimeType: mimeType),
             availability: .requiresPlanning,
-            evidence: ["streaming manifest recognized", reason],
+            evidence: ["streaming manifest recognized", reason] + (isLive ? ["live stream detected"] : []),
             documentID: documentID,
             cachedManifestText: cachedManifestText,
-            lastObserved: lastObserved
+            lastObserved: lastObserved,
+            isLive: isLive
         )
     }
 
@@ -686,6 +728,7 @@ public struct BrowserMediaCandidateCatalog: Sendable, Equatable {
                 rawURL: candidate.rawURL,
                 finalURL: candidate.finalURL,
                 kind: candidate.kind,
+                blobKind: candidate.blobKind,
                 mimeType: candidate.mimeType,
                 suggestedFilename: candidate.suggestedFilename,
                 estimatedSize: candidate.estimatedSize,
@@ -694,7 +737,15 @@ public struct BrowserMediaCandidateCatalog: Sendable, Equatable {
                 documentID: candidate.documentID,
                 requestContext: candidate.requestContext,
                 associatedManifestID: manifestID,
-                lastObserved: candidate.lastObserved
+                associatedManifestURL: candidate.associatedManifestURL,
+                cachedManifestText: candidate.cachedManifestText,
+                lastObserved: candidate.lastObserved,
+                isLive: candidate.isLive,
+                width: candidate.width,
+                height: candidate.height,
+                duration: candidate.duration,
+                codecs: candidate.codecs,
+                audioLanguage: candidate.audioLanguage
             )
             values[id] = candidate
         }
@@ -729,7 +780,13 @@ public struct BrowserMediaCandidateCatalog: Sendable, Equatable {
                         associatedManifestID: newCandidate.associatedManifestID,
                         associatedManifestURL: manifestURL,
                         cachedManifestText: manifestCachedText,
-                        lastObserved: newCandidate.lastObserved
+                        lastObserved: newCandidate.lastObserved,
+                        isLive: newCandidate.isLive,
+                        width: newCandidate.width,
+                        height: newCandidate.height,
+                        duration: newCandidate.duration,
+                        codecs: newCandidate.codecs,
+                        audioLanguage: newCandidate.audioLanguage
                     )
                 }
             }
@@ -756,7 +813,13 @@ public struct BrowserMediaCandidateCatalog: Sendable, Equatable {
                         associatedManifestID: val.associatedManifestID,
                         associatedManifestURL: manifestURL,
                         cachedManifestText: val.cachedManifestText ?? newCandidate.cachedManifestText,
-                        lastObserved: val.lastObserved
+                        lastObserved: val.lastObserved,
+                        isLive: val.isLive,
+                        width: val.width,
+                        height: val.height,
+                        duration: val.duration,
+                        codecs: val.codecs,
+                        audioLanguage: val.audioLanguage
                     )
                 }
             }
@@ -803,6 +866,8 @@ public struct BrowserMediaCandidateCatalog: Sendable, Equatable {
             return preferredAvailability(existing.availability, candidate.availability)
         }()
 
+        let mergedIsLive = candidate.isLive || existing.isLive || candidate.isLiveStream || existing.isLiveStream
+
         let merged = BrowserMediaCandidate(
             id: existing.id,
             url: existing.url ?? candidate.url,
@@ -820,7 +885,13 @@ public struct BrowserMediaCandidateCatalog: Sendable, Equatable {
             associatedManifestID: existing.associatedManifestID ?? candidate.associatedManifestID,
             associatedManifestURL: associatedManifestURL,
             cachedManifestText: candidate.cachedManifestText ?? existing.cachedManifestText,
-            lastObserved: max(existing.lastObserved, candidate.lastObserved)
+            lastObserved: max(existing.lastObserved, candidate.lastObserved),
+            isLive: mergedIsLive,
+            width: candidate.width ?? existing.width,
+            height: candidate.height ?? existing.height,
+            duration: candidate.duration ?? existing.duration,
+            codecs: candidate.codecs ?? existing.codecs,
+            audioLanguage: candidate.audioLanguage ?? existing.audioLanguage
         )
         values[candidate.id] = merged
 
@@ -843,7 +914,13 @@ public struct BrowserMediaCandidateCatalog: Sendable, Equatable {
                     associatedManifestID: val.associatedManifestID,
                     associatedManifestURL: manifestURL,
                     cachedManifestText: val.cachedManifestText ?? merged.cachedManifestText,
-                    lastObserved: val.lastObserved
+                    lastObserved: val.lastObserved,
+                    isLive: val.isLive,
+                    width: val.width,
+                    height: val.height,
+                    duration: val.duration,
+                    codecs: val.codecs,
+                    audioLanguage: val.audioLanguage
                 )
             }
         }

@@ -268,6 +268,38 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         }
     }
 
+    /// Explicitly updates discovered resources for a specific tab (or active tab).
+    public func setDiscoveredResources(_ resources: [WebpageResource], for tabID: UUID? = nil) {
+        let targetID = tabID ?? activeTabID
+        if let targetID {
+            tabDiscoveredResources[targetID] = resources
+            tabResourceStates[targetID, default: BrowserTabResourceState()].discoveredResources = resources
+            if targetID == activeTabID {
+                discoveredResources = resources
+            }
+        } else {
+            discoveredResources = resources
+        }
+    }
+
+    /// Explicitly updates variant stream items for a specific tab (or active tab).
+    public func setVariantStreamItems(_ items: [HLSVariantStreamItem], for tabID: UUID? = nil) {
+        let targetID = tabID ?? activeTabID
+        var dict: [String: HLSVariantStreamItem] = [:]
+        for item in items {
+            dict[item.id] = item
+        }
+        if let targetID {
+            tabVariantStreamItems[targetID] = dict
+            tabResourceStates[targetID, default: BrowserTabResourceState()].variantStreamItems = dict
+            if targetID == activeTabID {
+                variantStreamItems = dict
+            }
+        } else {
+            variantStreamItems = dict
+        }
+    }
+
     /// Deselects a resource ID for the given tab (or active tab).
     public func deselectResource(_ id: String, tabID: UUID? = nil) {
         let targetID = tabID ?? activeTabID
@@ -1274,20 +1306,32 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         }
     }
 
-    fileprivate func resetMediaDiscovery(for tabID: UUID) {
+    public func resetMediaDiscovery(for tabID: UUID) {
         cancelInFlightProbes(for: tabID)
         cancelBlobCapture(for: tabID)
         cancelMSECapture(for: tabID)
         tabSessions[tabID]?.mediaDiscoveryBridge.reset()
         resetMediaCandidateCatalog(for: tabID)
-        tabDiscoveredResources.removeValue(forKey: tabID)
-        tabVariantStreamItems.removeValue(forKey: tabID)
-        tabSelectedResourceIDs.removeValue(forKey: tabID)
-        tabResourceStates.removeValue(forKey: tabID)
+
+        let liveResources = (tabDiscoveredResources[tabID] ?? []).filter {
+            $0.isLive || $0.isStreamingManifest || $0.isBlobResource || $0.isMediaSourceBlob
+        }
+        let liveVariants = (tabVariantStreamItems[tabID] ?? [:]).filter { $1.isLive }
+        let preservedIDs = Set(liveResources.map { $0.id })
+        let selectedIDs = (tabSelectedResourceIDs[tabID] ?? []).filter { preservedIDs.contains($0) }
+
+        tabDiscoveredResources[tabID] = liveResources
+        tabVariantStreamItems[tabID] = liveVariants
+        tabSelectedResourceIDs[tabID] = selectedIDs
+        tabResourceStates[tabID] = BrowserTabResourceState(
+            discoveredResources: liveResources,
+            variantStreamItems: liveVariants,
+            selectedResourceIDs: selectedIDs
+        )
         if tabID == activeTabID {
-            discoveredResources = []
-            selectedResourceIDs = []
-            variantStreamItems = [:]
+            discoveredResources = liveResources
+            variantStreamItems = liveVariants
+            selectedResourceIDs = selectedIDs
         }
     }
 
@@ -3398,6 +3442,16 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         isShowingShareSheet = true
     }
 
+    /// Rescans resources on the current webpage, preserving live streams, manifests, and MSE/blob candidates.
+    public func rescanResources(includeNonVideo: Bool = false) {
+        inspectCurrentPageResources(includeNonVideo: includeNonVideo)
+    }
+
+    /// Rescans resources on the current webpage, preserving live streams, manifests, and MSE/blob candidates.
+    public func rescanCurrentPageResources(includeNonVideo: Bool = false) {
+        inspectCurrentPageResources(includeNonVideo: includeNonVideo)
+    }
+
     public func inspectCurrentPageResources(includeNonVideo: Bool = false) {
         guard let url = currentURL else {
             resourceScanError = "No active webpage is currently loaded."
@@ -3931,15 +3985,28 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         ingestMediaCandidates([candidate], tabID: tabID)
     }
 
-    private func resetMediaCandidateCatalog(for tabID: UUID?) {
+    public static func isPreservedCandidateOnRescan(_ candidate: BrowserMediaCandidate) -> Bool {
+        candidate.blobKind == .mediaSource ||
+        candidate.kind == .mediaSource ||
+        candidate.blobKind == .blob ||
+        candidate.kind == .completeBlob ||
+        candidate.associatedManifestURL != nil ||
+        candidate.isLive ||
+        candidate.isLiveStream ||
+        candidate.kind == .hlsManifest ||
+        candidate.kind == .dashManifest ||
+        candidate.evidence.contains(where: { $0.localizedCaseInsensitiveContains("live") })
+    }
+
+    public func resetMediaCandidateCatalog(for tabID: UUID? = nil) {
         guard let tabID else {
             mediaCandidates = mediaCandidates.filter {
-                $0.blobKind == .mediaSource || $0.kind == .mediaSource || $0.associatedManifestURL != nil
+                Self.isPreservedCandidateOnRescan($0)
             }
             return
         }
         let preserved = mediaCandidateCatalogs[tabID]?.candidates.filter {
-            $0.blobKind == .mediaSource || $0.kind == .mediaSource || $0.associatedManifestURL != nil
+            Self.isPreservedCandidateOnRescan($0)
         } ?? []
         var catalog = BrowserMediaCandidateCatalog()
         for cand in preserved {
@@ -4567,8 +4634,15 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                     documentID: mseCandidate.documentID,
                     requestContext: mseCandidate.requestContext ?? effectiveContext,
                     associatedManifestID: mseCandidate.associatedManifestID,
+                    associatedManifestURL: mseCandidate.associatedManifestURL,
                     cachedManifestText: mseCandidate.cachedManifestText,
-                    lastObserved: mseCandidate.lastObserved
+                    lastObserved: mseCandidate.lastObserved,
+                    isLive: mseCandidate.isLive,
+                    width: mseCandidate.width,
+                    height: mseCandidate.height,
+                    duration: mseCandidate.duration,
+                    codecs: mseCandidate.codecs,
+                    audioLanguage: mseCandidate.audioLanguage
                 )
             }
             #if canImport(WebKit)
@@ -4597,8 +4671,15 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                     documentID: blobCandidate.documentID,
                     requestContext: blobCandidate.requestContext ?? effectiveContext,
                     associatedManifestID: blobCandidate.associatedManifestID,
+                    associatedManifestURL: blobCandidate.associatedManifestURL,
                     cachedManifestText: blobCandidate.cachedManifestText,
-                    lastObserved: blobCandidate.lastObserved
+                    lastObserved: blobCandidate.lastObserved,
+                    isLive: blobCandidate.isLive,
+                    width: blobCandidate.width,
+                    height: blobCandidate.height,
+                    duration: blobCandidate.duration,
+                    codecs: blobCandidate.codecs,
+                    audioLanguage: blobCandidate.audioLanguage
                 )
             }
             #if canImport(WebKit)

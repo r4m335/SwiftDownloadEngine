@@ -536,5 +536,227 @@ final class BrowserMediaCandidateTests: XCTestCase {
         XCTAssertTrue(viewModel.isShowingQualityPicker)
         XCTAssertEqual(viewModel.qualityPickerTargetCandidate?.id, candidate.id)
     }
+
+    func testOrdinaryLiveCandidateClassificationAndProperties() {
+        // 1. Explicit isLive flag
+        let liveCand = BrowserMediaCandidate(
+            id: "cand-live-1",
+            url: URL(string: "https://example.com/live/broadcast.m3u8")!,
+            rawURL: "https://example.com/live/broadcast.m3u8",
+            kind: .hlsManifest,
+            suggestedFilename: "broadcast.m3u8",
+            availability: .requiresPlanning,
+            isLive: true
+        )
+        XCTAssertTrue(liveCand.isLive)
+        XCTAssertTrue(liveCand.isLiveStream)
+
+        // WebpageResource conversion preserves isLive
+        let resource = liveCand.toWebpageResource()
+        XCTAssertNotNil(resource)
+        XCTAssertTrue(resource?.isLive == true)
+
+        // Reverse conversion preserves isLive
+        if let res = resource {
+            let roundtrip = res.toMediaCandidate()
+            XCTAssertTrue(roundtrip.isLive)
+            XCTAssertTrue(roundtrip.isLiveStream)
+        }
+
+        // 2. Manifest without EXT-X-ENDLIST triggers live stream detection
+        let liveManifestText = """
+        #EXTM3U
+        #EXT-X-VERSION:3
+        #EXT-X-TARGETDURATION:10
+        #EXT-X-MEDIA-SEQUENCE:100
+        #EXTINF:10.0,
+        seg100.ts
+        #EXTINF:10.0,
+        seg101.ts
+        """
+        let manifestCand = BrowserMediaCandidate(
+            id: "cand-live-2",
+            url: URL(string: "https://example.com/stream.m3u8")!,
+            rawURL: "https://example.com/stream.m3u8",
+            kind: .hlsManifest,
+            suggestedFilename: "stream.m3u8",
+            availability: .requiresPlanning,
+            cachedManifestText: liveManifestText
+        )
+        XCTAssertTrue(manifestCand.isLiveStream)
+
+        // 3. Finite VOD manifest does not trigger live stream detection
+        let vodManifestText = """
+        #EXTM3U
+        #EXT-X-VERSION:3
+        #EXT-X-TARGETDURATION:10
+        #EXTINF:10.0,
+        seg1.ts
+        #EXT-X-ENDLIST
+        """
+        let vodCand = BrowserMediaCandidate(
+            id: "cand-vod-1",
+            url: URL(string: "https://example.com/vod.m3u8")!,
+            rawURL: "https://example.com/vod.m3u8",
+            kind: .hlsManifest,
+            suggestedFilename: "vod.m3u8",
+            availability: .requiresPlanning,
+            cachedManifestText: vodManifestText
+        )
+        XCTAssertFalse(vodCand.isLive)
+        XCTAssertFalse(vodCand.isLiveStream)
+    }
+
+    @MainActor
+    func testRescanPreservesOrdinaryLiveResultsAndMSEBlobCandidates() {
+        let viewModel = BrowserViewModel()
+        let tabID = viewModel.activeTabID ?? viewModel.createNewTab()
+
+        let mseCand = BrowserMediaCandidate(
+            id: "cand-mse",
+            url: nil,
+            rawURL: "blob:https://example.com/mse-uuid",
+            kind: .mediaSource,
+            blobKind: .mediaSource,
+            mimeType: "video/mp4",
+            suggestedFilename: "media_source_capture.mp4",
+            availability: .captureCandidate
+        )
+
+        let blobCand = BrowserMediaCandidate(
+            id: "cand-blob",
+            url: nil,
+            rawURL: "blob:https://example.com/blob-uuid",
+            kind: .completeBlob,
+            blobKind: .blob,
+            mimeType: "video/mp4",
+            suggestedFilename: "blob_export.mp4",
+            availability: .captureCandidate
+        )
+
+        let assocManifestCand = BrowserMediaCandidate(
+            id: "cand-assoc",
+            url: URL(string: "https://example.com/chunk.mp4")!,
+            rawURL: "https://example.com/chunk.mp4",
+            kind: .directMedia,
+            suggestedFilename: "chunk.mp4",
+            availability: .downloadable,
+            associatedManifestURL: URL(string: "https://example.com/stream.m3u8")!
+        )
+
+        let ordinaryLiveManifestCand = BrowserMediaCandidate(
+            id: "cand-live-hls",
+            url: URL(string: "https://example.com/live_broadcast.m3u8")!,
+            rawURL: "https://example.com/live_broadcast.m3u8",
+            kind: .hlsManifest,
+            suggestedFilename: "live_broadcast.m3u8",
+            availability: .requiresPlanning,
+            isLive: true
+        )
+
+        let ordinaryLiveDirectCand = BrowserMediaCandidate(
+            id: "cand-live-direct",
+            url: URL(string: "https://example.com/live/feed.flv")!,
+            rawURL: "https://example.com/live/feed.flv",
+            kind: .directMedia,
+            suggestedFilename: "feed.flv",
+            availability: .downloadable,
+            isLive: true
+        )
+
+        let normalStaticFileCand = BrowserMediaCandidate(
+            id: "cand-static-doc",
+            url: URL(string: "https://example.com/manual.pdf")!,
+            rawURL: "https://example.com/manual.pdf",
+            kind: .directFile,
+            suggestedFilename: "manual.pdf",
+            availability: .downloadable,
+            isLive: false
+        )
+
+        viewModel.ingestMediaCandidates(
+            [mseCand, blobCand, assocManifestCand, ordinaryLiveManifestCand, ordinaryLiveDirectCand, normalStaticFileCand],
+            tabID: tabID
+        )
+
+        // Verify all 6 ingested
+        XCTAssertEqual(viewModel.mediaCandidates.count, 6)
+
+        // Rescan / catalog reset
+        viewModel.resetMediaCandidateCatalog(for: tabID)
+
+        // Verify ordinary live streams, manifests, MSE, and blob candidates are all preserved, while ordinary static file is dropped
+        let remainingIDs = Set(viewModel.mediaCandidates.map(\.id))
+        XCTAssertTrue(remainingIDs.contains("cand-mse"), "MSE candidate must be preserved")
+        XCTAssertTrue(remainingIDs.contains("cand-blob"), "Complete blob candidate must be preserved")
+        XCTAssertTrue(remainingIDs.contains("cand-assoc"), "Candidate with associated manifest must be preserved")
+        XCTAssertTrue(remainingIDs.contains("cand-live-hls"), "Ordinary live HLS manifest candidate must be preserved")
+        XCTAssertTrue(remainingIDs.contains("cand-live-direct"), "Ordinary live direct stream candidate must be preserved")
+        XCTAssertFalse(remainingIDs.contains("cand-static-doc"), "Ordinary static non-live file must be dropped")
+    }
+
+    @MainActor
+    func testResetMediaDiscoveryPreservesLiveResourcesAndVariants() {
+        let viewModel = BrowserViewModel()
+        let tabID = viewModel.activeTabID ?? viewModel.createNewTab()
+
+        let liveRes = WebpageResource(
+            id: "res-live",
+            url: URL(string: "https://example.com/live/stream.m3u8")!,
+            title: "Live News Stream",
+            suggestedFilename: "stream.m3u8",
+            resourceType: .video,
+            isLive: true
+        )
+        let nonLiveRes = WebpageResource(
+            id: "res-static",
+            url: URL(string: "https://example.com/document.pdf")!,
+            title: "Static Document",
+            suggestedFilename: "document.pdf",
+            resourceType: .other,
+            isLive: false
+        )
+
+        let liveVariant = HLSVariantStreamItem(
+            id: "var-live",
+            url: URL(string: "https://example.com/live/1080p.m3u8")!,
+            manifestURL: URL(string: "https://example.com/live/stream.m3u8")!,
+            resolution: HLSResolution(width: 1920, height: 1080),
+            bandwidth: 5_000_000,
+            codecs: "avc1.640028",
+            isLive: true,
+            title: "1080p Live",
+            bitrateText: "5.0 Mbps"
+        )
+        let nonLiveVariant = HLSVariantStreamItem(
+            id: "var-vod",
+            url: URL(string: "https://example.com/vod/720p.m3u8")!,
+            manifestURL: URL(string: "https://example.com/vod/master.m3u8")!,
+            resolution: HLSResolution(width: 1280, height: 720),
+            bandwidth: 2_500_000,
+            codecs: "avc1.4d401f",
+            isLive: false,
+            title: "720p VOD",
+            bitrateText: "2.5 Mbps"
+        )
+
+        viewModel.setDiscoveredResources([liveRes, nonLiveRes], for: tabID)
+        viewModel.setVariantStreamItems([liveVariant, nonLiveVariant], for: tabID)
+
+        // Explicit rescan APIs are available
+        viewModel.rescanResources(includeNonVideo: false)
+        viewModel.rescanCurrentPageResources(includeNonVideo: true)
+
+        // Reset media discovery preserves live stream resources and variants
+        viewModel.resetMediaDiscovery(for: tabID)
+
+        let discovered = viewModel.discoveredResources(for: tabID)
+        XCTAssertTrue(discovered.contains(where: { $0.id == "res-live" }))
+        XCTAssertFalse(discovered.contains(where: { $0.id == "res-static" }))
+
+        let variants = viewModel.variantStreamItems(for: tabID)
+        XCTAssertNotNil(variants["var-live"])
+        XCTAssertNil(variants["var-vod"])
+    }
 }
 
