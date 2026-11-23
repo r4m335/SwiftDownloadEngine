@@ -94,6 +94,54 @@ public struct SettingsView: View {
                 }
 
                 Section(header: Text("About & System")) {
+                    NavigationLink {
+                        AboutView()
+                    } label: {
+                        HStack(spacing: 14) {
+                            ZStack {
+                                RoundedRectangle(cornerRadius: 8)
+                                    .fill(Color.gray)
+                                    .frame(width: 36, height: 36)
+                                Image(systemName: "info.circle.fill")
+                                    .font(.system(size: 20))
+                                    .foregroundColor(.white)
+                            }
+
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text("About")
+                                    .font(.headline)
+                                Text("Application version, engine details & open source licenses")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                            .padding(.vertical, 4)
+                        }
+                    }
+
+                    NavigationLink {
+                        OpenSourceLicensesView()
+                    } label: {
+                        HStack(spacing: 14) {
+                            ZStack {
+                                RoundedRectangle(cornerRadius: 8)
+                                    .fill(Color.teal)
+                                    .frame(width: 36, height: 36)
+                                Image(systemName: "doc.text.fill")
+                                    .font(.system(size: 18))
+                                    .foregroundColor(.white)
+                            }
+
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text("Open Source Licenses")
+                                    .font(.headline)
+                                Text("Third-party attributions, BSD, Boost, and LGPL notices")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                            .padding(.vertical, 4)
+                        }
+                    }
+
                     HStack {
                         Text("Application")
                         Spacer()
