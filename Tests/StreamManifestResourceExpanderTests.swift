@@ -1002,7 +1002,7 @@ final class StreamManifestResourceExpanderTests: XCTestCase {
     func testBrowserViewModelCancelsProbesOnNavigationAndCloseTab() async {
         let expander = StreamManifestResourceExpander(maxConcurrentProbes: 2)
         let vm = BrowserViewModel(streamManifestExpander: expander)
-        let tabID = vm.activeTabID ?? vm.createNewTab(select: true)
+        let tabID = vm.activeTabID ?? vm.createNewTab()
 
         let res = WebpageResource(
             id: "nav-test-manifest",
