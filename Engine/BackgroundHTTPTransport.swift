@@ -979,7 +979,8 @@ public final class BackgroundDownloadSessionManager: NSObject, @unchecked Sendab
         let resumeURL = resumeDataURL(downloadID: download.id, segmentID: segment.id)
         let task: URLSessionDownloadTask
         if FileManager.default.fileExists(atPath: resumeURL.path),
-           let resumeData = try? Data(contentsOf: resumeURL) {
+           let resumeData = try? Data(contentsOf: resumeURL),
+           isValidResumeData(resumeData) {
             task = session.downloadTask(withResumeData: resumeData)
             try? FileManager.default.removeItem(at: resumeURL)
             PipelineLogger.shared.log(stage: .transport, message: "[BackgroundDownloadSessionManager] Resumed download task with resumeData for download \(download.id), segment \(segment.id)")
@@ -1052,7 +1053,8 @@ public final class BackgroundDownloadSessionManager: NSObject, @unchecked Sendab
         let resumeURL = resumeDataURL(downloadID: transferID, segmentID: order)
         let task: URLSessionDownloadTask
         if FileManager.default.fileExists(atPath: resumeURL.path),
-           let resumeData = try? Data(contentsOf: resumeURL) {
+           let resumeData = try? Data(contentsOf: resumeURL),
+           isValidResumeData(resumeData) {
             task = session.downloadTask(withResumeData: resumeData)
             try? FileManager.default.removeItem(at: resumeURL)
             PipelineLogger.shared.log(stage: .transport, message: "[BackgroundDownloadSessionManager] Resumed streaming segment task with resumeData for \(transferID), order \(order)")
@@ -1323,6 +1325,14 @@ public final class BackgroundDownloadSessionManager: NSObject, @unchecked Sendab
 // MARK: - URLSessionDownloadDelegate Conformance
 
 extension BackgroundDownloadSessionManager: URLSessionDownloadDelegate {
+
+    fileprivate func isValidResumeData(_ data: Data) -> Bool {
+        // Must be a valid dictionary property list, never a bare string or array
+        guard let dict = (try? PropertyListSerialization.propertyList(from: data, format: nil)) as? [String: Any] else {
+            return false
+        }
+        return dict["NSURLSessionResumeInfoVersion"] != nil || dict["NSURLSessionResumeCurrentRequest"] != nil || dict["NSURLSessionDownloadURL"] != nil
+    }
 
     private func isTransientNetworkError(_ error: NSError) -> Bool {
         guard error.domain == NSURLErrorDomain else { return false }
@@ -1656,7 +1666,7 @@ extension BackgroundDownloadSessionManager: URLSessionDownloadDelegate {
                     let earliestBegin = Date().addingTimeInterval(backoffSeconds)
 
                     let newTask: URLSessionDownloadTask
-                    if let resumeData {
+                    if let resumeData, self.isValidResumeData(resumeData) {
                         newTask = self.session.downloadTask(withResumeData: resumeData)
                         PipelineLogger.shared.log(stage: .transport, message: "[BackgroundDownloadSessionManager] Apple task interruption recovery: restarting task with resumeData for download \(rec.downloadID), segment \(rec.segmentID) (attempt \(nextRetry)/3, backoff: \(backoffSeconds)s)")
                     } else {
