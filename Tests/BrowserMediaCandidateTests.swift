@@ -719,25 +719,25 @@ final class BrowserMediaCandidateTests: XCTestCase {
 
         let liveVariant = HLSVariantStreamItem(
             id: "var-live",
-            url: URL(string: "https://example.com/live/1080p.m3u8")!,
-            manifestURL: URL(string: "https://example.com/live/stream.m3u8")!,
-            resolution: HLSResolution(width: 1920, height: 1080),
+            masterURL: URL(string: "https://example.com/live/stream.m3u8")!,
+            variantURL: URL(string: "https://example.com/live/1080p.m3u8")!,
             bandwidth: 5_000_000,
+            resolution: HLSResolution(width: 1920, height: 1080),
+            qualityLabel: "1080p Live",
+            bitrateText: "5.0 Mbps",
             codecs: "avc1.640028",
-            isLive: true,
-            title: "1080p Live",
-            bitrateText: "5.0 Mbps"
+            isLive: true
         )
         let nonLiveVariant = HLSVariantStreamItem(
             id: "var-vod",
-            url: URL(string: "https://example.com/vod/720p.m3u8")!,
-            manifestURL: URL(string: "https://example.com/vod/master.m3u8")!,
-            resolution: HLSResolution(width: 1280, height: 720),
+            masterURL: URL(string: "https://example.com/vod/master.m3u8")!,
+            variantURL: URL(string: "https://example.com/vod/720p.m3u8")!,
             bandwidth: 2_500_000,
+            resolution: HLSResolution(width: 1280, height: 720),
+            qualityLabel: "720p VOD",
+            bitrateText: "2.5 Mbps",
             codecs: "avc1.4d401f",
-            isLive: false,
-            title: "720p VOD",
-            bitrateText: "2.5 Mbps"
+            isLive: false
         )
 
         viewModel.setDiscoveredResources([liveRes, nonLiveRes], for: tabID)
