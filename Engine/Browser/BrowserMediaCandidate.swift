@@ -1038,7 +1038,7 @@ extension BrowserMediaCandidate {
                 return .video
             }
         case .directFile:
-            let ext = url.pathExtension.lowercased()
+            let ext = url?.pathExtension.lowercased() ?? ""
             let isAudio = (mimeType?.lowercased().contains("audio") == true) ||
                 ["mp3", "m4a", "aac", "wav", "flac", "ogg"].contains(ext)
             return isAudio ? .audio : .other
@@ -1050,7 +1050,7 @@ extension BrowserMediaCandidate {
     /// Groups candidates by their URL host domain, sorted alphabetically by domain.
     public static func groupedByDomain(_ candidates: [BrowserMediaCandidate]) -> [(domain: String, candidates: [BrowserMediaCandidate])] {
         let dict = Dictionary(grouping: candidates) { cand in
-            cand.url.host?.lowercased() ?? "Other Domains"
+            cand.url?.host?.lowercased() ?? "Other Domains"
         }
         return dict.map { (domain: $0.key, candidates: $0.value) }
             .sorted { $0.domain < $1.domain }
