@@ -528,20 +528,10 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         self.authenticationHandler = authenticationHandler
         self.diagnosticLogger = diagnosticLogger
         self.streamManifestExpander = streamManifestExpander
-        let coordinator = BrowserResourceDiscoveryCoordinator(
+        self.discoveryCoordinator = BrowserResourceDiscoveryCoordinator(
             bridge: mediaDiscoveryBridge,
             streamManifestExpander: streamManifestExpander
         )
-        self.discoveryCoordinator = coordinator
-        coordinator.onStateChanged = { [weak self] in
-            guard let self = self else { return }
-            self.discoveredResources = self.discoveryCoordinator.discoveredResources
-            self.variantStreamItems = self.discoveryCoordinator.variantStreamItems
-            self.selectedResourceIDs = self.discoveryCoordinator.selectedResourceIDs
-            self.mediaCandidates = self.discoveryCoordinator.mediaCandidates
-            self.isScanningResources = self.discoveryCoordinator.isScanningResources
-            self.resourceScanError = self.discoveryCoordinator.resourceScanError
-        }
 
         let orchestrator = streamingOrchestrator ?? (downloadDelegate as? DownloadManagerViewModel)?.streamingOrchestrator
         if let orchestrator, let vm = downloadDelegate as? DownloadManagerViewModel {
@@ -583,6 +573,15 @@ public final class BrowserViewModel: NSObject, ObservableObject {
 
         super.init()
         permissionCoordinator.provider = self
+        discoveryCoordinator.onStateChanged = { [weak self] in
+            guard let self = self else { return }
+            self.discoveredResources = self.discoveryCoordinator.discoveredResources
+            self.variantStreamItems = self.discoveryCoordinator.variantStreamItems
+            self.selectedResourceIDs = self.discoveryCoordinator.selectedResourceIDs
+            self.mediaCandidates = self.discoveryCoordinator.mediaCandidates
+            self.isScanningResources = self.discoveryCoordinator.isScanningResources
+            self.resourceScanError = self.discoveryCoordinator.resourceScanError
+        }
 
         #if canImport(WebKit)
         Task {
