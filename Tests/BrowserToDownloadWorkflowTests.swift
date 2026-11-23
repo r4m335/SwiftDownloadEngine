@@ -1075,8 +1075,9 @@ extension BrowserToDownloadWorkflowTests {
             masterURL: resA1.url,
             variantURL: resA1.url,
             bandwidth: 5_000_000,
-            resolution: HLSStreamResolution(width: 1920, height: 1080),
-            qualityLabel: "1080p"
+            resolution: HLSResolution(width: 1920, height: 1080),
+            qualityLabel: "1080p",
+            bitrateText: "5.0 Mbps"
         )
         vm.ingestMediaResources([resA1], tabID: tabA)
         vm.variantStreamItems[resA1.id] = itemA
@@ -1126,8 +1127,9 @@ extension BrowserToDownloadWorkflowTests {
             masterURL: resB1.url,
             variantURL: resB1.url,
             bandwidth: 2_000_000,
-            resolution: HLSStreamResolution(width: 1280, height: 720),
-            qualityLabel: "720p"
+            resolution: HLSResolution(width: 1280, height: 720),
+            qualityLabel: "720p",
+            bitrateText: "2.0 Mbps"
         )
         vm.variantStreamItems[resB1.id] = itemB
 
