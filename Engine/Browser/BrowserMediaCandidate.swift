@@ -200,6 +200,16 @@ public struct BrowserMediaCandidate: Identifiable, Codable, Sendable, Equatable,
         guard let target = url ?? finalURL else { return nil }
         return DirectMediaTransferPlanner.urlExpirationDate(target)
     }
+
+    /// Direct access to the equivalent `WebpageResource` representation.
+    public var webpageResource: WebpageResource? {
+        toWebpageResource()
+    }
+
+    /// Creates a `BrowserMediaCandidate` from a `WebpageResource`.
+    public init(resource: WebpageResource, now: Date = Date()) {
+        self = BrowserMediaCandidateClassifier.classify(resource: resource, now: now)
+    }
 }
 
 /// Pure classification and identity rules shared by DOM and dynamic browser

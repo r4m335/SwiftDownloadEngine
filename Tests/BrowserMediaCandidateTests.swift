@@ -450,5 +450,91 @@ final class BrowserMediaCandidateTests: XCTestCase {
         let sortedQuality = BrowserResourceInspectorSheet.sortedResources(list, sortOption: .quality)
         XCTAssertEqual(sortedQuality.first?.id, "r2")
     }
+
+    @MainActor
+    func testBidirectionalBridgingBetweenCandidateAndResource() {
+        let candidate = BrowserMediaCandidate(
+            id: "cand-bidirectional",
+            url: URL(string: "https://example.com/video.mp4")!,
+            rawURL: "https://example.com/video.mp4",
+            kind: .directMedia,
+            mimeType: "video/mp4",
+            suggestedFilename: "test_video.mp4",
+            estimatedSize: 25_000_000,
+            availability: .downloadable,
+            evidence: ["test"],
+            width: 1920,
+            height: 1080,
+            duration: 180.0,
+            codecs: "avc1.640028,mp4a.40.2",
+            audioLanguage: "en"
+        )
+
+        // 1. Candidate -> WebpageResource via initializer and property
+        let resourceFromInit = WebpageResource(candidate: candidate)
+        XCTAssertNotNil(resourceFromInit)
+        XCTAssertEqual(resourceFromInit?.url, candidate.url)
+        XCTAssertEqual(resourceFromInit?.suggestedFilename, "test_video.mp4")
+        XCTAssertEqual(resourceFromInit?.resolutionText, "1920×1080")
+        XCTAssertEqual(resourceFromInit?.duration, 180.0)
+
+        let resourceFromProp = candidate.webpageResource
+        XCTAssertEqual(resourceFromProp?.url, candidate.url)
+        XCTAssertEqual(resourceFromProp?.suggestedFilename, "test_video.mp4")
+
+        // 2. WebpageResource -> Candidate via initializer and property
+        guard let validRes = resourceFromInit else {
+            XCTFail("Must have valid resource")
+            return
+        }
+
+        let candFromInit = BrowserMediaCandidate(resource: validRes)
+        XCTAssertEqual(candFromInit.url, validRes.url)
+        XCTAssertEqual(candFromInit.suggestedFilename, validRes.suggestedFilename)
+        XCTAssertEqual(candFromInit.width, 1920)
+        XCTAssertEqual(candFromInit.height, 1080)
+        XCTAssertEqual(candFromInit.duration, 180.0)
+
+        let candFromProp = validRes.mediaCandidate
+        XCTAssertEqual(candFromProp.url, validRes.url)
+        XCTAssertEqual(candFromProp.suggestedFilename, validRes.suggestedFilename)
+    }
+
+    @MainActor
+    func testBrowserViewModelCandidateWorkflowsAndCatalogSync() {
+        let viewModel = BrowserViewModel()
+        let tabID = UUID()
+
+        let candidate = BrowserMediaCandidate(
+            id: "cand-sync-1",
+            url: URL(string: "https://example.com/stream.m3u8")!,
+            rawURL: "https://example.com/stream.m3u8",
+            kind: .hlsManifest,
+            mimeType: "application/vnd.apple.mpegurl",
+            suggestedFilename: "stream.m3u8",
+            availability: .requiresPlanning,
+            evidence: ["hls"]
+        )
+
+        // 1. Ingest candidate directly
+        viewModel.ingestMediaCandidates([candidate], tabID: tabID)
+
+        // Verifies candidate is in mediaCandidates and synchronized into discoveredResources
+        XCTAssertTrue(viewModel.discoveredResources.contains(where: { $0.url == candidate.url }))
+
+        // 2. Candidate-first download workflow triggers
+        viewModel.promptDownload(for: candidate)
+        XCTAssertTrue(viewModel.isShowingDownloadSheet)
+        XCTAssertEqual(viewModel.downloadCandidateFilename, "stream.m3u8")
+
+        // 3. Candidate-first Inspector prompt
+        viewModel.promptDownloadFromInspector(for: candidate)
+        XCTAssertNotNil(viewModel.activeDownloadResource)
+
+        // 4. Candidate-first quality picker
+        viewModel.presentQualityPicker(for: candidate)
+        XCTAssertTrue(viewModel.isShowingQualityPicker)
+        XCTAssertEqual(viewModel.qualityPickerTargetCandidate?.id, candidate.id)
+    }
 }
 

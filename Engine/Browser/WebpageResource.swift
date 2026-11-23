@@ -788,3 +788,24 @@ public struct WebpageResourceExtractor {
         }
     }
 }
+
+// MARK: - BrowserMediaCandidate Bridging
+
+extension WebpageResource {
+    /// Initializes a `WebpageResource` from a `BrowserMediaCandidate`.
+    public init?(candidate: BrowserMediaCandidate) {
+        guard let res = candidate.toWebpageResource() else { return nil }
+        self = res
+    }
+
+    /// Converts this resource into its canonical `BrowserMediaCandidate` representation.
+    public func toMediaCandidate(now: Date = Date()) -> BrowserMediaCandidate {
+        BrowserMediaCandidateClassifier.classify(resource: self, now: now)
+    }
+
+    /// Associated `BrowserMediaCandidate` representation.
+    public var mediaCandidate: BrowserMediaCandidate {
+        toMediaCandidate()
+    }
+}
+

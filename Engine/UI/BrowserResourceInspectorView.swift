@@ -236,6 +236,16 @@ public struct BrowserResourceInspectorSheet: View {
         )
     }
 
+    /// Associated `BrowserMediaCandidate` representations for all displayed resources.
+    public var displayedCandidates: [BrowserMediaCandidate] {
+        displayedSortedResources.map { $0.toMediaCandidate() }
+    }
+
+    /// Associated `BrowserMediaCandidate` representations for all eligible resources.
+    public var eligibleCandidates: [BrowserMediaCandidate] {
+        eligibleResources.map { $0.toMediaCandidate() }
+    }
+
     public static func sortedResources(
         _ resources: [WebpageResource],
         sortOption: ResourceSortOption,

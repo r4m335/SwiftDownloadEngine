@@ -1729,6 +1729,20 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         return rm.matcher.match(resource: resource, transfers: transfers)
     }
 
+    public func matchingTransferDot(for candidate: BrowserMediaCandidate) -> DownloadStatusDot? {
+        if let res = candidate.toWebpageResource() {
+            return matchingTransferDot(for: res)
+        }
+        return nil
+    }
+
+    public func matchingTransfer(for candidate: BrowserMediaCandidate) -> DownloadMatchResult? {
+        if let res = candidate.toWebpageResource() {
+            return matchingTransfer(for: res)
+        }
+        return nil
+    }
+
     /// Synchronizes all media candidates captured dynamically during video playback
     /// directly into discoveredResources, ensuring the resource grabber can display
     /// grabbed links immediately without waiting for DOM evaluation or showing a blocking spinner.
@@ -1791,6 +1805,14 @@ public final class BrowserViewModel: NSObject, ObservableObject {
             inspectCurrentPageResources(includeNonVideo: false)
         } else {
             expandStreamingManifests()
+        }
+    }
+
+    public func promptDownloadFromInspector(for candidate: BrowserMediaCandidate) {
+        if let res = candidate.toWebpageResource() {
+            promptDownloadFromInspector(for: res)
+        } else {
+            promptDownload(for: candidate)
         }
     }
 
@@ -1867,6 +1889,16 @@ public final class BrowserViewModel: NSObject, ObservableObject {
             self.isShowingQualityPicker = false
             self.selectedQualityOption = nil
             self.isShowingDownloadSheet = true
+        }
+    }
+
+    /// Prefills the global Add Download sheet with this candidate's URL and dismisses the inspector.
+    public func sendToGlobalAddDownload(for candidate: BrowserMediaCandidate) {
+        if let res = candidate.toWebpageResource() {
+            sendToGlobalAddDownload(for: res)
+        } else if let url = candidate.url ?? URL(string: candidate.rawURL) {
+            isShowingResourceInspector = false
+            onOpenAddDownload?(url)
         }
     }
 
@@ -2014,6 +2046,13 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         inspectCurrentPageResources()
     }
 
+    /// Refreshes expired or expiring signed media tokens for a candidate from the active webpage.
+    public func refreshResourceToken(for candidate: BrowserMediaCandidate) {
+        if let res = candidate.toWebpageResource() {
+            refreshResourceToken(for: res)
+        }
+    }
+
     public func executeDecision(_ decision: BrowserDownloadDecision) {
         switch decision.action {
         case .streaming(let manifestURL, _, let suggestedFilename, let cachedText, let requestContext):
@@ -2072,6 +2111,19 @@ public final class BrowserViewModel: NSObject, ObservableObject {
             self.blobCaptureErrorMessage = reason
             self.mseCaptureErrorMessage = reason
         }
+    }
+
+    public func promptStreamingDownload(
+        for candidate: BrowserMediaCandidate,
+        customFilename: String? = nil,
+        transportPolicy: HTTPTransportPolicy? = nil
+    ) {
+        guard let resource = candidate.toWebpageResource() else {
+            let errorMsg = "This media candidate is not a recognized streaming manifest."
+            streamingErrorMessage = errorMsg
+            return
+        }
+        promptStreamingDownload(for: resource, customFilename: customFilename, transportPolicy: transportPolicy)
     }
 
     public func promptStreamingDownload(
@@ -2614,6 +2666,13 @@ public final class BrowserViewModel: NSObject, ObservableObject {
     }
 
     // MARK: - Interactive Stream Quality Picker (Phase 3 Milestone 3.1)
+
+    public func presentQualityPicker(for candidate: BrowserMediaCandidate, preloadedOptions: [StreamQualityOption]? = nil) {
+        if let resource = candidate.toWebpageResource() {
+            presentQualityPicker(for: resource, preloadedOptions: preloadedOptions)
+            qualityPickerTargetCandidate = candidate
+        }
+    }
 
     public func presentQualityPicker(for resource: WebpageResource, preloadedOptions: [StreamQualityOption]? = nil) {
         qualityPickerTargetResource = resource
@@ -3521,6 +3580,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         }
         let rawCandidates = mediaCandidateCatalogs[activeTabID]?.candidates ?? []
         mediaCandidates = BrowserMediaDiscoveryBridge.filter(candidates: rawCandidates)
+        syncMediaCandidatesToDiscoveredResources()
     }
 
     private func ingestMediaObservation(
@@ -3529,9 +3589,13 @@ public final class BrowserViewModel: NSObject, ObservableObject {
     ) {
         guard let targetTabID = tabID ?? activeTabID else { return }
         var catalog = mediaCandidateCatalogs[targetTabID] ?? BrowserMediaCandidateCatalog()
-        _ = catalog.ingest(observation: observation)
-        mediaCandidateCatalogs[targetTabID] = catalog
-        if targetTabID == activeTabID { publishMediaCandidates() }
+        if let candidate = catalog.ingest(observation: observation) {
+            mediaCandidateCatalogs[targetTabID] = catalog
+            if targetTabID == activeTabID { publishMediaCandidates() }
+            if let resource = candidate.toWebpageResource() {
+                ingestMediaResource(resource, tabID: targetTabID)
+            }
+        }
     }
 
     public func ingestMediaResources(
@@ -3572,6 +3636,31 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         tabID: UUID? = nil
     ) {
         ingestMediaResources([resource], tabID: tabID)
+    }
+
+    public func ingestMediaCandidates(
+        _ candidates: [BrowserMediaCandidate],
+        tabID: UUID? = nil
+    ) {
+        guard let targetTabID = tabID ?? activeTabID else { return }
+        var catalog = mediaCandidateCatalogs[targetTabID] ?? BrowserMediaCandidateCatalog()
+        for cand in candidates {
+            _ = catalog.merge(cand)
+        }
+        mediaCandidateCatalogs[targetTabID] = catalog
+        if targetTabID == activeTabID { publishMediaCandidates() }
+
+        let resources = candidates.compactMap { $0.toWebpageResource() }
+        if !resources.isEmpty {
+            ingestMediaResources(resources, tabID: targetTabID)
+        }
+    }
+
+    public func ingestMediaCandidate(
+        _ candidate: BrowserMediaCandidate,
+        tabID: UUID? = nil
+    ) {
+        ingestMediaCandidates([candidate], tabID: tabID)
     }
 
     private func resetMediaCandidateCatalog(for tabID: UUID?) {
