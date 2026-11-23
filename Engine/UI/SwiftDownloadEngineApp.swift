@@ -383,12 +383,17 @@ public struct SwiftDownloadEngineApp: App {
             let dashPersistenceStore = try? DASHPersistenceStore(
                 storageDirectoryURL: viewModel.engine.persistenceStore.storageDirectoryURL
             )
+            #if canImport(UIKit) && !os(watchOS)
+            let bgManager = AppDelegate.backgroundSessionManager
+            #else
+            let bgManager: BackgroundDownloadSessionManager? = nil
+            #endif
             let orchestrator = StreamingDownloadOrchestrator(
                 downloadCoordinator: viewModel.engine.coordinator,
                 downloadEngine: viewModel.engine,
                 hlsPersistenceStore: hlsPersistenceStore,
                 dashPersistenceStore: dashPersistenceStore,
-                backgroundSessionManager: Self.backgroundSessionManager
+                backgroundSessionManager: bgManager
             )
             Task { await viewModel.engine.setStreamingOrchestrator(orchestrator) }
         }
@@ -403,12 +408,17 @@ public struct SwiftDownloadEngineApp: App {
         let dashPersistenceStore = try? DASHPersistenceStore(
             storageDirectoryURL: engine.persistenceStore.storageDirectoryURL
         )
+        #if canImport(UIKit) && !os(watchOS)
+        let bgManager = AppDelegate.backgroundSessionManager
+        #else
+        let bgManager: BackgroundDownloadSessionManager? = nil
+        #endif
         let orchestrator = StreamingDownloadOrchestrator(
             downloadCoordinator: engine.coordinator,
             downloadEngine: engine,
             hlsPersistenceStore: hlsPersistenceStore,
             dashPersistenceStore: dashPersistenceStore,
-            backgroundSessionManager: Self.backgroundSessionManager
+            backgroundSessionManager: bgManager
         )
         let vm = DownloadManagerViewModel(
             engine: engine,
