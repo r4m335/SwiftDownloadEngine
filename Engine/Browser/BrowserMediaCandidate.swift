@@ -1029,8 +1029,15 @@ extension BrowserMediaCandidate {
     /// The mapped category of this candidate.
     public var resourceType: WebpageResourceType {
         switch kind {
-        case .directMedia, .hlsManifest, .dashManifest, .mediaSource, .protectedMedia:
+        case .hlsManifest, .dashManifest, .mediaSource, .protectedMedia:
             return .video
+        case .directMedia:
+            let ext = url?.pathExtension.lowercased() ?? ""
+            let fnExt = (suggestedFilename ?? "").split(separator: ".").last.map(String.init)?.lowercased() ?? ""
+            let isAudio = (mimeType?.lowercased().contains("audio") == true) ||
+                ["mp3", "m4a", "aac", "wav", "flac", "ogg"].contains(ext) ||
+                ["mp3", "m4a", "aac", "wav", "flac", "ogg"].contains(fnExt)
+            return isAudio ? .audio : .video
         case .completeBlob:
             if let mime = mimeType?.lowercased(), mime.contains("audio") {
                 return .audio
@@ -1039,8 +1046,10 @@ extension BrowserMediaCandidate {
             }
         case .directFile:
             let ext = url?.pathExtension.lowercased() ?? ""
+            let fnExt = (suggestedFilename ?? "").split(separator: ".").last.map(String.init)?.lowercased() ?? ""
             let isAudio = (mimeType?.lowercased().contains("audio") == true) ||
-                ["mp3", "m4a", "aac", "wav", "flac", "ogg"].contains(ext)
+                ["mp3", "m4a", "aac", "wav", "flac", "ogg"].contains(ext) ||
+                ["mp3", "m4a", "aac", "wav", "flac", "ogg"].contains(fnExt)
             return isAudio ? .audio : .other
         case .unknown:
             return .other
