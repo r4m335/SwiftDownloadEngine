@@ -92,16 +92,24 @@ public final class DownloadRecoveryManager: ObservableObject {
             )
             try await engine.resumeDownload(id: transferID)
         } else {
+            let initialRecord = try? await persistenceStore.fetch(tag: transferID)
+            let initialURL = initialRecord?.originalURL
             let (record, _) = try await linkRefresher.refresh(
                 id: transferID,
                 newURL: url,
                 newHeaders: newHeaders,
                 forceRestartIfNonResumable: forceRestartIfNonResumable
             )
-            let sameOrigin = (record.originalURL.host?.lowercased() == url.host?.lowercased() && record.originalURL.scheme?.lowercased() == url.scheme?.lowercased())
+            let sameOrigin = initialURL != nil && (initialURL?.host?.lowercased() == url.host?.lowercased() && initialURL?.scheme?.lowercased() == url.scheme?.lowercased())
             let headersToUpdate = sameOrigin ? record.securedHeaders : record.headers.filter {
                 let l = $0.key.lowercased()
                 return l != "authorization" && l != "cookie" && l != "proxy-authorization"
+            }
+            if !sameOrigin {
+                KeychainManager.shared.deleteCredentials(forDownloadId: transferID)
+                var sanitizedRecord = record
+                sanitizedRecord.headers = headersToUpdate
+                try? await persistenceStore.save(sanitizedRecord)
             }
             try? await engine.queueManager.updateRequest(
                 id: transferID,

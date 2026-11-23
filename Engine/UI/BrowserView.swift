@@ -113,9 +113,27 @@ public final class BrowserViewModel: NSObject, ObservableObject {
     @Published public var isScanningResources: Bool = false
     @Published public var resourceSortOption: ResourceSortOption = .newest
     @Published public var resourceGroupingOption: ResourceGroupingOption = .none
-    @Published public var discoveredResources: [WebpageResource] = []
-    @Published public var variantStreamItems: [String: HLSVariantStreamItem] = [:]
-    @Published public var selectedResourceIDs: Set<String> = []
+    @Published public var discoveredResources: [WebpageResource] = [] {
+        didSet {
+            if discoveryCoordinator.discoveredResources != discoveredResources {
+                discoveryCoordinator.discoveredResources = discoveredResources
+            }
+        }
+    }
+    @Published public var variantStreamItems: [String: HLSVariantStreamItem] = [:] {
+        didSet {
+            if discoveryCoordinator.variantStreamItems != variantStreamItems {
+                discoveryCoordinator.variantStreamItems = variantStreamItems
+            }
+        }
+    }
+    @Published public var selectedResourceIDs: Set<String> = [] {
+        didSet {
+            if discoveryCoordinator.selectedResourceIDs != selectedResourceIDs {
+                discoveryCoordinator.selectedResourceIDs = selectedResourceIDs
+            }
+        }
+    }
     @Published public var resourceScanError: String? = nil
     @Published public private(set) var mediaCandidates: [BrowserMediaCandidate] = []
     public func setMediaCandidatesForTesting(_ candidates: [BrowserMediaCandidate]) {
@@ -232,20 +250,41 @@ public final class BrowserViewModel: NSObject, ObservableObject {
     }
     public var tabDiscoveredResources: [UUID: [WebpageResource]] {
         get { discoveryCoordinator.tabDiscoveredResources }
-        set { discoveryCoordinator.tabDiscoveredResources = newValue }
+        set {
+            discoveryCoordinator.tabDiscoveredResources = newValue
+            if let active = activeTabID, let current = newValue[active] {
+                discoveredResources = current
+                discoveryCoordinator.discoveredResources = current
+            }
+        }
     }
     public var tabVariantStreamItems: [UUID: [String: HLSVariantStreamItem]] {
         get { discoveryCoordinator.tabVariantStreamItems }
-        set { discoveryCoordinator.tabVariantStreamItems = newValue }
+        set {
+            discoveryCoordinator.tabVariantStreamItems = newValue
+            if let active = activeTabID, let current = newValue[active] {
+                variantStreamItems = current
+                discoveryCoordinator.variantStreamItems = current
+            }
+        }
     }
     public var tabSelectedResourceIDs: [UUID: Set<String>] {
         get { discoveryCoordinator.tabSelectedResourceIDs }
-        set { discoveryCoordinator.tabSelectedResourceIDs = newValue }
+        set {
+            discoveryCoordinator.tabSelectedResourceIDs = newValue
+            if let active = activeTabID, let current = newValue[active] {
+                selectedResourceIDs = current
+                discoveryCoordinator.selectedResourceIDs = current
+            }
+        }
     }
 
     /// Persists the active tab's resource inspector state into its tab-scoped caches.
     public func saveActiveTabResourceState() {
         guard let current = activeTabID else { return }
+        discoveryCoordinator.discoveredResources = discoveredResources
+        discoveryCoordinator.variantStreamItems = variantStreamItems
+        discoveryCoordinator.selectedResourceIDs = selectedResourceIDs
         discoveryCoordinator.saveTabState(
             for: current,
             sortOption: resourceSortOption,
@@ -1988,6 +2027,9 @@ public final class BrowserViewModel: NSObject, ObservableObject {
     /// directly into discoveredResources, ensuring the resource grabber can display
     /// grabbed links immediately without waiting for DOM evaluation or showing a blocking spinner.
     public func syncMediaCandidatesToDiscoveredResources(for tabID: UUID? = nil) {
+        discoveryCoordinator.discoveredResources = discoveredResources
+        discoveryCoordinator.variantStreamItems = variantStreamItems
+        discoveryCoordinator.selectedResourceIDs = selectedResourceIDs
         discoveryCoordinator.syncMediaCandidatesToDiscoveredResources(for: tabID, activeTabID: activeTabID)
         discoveredResources = discoveryCoordinator.discoveredResources
     }
@@ -2724,7 +2766,11 @@ public final class BrowserViewModel: NSObject, ObservableObject {
     /// Asynchronously inspects and expands streaming master manifests (HLS and DASH)
     /// into individual selectable video and audio quality resources directly in `discoveredResources`.
     public func expandStreamingManifests(in resources: [WebpageResource]? = nil, tabID: UUID? = nil) {
-        discoveryCoordinator.expandStreamingManifests(in: resources, tabID: tabID, activeTabID: activeTabID)
+        let targets = resources ?? discoveredResources
+        discoveryCoordinator.discoveredResources = discoveredResources
+        discoveryCoordinator.variantStreamItems = variantStreamItems
+        discoveryCoordinator.selectedResourceIDs = selectedResourceIDs
+        discoveryCoordinator.expandStreamingManifests(in: targets, tabID: tabID, activeTabID: activeTabID)
     }
 
         // MARK: - Interactive Stream Quality Picker (Phase 3 Milestone 3.1)
