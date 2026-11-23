@@ -11,6 +11,39 @@ public actor StreamManifestResourceExpander {
 
     public static let shared = StreamManifestResourceExpander()
 
+    public let maxConcurrentProbes: Int
+    private var activeProbeCount: Int = 0
+
+    private struct PendingSlot: Sendable {
+        let id: UUID
+        let continuation: CheckedContinuation<Bool, Never>
+    }
+    private var pendingSlots: [PendingSlot] = []
+
+    public init(maxConcurrentProbes: Int = 3) {
+        self.maxConcurrentProbes = max(1, maxConcurrentProbes)
+    }
+
+    public var currentActiveProbeCount: Int {
+        activeProbeCount
+    }
+
+    public var currentPendingProbeCount: Int {
+        pendingSlots.count
+    }
+
+    public var currentInFlightCount: Int {
+        inFlight.count
+    }
+
+    public func isInFlight(for key: String) -> Bool {
+        inFlight[key] != nil
+    }
+
+    public func hasInFlightTasks(for tabID: UUID) -> Bool {
+        !(tabInFlightKeys[tabID]?.isEmpty ?? true)
+    }
+
     public struct ExpansionResult: Sendable {
         public let masterURL: URL
         public let manifestText: String
@@ -68,6 +101,92 @@ public actor StreamManifestResourceExpander {
     /// to avoid duplicate concurrent network fetches while isolating different contexts.
     private var inFlight: [String: Task<ExpansionResult, Never>] = [:]
 
+    /// Tracks manifest keys associated with each tabID for coordinated navigation/tab closure cancellation.
+    private var tabInFlightKeys: [UUID: Set<String>] = [:]
+
+    /// Tracks which tabIDs are currently observing/awaiting a given manifest key.
+    private var keyTabOwners: [String: Set<UUID>] = [:]
+
+    private func acquireProbeSlot() async -> Bool {
+        if Task.isCancelled { return false }
+        if activeProbeCount < maxConcurrentProbes {
+            activeProbeCount += 1
+            return true
+        }
+        let slotID = UUID()
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
+                if Task.isCancelled {
+                    continuation.resume(returning: false)
+                } else {
+                    pendingSlots.append(PendingSlot(id: slotID, continuation: continuation))
+                }
+            }
+        } onCancel: {
+            Task {
+                await self.cancelPendingSlot(slotID)
+            }
+        }
+    }
+
+    private func cancelPendingSlot(_ id: UUID) {
+        if let idx = pendingSlots.firstIndex(where: { $0.id == id }) {
+            let slot = pendingSlots.remove(at: idx)
+            slot.continuation.resume(returning: false)
+        }
+    }
+
+    private func releaseProbeSlot() {
+        while !pendingSlots.isEmpty {
+            let next = pendingSlots.removeFirst()
+            next.continuation.resume(returning: true)
+            return
+        }
+        activeProbeCount = max(0, activeProbeCount - 1)
+    }
+
+    private func removeTabKey(key: String, tabID: UUID) {
+        tabInFlightKeys[tabID]?.remove(key)
+        if tabInFlightKeys[tabID]?.isEmpty ?? false {
+            tabInFlightKeys.removeValue(forKey: tabID)
+        }
+        keyTabOwners[key]?.remove(tabID)
+        if keyTabOwners[key]?.isEmpty ?? false {
+            keyTabOwners.removeValue(forKey: key)
+        }
+    }
+
+    private func handleCallerCancelled(key: String, tabID: UUID?) {
+        if let tabID {
+            removeTabKey(key: key, tabID: tabID)
+            if keyTabOwners[key]?.isEmpty ?? true {
+                if let task = inFlight.removeValue(forKey: key) {
+                    task.cancel()
+                }
+            }
+        } else {
+            if keyTabOwners[key]?.isEmpty ?? true {
+                if let task = inFlight.removeValue(forKey: key) {
+                    task.cancel()
+                }
+            }
+        }
+    }
+
+    /// Cancels all in-flight expansion and probe tasks associated with the given tab.
+    public func cancelInFlight(for tabID: UUID) {
+        guard let keys = tabInFlightKeys.removeValue(forKey: tabID) else { return }
+        for key in keys {
+            keyTabOwners[key]?.remove(tabID)
+            if keyTabOwners[key]?.isEmpty ?? true {
+                keyTabOwners.removeValue(forKey: key)
+                if let task = inFlight.removeValue(forKey: key) {
+                    task.cancel()
+                }
+            }
+        }
+    }
+
     /// Clears the expansion cache and cancels all active in-flight expansion tasks.
     public func clearCache(
         for url: URL? = nil,
@@ -79,11 +198,21 @@ public actor StreamManifestResourceExpander {
             if let task = inFlight.removeValue(forKey: key) {
                 task.cancel()
             }
+            keyTabOwners.removeValue(forKey: key)
+            for (tabID, var keys) in tabInFlightKeys {
+                keys.remove(key)
+                tabInFlightKeys[tabID] = keys.isEmpty ? nil : keys
+            }
             if requestContext == nil {
                 let bare = BrowserRequestContext.canonicalURLString(for: url)
                 cache.removeValue(forKey: bare)
                 if let task = inFlight.removeValue(forKey: bare) {
                     task.cancel()
+                }
+                keyTabOwners.removeValue(forKey: bare)
+                for (tabID, var keys) in tabInFlightKeys {
+                    keys.remove(bare)
+                    tabInFlightKeys[tabID] = keys.isEmpty ? nil : keys
                 }
             }
         } else {
@@ -92,6 +221,13 @@ public actor StreamManifestResourceExpander {
             }
             cache.removeAll()
             inFlight.removeAll()
+            tabInFlightKeys.removeAll()
+            keyTabOwners.removeAll()
+            for slot in pendingSlots {
+                slot.continuation.resume(returning: false)
+            }
+            pendingSlots.removeAll()
+            activeProbeCount = 0
         }
     }
 
@@ -131,10 +267,22 @@ public actor StreamManifestResourceExpander {
         return nil
     }
 
+    public static func emptyResult(for url: URL) -> ExpansionResult {
+        ExpansionResult(
+            masterURL: url,
+            manifestText: "",
+            options: [],
+            variants: [],
+            variantStreamItems: [],
+            isExpanded: false
+        )
+    }
+
     /// Asynchronously expands a master manifest resource into individual quality variants.
     /// If the manifest is already cached for the given browser context and unexpired, results return immediately without network latency.
     public func expand(
         manifestResource: WebpageResource,
+        tabID: UUID? = nil,
         session: URLSession = .shared
     ) async -> [WebpageResource] {
         let key = BrowserRequestContext.manifestCacheKey(
@@ -151,22 +299,48 @@ public actor StreamManifestResourceExpander {
         }
 
         if let pending = inFlight[key] {
-            let result = await pending.value
-            if !result.isExpired() {
-                return result.variants
+            if let tabID {
+                tabInFlightKeys[tabID, default: []].insert(key)
+                keyTabOwners[key, default: []].insert(tabID)
             }
+            return await withTaskCancellationHandler {
+                let result = await pending.value
+                if let tabID {
+                    self.removeTabKey(key: key, tabID: tabID)
+                }
+                return result.variants
+            } onCancel: {
+                Task {
+                    await self.handleCallerCancelled(key: key, tabID: tabID)
+                }
+            }
+        }
+
+        if let tabID {
+            tabInFlightKeys[tabID, default: []].insert(key)
+            keyTabOwners[key, default: []].insert(tabID)
         }
 
         let task = Task<ExpansionResult, Never> {
             await self.performExpansion(manifestResource: manifestResource, session: session)
         }
         inFlight[key] = task
-        let result = await task.value
-        inFlight.removeValue(forKey: key)
-        if !result.isExpired() {
-            cache[key] = result
+
+        return await withTaskCancellationHandler {
+            let result = await task.value
+            inFlight.removeValue(forKey: key)
+            if let tabID {
+                self.removeTabKey(key: key, tabID: tabID)
+            }
+            if !result.isExpired() && !Task.isCancelled && !result.variants.isEmpty {
+                cache[key] = result
+            }
+            return result.variants
+        } onCancel: {
+            Task {
+                await self.handleCallerCancelled(key: key, tabID: tabID)
+            }
         }
-        return result.variants
     }
 
     private func performExpansion(
@@ -174,15 +348,20 @@ public actor StreamManifestResourceExpander {
         session: URLSession
     ) async -> ExpansionResult {
         if Task.isCancelled {
-            return ExpansionResult(
-                masterURL: manifestResource.url,
-                manifestText: "",
-                options: [],
-                variants: [],
-                variantStreamItems: [],
-                isExpanded: false
-            )
+            return Self.emptyResult(for: manifestResource.url)
         }
+
+        guard await acquireProbeSlot() else {
+            return Self.emptyResult(for: manifestResource.url)
+        }
+        defer {
+            releaseProbeSlot()
+        }
+
+        if Task.isCancelled {
+            return Self.emptyResult(for: manifestResource.url)
+        }
+
         let url = manifestResource.url
         var effectiveText = manifestResource.manifestText ?? ""
 
@@ -193,8 +372,15 @@ public actor StreamManifestResourceExpander {
                 requestContext: manifestResource.requestContext,
                 session: session
             ) {
+                if Task.isCancelled {
+                    return Self.emptyResult(for: url)
+                }
                 effectiveText = loaded
             }
+        }
+
+        if Task.isCancelled {
+            return Self.emptyResult(for: url)
         }
 
         do {
@@ -205,6 +391,10 @@ public actor StreamManifestResourceExpander {
                 requestContext: manifestResource.requestContext,
                 session: session
             )
+
+            if Task.isCancelled {
+                return Self.emptyResult(for: url)
+            }
 
             // If only 1 option was returned and it's a default/generic media fallback,
             // check if this is an HLS media playlist containing #EXT-X-TARGETDURATION
@@ -329,6 +519,9 @@ public actor StreamManifestResourceExpander {
                 isExpanded: true
             )
         } catch {
+            if Task.isCancelled {
+                return Self.emptyResult(for: url)
+            }
             // Graceful fallback on network or parsing error:
             // Attempt to parse existing text without child playlist if text was present
             if !effectiveText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -338,6 +531,9 @@ public actor StreamManifestResourceExpander {
                     mimeType: manifestResource.mimeType,
                     durationSeconds: nil
                 ), options.count > 1 {
+                    if Task.isCancelled {
+                        return Self.emptyResult(for: url)
+                    }
                     let (variants, items) = Self.buildVariants(
                         from: options,
                         masterResource: manifestResource,

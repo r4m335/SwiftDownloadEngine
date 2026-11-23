@@ -353,6 +353,9 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                 task.cancel()
             }
         }
+        Task { [expander = streamManifestExpander] in
+            await expander.cancelInFlight(for: tabID)
+        }
     }
 
     // Streaming proposal/execution state. The orchestrator remains the only
@@ -2789,9 +2792,14 @@ public final class BrowserViewModel: NSObject, ObservableObject {
 
         let expansionTask = Task { @MainActor [weak self] in
             guard let self = self else { return }
+            defer {
+                if let targetTabID {
+                    self.activeProbeTasks[targetTabID]?.removeAll { $0.isCancelled }
+                }
+            }
             for manifest in targets {
                 if Task.isCancelled { break }
-                let expanded = await self.streamManifestExpander.expand(manifestResource: manifest)
+                let expanded = await self.streamManifestExpander.expand(manifestResource: manifest, tabID: targetTabID)
                 if Task.isCancelled { break }
                 guard expanded.count > 1 || (expanded.count == 1 && expanded[0].id != manifest.id) else {
                     continue
@@ -4284,6 +4292,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
             targetTabID = tabManager.createTab(select: true)
             publishTabState()
         }
+        cancelInFlightProbes(for: targetTabID)
         guard var tab = tabManager.tab(withID: targetTabID) else { return }
         tab.url = url
         tab.isLoading = true
@@ -6964,6 +6973,9 @@ public final class BrowserWebViewCoordinator: NSObject, WKNavigationDelegate, WK
                 vm.resetMediaDiscovery(for: tabID)
                 vm.errorMessage = nil
                 return
+            }
+            if let activeID = vm.activeTabID {
+                vm.resetMediaDiscovery(for: activeID)
             }
             vm.isLoading = true
             vm.errorMessage = nil

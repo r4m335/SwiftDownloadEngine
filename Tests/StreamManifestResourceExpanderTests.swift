@@ -899,6 +899,129 @@ final class StreamManifestResourceExpanderTests: XCTestCase {
         XCTAssertTrue(syncVariant.title.contains("Thumbnails/Seek"))
         XCTAssertTrue(syncVariant.suggestedFilename.hasSuffix("-thumbnails.m3u8"))
     }
+
+    // MARK: - Probe Concurrency & Cancellation Tests
+
+    func testProbeConcurrencyConfiguration() async {
+        let expander = StreamManifestResourceExpander(maxConcurrentProbes: 4)
+        let maxProbes = await expander.maxConcurrentProbes
+        XCTAssertEqual(maxProbes, 4)
+        let defaultExpander = StreamManifestResourceExpander()
+        let defaultMaxProbes = await defaultExpander.maxConcurrentProbes
+        XCTAssertEqual(defaultMaxProbes, 3)
+    }
+
+    func testCancelInFlightForTabCancelsUnderlyingTasks() async {
+        let expander = StreamManifestResourceExpander(maxConcurrentProbes: 2)
+        let tab1 = UUID()
+        let tab2 = UUID()
+
+        let res1 = WebpageResource(
+            id: "m1",
+            url: URL(string: "https://example.com/tab1_manifest.m3u8")!,
+            title: "Tab 1 Stream",
+            suggestedFilename: "tab1.m3u8",
+            resourceType: .video,
+            mimeType: "application/vnd.apple.mpegurl"
+        )
+        let res2 = WebpageResource(
+            id: "m2",
+            url: URL(string: "https://example.com/tab2_manifest.m3u8")!,
+            title: "Tab 2 Stream",
+            suggestedFilename: "tab2.m3u8",
+            resourceType: .video,
+            mimeType: "application/vnd.apple.mpegurl",
+            manifestText: muxMasterManifest
+        )
+
+        let task1 = Task {
+            await expander.expand(manifestResource: res1, tabID: tab1)
+        }
+
+        await Task.yield()
+
+        // Cancel Tab 1
+        await expander.cancelInFlight(for: tab1)
+        let hasInFlightTab1 = await expander.hasInFlightTasks(for: tab1)
+        XCTAssertFalse(hasInFlightTab1)
+
+        let result1 = await task1.value
+        XCTAssertTrue(result1.isEmpty || result1.count == 1)
+
+        // Tab 2 with valid manifest succeeds
+        let result2 = await expander.expand(manifestResource: res2, tabID: tab2)
+        XCTAssertEqual(result2.count, 5)
+    }
+
+    func testCallerCancellationAbortsInFlightTask() async {
+        let expander = StreamManifestResourceExpander(maxConcurrentProbes: 2)
+        let tabID = UUID()
+
+        let res = WebpageResource(
+            id: "caller-cancel-manifest",
+            url: URL(string: "https://example.com/caller_cancel.m3u8")!,
+            title: "Cancel Stream",
+            suggestedFilename: "cancel.m3u8",
+            resourceType: .video,
+            mimeType: "application/vnd.apple.mpegurl"
+        )
+
+        let callerTask = Task {
+            await expander.expand(manifestResource: res, tabID: tabID)
+        }
+
+        await Task.yield()
+        callerTask.cancel()
+
+        let variants = await callerTask.value
+        XCTAssertTrue(variants.isEmpty || variants.count == 1)
+        let hasInFlight = await expander.hasInFlightTasks(for: tabID)
+        XCTAssertFalse(hasInFlight)
+    }
+
+    func testProbeConcurrencySlotAcquisitionAndRelease() async {
+        let expander = StreamManifestResourceExpander(maxConcurrentProbes: 2)
+        let master = makeMasterResource()
+
+        async let exp1 = expander.expand(manifestResource: master)
+        async let exp2 = expander.expand(manifestResource: master)
+        async let exp3 = expander.expand(manifestResource: master)
+
+        let (r1, r2, r3) = await (exp1, exp2, exp3)
+        XCTAssertEqual(r1.count, 5)
+        XCTAssertEqual(r2.count, 5)
+        XCTAssertEqual(r3.count, 5)
+
+        let activeCount = await expander.currentActiveProbeCount
+        let pendingCount = await expander.currentPendingProbeCount
+        XCTAssertEqual(activeCount, 0)
+        XCTAssertEqual(pendingCount, 0)
+    }
+
+    func testBrowserViewModelCancelsProbesOnNavigationAndCloseTab() async {
+        let expander = StreamManifestResourceExpander(maxConcurrentProbes: 2)
+        let vm = BrowserViewModel(streamManifestExpander: expander)
+        let tabID = vm.activeTabID ?? vm.tabManager.createTab(select: true)
+
+        let res = WebpageResource(
+            id: "nav-test-manifest",
+            url: URL(string: "https://example.com/nav_manifest.m3u8")!,
+            title: "Nav Test Stream",
+            suggestedFilename: "nav.m3u8",
+            resourceType: .video,
+            mimeType: "application/vnd.apple.mpegurl"
+        )
+
+        vm.expandStreamingManifests(in: [res], tabID: tabID)
+        await Task.yield()
+
+        // Navigating to a new URL cancels probes for active tab
+        vm.load(url: URL(string: "https://example.com/page2")!)
+        await Task.yield()
+
+        let hasInFlight = await expander.hasInFlightTasks(for: tabID)
+        XCTAssertFalse(hasInFlight)
+    }
 }
 
 // MARK: - Failing URL Protocol Helper for Error Testing
