@@ -1332,6 +1332,118 @@ final class BrowserMediaDiscoveryTests: XCTestCase {
         XCTAssertTrue(eligibleAll.contains(where: { $0.id == standalone.id }), "Standalone media playlist without master must remain eligible in All view")
     }
     #endif
+
+    @MainActor
+    func testDecoupledMediaDiscoveryScripts() {
+        let hookScript = BrowserMediaDiscoveryScripts.urlResolutionHookScript
+        XCTAssertTrue(hookScript.contains("window.resolvePlayerURL"))
+        XCTAssertEqual(hookScript, BrowserMediaDiscoveryBridge.urlResolutionHookScript)
+
+        let defaultScript = BrowserMediaDiscoveryScripts.defaultURLResolutionScript
+        XCTAssertTrue(defaultScript.contains("parseQueryParams"))
+        XCTAssertTrue(defaultScript.contains("updateQueryParam"))
+        XCTAssertEqual(defaultScript, BrowserMediaDiscoveryBridge.defaultURLResolutionScript)
+
+        let observerScript = BrowserMediaDiscoveryScripts.observerScript
+        XCTAssertTrue(observerScript.contains("__lidMediaDiscoveryInstalled"))
+        XCTAssertEqual(observerScript, BrowserMediaDiscoveryBridge.observerScript)
+
+        let videoOnlyScript = BrowserMediaDiscoveryScripts.domExtractionScript(includeNonVideo: false)
+        XCTAssertTrue(videoOnlyScript.contains("video"))
+        XCTAssertTrue(videoOnlyScript.contains("audio"))
+        XCTAssertFalse(videoOnlyScript.contains("img[src]"))
+
+        let allDomScript = BrowserMediaDiscoveryScripts.domExtractionScript(includeNonVideo: true)
+        XCTAssertTrue(allDomScript.contains("img[src]"))
+        XCTAssertTrue(allDomScript.contains("a[href]"))
+    }
+
+    @MainActor
+    func testBrowserResourceDiscoveryCoordinatorStateAndTabPersistence() {
+        let coordinator = BrowserResourceDiscoveryCoordinator()
+        let tab1 = UUID()
+        let tab2 = UUID()
+
+        let r1 = WebpageResource(
+            id: "res-1",
+            url: URL(string: "https://example.com/video1.mp4")!,
+            title: "Video 1",
+            suggestedFilename: "video1.mp4",
+            resourceType: .video
+        )
+        let r2 = WebpageResource(
+            id: "res-2",
+            url: URL(string: "https://example.com/video2.mp4")!,
+            title: "Video 2",
+            suggestedFilename: "video2.mp4",
+            resourceType: .video
+        )
+
+        coordinator.setDiscoveredResources([r1], for: tab1, activeTabID: tab1)
+        XCTAssertEqual(coordinator.discoveredResources(for: tab1, activeTabID: tab1).count, 1)
+
+        coordinator.selectResource(r1.id, tabID: tab1, activeTabID: tab1)
+        XCTAssertTrue(coordinator.isResourceSelected(r1.id, tabID: tab1, activeTabID: tab1))
+
+        coordinator.saveTabState(for: tab1)
+
+        // Switch to tab 2
+        let tab2State = coordinator.restoreTabState(for: tab2)
+        XCTAssertTrue(tab2State.resources.isEmpty)
+        XCTAssertTrue(coordinator.discoveredResources.isEmpty)
+
+        coordinator.setDiscoveredResources([r2], for: tab2, activeTabID: tab2)
+        coordinator.selectResource(r2.id, tabID: tab2, activeTabID: tab2)
+        coordinator.saveTabState(for: tab2)
+
+        // Switch back to tab 1
+        let restoredTab1 = coordinator.restoreTabState(for: tab1)
+        XCTAssertEqual(restoredTab1.resources.count, 1)
+        XCTAssertEqual(restoredTab1.resources.first?.id, r1.id)
+        XCTAssertTrue(restoredTab1.selections.contains(r1.id))
+        XCTAssertEqual(coordinator.discoveredResources.first?.id, r1.id)
+
+        // Toggle selection
+        coordinator.toggleResourceSelection(r1.id, tabID: tab1, activeTabID: tab1)
+        XCTAssertFalse(coordinator.isResourceSelected(r1.id, tabID: tab1, activeTabID: tab1))
+
+        coordinator.selectAllResources(tabID: tab1, activeTabID: tab1)
+        XCTAssertTrue(coordinator.isResourceSelected(r1.id, tabID: tab1, activeTabID: tab1))
+
+        coordinator.deselectAllResources(tabID: tab1, activeTabID: tab1)
+        XCTAssertFalse(coordinator.isResourceSelected(r1.id, tabID: tab1, activeTabID: tab1))
+
+        // In-flight probe cancellation
+        coordinator.cancelInFlightProbes(for: tab1)
+    }
+
+    @MainActor
+    func testBrowserViewModelDelegatesToDiscoveryCoordinator() {
+        let vm = BrowserViewModel()
+        XCTAssertNotNil(vm.discoveryCoordinator)
+        XCTAssertTrue(vm.discoveryCoordinator.bridge === vm.mediaDiscoveryBridge)
+
+        let tabID = vm.activeTabID ?? vm.createNewTab()
+        let res = WebpageResource(
+            id: "delegate-res-1",
+            url: URL(string: "https://example.com/media.mp4")!,
+            title: "Delegated Media",
+            suggestedFilename: "media.mp4",
+            resourceType: .video
+        )
+
+        vm.setDiscoveredResources([res], for: tabID)
+        XCTAssertEqual(vm.discoveredResources.count, 1)
+        XCTAssertEqual(vm.discoveryCoordinator.discoveredResources.count, 1)
+
+        vm.selectResource(res.id, tabID: tabID)
+        XCTAssertTrue(vm.isResourceSelected(res.id, tabID: tabID))
+        XCTAssertTrue(vm.discoveryCoordinator.isResourceSelected(res.id, tabID: tabID, activeTabID: vm.activeTabID))
+
+        vm.deselectResource(res.id, tabID: tabID)
+        XCTAssertFalse(vm.isResourceSelected(res.id, tabID: tabID))
+        XCTAssertFalse(vm.discoveryCoordinator.isResourceSelected(res.id, tabID: tabID, activeTabID: vm.activeTabID))
+    }
 }
 
 

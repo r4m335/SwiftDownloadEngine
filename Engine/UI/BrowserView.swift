@@ -122,6 +122,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         self.mediaCandidates = candidates
     }
     public let mediaDiscoveryBridge = BrowserMediaDiscoveryBridge()
+    public let discoveryCoordinator: BrowserResourceDiscoveryCoordinator
 
     /// Returns discovered resources for the active tab sorted by the specified or active sort option.
     public func sortedDiscoveredResources(
@@ -224,23 +225,29 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         return BrowserMediaCandidate.groupedByCategory(sorted)
     }
 
-    // Tab-scoped media grabber candidate & variant caches
-    public var tabResourceStates: [UUID: BrowserTabResourceState] = [:]
-    public var tabDiscoveredResources: [UUID: [WebpageResource]] = [:]
-    public var tabVariantStreamItems: [UUID: [String: HLSVariantStreamItem]] = [:]
-    public var tabSelectedResourceIDs: [UUID: Set<String>] = [:]
-    private var activeProbeTasks: [UUID: [Task<Void, Never>]] = [:]
+    // Tab-scoped media grabber candidate & variant caches (delegated to discoveryCoordinator)
+    public var tabResourceStates: [UUID: BrowserTabResourceState] {
+        get { discoveryCoordinator.tabResourceStates }
+        set { discoveryCoordinator.tabResourceStates = newValue }
+    }
+    public var tabDiscoveredResources: [UUID: [WebpageResource]] {
+        get { discoveryCoordinator.tabDiscoveredResources }
+        set { discoveryCoordinator.tabDiscoveredResources = newValue }
+    }
+    public var tabVariantStreamItems: [UUID: [String: HLSVariantStreamItem]] {
+        get { discoveryCoordinator.tabVariantStreamItems }
+        set { discoveryCoordinator.tabVariantStreamItems = newValue }
+    }
+    public var tabSelectedResourceIDs: [UUID: Set<String>] {
+        get { discoveryCoordinator.tabSelectedResourceIDs }
+        set { discoveryCoordinator.tabSelectedResourceIDs = newValue }
+    }
 
     /// Persists the active tab's resource inspector state into its tab-scoped caches.
     public func saveActiveTabResourceState() {
         guard let current = activeTabID else { return }
-        tabDiscoveredResources[current] = discoveredResources
-        tabVariantStreamItems[current] = variantStreamItems
-        tabSelectedResourceIDs[current] = selectedResourceIDs
-        tabResourceStates[current] = BrowserTabResourceState(
-            discoveredResources: discoveredResources,
-            variantStreamItems: variantStreamItems,
-            selectedResourceIDs: selectedResourceIDs,
+        discoveryCoordinator.saveTabState(
+            for: current,
             sortOption: resourceSortOption,
             groupingOption: resourceGroupingOption
         )
@@ -248,61 +255,21 @@ public final class BrowserViewModel: NSObject, ObservableObject {
 
     /// Restores a given tab's resource inspector state into the published properties.
     public func restoreTabResourceState(for tabID: UUID?) {
-        guard let targetID = tabID else {
-            discoveredResources = []
-            variantStreamItems = [:]
-            selectedResourceIDs = []
-            return
+        let restored = discoveryCoordinator.restoreTabState(for: tabID)
+        discoveredResources = restored.resources
+        variantStreamItems = restored.variants
+        selectedResourceIDs = restored.selections
+        if tabID != nil {
+            resourceSortOption = restored.sort
+            resourceGroupingOption = restored.group
         }
-        let restoredResources = tabDiscoveredResources[targetID] ?? tabResourceStates[targetID]?.discoveredResources ?? []
-        let restoredVariants = tabVariantStreamItems[targetID] ?? tabResourceStates[targetID]?.variantStreamItems ?? [:]
-        let restoredSelections = tabSelectedResourceIDs[targetID] ?? tabResourceStates[targetID]?.selectedResourceIDs ?? []
-
-        discoveredResources = restoredResources
-        variantStreamItems = restoredVariants
-        selectedResourceIDs = restoredSelections
-
-        if let state = tabResourceStates[targetID] {
-            resourceSortOption = state.sortOption
-            resourceGroupingOption = state.groupingOption
-        }
-
-        tabDiscoveredResources[targetID] = restoredResources
-        tabVariantStreamItems[targetID] = restoredVariants
-        tabSelectedResourceIDs[targetID] = restoredSelections
-        tabResourceStates[targetID] = BrowserTabResourceState(
-            discoveredResources: restoredResources,
-            variantStreamItems: restoredVariants,
-            selectedResourceIDs: restoredSelections,
-            sortOption: resourceSortOption,
-            groupingOption: resourceGroupingOption
-        )
     }
 
     /// Returns the comprehensive tab-scoped resource state for a given tab (or the active tab).
     public func resourceState(for tabID: UUID? = nil) -> BrowserTabResourceState {
-        let targetID = tabID ?? activeTabID
-        if let targetID, targetID == activeTabID {
-            return BrowserTabResourceState(
-                discoveredResources: discoveredResources,
-                variantStreamItems: variantStreamItems,
-                selectedResourceIDs: selectedResourceIDs,
-                sortOption: resourceSortOption,
-                groupingOption: resourceGroupingOption
-            )
-        } else if let targetID {
-            return tabResourceStates[targetID] ?? BrowserTabResourceState(
-                discoveredResources: tabDiscoveredResources[targetID] ?? [],
-                variantStreamItems: tabVariantStreamItems[targetID] ?? [:],
-                selectedResourceIDs: tabSelectedResourceIDs[targetID] ?? [],
-                sortOption: resourceSortOption,
-                groupingOption: resourceGroupingOption
-            )
-        }
-        return BrowserTabResourceState(
-            discoveredResources: discoveredResources,
-            variantStreamItems: variantStreamItems,
-            selectedResourceIDs: selectedResourceIDs,
+        discoveryCoordinator.resourceState(
+            for: tabID,
+            activeTabID: activeTabID,
             sortOption: resourceSortOption,
             groupingOption: resourceGroupingOption
         )
@@ -310,173 +277,72 @@ public final class BrowserViewModel: NSObject, ObservableObject {
 
     /// Returns discovered resources for a specific tab without requiring a tab switch.
     public func discoveredResources(for tabID: UUID? = nil) -> [WebpageResource] {
-        let targetID = tabID ?? activeTabID
-        if let targetID, targetID == activeTabID {
-            return discoveredResources
-        } else if let targetID {
-            return tabDiscoveredResources[targetID] ?? tabResourceStates[targetID]?.discoveredResources ?? []
-        }
-        return discoveredResources
+        discoveryCoordinator.discoveredResources(for: tabID, activeTabID: activeTabID)
     }
 
     /// Returns variant stream items for a specific tab without requiring a tab switch.
     public func variantStreamItems(for tabID: UUID? = nil) -> [String: HLSVariantStreamItem] {
-        let targetID = tabID ?? activeTabID
-        if let targetID, targetID == activeTabID {
-            return variantStreamItems
-        } else if let targetID {
-            return tabVariantStreamItems[targetID] ?? tabResourceStates[targetID]?.variantStreamItems ?? [:]
-        }
-        return variantStreamItems
+        discoveryCoordinator.variantStreamItems(for: tabID, activeTabID: activeTabID)
     }
 
     /// Returns selected resource IDs for a specific tab without requiring a tab switch.
     public func selectedResourceIDs(for tabID: UUID? = nil) -> Set<String> {
-        let targetID = tabID ?? activeTabID
-        if let targetID, targetID == activeTabID {
-            return selectedResourceIDs
-        } else if let targetID {
-            return tabSelectedResourceIDs[targetID] ?? tabResourceStates[targetID]?.selectedResourceIDs ?? []
-        }
-        return selectedResourceIDs
+        discoveryCoordinator.selectedResourceIDs(for: tabID, activeTabID: activeTabID)
     }
 
     /// Checks if a resource ID is selected in the given tab (or active tab).
     public func isResourceSelected(_ id: String, tabID: UUID? = nil) -> Bool {
-        selectedResourceIDs(for: tabID).contains(id)
+        discoveryCoordinator.isResourceSelected(id, tabID: tabID, activeTabID: activeTabID)
     }
 
     /// Toggles resource selection for the given tab (or active tab).
     public func toggleResourceSelection(_ id: String, tabID: UUID? = nil) {
-        let targetID = tabID ?? activeTabID
-        if let targetID {
-            var selections = tabSelectedResourceIDs[targetID] ?? tabResourceStates[targetID]?.selectedResourceIDs ?? (targetID == activeTabID ? selectedResourceIDs : [])
-            if selections.contains(id) {
-                selections.remove(id)
-            } else {
-                selections.insert(id)
-            }
-            tabSelectedResourceIDs[targetID] = selections
-            tabResourceStates[targetID, default: BrowserTabResourceState()].selectedResourceIDs = selections
-            if targetID == activeTabID {
-                selectedResourceIDs = selections
-            }
-        } else {
-            if selectedResourceIDs.contains(id) {
-                selectedResourceIDs.remove(id)
-            } else {
-                selectedResourceIDs.insert(id)
-            }
-        }
+        discoveryCoordinator.toggleResourceSelection(id, tabID: tabID, activeTabID: activeTabID)
+        selectedResourceIDs = discoveryCoordinator.selectedResourceIDs
     }
 
     /// Selects a resource ID for the given tab (or active tab).
     public func selectResource(_ id: String, tabID: UUID? = nil) {
-        let targetID = tabID ?? activeTabID
-        if let targetID {
-            var selections = tabSelectedResourceIDs[targetID] ?? tabResourceStates[targetID]?.selectedResourceIDs ?? (targetID == activeTabID ? selectedResourceIDs : [])
-            selections.insert(id)
-            tabSelectedResourceIDs[targetID] = selections
-            tabResourceStates[targetID, default: BrowserTabResourceState()].selectedResourceIDs = selections
-            if targetID == activeTabID {
-                selectedResourceIDs = selections
-            }
-        } else {
-            selectedResourceIDs.insert(id)
-        }
+        discoveryCoordinator.selectResource(id, tabID: tabID, activeTabID: activeTabID)
+        selectedResourceIDs = discoveryCoordinator.selectedResourceIDs
     }
 
     /// Explicitly updates discovered resources for a specific tab (or active tab).
     public func setDiscoveredResources(_ resources: [WebpageResource], for tabID: UUID? = nil) {
-        let targetID = tabID ?? activeTabID
-        if let targetID {
-            tabDiscoveredResources[targetID] = resources
-            tabResourceStates[targetID, default: BrowserTabResourceState()].discoveredResources = resources
-            if targetID == activeTabID {
-                discoveredResources = resources
-            }
-        } else {
-            discoveredResources = resources
-        }
+        discoveryCoordinator.setDiscoveredResources(resources, for: tabID, activeTabID: activeTabID)
+        discoveredResources = discoveryCoordinator.discoveredResources
     }
 
     /// Explicitly updates variant stream items for a specific tab (or active tab).
     public func setVariantStreamItems(_ items: [HLSVariantStreamItem], for tabID: UUID? = nil) {
-        let targetID = tabID ?? activeTabID
-        var dict: [String: HLSVariantStreamItem] = [:]
-        for item in items {
-            dict[item.id] = item
-        }
-        if let targetID {
-            tabVariantStreamItems[targetID] = dict
-            tabResourceStates[targetID, default: BrowserTabResourceState()].variantStreamItems = dict
-            if targetID == activeTabID {
-                variantStreamItems = dict
-            }
-        } else {
-            variantStreamItems = dict
-        }
+        discoveryCoordinator.setVariantStreamItems(items, for: tabID, activeTabID: activeTabID)
+        variantStreamItems = discoveryCoordinator.variantStreamItems
     }
 
     /// Deselects a resource ID for the given tab (or active tab).
     public func deselectResource(_ id: String, tabID: UUID? = nil) {
-        let targetID = tabID ?? activeTabID
-        if let targetID {
-            var selections = tabSelectedResourceIDs[targetID] ?? tabResourceStates[targetID]?.selectedResourceIDs ?? (targetID == activeTabID ? selectedResourceIDs : [])
-            selections.remove(id)
-            tabSelectedResourceIDs[targetID] = selections
-            tabResourceStates[targetID, default: BrowserTabResourceState()].selectedResourceIDs = selections
-            if targetID == activeTabID {
-                selectedResourceIDs = selections
-            }
-        } else {
-            selectedResourceIDs.remove(id)
-        }
+        discoveryCoordinator.deselectResource(id, tabID: tabID, activeTabID: activeTabID)
+        selectedResourceIDs = discoveryCoordinator.selectedResourceIDs
     }
 
     /// Selects all discovered resources for the given tab (or active tab).
     public func selectAllResources(tabID: UUID? = nil) {
-        let targetID = tabID ?? activeTabID
-        let resources = discoveredResources(for: targetID)
-        let allIDs = Set(resources.map(\.id))
-        if let targetID {
-            tabSelectedResourceIDs[targetID] = allIDs
-            tabResourceStates[targetID, default: BrowserTabResourceState()].selectedResourceIDs = allIDs
-            if targetID == activeTabID {
-                selectedResourceIDs = allIDs
-            }
-        } else {
-            selectedResourceIDs = allIDs
-        }
+        discoveryCoordinator.selectAllResources(tabID: tabID, activeTabID: activeTabID)
+        selectedResourceIDs = discoveryCoordinator.selectedResourceIDs
     }
 
     /// Deselects all resources for the given tab (or active tab).
     public func deselectAllResources(tabID: UUID? = nil) {
-        let targetID = tabID ?? activeTabID
-        if let targetID {
-            tabSelectedResourceIDs[targetID] = []
-            tabResourceStates[targetID, default: BrowserTabResourceState()].selectedResourceIDs = []
-            if targetID == activeTabID {
-                selectedResourceIDs = []
-            }
-        } else {
-            selectedResourceIDs = []
-        }
+        discoveryCoordinator.deselectAllResources(tabID: tabID, activeTabID: activeTabID)
+        selectedResourceIDs = discoveryCoordinator.selectedResourceIDs
     }
 
     /// Cancels all in-flight media probe and manifest expansion tasks associated with a tab.
     public func cancelInFlightProbes(for tabID: UUID) {
-        if let tasks = activeProbeTasks.removeValue(forKey: tabID) {
-            for task in tasks {
-                task.cancel()
-            }
-        }
-        Task { [expander = streamManifestExpander] in
-            await expander.cancelInFlight(for: tabID)
-        }
+        discoveryCoordinator.cancelInFlightProbes(for: tabID)
     }
 
-    // Streaming proposal/execution state. The orchestrator remains the only
+        // Streaming proposal/execution state. The orchestrator remains the only
     // owner of transfer execution; the browser owns confirmation presentation.
     @Published public var streamingProposal: StreamingTransferProposal? = nil
     @Published public var isPreparingStreaming: Bool = false
@@ -577,7 +443,10 @@ public final class BrowserViewModel: NSObject, ObservableObject {
     @Published public var preferredStreamingTransportPolicy: HTTPTransportPolicy? = .background
 
     private var tabManager = BrowserTabManager()
-    private var mediaCandidateCatalogs: [UUID: BrowserMediaCandidateCatalog] = [:]
+    public var mediaCandidateCatalogs: [UUID: BrowserMediaCandidateCatalog] {
+        get { discoveryCoordinator.mediaCandidateCatalogs }
+        set { discoveryCoordinator.mediaCandidateCatalogs = newValue }
+    }
 
     #if canImport(WebKit)
     public weak var webView: WKWebView?
@@ -659,6 +528,20 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         self.authenticationHandler = authenticationHandler
         self.diagnosticLogger = diagnosticLogger
         self.streamManifestExpander = streamManifestExpander
+        let coordinator = BrowserResourceDiscoveryCoordinator(
+            bridge: mediaDiscoveryBridge,
+            streamManifestExpander: streamManifestExpander
+        )
+        self.discoveryCoordinator = coordinator
+        coordinator.onStateChanged = { [weak self] in
+            guard let self = self else { return }
+            self.discoveredResources = self.discoveryCoordinator.discoveredResources
+            self.variantStreamItems = self.discoveryCoordinator.variantStreamItems
+            self.selectedResourceIDs = self.discoveryCoordinator.selectedResourceIDs
+            self.mediaCandidates = self.discoveryCoordinator.mediaCandidates
+            self.isScanningResources = self.discoveryCoordinator.isScanningResources
+            self.resourceScanError = self.discoveryCoordinator.resourceScanError
+        }
 
         let orchestrator = streamingOrchestrator ?? (downloadDelegate as? DownloadManagerViewModel)?.streamingOrchestrator
         if let orchestrator, let vm = downloadDelegate as? DownloadManagerViewModel {
@@ -715,7 +598,14 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         publishTabState()
         mediaDiscoveryBridge.observationHandler = { [weak self] observation in
             DispatchQueue.main.async { [weak self] in
-                self?.handleMediaDiscoveryObservation(observation)
+                guard let self = self else { return }
+                self.discoveryCoordinator.handleMediaDiscoveryObservation(
+                    observation,
+                    tabID: self.activeTabID,
+                    activeTabID: self.activeTabID,
+                    currentURL: self.currentURL,
+                    streamingOrchestrator: self.streamingOrchestrator
+                )
             }
         }
 
@@ -2099,75 +1989,11 @@ public final class BrowserViewModel: NSObject, ObservableObject {
     /// directly into discoveredResources, ensuring the resource grabber can display
     /// grabbed links immediately without waiting for DOM evaluation or showing a blocking spinner.
     public func syncMediaCandidatesToDiscoveredResources(for tabID: UUID? = nil) {
-        guard let targetTabID = tabID ?? activeTabID else { return }
-        var currentResources = (targetTabID == activeTabID)
-            ? discoveredResources
-            : (tabDiscoveredResources[targetTabID] ?? tabResourceStates[targetTabID]?.discoveredResources ?? [])
-
-        let candidates = (targetTabID == activeTabID)
-            ? mediaCandidates
-            : (mediaCandidateCatalogs[targetTabID]?.candidates ?? [])
-
-        var modified = false
-        for candidate in candidates {
-            guard let res = candidate.toWebpageResource() else { continue }
-            let urlStr = res.url.absoluteString.lowercased()
-            if let existingIndex = currentResources.firstIndex(where: { $0.url.absoluteString.lowercased() == urlStr }) {
-                let old = currentResources[existingIndex]
-                let shouldUpdateManifest = (old.manifestText == nil || old.manifestText?.isEmpty == true) && (candidate.cachedManifestText?.isEmpty == false)
-                let shouldUpdateResolution = old.resolutionText == nil && res.resolutionText != nil
-                let shouldUpdateDuration = old.duration == nil && res.duration != nil
-                if shouldUpdateManifest || shouldUpdateResolution || shouldUpdateDuration {
-                    currentResources[existingIndex] = WebpageResource(
-                        id: old.id,
-                        url: old.url,
-                        title: old.title,
-                        suggestedFilename: old.suggestedFilename,
-                        resourceType: old.resourceType,
-                        mimeType: old.mimeType,
-                        estimatedSize: old.estimatedSize,
-                        isSupported: old.isSupported,
-                        unsupportedReason: old.unsupportedReason,
-                        requestContext: old.requestContext ?? candidate.requestContext,
-                        manifestText: shouldUpdateManifest ? candidate.cachedManifestText : old.manifestText,
-                        hlsVariantPreferences: old.hlsVariantPreferences,
-                        dashVideoRepresentationID: old.dashVideoRepresentationID,
-                        dashAudioRepresentationID: old.dashAudioRepresentationID,
-                        dashTextRepresentationID: old.dashTextRepresentationID,
-                        isDRMProtected: old.isDRMProtected,
-                        drmProtectionType: old.drmProtectionType,
-                        discoveredAt: old.discoveredAt,
-                        isLive: old.isLive,
-                        resolutionText: res.resolutionText ?? old.resolutionText,
-                        duration: res.duration ?? old.duration,
-                        codecs: res.codecs ?? old.codecs,
-                        audioLanguage: res.audioLanguage ?? old.audioLanguage,
-                        isAudioVideoSplit: old.isAudioVideoSplit
-                    )
-                    modified = true
-                }
-                continue
-            }
-
-            let knownVariants = HLSResourceGrouping.variantURLs(in: currentResources)
-            if HLSResourceGrouping.isVariantOrRenditionURL(res.url, matchingVariantURLs: knownVariants) {
-                continue
-            }
-
-            currentResources.insert(res, at: 0)
-            modified = true
-        }
-
-        if modified || tabDiscoveredResources[targetTabID] == nil {
-            tabDiscoveredResources[targetTabID] = currentResources
-            tabResourceStates[targetTabID, default: BrowserTabResourceState()].discoveredResources = currentResources
-            if targetTabID == activeTabID {
-                discoveredResources = currentResources
-            }
-        }
+        discoveryCoordinator.syncMediaCandidatesToDiscoveredResources(for: tabID, activeTabID: activeTabID)
+        discoveredResources = discoveryCoordinator.discoveredResources
     }
 
-    public func openResourceInspector() {
+        public func openResourceInspector() {
         syncMediaCandidatesToDiscoveredResources()
         isShowingResourceInspector = true
         if discoveredResources.isEmpty {
@@ -2899,175 +2725,10 @@ public final class BrowserViewModel: NSObject, ObservableObject {
     /// Asynchronously inspects and expands streaming master manifests (HLS and DASH)
     /// into individual selectable video and audio quality resources directly in `discoveredResources`.
     public func expandStreamingManifests(in resources: [WebpageResource]? = nil, tabID: UUID? = nil) {
-        let targetTabID = tabID ?? activeTabID
-        let currentResources = (targetTabID == activeTabID)
-            ? discoveredResources
-            : (targetTabID.flatMap { tabDiscoveredResources[$0] ?? tabResourceStates[$0]?.discoveredResources } ?? [])
-        let targets = (resources ?? currentResources).filter {
-            $0.isStreamingManifest && $0.hlsVariantPreferences == nil && $0.dashVideoRepresentationID == nil && $0.dashTextRepresentationID == nil
-        }
-        guard !targets.isEmpty else { return }
-
-        let expansionTask = Task { @MainActor [weak self] in
-            guard let self = self else { return }
-            defer {
-                if let targetTabID {
-                    self.activeProbeTasks[targetTabID]?.removeAll { $0.isCancelled }
-                }
-            }
-            for manifest in targets {
-                if Task.isCancelled { break }
-                let expanded = await self.streamManifestExpander.expand(manifestResource: manifest, tabID: targetTabID)
-                if Task.isCancelled { break }
-                guard expanded.count > 1 || (expanded.count == 1 && expanded[0].id != manifest.id) else {
-                    continue
-                }
-
-                if let targetTabID {
-                    var tabVariants = self.tabVariantStreamItems[targetTabID] ?? self.tabResourceStates[targetTabID]?.variantStreamItems ?? [:]
-                    for variant in expanded {
-                        if let item = await self.streamManifestExpander.variantItem(for: variant.id) {
-                            tabVariants[variant.id] = item
-                            if targetTabID == self.activeTabID {
-                                self.variantStreamItems[variant.id] = item
-                            }
-                        }
-                    }
-                    self.tabVariantStreamItems[targetTabID] = tabVariants
-                    self.tabResourceStates[targetTabID, default: BrowserTabResourceState()].variantStreamItems = tabVariants
-                } else {
-                    for variant in expanded {
-                        if let item = await self.streamManifestExpander.variantItem(for: variant.id) {
-                            self.variantStreamItems[variant.id] = item
-                        }
-                    }
-                }
-
-                // Do not automatically replace a selected master manifest with expanded.first (highest quality).
-                // Doing so silently forces 1080p/4K on the user without their explicit consent.
-                // Keep the master manifest selected so the user can either choose a specific variant
-                // or have the quality picker presented when initiating the download.
-
-                // Collect all child variant and rendition URLs from expanded variants and manifest text
-                var childURLs = Set<String>()
-                for v in expanded {
-                    if let exact = v.hlsVariantPreferences?.exactURI {
-                        childURLs.insert(exact.absoluteString)
-                        childURLs.insert(exact.absoluteString.lowercased())
-                        childURLs.insert(HLSResourceGrouping.urlWithoutQuery(exact))
-                    }
-                }
-                if let text = manifest.manifestText ?? expanded.first?.manifestText,
-                   let manifestObj = try? HLSManifestParser.parse(text, baseURL: manifest.url) {
-                    for v in manifestObj.variants {
-                        childURLs.insert(v.uri.absoluteString)
-                        childURLs.insert(v.uri.absoluteString.lowercased())
-                        childURLs.insert(HLSResourceGrouping.urlWithoutQuery(v.uri))
-                    }
-                    for r in manifestObj.renditions {
-                        if let rURI = r.uri {
-                            childURLs.insert(rURI.absoluteString)
-                            childURLs.insert(rURI.absoluteString.lowercased())
-                            childURLs.insert(HLSResourceGrouping.urlWithoutQuery(rURI))
-                        }
-                    }
-                }
-                let baseResources = (targetTabID == self.activeTabID)
-                    ? self.discoveredResources
-                    : (targetTabID.flatMap { self.tabDiscoveredResources[$0] ?? self.tabResourceStates[$0]?.discoveredResources } ?? [])
-                childURLs.formUnion(HLSResourceGrouping.variantURLs(in: baseResources))
-
-                var updated: [WebpageResource] = []
-                var inserted = false
-                for res in baseResources {
-                    if res.id == manifest.id || (res.url == manifest.url && res.hlsVariantPreferences == nil && res.dashVideoRepresentationID == nil) {
-                        if !inserted {
-                            for v in expanded {
-                                if !updated.contains(where: { $0.id == v.id }) {
-                                    updated.append(v)
-                                }
-                            }
-                            let isMasterLive = expanded.first?.isLive == true || res.isLive
-                            let isMasterDRM = res.isDRMProtected || expanded.contains(where: { $0.isDRMProtected })
-                            let drmType = res.drmProtectionType ?? expanded.first(where: { $0.isDRMProtected })?.drmProtectionType
-                            let isSupported = !isMasterDRM && !isMasterLive
-                            let unsupportedReason: String? = {
-                                if isMasterDRM {
-                                    if let resReason = res.unsupportedReason, res.isDRMProtected {
-                                        return resReason
-                                    }
-                                    if let varReason = expanded.first(where: { $0.isDRMProtected })?.unsupportedReason {
-                                        return varReason
-                                    }
-                                    if let drmType = drmType {
-                                        return "This media stream is encrypted with Digital Rights Management (\(drmType)) and cannot be downloaded"
-                                    }
-                                    return "This media stream is encrypted with Digital Rights Management and cannot be downloaded"
-                                }
-                                if isMasterLive {
-                                    return "Live stream recording required; VOD download unsupported for live/event manifests"
-                                }
-                                return "Parent master manifest containing \(expanded.count) quality variants"
-                            }()
-                            let cleanTitle = res.title.replacingOccurrences(of: " (Master Playlist)", with: "")
-                            let baseTitle = "\(cleanTitle) (Master Playlist)"
-                            let parentTitle = (isMasterLive && !baseTitle.hasPrefix("[LIVE]")) ? "[LIVE] \(baseTitle)" : baseTitle
-                            let parent = WebpageResource(
-                                id: res.id,
-                                url: res.url,
-                                title: parentTitle,
-                                suggestedFilename: res.suggestedFilename,
-                                resourceType: res.resourceType,
-                                mimeType: res.mimeType,
-                                estimatedSize: isMasterLive ? nil : res.estimatedSize,
-                                isSupported: isSupported,
-                                unsupportedReason: unsupportedReason,
-                                requestContext: res.requestContext,
-                                manifestText: expanded.first?.manifestText ?? res.manifestText,
-                                hlsVariantPreferences: res.hlsVariantPreferences,
-                                dashVideoRepresentationID: res.dashVideoRepresentationID,
-                                dashAudioRepresentationID: res.dashAudioRepresentationID,
-                                dashTextRepresentationID: res.dashTextRepresentationID,
-                                isDRMProtected: isMasterDRM,
-                                drmProtectionType: drmType,
-                                discoveredAt: res.discoveredAt,
-                                isLive: isMasterLive
-                            )
-                            updated.append(parent)
-                            inserted = true
-                        }
-                    } else {
-                        // Check if this resource is a raw child playlist belonging to the expanded variants
-                        let isRawChild = res.hlsVariantPreferences == nil && HLSResourceGrouping.isVariantOrRenditionURL(res.url, matchingVariantURLs: childURLs)
-                        if !isRawChild && !expanded.contains(where: { $0.id == res.id }) {
-                            updated.append(res)
-                        }
-                    }
-                }
-                if !inserted {
-                    updated.append(contentsOf: expanded)
-                }
-                // Final prune: ensure no raw child playlist matching childURLs remains in updated
-                updated.removeAll { res in
-                    res.hlsVariantPreferences == nil && HLSResourceGrouping.isVariantOrRenditionURL(res.url, matchingVariantURLs: childURLs)
-                }
-                if let targetTabID {
-                    self.tabDiscoveredResources[targetTabID] = updated
-                    self.tabResourceStates[targetTabID, default: BrowserTabResourceState()].discoveredResources = updated
-                    if targetTabID == self.activeTabID {
-                        self.discoveredResources = updated
-                    }
-                } else {
-                    self.discoveredResources = updated
-                }
-            }
-        }
-        if let targetTabID {
-            activeProbeTasks[targetTabID, default: []].append(expansionTask)
-        }
+        discoveryCoordinator.expandStreamingManifests(in: resources, tabID: tabID, activeTabID: activeTabID)
     }
 
-    // MARK: - Interactive Stream Quality Picker (Phase 3 Milestone 3.1)
+        // MARK: - Interactive Stream Quality Picker (Phase 3 Milestone 3.1)
 
     public func presentQualityPicker(for resource: WebpageResource, preloadedOptions: [StreamQualityOption]? = nil) {
         qualityPickerTargetResource = resource
@@ -3579,460 +3240,59 @@ public final class BrowserViewModel: NSObject, ObservableObject {
     }
 
     public func inspectCurrentPageResources(includeNonVideo: Bool = false) {
-        guard let url = currentURL else {
-            resourceScanError = "No active webpage is currently loaded."
-            resetMediaCandidateCatalog(for: activeTabID)
-            if let activeTabID {
-                let liveResources = (tabDiscoveredResources[activeTabID] ?? []).filter {
-                    $0.isLive || $0.isStreamingManifest || $0.isBlobResource || $0.isMediaSourceBlob
-                }
-                let liveVariants = (tabVariantStreamItems[activeTabID] ?? [:]).filter { $1.isLive }
-                let preservedIDs = Set(liveResources.map { $0.id })
-                let selectedIDs = (tabSelectedResourceIDs[activeTabID] ?? []).filter { preservedIDs.contains($0) }
-                tabDiscoveredResources[activeTabID] = liveResources
-                tabVariantStreamItems[activeTabID] = liveVariants
-                tabSelectedResourceIDs[activeTabID] = selectedIDs
-                tabResourceStates[activeTabID] = BrowserTabResourceState(
-                    discoveredResources: liveResources,
-                    variantStreamItems: liveVariants,
-                    selectedResourceIDs: selectedIDs
-                )
-                discoveredResources = liveResources
-                variantStreamItems = liveVariants
-                selectedResourceIDs = selectedIDs
-            } else {
-                discoveredResources = []
-                selectedResourceIDs = []
-            }
-            return
-        }
-
-        isScanningResources = true
-        resourceScanError = nil
-
         #if canImport(WebKit)
         guard let wv = webView else {
             isScanningResources = false
             resourceScanError = "Web browser engine is not ready."
             return
         }
-
-        let nonVideoClause = includeNonVideo ? """
-            document.querySelectorAll('a[href]').forEach(function(a) {
-                var href = a.getAttribute('href');
-                if (href && !href.startsWith('#') && !href.startsWith('javascript:')) {
-                    add(href, 'a', (a.innerText || a.textContent || '').trim(), a.getAttribute('type') || null);
-                }
-            });
-            document.querySelectorAll('img[src]').forEach(function(img) {
-                var src = img.getAttribute('src');
-                if (src && !src.startsWith('data:')) {
-                    add(src, 'img', (img.getAttribute('alt') || '').trim(), null);
-                }
-            });
-        """ : """
-            var mediaExts = /\\.(mp4|m3u8|mpd|mkv|webm|mov|flv|ts|avi|m4v|3gp|mp3|aac|flac|wav|m4a)($|\\?|#)/i;
-            document.querySelectorAll('a[href]').forEach(function(a) {
-                var href = a.getAttribute('href');
-                if (href && mediaExts.test(href)) {
-                    add(href, 'a', (a.innerText || a.textContent || '').trim(), a.getAttribute('type') || null);
-                }
-            });
-        """
-
-        let jsScript = """
-        (function() {
-            var candidates = [];
-            var seen = {};
-            function add(u, tag, text, type, w, h, d) {
-                if (!u || seen[u]) return;
-                seen[u] = true;
-                candidates.push({
-                    rawURL: u,
-                    tag: tag,
-                    text: text || '',
-                    declaredType: type || null,
-                    width: (w && w > 0) ? w : null,
-                    height: (h && h > 0) ? h : null,
-                    duration: (d && !isNaN(d) && isFinite(d) && d > 0) ? d : null
-                });
-            }
-            document.querySelectorAll('video').forEach(function(v) {
-                if (v.src) {
-                    var isMSE = (window.__grabberBlobRegistry && window.__grabberBlobRegistry[v.src] === 'MediaSource') ||
-                                (v.src.indexOf('blob:') === 0);
-                    var w = (v.videoWidth && v.videoWidth > 0) ? v.videoWidth : null;
-                    var h = (v.videoHeight && v.videoHeight > 0) ? v.videoHeight : null;
-                    var d = (v.duration && !isNaN(v.duration) && isFinite(v.duration) && v.duration > 0) ? v.duration : null;
-                    add(v.src, 'video', v.title || v.getAttribute('aria-label') || '', isMSE ? 'application/x-mediasource' : null, w, h, d);
-                }
-            });
-            document.querySelectorAll('audio').forEach(function(a) {
-                if (a.src) {
-                    var d = (a.duration && !isNaN(a.duration) && isFinite(a.duration) && a.duration > 0) ? a.duration : null;
-                    add(a.src, 'audio', a.title || a.getAttribute('aria-label') || '', null, null, null, d);
-                }
-            });
-            document.querySelectorAll('source').forEach(function(s) {
-                if (s.src) add(s.src, 'source', '', s.type || null, null, null, null);
-            });
-            \(nonVideoClause)
-            return JSON.stringify(candidates);
-        })()
-        """
-
-        wv.evaluateJavaScript(jsScript) { [weak self] result, error in
-            DispatchQueue.main.async {
-                guard let self = self else { return }
-                self.isScanningResources = false
-
-                if let error = error {
-                    self.resourceScanError = "Failed to scan webpage: \(error.localizedDescription)"
+        discoveryCoordinator.inspectCurrentPageResources(
+            currentURL: currentURL,
+            activeTabID: activeTabID,
+            includeNonVideo: includeNonVideo,
+            evaluateScript: { script, completion in
+                wv.evaluateJavaScript(script, completionHandler: completion)
+            },
+            captureContexts: { [weak self] resources, pageURL, completion in
+                guard let self = self else {
+                    completion(resources)
                     return
                 }
-
-                guard let jsonStr = result as? String,
-                      let data = jsonStr.data(using: .utf8),
-                      let rawCandidates = try? JSONDecoder().decode([WebpageRawResourceCandidate].self, from: data) else {
-                    self.resourceScanError = "Unable to process resources from webpage."
-                    return
-                }
-
-                let resources = WebpageResourceExtractor.extractFromRawCandidates(rawCandidates, baseURL: url)
-                self.captureRequestContexts(for: resources, pageURL: url, webView: wv) { [weak self] contextualResources in
-                    guard let self = self else { return }
-                    // Merge newly discovered DOM resources at index 0 (newest on top) with O(1) deduplication
-                    var newToInsert: [WebpageResource] = []
-                    var seenURLs = Set(self.discoveredResources.map { $0.url.absoluteString.lowercased() })
-                    for newRes in contextualResources {
-                        let lower = newRes.url.absoluteString.lowercased()
-                        if !seenURLs.contains(lower) {
-                            seenURLs.insert(lower)
-                            newToInsert.append(newRes)
-                        }
-                    }
-                    if !newToInsert.isEmpty {
-                        self.discoveredResources.insert(contentsOf: newToInsert, at: 0)
-                        if let tabID = self.activeTabID {
-                            self.tabDiscoveredResources[tabID] = self.discoveredResources
-                            self.tabResourceStates[tabID, default: BrowserTabResourceState()].discoveredResources = self.discoveredResources
-                        }
-                    }
-                    if self.selectedResourceIDs.isEmpty,
-                       let manifest = self.discoveredResources.first(where: { $0.isStreamingManifest }) {
-                        self.selectedResourceIDs.insert(manifest.id)
-                        if let tabID = self.activeTabID {
-                            self.tabSelectedResourceIDs[tabID] = self.selectedResourceIDs
-                            self.tabResourceStates[tabID, default: BrowserTabResourceState()].selectedResourceIDs = self.selectedResourceIDs
-                        }
-                    }
-                    self.ingestMediaResources(contextualResources, tabID: self.activeTabID)
-                    self.expandStreamingManifests(in: contextualResources, tabID: self.activeTabID)
-                }
+                self.captureRequestContexts(for: resources, pageURL: pageURL, webView: wv, completion: completion)
             }
-        }
+        )
         #else
-        isScanningResources = false
-        resourceScanError = "WebKit is not available in this environment."
+        discoveryCoordinator.inspectCurrentPageResources(
+            currentURL: currentURL,
+            activeTabID: activeTabID,
+            includeNonVideo: includeNonVideo,
+            evaluateScript: nil
+        )
         #endif
     }
 
-    /// Adds dynamically observed media candidates to the existing resource
-    /// classifier. Complete Blobs remain page-owned until the user explicitly
-    /// starts the bounded capture workflow.
     fileprivate func handleMediaDiscoveryObservation(
         _ observation: BrowserMediaDiscoveryObservation,
         tabID: UUID? = nil
     ) {
-        ingestMediaObservation(observation, tabID: tabID)
-        if let tabID, tabID != activeTabID { return }
-        guard let discoveredURL = observation.url else { return }
-        let resourceURL: URL
-        if let responseURL = observation.responseURL,
-           BrowserURLResolver.isValidDownloadURL(responseURL) {
-            resourceURL = responseURL
-        } else {
-            resourceURL = discoveredURL
-        }
-
-        if let prefix = observation.manifestPrefix, !prefix.isEmpty {
-            let pageURL = currentURL ?? observation.pageOrigin
-            Task { [weak self] in
-                let context = BrowserRequestContext(
-                    url: resourceURL,
-                    pageURL: pageURL,
-                    userAgent: BrowserViewModel.defaultDesktopUserAgent,
-                    cookies: [],
-                    source: .webpageResource
-                )
-                await self?.streamingOrchestrator?.recordCachedManifest(
-                    text: prefix,
-                    for: resourceURL,
-                    requestContext: context
-                )
-            }
-        }
-
-        let rawCandidate = WebpageRawResourceCandidate(
-            rawURL: resourceURL.absoluteString,
-            tag: observation.tag ?? (observation.isManifestSignal ? "video" : nil),
-            declaredType: observation.declaredType,
-            width: observation.width,
-            height: observation.height,
-            duration: observation.duration
+        discoveryCoordinator.handleMediaDiscoveryObservation(
+            observation,
+            tabID: tabID,
+            activeTabID: activeTabID,
+            currentURL: currentURL,
+            streamingOrchestrator: streamingOrchestrator
         )
-        let baseURL = currentURL ?? observation.pageOrigin
-        var resources = WebpageResourceExtractor.extractFromRawCandidates(
-            [rawCandidate],
-            baseURL: baseURL
-        )
-        // A fetch/XHR response can identify a manifest even when its URL has
-        // no useful extension and the media element has not yet attached it.
-        // Preserve that signal as a candidate; the orchestrator performs the
-        // authoritative fetch, classification, and parsing later.
-        if resources.isEmpty, observation.isManifestSignal {
-            let manifestType = observation.manifestKind == .dash
-                ? "application/dash+xml"
-                : "application/vnd.apple.mpegurl"
-            let baseName = BrowserURLResolver.suggestedFilename(from: resourceURL)
-            let manifestTitle: String
-            if let prefix = observation.manifestPrefix {
-                if prefix.contains("#EXT-X-STREAM-INF") {
-                    manifestTitle = "\(baseName) (Master Playlist)"
-                } else if prefix.contains("#EXT-X-TARGETDURATION") {
-                    manifestTitle = "\(baseName) (Media Playlist)"
-                } else {
-                    manifestTitle = baseName
-                }
-            } else {
-                manifestTitle = baseName
-            }
-            resources = [WebpageResource(
-                url: resourceURL,
-                title: manifestTitle,
-                suggestedFilename: baseName,
-                resourceType: .video,
-                mimeType: observation.declaredType ?? manifestType,
-                estimatedSize: observation.contentLength,
-                isSupported: false,
-                unsupportedReason: "Streaming playlist manifest. Prepare a manifest-aware transfer to continue.",
-                manifestText: observation.manifestPrefix
-            )]
-        }
-        guard var resource = resources.first else { return }
-
-        if let existingIndex = discoveredResources.firstIndex(where: {
-            $0.url.absoluteString.lowercased() == resource.url.absoluteString.lowercased()
-        }) {
-            if let prefix = observation.manifestPrefix, !prefix.isEmpty {
-                let existing = discoveredResources[existingIndex]
-                if existing.manifestText == nil || existing.manifestText?.isEmpty == true {
-                    let updatedTitle: String
-                    if prefix.contains("#EXT-X-STREAM-INF") && !existing.title.contains("Master Playlist") {
-                        updatedTitle = "\(existing.title) (Master Playlist)"
-                    } else if prefix.contains("#EXT-X-TARGETDURATION") && !existing.title.contains("Media Playlist") {
-                        updatedTitle = "\(existing.title) (Media Playlist)"
-                    } else {
-                        updatedTitle = existing.title
-                    }
-                    let updated = WebpageResource(
-                        id: existing.id,
-                        url: existing.url,
-                        title: updatedTitle,
-                        suggestedFilename: existing.suggestedFilename,
-                        resourceType: existing.resourceType,
-                        mimeType: existing.mimeType ?? observation.declaredType,
-                        estimatedSize: existing.estimatedSize ?? observation.contentLength,
-                        isSupported: existing.isSupported,
-                        unsupportedReason: existing.unsupportedReason,
-                        requestContext: existing.requestContext,
-                        manifestText: prefix,
-                        hlsVariantPreferences: existing.hlsVariantPreferences,
-                        dashVideoRepresentationID: existing.dashVideoRepresentationID,
-                        dashAudioRepresentationID: existing.dashAudioRepresentationID,
-                        dashTextRepresentationID: existing.dashTextRepresentationID,
-                        isDRMProtected: existing.isDRMProtected,
-                        drmProtectionType: existing.drmProtectionType,
-                        discoveredAt: existing.discoveredAt,
-                        isLive: existing.isLive
-                    )
-                    discoveredResources[existingIndex] = updated
-                    PipelineLogger.shared.log("[BrowserView] Attached captured manifestText (\(prefix.count) chars) to existing discovered resource: \(existing.url.absoluteString)")
-                    ingestMediaResource(updated, tabID: tabID ?? activeTabID)
-                }
-            }
-            return
-        }
-
-        if observation.isManifestSignal && !resource.isStreamingManifest {
-            let manifestType = observation.manifestKind == .dash
-                ? "application/dash+xml"
-                : "application/vnd.apple.mpegurl"
-            let prefix = resource.manifestText ?? observation.manifestPrefix
-            let dynamicTitle: String
-            if let p = prefix {
-                if p.contains("#EXT-X-STREAM-INF") && !resource.title.contains("Master Playlist") {
-                    dynamicTitle = "\(resource.title) (Master Playlist)"
-                } else if p.contains("#EXT-X-TARGETDURATION") && !resource.title.contains("Media Playlist") {
-                    dynamicTitle = "\(resource.title) (Media Playlist)"
-                } else {
-                    dynamicTitle = resource.title
-                }
-            } else {
-                dynamicTitle = resource.title
-            }
-            resource = WebpageResource(
-                id: resource.id,
-                url: resource.url,
-                title: dynamicTitle,
-                suggestedFilename: resource.suggestedFilename,
-                resourceType: .video,
-                mimeType: resource.mimeType ?? observation.declaredType ?? manifestType,
-                estimatedSize: observation.contentLength ?? resource.estimatedSize,
-                isSupported: false,
-                unsupportedReason: "Streaming playlist manifest. Prepare a manifest-aware transfer to continue.",
-                requestContext: resource.requestContext,
-                manifestText: prefix,
-                hlsVariantPreferences: resource.hlsVariantPreferences,
-                dashVideoRepresentationID: resource.dashVideoRepresentationID,
-                dashAudioRepresentationID: resource.dashAudioRepresentationID,
-                dashTextRepresentationID: resource.dashTextRepresentationID,
-                isDRMProtected: resource.isDRMProtected,
-                drmProtectionType: resource.drmProtectionType,
-                discoveredAt: resource.discoveredAt,
-                isLive: resource.isLive
-            )
-        } else if resource.manifestText == nil, let prefix = observation.manifestPrefix {
-            let dynamicTitle: String
-            if prefix.contains("#EXT-X-STREAM-INF") && !resource.title.contains("Master Playlist") {
-                dynamicTitle = "\(resource.title) (Master Playlist)"
-            } else if prefix.contains("#EXT-X-TARGETDURATION") && !resource.title.contains("Media Playlist") {
-                dynamicTitle = "\(resource.title) (Media Playlist)"
-            } else {
-                dynamicTitle = resource.title
-            }
-            resource = WebpageResource(
-                id: resource.id,
-                url: resource.url,
-                title: dynamicTitle,
-                suggestedFilename: resource.suggestedFilename,
-                resourceType: resource.resourceType,
-                mimeType: resource.mimeType,
-                estimatedSize: resource.estimatedSize,
-                isSupported: resource.isSupported,
-                unsupportedReason: resource.unsupportedReason,
-                requestContext: resource.requestContext,
-                manifestText: prefix,
-                hlsVariantPreferences: resource.hlsVariantPreferences,
-                dashVideoRepresentationID: resource.dashVideoRepresentationID,
-                dashAudioRepresentationID: resource.dashAudioRepresentationID,
-                dashTextRepresentationID: resource.dashTextRepresentationID,
-                isDRMProtected: resource.isDRMProtected,
-                drmProtectionType: resource.drmProtectionType,
-                discoveredAt: resource.discoveredAt,
-                isLive: resource.isLive
-            )
-        }
-
-        // Always preserve request context (Referer, Origin, User-Agent) for discovered media
-        let effectivePageURL = currentURL ?? observation.pageOrigin ?? URL(string: "about:blank")!
-        let fallbackContext = BrowserRequestContext(
-            url: resource.url,
-            pageURL: effectivePageURL,
-            userAgent: BrowserViewModel.defaultDesktopUserAgent,
-            cookies: [],
-            source: .webpageResource
-        )
-        let immediateResource = WebpageResource(
-            id: resource.id,
-            url: resource.url,
-            title: resource.title,
-            suggestedFilename: resource.suggestedFilename,
-            resourceType: resource.resourceType,
-            mimeType: resource.mimeType,
-            estimatedSize: resource.estimatedSize,
-            isSupported: resource.isSupported,
-            unsupportedReason: resource.unsupportedReason,
-            requestContext: resource.requestContext ?? fallbackContext,
-            manifestText: resource.manifestText,
-            hlsVariantPreferences: resource.hlsVariantPreferences,
-            dashVideoRepresentationID: resource.dashVideoRepresentationID,
-            dashAudioRepresentationID: resource.dashAudioRepresentationID,
-            dashTextRepresentationID: resource.dashTextRepresentationID,
-            isDRMProtected: resource.isDRMProtected,
-            drmProtectionType: resource.drmProtectionType,
-            discoveredAt: resource.discoveredAt,
-            isLive: resource.isLive
-        )
-
-        // 1. Immediately insert at top with 0 delay so user sees grabbed link instantly
-        let knownVariants = HLSResourceGrouping.variantURLs(in: discoveredResources)
-        let isRawChildOfKnownMaster = HLSResourceGrouping.isVariantOrRenditionURL(immediateResource.url, matchingVariantURLs: knownVariants)
-        if !isRawChildOfKnownMaster && !discoveredResources.contains(where: {
-            $0.url.absoluteString.lowercased() == immediateResource.url.absoluteString.lowercased()
-        }) {
-            discoveredResources.insert(immediateResource, at: 0)
-            if let targetTabID = tabID ?? activeTabID {
-                tabDiscoveredResources[targetTabID] = discoveredResources
-                tabResourceStates[targetTabID, default: BrowserTabResourceState()].discoveredResources = discoveredResources
-            }
-            if selectedResourceIDs.isEmpty,
-               let manifest = discoveredResources.first(where: { $0.isStreamingManifest }) {
-                selectedResourceIDs.insert(manifest.id)
-                if let targetTabID = tabID ?? activeTabID {
-                    tabSelectedResourceIDs[targetTabID] = selectedResourceIDs
-                    tabResourceStates[targetTabID, default: BrowserTabResourceState()].selectedResourceIDs = selectedResourceIDs
-                }
-            }
-            ingestMediaResource(immediateResource, tabID: tabID ?? activeTabID)
-        }
-
-        // 2. In background, asynchronously capture cookies & exact User-Agent to enrich headers
-        #if canImport(WebKit)
-        if let wv = webView {
-            captureRequestContexts(
-                for: [immediateResource],
-                pageURL: effectivePageURL,
-                webView: wv
-            ) { [weak self] contextualResources in
-                guard let self, let enriched = contextualResources.first else { return }
-                if let idx = self.discoveredResources.firstIndex(where: {
-                    $0.url.absoluteString.lowercased() == enriched.url.absoluteString.lowercased()
-                }) {
-                    self.discoveredResources[idx] = enriched
-                    if let tID = self.activeTabID {
-                        self.tabDiscoveredResources[tID] = self.discoveredResources
-                        self.tabResourceStates[tID, default: BrowserTabResourceState()].discoveredResources = self.discoveredResources
-                    }
-                }
-            }
-        }
-        #endif
     }
 
     private func publishMediaCandidates() {
-        guard let activeTabID else {
-            mediaCandidates = []
-            return
-        }
-        let rawCandidates = mediaCandidateCatalogs[activeTabID]?.candidates ?? []
-        mediaCandidates = BrowserMediaDiscoveryBridge.filter(candidates: rawCandidates)
-        syncMediaCandidatesToDiscoveredResources()
+        discoveryCoordinator.publishMediaCandidates(activeTabID: activeTabID)
     }
 
     private func ingestMediaObservation(
         _ observation: BrowserMediaDiscoveryObservation,
         tabID: UUID?
     ) {
-        guard let targetTabID = tabID ?? activeTabID else { return }
-        var catalog = mediaCandidateCatalogs[targetTabID] ?? BrowserMediaCandidateCatalog()
-        if let candidate = catalog.ingest(observation: observation) {
-            mediaCandidateCatalogs[targetTabID] = catalog
-            if targetTabID == activeTabID { publishMediaCandidates() }
-            if let resource = candidate.toWebpageResource() {
-                ingestMediaResource(resource, tabID: targetTabID)
-            }
-        }
+        discoveryCoordinator.ingestMediaObservation(observation, tabID: tabID, activeTabID: activeTabID)
     }
 
     public func ingestMediaResources(
@@ -4040,92 +3300,33 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         tabID: UUID? = nil,
         updateCatalog: Bool = true
     ) {
-        guard let targetTabID = tabID ?? activeTabID else { return }
-        if updateCatalog {
-            var catalog = mediaCandidateCatalogs[targetTabID] ?? BrowserMediaCandidateCatalog()
-            for resource in resources {
-                _ = catalog.ingest(resource: resource)
-            }
-            mediaCandidateCatalogs[targetTabID] = catalog
-        }
-
-        var targetResources = (targetTabID == activeTabID)
-            ? discoveredResources
-            : (tabDiscoveredResources[targetTabID] ?? tabResourceStates[targetTabID]?.discoveredResources ?? [])
-
-        var seenURLs = Set(targetResources.map { $0.url })
-        let knownVariants = HLSResourceGrouping.variantURLs(in: targetResources)
-        var newToInsert: [WebpageResource] = []
-
-        for resource in resources {
-            if !seenURLs.contains(resource.url) {
-                if resource.hlsVariantPreferences == nil && HLSResourceGrouping.isVariantOrRenditionURL(resource.url, matchingVariantURLs: knownVariants) {
-                    continue
-                }
-                seenURLs.insert(resource.url)
-                newToInsert.append(resource)
-            }
-        }
-
-        if !newToInsert.isEmpty {
-            targetResources.insert(contentsOf: newToInsert, at: 0)
-            tabDiscoveredResources[targetTabID] = targetResources
-            tabResourceStates[targetTabID, default: BrowserTabResourceState()].discoveredResources = targetResources
-            if targetTabID == activeTabID {
-                discoveredResources = targetResources
-            }
-        }
-
-        var targetSelections = (targetTabID == activeTabID)
-            ? selectedResourceIDs
-            : (tabSelectedResourceIDs[targetTabID] ?? tabResourceStates[targetTabID]?.selectedResourceIDs ?? [])
-
-        if targetSelections.isEmpty,
-           let manifest = targetResources.first(where: { $0.isStreamingManifest }) {
-            targetSelections.insert(manifest.id)
-            tabSelectedResourceIDs[targetTabID] = targetSelections
-            tabResourceStates[targetTabID, default: BrowserTabResourceState()].selectedResourceIDs = targetSelections
-            if targetTabID == activeTabID {
-                selectedResourceIDs = targetSelections
-            }
-        }
-
-        if targetTabID == activeTabID { publishMediaCandidates() }
-        if resources.contains(where: { $0.isStreamingManifest && $0.hlsVariantPreferences == nil && $0.dashVideoRepresentationID == nil }) {
-            expandStreamingManifests(in: resources, tabID: targetTabID)
-        }
+        discoveryCoordinator.ingestMediaResources(
+            resources,
+            tabID: tabID,
+            activeTabID: activeTabID,
+            updateCatalog: updateCatalog
+        )
     }
 
     public func ingestMediaResource(
         _ resource: WebpageResource,
         tabID: UUID? = nil
     ) {
-        ingestMediaResources([resource], tabID: tabID)
+        discoveryCoordinator.ingestMediaResource(resource, tabID: tabID, activeTabID: activeTabID)
     }
 
     public func ingestMediaCandidates(
         _ candidates: [BrowserMediaCandidate],
         tabID: UUID? = nil
     ) {
-        guard let targetTabID = tabID ?? activeTabID else { return }
-        var catalog = mediaCandidateCatalogs[targetTabID] ?? BrowserMediaCandidateCatalog()
-        for cand in candidates {
-            _ = catalog.merge(cand)
-        }
-        mediaCandidateCatalogs[targetTabID] = catalog
-        if targetTabID == activeTabID { publishMediaCandidates() }
-
-        let resources = candidates.compactMap { $0.toWebpageResource() }
-        if !resources.isEmpty {
-            ingestMediaResources(resources, tabID: targetTabID, updateCatalog: false)
-        }
+        discoveryCoordinator.ingestMediaCandidates(candidates, tabID: tabID, activeTabID: activeTabID)
     }
 
     public func ingestMediaCandidate(
         _ candidate: BrowserMediaCandidate,
         tabID: UUID? = nil
     ) {
-        ingestMediaCandidates([candidate], tabID: tabID)
+        discoveryCoordinator.ingestMediaCandidate(candidate, tabID: tabID, activeTabID: activeTabID)
     }
 
     public static func isPreservedCandidateOnRescan(_ candidate: BrowserMediaCandidate) -> Bool {
@@ -4142,24 +3343,10 @@ public final class BrowserViewModel: NSObject, ObservableObject {
     }
 
     public func resetMediaCandidateCatalog(for tabID: UUID? = nil) {
-        guard let tabID else {
-            mediaCandidates = mediaCandidates.filter {
-                Self.isPreservedCandidateOnRescan($0)
-            }
-            return
-        }
-        let preserved = mediaCandidateCatalogs[tabID]?.candidates.filter {
-            Self.isPreservedCandidateOnRescan($0)
-        } ?? []
-        var catalog = BrowserMediaCandidateCatalog()
-        for cand in preserved {
-            catalog.merge(cand)
-        }
-        mediaCandidateCatalogs[tabID] = catalog
-        if tabID == activeTabID { publishMediaCandidates() }
+        discoveryCoordinator.resetMediaCandidateCatalog(for: tabID)
     }
 
-    #if canImport(WebKit)
+        #if canImport(WebKit)
     /// Captures only cookies that can match each discovered resource. The WebKit
     /// store is never copied into the download engine wholesale.
     private func captureRequestContexts(
