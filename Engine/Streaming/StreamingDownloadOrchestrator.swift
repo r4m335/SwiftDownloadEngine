@@ -28,7 +28,7 @@ public struct StreamingManifestCandidate: Sendable, Equatable {
         dashVideoRepresentationID: String? = nil,
         dashAudioRepresentationID: String? = nil,
         dashTextRepresentationID: String? = nil,
-        transportPolicy: HTTPTransportPolicy = .foreground
+        transportPolicy: HTTPTransportPolicy = .background
     ) throws {
         guard BrowserURLResolver.isValidDownloadURL(url) else {
             throw StreamingDownloadOrchestratorError.invalidManifestURL
@@ -122,7 +122,7 @@ public struct StreamingManifestCandidate: Sendable, Equatable {
     public init(
         resource: WebpageResource,
         browserSessionSnapshot: BrowserSessionSnapshot? = nil,
-        transportPolicy: HTTPTransportPolicy = .foreground
+        transportPolicy: HTTPTransportPolicy = .background
     ) throws {
         try self.init(
             url: resource.url,
@@ -1752,24 +1752,32 @@ public actor StreamingDownloadOrchestrator {
     public func handleSegmentCompleted(transferID: String, order: Int, partURL: URL) async {
         // 1. Check HLS Store
         if let persistence = hlsPersistenceStore {
-            if var record = try? await persistence.load(id: transferID) {
+            let directOrParentID: String
+            if (try? await persistence.load(id: transferID)) != nil {
+                directOrParentID = transferID
+            } else if let mapped = registeredTransferIDs[transferID], (try? await persistence.load(id: mapped)) != nil {
+                directOrParentID = mapped
+            } else {
+                directOrParentID = hlsParentID(for: transferID)
+            }
+            if var record = try? await persistence.load(id: directOrParentID) {
                 if !record.completedSegmentOrders.contains(order) {
-                    _ = try? await persistence.markSegmentCompleted(id: transferID, order: order)
+                    _ = try? await persistence.markSegmentCompleted(id: directOrParentID, order: order)
                     record.completedSegmentOrders.insert(order)
                 }
                 if let engine = self.downloadEngine {
                     let estimatedTotal = Int64(record.totalSegments) * 1_000_000
                     let completedBytes = Int64(record.completedSegmentOrders.count) * 1_000_000
                     await engine.updateStreamingDownloadProgress(
-                        id: transferID,
+                        id: directOrParentID,
                         completedBytes: completedBytes,
                         totalBytes: estimatedTotal
                     )
                 }
                 if record.completedSegmentOrders.count >= record.totalSegments,
-                   !runningTransfers.contains(transferID),
-                   !activeAssemblyOperations.contains(transferID) {
-                    PipelineLogger.shared.log("[HLS Background] All \(record.totalSegments) segments downloaded for \(transferID). Triggering assembly...")
+                   !runningTransfers.contains(record.id),
+                   !activeAssemblyOperations.contains(record.id) {
+                    PipelineLogger.shared.log("[HLS Background] All \(record.totalSegments) segments downloaded for \(record.id). Triggering assembly...")
                     await self.resumePersistedHLS(record)
                 }
                 return
@@ -1778,24 +1786,32 @@ public actor StreamingDownloadOrchestrator {
 
         // 2. Check DASH Store
         if let persistence = dashPersistenceStore {
-            if var record = try? await persistence.load(id: transferID) {
+            let targetID: String
+            if (try? await persistence.load(id: transferID)) != nil {
+                targetID = transferID
+            } else if let mapped = registeredTransferIDs[transferID], (try? await persistence.load(id: mapped)) != nil {
+                targetID = mapped
+            } else {
+                targetID = transferID
+            }
+            if var record = try? await persistence.load(id: targetID) {
                 if !record.completedSegmentOrders.contains(order) {
-                    _ = try? await persistence.updateCompletedSegmentOrders(id: transferID, completedOrders: [order])
+                    _ = try? await persistence.updateCompletedSegmentOrders(id: targetID, completedOrders: [order])
                     record.completedSegmentOrders.insert(order)
                 }
                 if let engine = self.downloadEngine {
                     let estimatedTotal = Int64(record.totalSegments) * 1_000_000
                     let completedBytes = Int64(record.completedSegmentOrders.count) * 1_000_000
                     await engine.updateStreamingDownloadProgress(
-                        id: transferID,
+                        id: targetID,
                         completedBytes: completedBytes,
                         totalBytes: estimatedTotal
                     )
                 }
                 if record.completedSegmentOrders.count >= record.totalSegments,
-                   !runningTransfers.contains(transferID),
-                   !activeAssemblyOperations.contains(transferID) {
-                    PipelineLogger.shared.log("[DASH Background] All \(record.totalSegments) segments downloaded for \(transferID). Triggering assembly...")
+                   !runningTransfers.contains(record.id),
+                   !activeAssemblyOperations.contains(record.id) {
+                    PipelineLogger.shared.log("[DASH Background] All \(record.totalSegments) segments downloaded for \(record.id). Triggering assembly...")
                     await self.resumePersistedDASH(record)
                 }
                 return
@@ -2865,6 +2881,18 @@ public actor StreamingDownloadOrchestrator {
 
         // Ensure destination directory exists before preflight and transfers
         try DownloadManagerViewModel.ensureDirectoryExistsAndWritable(destinationDirectory)
+
+        // When transport policy is background and background manager is available,
+        // proactively schedule segments into the background URLSession transport so they
+        // continue progressing durably across app suspension or termination.
+        if proposal.transportPolicy == .background, let bgManager = self.backgroundSessionManager {
+            PipelineLogger.shared.log("\(pipelineTag) Proactively scheduling streaming segments in background URLSession...")
+            _ = try? await scheduleBackgroundStreaming(
+                proposal: proposal,
+                destinationDirectory: destinationDirectory,
+                backgroundManager: bgManager
+            )
+        }
 
         // Preflight disk space verification before downloading streaming segments
         if let estimatedSize = proposal.estimatedTotalBytes, estimatedSize > 0 {
@@ -4254,7 +4282,7 @@ public actor StreamingDownloadOrchestrator {
     ) async throws -> MediaAssemblyOutput {
         PipelineLogger.shared.log("[HLS Pipeline] downloadHLS started for manifest: \(manifestURL.absoluteString)")
         do {
-            let effectivePolicy = transportPolicy ?? (backgroundSessionManager != nil ? .background : .foreground)
+            let effectivePolicy = transportPolicy ?? .background
             let candidate = try StreamingManifestCandidate(
                 url: manifestURL,
                 browserSessionSnapshot: browserSessionSnapshot,
@@ -4299,7 +4327,7 @@ public actor StreamingDownloadOrchestrator {
     ) async throws -> MediaAssemblyOutput {
         PipelineLogger.shared.log("[DASH Pipeline] downloadDASH started for manifest: \(manifestURL.absoluteString)")
         do {
-            let effectivePolicy = transportPolicy ?? (backgroundSessionManager != nil ? .background : .foreground)
+            let effectivePolicy = transportPolicy ?? .background
             let candidate = try StreamingManifestCandidate(
                 url: manifestURL,
                 browserSessionSnapshot: browserSessionSnapshot,

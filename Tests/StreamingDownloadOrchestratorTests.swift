@@ -3778,6 +3778,61 @@ final class StreamingDownloadOrchestratorTests: XCTestCase {
         let activeProposal = await orchestrator.activeProposal(for: proposal.transferID)
         XCTAssertEqual(activeProposal?.transportPolicy, HTTPTransportPolicy.background)
     }
+
+    func testStreamingManifestCandidateDefaultsToBackgroundAndSchedulesInBackground() async throws {
+        let manifestData = """
+        #EXTM3U
+        #EXT-X-VERSION:3
+        #EXT-X-TARGETDURATION:10
+        #EXTINF:10.0,
+        seg0.ts
+        #EXT-X-ENDLIST
+        """.data(using: .utf8)!
+        let url = URL(string: "https://example.com/stream-default-bg.m3u8")!
+        let loader = RecordingManifestLoader(data: manifestData, finalURL: url, mimeType: "application/vnd.apple.mpegurl")
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent("test-default-bg-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+
+        let bgManager = try BackgroundDownloadSessionManager(
+            sessionIdentifier: "test.default.bg.\(UUID().uuidString)",
+            storageDirectoryURL: tempDir
+        )
+        let persistence = try HLSPersistenceStore(storageDirectoryURL: tempDir)
+        let orchestrator = StreamingDownloadOrchestrator(
+            manifestLoader: loader,
+            segmentExecutor: RecordingSegmentExecutor(),
+            hlsPersistenceStore: persistence,
+            backgroundSessionManager: bgManager
+        )
+
+        // 1. Candidate defaults to .background
+        let candidateFromURL = try StreamingManifestCandidate(url: url)
+        XCTAssertEqual(candidateFromURL.transportPolicy, .background)
+
+        let resource = WebpageResource(url: url, title: "Stream", suggestedFilename: "stream.mp4", resourceType: .video)
+        let candidateFromResource = try StreamingManifestCandidate(resource: resource)
+        XCTAssertEqual(candidateFromResource.transportPolicy, .background)
+
+        // 2. Proposal inherits .background
+        let proposal = try await orchestrator.prepare(candidate: candidateFromURL)
+        XCTAssertEqual(proposal.transportPolicy, .background)
+
+        // 3. Proactive scheduling in background URLSession via scheduleBackgroundStreaming
+        let segDir = tempDir.appendingPathComponent("segments", isDirectory: true)
+        try FileManager.default.createDirectory(at: segDir, withIntermediateDirectories: true)
+        let scheduledTasks = try await orchestrator.scheduleBackgroundStreaming(
+            proposal: proposal,
+            destinationDirectory: segDir,
+            backgroundManager: bgManager
+        )
+        XCTAssertEqual(scheduledTasks.count, 1)
+        XCTAssertEqual(scheduledTasks.first?.segmentID, 0)
+
+        let records = await bgManager.mappingStore.records(forDownloadID: proposal.transferID)
+        XCTAssertEqual(records.count, 1)
+        XCTAssertEqual(records.first?.segmentID, 0)
+    }
 }
 
 private final class DummyAuthSender: NSObject, URLAuthenticationChallengeSender {

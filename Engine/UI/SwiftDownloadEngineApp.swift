@@ -387,7 +387,8 @@ public struct SwiftDownloadEngineApp: App {
                 downloadCoordinator: viewModel.engine.coordinator,
                 downloadEngine: viewModel.engine,
                 hlsPersistenceStore: hlsPersistenceStore,
-                dashPersistenceStore: dashPersistenceStore
+                dashPersistenceStore: dashPersistenceStore,
+                backgroundSessionManager: Self.backgroundSessionManager
             )
             Task { await viewModel.engine.setStreamingOrchestrator(orchestrator) }
         }
@@ -406,7 +407,8 @@ public struct SwiftDownloadEngineApp: App {
             downloadCoordinator: engine.coordinator,
             downloadEngine: engine,
             hlsPersistenceStore: hlsPersistenceStore,
-            dashPersistenceStore: dashPersistenceStore
+            dashPersistenceStore: dashPersistenceStore,
+            backgroundSessionManager: Self.backgroundSessionManager
         )
         let vm = DownloadManagerViewModel(
             engine: engine,
