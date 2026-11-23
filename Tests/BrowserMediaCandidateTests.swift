@@ -1165,14 +1165,23 @@ final class BrowserMediaCandidateTests: XCTestCase {
         XCTAssertEqual(candidateCatGroups.count, 2)
 
         // Test state updates & tab switching persistence
-        vm.addTab()
+        let tab1 = vm.activeTabID ?? vm.createNewTab()
         vm.resourceGroupingOption = .domain
         vm.resourceSortOption = .size
         vm.saveActiveTabResourceState()
 
-        let state = vm.resourceState()
-        XCTAssertEqual(state.groupingOption, .domain)
-        XCTAssertEqual(state.sortOption, .size)
+        let state1 = vm.resourceState(for: tab1)
+        XCTAssertEqual(state1.groupingOption, .domain)
+        XCTAssertEqual(state1.sortOption, .size)
+
+        let tab2 = vm.createNewTab()
+        vm.restoreTabResourceState(for: tab2)
+        XCTAssertEqual(vm.resourceGroupingOption, .none)
+
+        _ = vm.selectTab(tab1)
+        vm.restoreTabResourceState(for: tab1)
+        XCTAssertEqual(vm.resourceGroupingOption, .domain)
+        XCTAssertEqual(vm.resourceSortOption, .size)
     }
 }
 
