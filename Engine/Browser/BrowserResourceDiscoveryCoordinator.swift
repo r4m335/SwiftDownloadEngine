@@ -44,10 +44,10 @@ public final class BrowserResourceDiscoveryCoordinator: ObservableObject {
     private var activeProbeTasks: [UUID: [Task<Void, Never>]] = [:]
 
     public init(
-        bridge: BrowserMediaDiscoveryBridge = BrowserMediaDiscoveryBridge(),
-        streamManifestExpander: StreamManifestResourceExpander = StreamManifestResourceExpander()
+        bridge: BrowserMediaDiscoveryBridge? = nil,
+        streamManifestExpander: StreamManifestResourceExpander = .shared
     ) {
-        self.bridge = bridge
+        self.bridge = bridge ?? BrowserMediaDiscoveryBridge()
         self.streamManifestExpander = streamManifestExpander
     }
 
@@ -308,7 +308,7 @@ public final class BrowserResourceDiscoveryCoordinator: ObservableObject {
                 guard let candidateURL = candidate.url else { continue }
                 if let idx = currentResources.firstIndex(where: { $0.url == candidateURL }) {
                     let existing = currentResources[idx]
-                    if let p = candidate.manifestText, !p.isEmpty, existing.manifestText == nil {
+                    if let p = candidate.cachedManifestText, !p.isEmpty, existing.manifestText == nil {
                         var updatedTitle = existing.title
                         if p.contains("#EXT-X-STREAM-INF") && !updatedTitle.contains("Master Playlist") {
                             updatedTitle = "\(updatedTitle) (Master Playlist)"
