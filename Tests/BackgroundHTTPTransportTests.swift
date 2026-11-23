@@ -1627,5 +1627,72 @@ final class BackgroundHTTPTransportTests: XCTestCase {
         XCTAssertFalse(wifiOnly.allowsExpensiveNetworkAccess)
         XCTAssertFalse(wifiOnly.allowsConstrainedNetworkAccess)
     }
+
+    func testAppleTaskInterruptionRecoveryWithResumeData() async throws {
+        let download = DownloadRecord(
+            id: "dl-interruption-recover",
+            originalURL: URL(string: "https://example.com/interrupted.bin")!,
+            destinationURL: storageDirectoryURL.appendingPathComponent("interrupted.bin"),
+            totalSize: 1000,
+            state: .downloading,
+            storageMode: .partFiles,
+            segments: [
+                SegmentRecord(id: 0, startOffset: 0, endOffset: 999, length: 1000, completedBytes: 0)
+            ]
+        )
+        try await persistenceStore.save(download)
+
+        let manager = try BackgroundDownloadSessionManager(
+            sessionIdentifier: "test.interruption.\(UUID().uuidString)",
+            storageDirectoryURL: storageDirectoryURL,
+            persistenceStore: persistenceStore
+        )
+
+        let taskRecord = try await manager.scheduleSegmentTask(
+            download: download,
+            segment: download.segments[0]
+        )
+
+        let tasks = await manager.activeSessionTasks()
+        let initialTask = try XCTUnwrap(tasks.first { $0.taskIdentifier == taskRecord.taskIdentifier })
+
+        var failedCalled = false
+        manager.onSegmentFailed = { _, _, _ in
+            failedCalled = true
+        }
+
+        let fakeResumeData = "FAKE_APPLE_RESUME_DATA_\(UUID().uuidString)".data(using: .utf8)!
+        let interruptionError = NSError(
+            domain: NSURLErrorDomain,
+            code: NSURLErrorNetworkConnectionLost,
+            userInfo: [NSURLSessionDownloadTaskResumeData: fakeResumeData]
+        )
+
+        // Simulate Apple task interruption
+        manager.urlSession(
+            manager.session,
+            task: initialTask,
+            didCompleteWithError: interruptionError
+        )
+        await manager.waitForInFlightEvents()
+
+        // 1. Resume data was saved to disk
+        let resumeURL = manager.resumeDataURL(downloadID: download.id, segmentID: 0)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: resumeURL.path))
+        let savedResume = try? Data(contentsOf: resumeURL)
+        XCTAssertEqual(savedResume, fakeResumeData)
+
+        // 2. Failure callback was NOT called because in-transport recovery succeeded
+        XCTAssertFalse(failedCalled, "Transient interruption with resumeData should not trigger onSegmentFailed")
+
+        // 3. New recovered task was registered in mappingStore with retryCount == 1
+        let records = await manager.mappingStore.records(forDownloadID: download.id)
+        XCTAssertEqual(records.count, 1)
+        let recovered = try XCTUnwrap(records.first)
+        XCTAssertEqual(recovered.retryCount, 1)
+        XCTAssertNotEqual(recovered.taskIdentifier, initialTask.taskIdentifier)
+
+        await manager.cancelTasks(for: download.id)
+    }
 }
 

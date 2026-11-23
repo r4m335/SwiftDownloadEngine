@@ -754,8 +754,10 @@ public final class BackgroundDownloadSessionManager: NSObject, @unchecked Sendab
     public var onSegmentCompleted: (@Sendable (String, Int, URL) -> Void)?
 
     /// Failure notification hook: (downloadID, segmentID, error)
-    /// Failure notification hook: (downloadID, segmentID, error)
     public var onSegmentFailed: (@Sendable (String, Int, Error) -> Void)?
+
+    /// Enables automatic in-transport task interruption recovery via resumeData and exponential backoff
+    public var autoRetryOnInterruption: Bool = true
 
     // MARK: - In-Flight Task Tracking & Callback Ordering
     private let eventLock = NSLock()
@@ -1637,13 +1639,78 @@ extension BackgroundDownloadSessionManager: URLSessionDownloadDelegate {
                     }
                 }
 
+                // Bug #20: Reconcile persisted progress against actual committed file on disk when a task fails or is interrupted
+                await reconcileSegmentWithDisk(downloadID: rec.downloadID, segmentID: rec.segmentID, partURL: rec.destinationPartURL)
+
+                // Apple Task Interruption Recovery:
+                // If the task was interrupted (resumeData present or transient network error), and retries remain (< 3),
+                // automatically reschedule and resume directly in the background URLSession with exponential backoff.
+                let isTransient = isTransientNetworkError(nsError)
+                let isCancelled = nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled
+                let canRecover = autoRetryOnInterruption && (resumeData != nil || isTransient) && !isCancelled && rec.retryCount < 3
+
+                if canRecover {
+                    let nextRetry = rec.retryCount + 1
+                    let backoffSeconds = pow(2.0, Double(nextRetry))
+                    let earliestBegin = Date().addingTimeInterval(backoffSeconds)
+
+                    let newTask: URLSessionDownloadTask
+                    if let resumeData {
+                        newTask = self.session.downloadTask(withResumeData: resumeData)
+                        PipelineLogger.shared.log(stage: .transport, message: "[BackgroundDownloadSessionManager] Apple task interruption recovery: restarting task with resumeData for download \(rec.downloadID), segment \(rec.segmentID) (attempt \(nextRetry)/3, backoff: \(backoffSeconds)s)")
+                    } else {
+                        var request = URLRequest(url: rec.originalURL)
+                        request.setValue("identity", forHTTPHeaderField: "Accept-Encoding")
+                        if rec.endOffset > 0 || rec.startOffset > 0 {
+                            request.setValue("bytes=\(rec.startOffset)-\(rec.endOffset)", forHTTPHeaderField: "Range")
+                        }
+                        request = DownloadRequestEnricher.enrich(request)
+                        newTask = self.session.downloadTask(with: request)
+                        PipelineLogger.shared.log(stage: .transport, message: "[BackgroundDownloadSessionManager] Apple task interruption recovery: restarting task with transient error backoff for download \(rec.downloadID), segment \(rec.segmentID) (attempt \(nextRetry)/3, backoff: \(backoffSeconds)s)")
+                    }
+
+                    #if canImport(Darwin)
+                    if #available(iOS 11.0, macOS 10.13, *) {
+                        newTask.earliestBeginDate = earliestBegin
+                    }
+                    #endif
+
+                    let updatedRecord = BackgroundDownloadTaskRecord(
+                        sessionIdentifier: sessID,
+                        taskIdentifier: newTask.taskIdentifier,
+                        downloadID: rec.downloadID,
+                        segmentID: rec.segmentID,
+                        originalURL: rec.originalURL,
+                        startOffset: rec.startOffset,
+                        endOffset: rec.endOffset,
+                        expectedBytes: rec.expectedBytes,
+                        initialSegmentCompletedBytes: rec.initialSegmentCompletedBytes,
+                        segmentLength: rec.segmentLength,
+                        destinationPartURL: rec.destinationPartURL,
+                        createdAt: rec.createdAt,
+                        updatedAt: Date(),
+                        completedBytes: rec.completedBytes,
+                        isCompleted: false,
+                        errorDescription: nil,
+                        retryCount: nextRetry
+                    )
+                    newTask.taskDescription = updatedRecord.systemTaskDescription
+
+                    do {
+                        try await self.mappingStore.remove(sessionIdentifier: sessID, taskIdentifier: taskID)
+                        try await self.mappingStore.save(record: updatedRecord)
+                        newTask.resume()
+                        return
+                    } catch {
+                        PipelineLogger.shared.log(stage: .transport, message: "[BackgroundDownloadSessionManager] Failed to persist recovered task record for \(rec.downloadID): \(error.localizedDescription)")
+                    }
+                }
+
                 do {
                     try await self.mappingStore.markFailed(sessionIdentifier: sessID, taskIdentifier: taskID, error: finalError.localizedDescription)
                 } catch {
                     PipelineLogger.shared.log(stage: .transport, message: "Failed to markFailed in mappingStore for task \(taskID): \(error)")
                 }
-                // Bug #20: Reconcile persisted progress against actual committed file on disk when a task fails
-                await reconcileSegmentWithDisk(downloadID: rec.downloadID, segmentID: rec.segmentID, partURL: rec.destinationPartURL)
                 self.notifyFailed(downloadID: rec.downloadID, segmentID: rec.segmentID, error: finalError)
             }
         }
