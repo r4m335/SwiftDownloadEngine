@@ -11,10 +11,16 @@ public actor NetworkConnectivityGate {
     public static let shared = NetworkConnectivityGate()
 
 #if canImport(Network)
+    private struct WaiterPolicy: Sendable {
+        let allowsCellular: Bool
+        let allowsExpensive: Bool
+        let allowsConstrained: Bool
+    }
+
     private let monitor: NWPathMonitor
     private let monitorQueue = DispatchQueue(label: "DownloadEngineKit.network-path")
     private var latestPath: NWPath?
-    private var waiters: [UUID: (allowsCellular: Bool, continuation: CheckedContinuation<Void, Error>)] = [:]
+    private var waiters: [UUID: (policy: WaiterPolicy, continuation: CheckedContinuation<Void, Error>)] = [:]
 
     public init() {
         let monitor = NWPathMonitor()
@@ -35,11 +41,21 @@ public actor NetworkConnectivityGate {
     public init() {}
 #endif
 
-    func waitUntilAvailable(allowsCellular: Bool) async throws {
+    func waitUntilAvailable(
+        allowsCellular: Bool,
+        allowsExpensive: Bool = true,
+        allowsConstrained: Bool = false
+    ) async throws {
 #if canImport(Network)
         try Task.checkCancellation()
 
-        if let latestPath, Self.isUsable(latestPath, allowsCellular: allowsCellular) {
+        let policy = WaiterPolicy(
+            allowsCellular: allowsCellular,
+            allowsExpensive: allowsExpensive,
+            allowsConstrained: allowsConstrained
+        )
+
+        if let latestPath, Self.isUsable(latestPath, policy: policy) {
             return
         }
 
@@ -48,7 +64,7 @@ public actor NetworkConnectivityGate {
             for _ in 0..<10 {
                 try await Task.sleep(nanoseconds: 50_000_000)
                 if let path = latestPath {
-                    if Self.isUsable(path, allowsCellular: allowsCellular) {
+                    if Self.isUsable(path, policy: policy) {
                         return
                     }
                     break
@@ -63,10 +79,10 @@ public actor NetworkConnectivityGate {
         let waiterID = UUID()
         try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-                if let latestPath, Self.isUsable(latestPath, allowsCellular: allowsCellular) {
+                if let latestPath, Self.isUsable(latestPath, policy: policy) {
                     continuation.resume()
                 } else {
-                    waiters[waiterID] = (allowsCellular: allowsCellular, continuation: continuation)
+                    waiters[waiterID] = (policy: policy, continuation: continuation)
                 }
             }
         } onCancel: {
@@ -76,8 +92,18 @@ public actor NetworkConnectivityGate {
         }
 #else
         _ = allowsCellular
+        _ = allowsExpensive
+        _ = allowsConstrained
         try Task.checkCancellation()
 #endif
+    }
+
+    func waitUntilAvailable(networkPolicy: DownloadNetworkPolicy) async throws {
+        try await waitUntilAvailable(
+            allowsCellular: networkPolicy.allowsCellularAccess,
+            allowsExpensive: networkPolicy.allowsExpensiveNetworkAccess,
+            allowsConstrained: networkPolicy.allowsConstrainedNetworkAccess
+        )
     }
 
 #if canImport(Network)
@@ -86,7 +112,7 @@ public actor NetworkConnectivityGate {
         guard path.status == .satisfied else { return }
 
         let readyIDs = waiters.compactMap { id, waiter in
-            Self.isUsable(path, allowsCellular: waiter.allowsCellular) ? id : nil
+            Self.isUsable(path, policy: waiter.policy) ? id : nil
         }
         for id in readyIDs {
             guard let waiter = waiters.removeValue(forKey: id) else { continue }
@@ -99,9 +125,15 @@ public actor NetworkConnectivityGate {
         waiter.continuation.resume(throwing: CancellationError())
     }
 
-    private static func isUsable(_ path: NWPath, allowsCellular: Bool) -> Bool {
+    private static func isUsable(_ path: NWPath, policy: WaiterPolicy) -> Bool {
         guard path.status == .satisfied else { return false }
-        guard !path.usesInterfaceType(.cellular) || allowsCellular else {
+        guard !path.usesInterfaceType(.cellular) || policy.allowsCellular else {
+            return false
+        }
+        guard !path.isExpensive || policy.allowsExpensive else {
+            return false
+        }
+        guard !path.isConstrained || policy.allowsConstrained else {
             return false
         }
         return true

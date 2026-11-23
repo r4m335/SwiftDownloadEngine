@@ -28,6 +28,12 @@ struct HTTPRangeProbeConfiguration: Sendable {
     /// Whether to allow requests over cellular networks.
     let allowsCellularAccess: Bool
 
+    /// Whether to allow requests over expensive networks (e.g. personal hotspots, metered Wi-Fi).
+    let allowsExpensiveNetworkAccess: Bool
+
+    /// Whether to allow requests when in Low Data Mode (constrained network).
+    let allowsConstrainedNetworkAccess: Bool
+
     /// Allowed origins/wildcards permitted to receive credentials across redirects.
     let allowedCredentialOrigins: Set<String>
 
@@ -37,6 +43,8 @@ struct HTTPRangeProbeConfiguration: Sendable {
         probeMethod: ProbeMethod = .rangeGet,
         timeoutInterval: TimeInterval = 45.0,
         allowsCellularAccess: Bool = true,
+        allowsExpensiveNetworkAccess: Bool = true,
+        allowsConstrainedNetworkAccess: Bool = false,
         allowedCredentialOrigins: Set<String> = []
     ) {
         self.url = url
@@ -44,7 +52,29 @@ struct HTTPRangeProbeConfiguration: Sendable {
         self.probeMethod = probeMethod
         self.timeoutInterval = timeoutInterval
         self.allowsCellularAccess = allowsCellularAccess
+        self.allowsExpensiveNetworkAccess = allowsExpensiveNetworkAccess
+        self.allowsConstrainedNetworkAccess = allowsConstrainedNetworkAccess
         self.allowedCredentialOrigins = allowedCredentialOrigins
+    }
+
+    init(
+        url: URL,
+        customHeaders: [String: String] = [:],
+        probeMethod: ProbeMethod = .rangeGet,
+        timeoutInterval: TimeInterval = 45.0,
+        networkPolicy: DownloadNetworkPolicy,
+        allowedCredentialOrigins: Set<String> = []
+    ) {
+        self.init(
+            url: url,
+            customHeaders: customHeaders,
+            probeMethod: probeMethod,
+            timeoutInterval: timeoutInterval,
+            allowsCellularAccess: networkPolicy.allowsCellularAccess,
+            allowsExpensiveNetworkAccess: networkPolicy.allowsExpensiveNetworkAccess,
+            allowsConstrainedNetworkAccess: networkPolicy.allowsConstrainedNetworkAccess,
+            allowedCredentialOrigins: allowedCredentialOrigins
+        )
     }
 }
 
@@ -162,8 +192,8 @@ final class HTTPRangeProbe: Sendable {
         request.allowsCellularAccess = configuration.allowsCellularAccess
         #if canImport(Darwin)
         if #available(iOS 13.0, macOS 10.15, *) {
-            request.allowsExpensiveNetworkAccess = configuration.allowsCellularAccess
-            request.allowsConstrainedNetworkAccess = configuration.allowsCellularAccess
+            request.allowsExpensiveNetworkAccess = configuration.allowsExpensiveNetworkAccess
+            request.allowsConstrainedNetworkAccess = configuration.allowsConstrainedNetworkAccess
         }
         #endif
 

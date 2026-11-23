@@ -688,7 +688,7 @@ public actor DownloadCoordinator {
         let probeConfig = HTTPRangeProbeConfiguration(
             url: newURL,
             customHeaders: newHeaders ?? record.securedHeaders,
-            allowsCellularAccess: record.networkPolicy.allowsCellularAccess
+            networkPolicy: record.networkPolicy
         )
         let probeResult = try await probe.probe(configuration: probeConfig)
 
@@ -807,7 +807,7 @@ public actor DownloadCoordinator {
             let probeConfig = HTTPRangeProbeConfiguration(
                 url: request.url,
                 customHeaders: request.headers,
-                allowsCellularAccess: request.networkPolicy.allowsCellularAccess,
+                networkPolicy: request.networkPolicy,
                 allowedCredentialOrigins: request.allowedCredentialOrigins
             )
             var probeResult: HTTPRangeProbeResult!
@@ -816,7 +816,7 @@ public actor DownloadCoordinator {
                 try Task.checkCancellation()
                 if !Self.isLoopbackURL(request.url) {
                     try await connectivityGate.waitUntilAvailable(
-                        allowsCellular: request.networkPolicy.allowsCellularAccess
+                        networkPolicy: request.networkPolicy
                     )
                 }
                 do {
@@ -841,7 +841,7 @@ public actor DownloadCoordinator {
                     }
                     if HTTPRetryPolicy.shouldWaitForConnectivity(error) && !Self.isLoopbackURL(request.url) {
                         try await connectivityGate.waitUntilAvailable(
-                            allowsCellular: request.networkPolicy.allowsCellularAccess
+                            networkPolicy: request.networkPolicy
                         )
                         continue
                     }
@@ -1284,7 +1284,7 @@ public actor DownloadCoordinator {
                     probeResult = try await probe.probe(configuration: HTTPRangeProbeConfiguration(
                         url: request.url,
                         customHeaders: request.headers,
-                        allowsCellularAccess: request.networkPolicy.allowsCellularAccess,
+                        networkPolicy: request.networkPolicy,
                         allowedCredentialOrigins: request.allowedCredentialOrigins
                     ))
                 } catch let probeError as HTTPRangeProbeError {
@@ -1492,7 +1492,7 @@ public actor DownloadCoordinator {
                     PipelineLogger.shared.log("[DownloadCoordinator] Segment \(request.id) encountered retryable error (\(error.localizedDescription)). Retrying attempt \(attempt + 1)/\(maxAttempts)...")
                     if HTTPRetryPolicy.shouldWaitForConnectivity(error) && !Self.isLoopbackURL(request.url) {
                         try? await connectivityGate.waitUntilAvailable(
-                            allowsCellular: request.networkPolicy.allowsCellularAccess
+                            networkPolicy: request.networkPolicy
                         )
                     }
                     let delaySeconds: Double
@@ -1646,7 +1646,7 @@ public actor DownloadCoordinator {
                                 try Task.checkCancellation()
                                 if !Self.isLoopbackURL(request.url) {
                                     try await self.connectivityGate.waitUntilAvailable(
-                                        allowsCellular: request.networkPolicy.allowsCellularAccess
+                                        networkPolicy: request.networkPolicy
                                     )
                                 }
                                 do {
@@ -1729,7 +1729,7 @@ public actor DownloadCoordinator {
                                     }
                                     if HTTPRetryPolicy.shouldWaitForConnectivity(error) && !Self.isLoopbackURL(request.url) {
                                         try await self.connectivityGate.waitUntilAvailable(
-                                            allowsCellular: request.networkPolicy.allowsCellularAccess
+                                            networkPolicy: request.networkPolicy
                                         )
                                         continue
                                     }

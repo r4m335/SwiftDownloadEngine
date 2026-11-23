@@ -416,4 +416,67 @@ final class HTTPRangeProbeTests: XCTestCase {
             XCTFail("Unexpected error type: \(error)")
         }
     }
+
+    // MARK: - Network Policy & Request Configuration Verification
+
+    func testProbeRequestHonorsNetworkPolicy() async throws {
+        let testURL = URL(string: "https://example.com/network-policy-test.bin")!
+
+        // 1. Default configuration: cellular=true, expensive=true, constrained=false (respecting Low Data Mode)
+        MockURLProtocol.setHandler(for: testURL) { request in
+            XCTAssertTrue(request.allowsCellularAccess)
+            #if canImport(Darwin)
+            if #available(iOS 13.0, macOS 10.15, *) {
+                XCTAssertTrue(request.allowsExpensiveNetworkAccess)
+                XCTAssertFalse(request.allowsConstrainedNetworkAccess, "Default probe request must respect Low Data Mode (allowsConstrainedNetworkAccess == false)")
+            }
+            #endif
+
+            let response = HTTPURLResponse(url: testURL, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: ["Content-Length": "100"])!
+            return (response, Data(count: 100))
+        }
+
+        let defaultConfig = HTTPRangeProbeConfiguration(url: testURL)
+        _ = try await probe.probe(configuration: defaultConfig)
+
+        // 2. Wi-Fi only policy
+        MockURLProtocol.setHandler(for: testURL) { request in
+            XCTAssertFalse(request.allowsCellularAccess)
+            #if canImport(Darwin)
+            if #available(iOS 13.0, macOS 10.15, *) {
+                XCTAssertFalse(request.allowsExpensiveNetworkAccess)
+                XCTAssertFalse(request.allowsConstrainedNetworkAccess)
+            }
+            #endif
+
+            let response = HTTPURLResponse(url: testURL, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: ["Content-Length": "100"])!
+            return (response, Data(count: 100))
+        }
+
+        let wifiConfig = HTTPRangeProbeConfiguration(url: testURL, networkPolicy: .wifiOnly)
+        _ = try await probe.probe(configuration: wifiConfig)
+
+        // 3. Custom configuration with independent expensive and constrained settings
+        // Specifically verifies that expensive and constrained access are NOT set equal to allowsCellularAccess!
+        MockURLProtocol.setHandler(for: testURL) { request in
+            XCTAssertTrue(request.allowsCellularAccess)
+            #if canImport(Darwin)
+            if #available(iOS 13.0, macOS 10.15, *) {
+                XCTAssertFalse(request.allowsExpensiveNetworkAccess, "allowsExpensiveNetworkAccess must not be forced to equal allowsCellularAccess")
+                XCTAssertTrue(request.allowsConstrainedNetworkAccess, "allowsConstrainedNetworkAccess must not be forced to equal allowsCellularAccess")
+            }
+            #endif
+
+            let response = HTTPURLResponse(url: testURL, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: ["Content-Length": "100"])!
+            return (response, Data(count: 100))
+        }
+
+        let customConfig = HTTPRangeProbeConfiguration(
+            url: testURL,
+            allowsCellularAccess: true,
+            allowsExpensiveNetworkAccess: false,
+            allowsConstrainedNetworkAccess: true
+        )
+        _ = try await probe.probe(configuration: customConfig)
+    }
 }

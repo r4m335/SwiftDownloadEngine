@@ -86,7 +86,7 @@ public final class DownloadLinkRefresher: Sendable {
         let probeConfig = HTTPRangeProbeConfiguration(
             url: newURL,
             customHeaders: probeHeaders,
-            allowsCellularAccess: record.networkPolicy.allowsCellularAccess
+            networkPolicy: record.networkPolicy
         )
 
         let probeResult: HTTPRangeProbeResult
