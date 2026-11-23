@@ -39,7 +39,45 @@ public struct AboutView: View {
                 LabeledRow(label: "Platform", value: "iOS 15.0+ / macOS 12.0+")
             }
 
-            Section(header: Text("Legal & Open Source")) {
+            Section(header: Text("Privacy & Legal")) {
+                NavigationLink {
+                    AppPrivacyView()
+                } label: {
+                    HStack(spacing: 12) {
+                        Image(systemName: "hand.raised.shield.fill")
+                            .foregroundColor(.green)
+                            .font(.system(size: 18))
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("App Privacy & Policy")
+                                .font(.body)
+                            Text("Nutrition label, zero tracking & Privacy Manifest")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                    .padding(.vertical, 4)
+                }
+
+                Link(destination: AppPrivacyInfo.privacyPolicyURL) {
+                    HStack(spacing: 12) {
+                        Image(systemName: "safari.fill")
+                            .foregroundColor(.blue)
+                            .font(.system(size: 18))
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Privacy Policy (Web)")
+                                .font(.body)
+                            Text("Official policy hosted on GitHub")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                        Spacer()
+                        Image(systemName: "arrow.up.right.square")
+                            .foregroundColor(.secondary)
+                            .font(.caption)
+                    }
+                    .padding(.vertical, 4)
+                }
+
                 NavigationLink {
                     OpenSourceLicensesView()
                 } label: {

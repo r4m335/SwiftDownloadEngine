@@ -662,6 +662,16 @@ jobs:
           fi
           echo "Found device app bundle at: $APP_PATH"
 
+          # Ensure Privacy Manifest is present in app bundle
+          if [ -f "iOSApp/PrivacyInfo.xcprivacy" ]; then
+            if [ ! -f "$APP_PATH/PrivacyInfo.xcprivacy" ]; then
+              echo "Copying PrivacyInfo.xcprivacy into app bundle..."
+              cp "iOSApp/PrivacyInfo.xcprivacy" "$APP_PATH/"
+            fi
+            echo "=== Privacy Manifest Verified in App Bundle ==="
+            ls -la "$APP_PATH/PrivacyInfo.xcprivacy"
+          fi
+
           # Embed VLCKit dynamic framework if present
           if [ -d "Frameworks/VLCKit.xcframework/ios-arm64/VLCKit.framework" ]; then
             mkdir -p "$APP_PATH/Frameworks"

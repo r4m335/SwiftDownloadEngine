@@ -119,6 +119,30 @@ public struct SettingsView: View {
                     }
 
                     NavigationLink {
+                        AppPrivacyView()
+                    } label: {
+                        HStack(spacing: 14) {
+                            ZStack {
+                                RoundedRectangle(cornerRadius: 8)
+                                    .fill(Color.green)
+                                    .frame(width: 36, height: 36)
+                                Image(systemName: "hand.raised.shield.fill")
+                                    .font(.system(size: 18))
+                                    .foregroundColor(.white)
+                            }
+
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text("App Privacy & Policy")
+                                    .font(.headline)
+                                Text("Nutrition label, zero tracking & Privacy Manifest")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                            .padding(.vertical, 4)
+                        }
+                    }
+
+                    NavigationLink {
                         OpenSourceLicensesView()
                     } label: {
                         HStack(spacing: 14) {
