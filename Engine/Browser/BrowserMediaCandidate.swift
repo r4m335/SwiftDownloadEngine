@@ -953,66 +953,66 @@ extension BrowserMediaCandidate {
     ) -> [BrowserMediaCandidate] {
         switch sortOption {
         case .newest:
-            return candidates.sorted {
-                if $0.lastObserved != $1.lastObserved {
-                    return $0.lastObserved > $1.lastObserved
+            return candidates.sorted { (lhs: BrowserMediaCandidate, rhs: BrowserMediaCandidate) -> Bool in
+                if lhs.lastObserved != rhs.lastObserved {
+                    return lhs.lastObserved > rhs.lastObserved
                 }
-                if $0.isStreamingManifest != $1.isStreamingManifest {
-                    return $0.isStreamingManifest && !$1.isStreamingManifest
+                if lhs.isStreamingManifest != rhs.isStreamingManifest {
+                    return lhs.isStreamingManifest && !rhs.isStreamingManifest
                 }
-                let fn0 = $0.suggestedFilename ?? ""
-                let fn1 = $1.suggestedFilename ?? ""
+                let fn0 = lhs.suggestedFilename ?? ""
+                let fn1 = rhs.suggestedFilename ?? ""
                 return fn0.localizedCaseInsensitiveCompare(fn1) == .orderedAscending
             }
         case .size:
-            return candidates.sorted {
-                let s0 = variantMetadataMap[$0.id]?.estimatedSizeBytes ?? $0.estimatedSize ?? 0
-                let s1 = variantMetadataMap[$1.id]?.estimatedSizeBytes ?? $1.estimatedSize ?? 0
+            return candidates.sorted { (lhs: BrowserMediaCandidate, rhs: BrowserMediaCandidate) -> Bool in
+                let s0 = variantMetadataMap[lhs.id]?.estimatedSizeBytes ?? lhs.estimatedSize ?? 0
+                let s1 = variantMetadataMap[rhs.id]?.estimatedSizeBytes ?? rhs.estimatedSize ?? 0
                 if s0 != s1 {
                     return s0 > s1
                 }
-                if $0.lastObserved != $1.lastObserved {
-                    return $0.lastObserved > $1.lastObserved
+                if lhs.lastObserved != rhs.lastObserved {
+                    return lhs.lastObserved > rhs.lastObserved
                 }
-                let fn0 = $0.suggestedFilename ?? ""
-                let fn1 = $1.suggestedFilename ?? ""
+                let fn0 = lhs.suggestedFilename ?? ""
+                let fn1 = rhs.suggestedFilename ?? ""
                 return fn0.localizedCaseInsensitiveCompare(fn1) == .orderedAscending
             }
         case .name:
-            return candidates.sorted {
-                let fn0 = $0.suggestedFilename ?? ""
-                let fn1 = $1.suggestedFilename ?? ""
+            return candidates.sorted { (lhs: BrowserMediaCandidate, rhs: BrowserMediaCandidate) -> Bool in
+                let fn0 = lhs.suggestedFilename ?? ""
+                let fn1 = rhs.suggestedFilename ?? ""
                 let cmp = fn0.localizedCaseInsensitiveCompare(fn1)
                 if cmp != .orderedSame {
                     return cmp == .orderedAscending
                 }
-                return $0.lastObserved > $1.lastObserved
+                return lhs.lastObserved > rhs.lastObserved
             }
         case .quality:
-            return candidates.sorted {
-                let h0 = variantMetadataMap[$0.id]?.resolution?.height ?? ($0.height ?? 0)
-                let h1 = variantMetadataMap[$1.id]?.resolution?.height ?? ($1.height ?? 0)
+            return candidates.sorted { (lhs: BrowserMediaCandidate, rhs: BrowserMediaCandidate) -> Bool in
+                let h0 = variantMetadataMap[lhs.id]?.resolution?.height ?? lhs.height ?? 0
+                let h1 = variantMetadataMap[rhs.id]?.resolution?.height ?? rhs.height ?? 0
                 if h0 != h1 {
                     return h0 > h1
                 }
-                let bw0 = variantMetadataMap[$0.id]?.bandwidth ?? 0
-                let bw1 = variantMetadataMap[$1.id]?.bandwidth ?? 0
+                let bw0 = variantMetadataMap[lhs.id]?.bandwidth ?? 0
+                let bw1 = variantMetadataMap[rhs.id]?.bandwidth ?? 0
                 if bw0 != bw1 {
                     return bw0 > bw1
                 }
-                if $0.lastObserved != $1.lastObserved {
-                    return $0.lastObserved > $1.lastObserved
+                if lhs.lastObserved != rhs.lastObserved {
+                    return lhs.lastObserved > rhs.lastObserved
                 }
-                let fn0 = $0.suggestedFilename ?? ""
-                let fn1 = $1.suggestedFilename ?? ""
+                let fn0 = lhs.suggestedFilename ?? ""
+                let fn1 = rhs.suggestedFilename ?? ""
                 return fn0.localizedCaseInsensitiveCompare(fn1) == .orderedAscending
             }
         case .type:
-            return candidates.sorted {
-                if $0.kind.rawValue != $1.kind.rawValue {
-                    return $0.kind.rawValue < $1.kind.rawValue
+            return candidates.sorted { (lhs: BrowserMediaCandidate, rhs: BrowserMediaCandidate) -> Bool in
+                if lhs.kind.rawValue != rhs.kind.rawValue {
+                    return lhs.kind.rawValue < rhs.kind.rawValue
                 }
-                return $0.lastObserved > $1.lastObserved
+                return lhs.lastObserved > rhs.lastObserved
             }
         }
     }

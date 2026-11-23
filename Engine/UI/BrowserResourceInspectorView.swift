@@ -224,58 +224,58 @@ public struct BrowserResourceInspectorSheet: View {
     ) -> [WebpageResource] {
         switch sortOption {
         case .newest:
-            return resources.sorted {
-                if $0.discoveredAt != $1.discoveredAt {
-                    return $0.discoveredAt > $1.discoveredAt
+            return resources.sorted { (lhs: WebpageResource, rhs: WebpageResource) -> Bool in
+                if lhs.discoveredAt != rhs.discoveredAt {
+                    return lhs.discoveredAt > rhs.discoveredAt
                 }
-                if $0.isStreamingManifest != $1.isStreamingManifest {
-                    return $0.isStreamingManifest && !$1.isStreamingManifest
+                if lhs.isStreamingManifest != rhs.isStreamingManifest {
+                    return lhs.isStreamingManifest && !rhs.isStreamingManifest
                 }
-                return $0.suggestedFilename.localizedCaseInsensitiveCompare($1.suggestedFilename) == .orderedAscending
+                return lhs.suggestedFilename.localizedCaseInsensitiveCompare(rhs.suggestedFilename) == .orderedAscending
             }
         case .size:
-            return resources.sorted {
-                let size0 = variantMetadataMap[$0.id]?.estimatedSizeBytes ?? $0.estimatedSize ?? 0
-                let size1 = variantMetadataMap[$1.id]?.estimatedSizeBytes ?? $1.estimatedSize ?? 0
+            return resources.sorted { (lhs: WebpageResource, rhs: WebpageResource) -> Bool in
+                let size0 = variantMetadataMap[lhs.id]?.estimatedSizeBytes ?? lhs.estimatedSize ?? 0
+                let size1 = variantMetadataMap[rhs.id]?.estimatedSizeBytes ?? rhs.estimatedSize ?? 0
                 if size0 != size1 {
                     return size0 > size1
                 }
-                if $0.discoveredAt != $1.discoveredAt {
-                    return $0.discoveredAt > $1.discoveredAt
+                if lhs.discoveredAt != rhs.discoveredAt {
+                    return lhs.discoveredAt > rhs.discoveredAt
                 }
-                return $0.suggestedFilename.localizedCaseInsensitiveCompare($1.suggestedFilename) == .orderedAscending
+                return lhs.suggestedFilename.localizedCaseInsensitiveCompare(rhs.suggestedFilename) == .orderedAscending
             }
         case .name:
-            return resources.sorted {
-                let cmp = $0.suggestedFilename.localizedCaseInsensitiveCompare($1.suggestedFilename)
+            return resources.sorted { (lhs: WebpageResource, rhs: WebpageResource) -> Bool in
+                let cmp = lhs.suggestedFilename.localizedCaseInsensitiveCompare(rhs.suggestedFilename)
                 if cmp != .orderedSame {
                     return cmp == .orderedAscending
                 }
-                return $0.discoveredAt > $1.discoveredAt
+                return lhs.discoveredAt > rhs.discoveredAt
             }
         case .quality:
-            return resources.sorted {
-                let h0 = variantMetadataMap[$0.id]?.resolution?.height ?? ($0.hlsVariantPreferences?.maximumHeight ?? ($0.height ?? 0))
-                let h1 = variantMetadataMap[$1.id]?.resolution?.height ?? ($1.hlsVariantPreferences?.maximumHeight ?? ($1.height ?? 0))
+            return resources.sorted { (lhs: WebpageResource, rhs: WebpageResource) -> Bool in
+                let h0 = variantMetadataMap[lhs.id]?.resolution?.height ?? lhs.hlsVariantPreferences?.maximumHeight ?? lhs.height ?? 0
+                let h1 = variantMetadataMap[rhs.id]?.resolution?.height ?? rhs.hlsVariantPreferences?.maximumHeight ?? rhs.height ?? 0
                 if h0 != h1 {
                     return h0 > h1
                 }
-                let bw0 = variantMetadataMap[$0.id]?.bandwidth ?? ($0.hlsVariantPreferences?.maximumBandwidth ?? 0)
-                let bw1 = variantMetadataMap[$1.id]?.bandwidth ?? ($1.hlsVariantPreferences?.maximumBandwidth ?? 0)
+                let bw0 = variantMetadataMap[lhs.id]?.bandwidth ?? lhs.hlsVariantPreferences?.maximumBandwidth ?? 0
+                let bw1 = variantMetadataMap[rhs.id]?.bandwidth ?? rhs.hlsVariantPreferences?.maximumBandwidth ?? 0
                 if bw0 != bw1 {
                     return bw0 > bw1
                 }
-                if $0.discoveredAt != $1.discoveredAt {
-                    return $0.discoveredAt > $1.discoveredAt
+                if lhs.discoveredAt != rhs.discoveredAt {
+                    return lhs.discoveredAt > rhs.discoveredAt
                 }
-                return $0.suggestedFilename.localizedCaseInsensitiveCompare($1.suggestedFilename) == .orderedAscending
+                return lhs.suggestedFilename.localizedCaseInsensitiveCompare(rhs.suggestedFilename) == .orderedAscending
             }
         case .type:
-            return resources.sorted {
-                if $0.resourceType.rawValue != $1.resourceType.rawValue {
-                    return $0.resourceType.rawValue < $1.resourceType.rawValue
+            return resources.sorted { (lhs: WebpageResource, rhs: WebpageResource) -> Bool in
+                if lhs.resourceType.rawValue != rhs.resourceType.rawValue {
+                    return lhs.resourceType.rawValue < rhs.resourceType.rawValue
                 }
-                return $0.discoveredAt > $1.discoveredAt
+                return lhs.discoveredAt > rhs.discoveredAt
             }
         }
     }
