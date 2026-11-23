@@ -13,22 +13,6 @@ public struct MediaPreviewItem: Identifiable {
     }
 }
 
-public enum ResourceGroupingOption: String, CaseIterable, Identifiable, Sendable {
-    case none = "None (Flat List)"
-    case domain = "By Domain"
-    case type = "By Category"
-
-    public var id: String { rawValue }
-
-    public var iconName: String {
-        switch self {
-        case .none: return "list.bullet"
-        case .domain: return "globe"
-        case .type: return "square.grid.2x2"
-        }
-    }
-}
-
 /// Sheet displaying media assets, documents, and downloadable files discovered inside the active webpage.
 public struct BrowserResourceInspectorSheet: View {
     @ObservedObject public var viewModel: BrowserViewModel
@@ -45,6 +29,7 @@ public struct BrowserResourceInspectorSheet: View {
     public init(viewModel: BrowserViewModel) {
         self.viewModel = viewModel
         _sortOption = State(initialValue: viewModel.resourceSortOption)
+        _groupingOption = State(initialValue: viewModel.resourceGroupingOption)
     }
 
     private var variantMetadataMap: [String: HLSVariantStreamItem] {
@@ -303,11 +288,8 @@ public struct BrowserResourceInspectorSheet: View {
     }
 
     private var groupedByDomain: [DomainSection] {
-        let dict = Dictionary(grouping: displayedSortedResources) { res in
-            res.url.host?.lowercased() ?? "Other Domains"
-        }
-        return dict.map { DomainSection(domain: $0.key, resources: $0.value) }
-            .sorted { $0.domain < $1.domain }
+        let grouped = WebpageResource.groupedByDomain(displayedSortedResources)
+        return grouped.map { DomainSection(domain: $0.domain, resources: $0.resources) }
     }
 
     private struct CategorySection: Identifiable {
@@ -316,12 +298,13 @@ public struct BrowserResourceInspectorSheet: View {
         var id: String { category.rawValue }
     }
 
+    private var groupedByCategory: [CategorySection] {
+        let grouped = WebpageResource.groupedByCategory(displayedSortedResources)
+        return grouped.map { CategorySection(category: $0.category, resources: $0.resources) }
+    }
+
     private var groupedByType: [CategorySection] {
-        let dict = Dictionary(grouping: displayedSortedResources) { $0.resourceType }
-        return WebpageResourceType.allCases.compactMap { cat in
-            guard let list = dict[cat], !list.isEmpty else { return nil }
-            return CategorySection(category: cat, resources: list)
-        }
+        groupedByCategory
     }
 
     public var body: some View {
@@ -335,6 +318,9 @@ public struct BrowserResourceInspectorSheet: View {
 
                 // Explicit Sort Controls (Newest, Size, Quality, Name)
                 sortControlBar
+
+                // Explicit Grouping Controls (None, Domain, Category)
+                groupingControlBar
 
                 // Main Content: List, Loading, Empty, or Error
                 if !filteredResources.isEmpty {
@@ -388,9 +374,9 @@ public struct BrowserResourceInspectorSheet: View {
                                         groupingOption = grp
                                     } label: {
                                         if groupingOption == grp {
-                                            Label(grp.rawValue, systemImage: "checkmark")
+                                            Label(grp.displayName, systemImage: "checkmark")
                                         } else {
-                                            Label(grp.rawValue, systemImage: grp.iconName)
+                                            Label(grp.displayName, systemImage: grp.iconName)
                                         }
                                     }
                                 }
@@ -425,10 +411,23 @@ public struct BrowserResourceInspectorSheet: View {
             .onChange(of: sortOption) { newOption in
                 viewModel.resourceSortOption = newOption
             }
+            .onChange(of: groupingOption) { newOption in
+                viewModel.resourceGroupingOption = newOption
+            }
+            .onChange(of: viewModel.resourceSortOption) { newOption in
+                if sortOption != newOption {
+                    sortOption = newOption
+                }
+            }
+            .onChange(of: viewModel.resourceGroupingOption) { newOption in
+                if groupingOption != newOption {
+                    groupingOption = newOption
+                }
+            }
         }
     }
 
-    // MARK: - Explicit Sort Controls
+    // MARK: - Explicit Sort & Grouping Controls
 
     private var sortControlBar: some View {
         HStack(spacing: 8) {
@@ -447,7 +446,31 @@ public struct BrowserResourceInspectorSheet: View {
             .accessibilityLabel("Resource Sort Order")
         }
         .padding(.horizontal, 16)
-        .padding(.vertical, 6)
+        .padding(.vertical, 4)
+        #if canImport(UIKit)
+        .background(Color(UIColor.secondarySystemBackground))
+        #else
+        .background(Color.secondary.opacity(0.06))
+        #endif
+    }
+
+    private var groupingControlBar: some View {
+        HStack(spacing: 8) {
+            Text("Group:")
+                .font(.subheadline)
+                .fontWeight(.medium)
+                .foregroundColor(.secondary)
+
+            Picker("Group By", selection: $groupingOption) {
+                Text(ResourceGroupingOption.none.rawValue).tag(ResourceGroupingOption.none)
+                Text(ResourceGroupingOption.domain.rawValue).tag(ResourceGroupingOption.domain)
+                Text(ResourceGroupingOption.category.rawValue).tag(ResourceGroupingOption.category)
+            }
+            .pickerStyle(.segmented)
+            .accessibilityLabel("Resource Grouping Option")
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 4)
         #if canImport(UIKit)
         .background(Color(UIColor.secondarySystemBackground))
         #else
@@ -575,9 +598,9 @@ public struct BrowserResourceInspectorSheet: View {
                             groupingOption = grp
                         } label: {
                             if groupingOption == grp {
-                                Label(grp.rawValue, systemImage: "checkmark")
+                                Label(grp.displayName, systemImage: "checkmark")
                             } else {
-                                Label(grp.rawValue, systemImage: grp.iconName)
+                                Label(grp.displayName, systemImage: grp.iconName)
                             }
                         }
                     }
@@ -609,9 +632,9 @@ public struct BrowserResourceInspectorSheet: View {
                         }
                     }
                 }
-            case .type:
-                ForEach(groupedByType) { section in
-                    Section(header: Label(section.category.rawValue, systemImage: section.category.systemImage)) {
+            case .category:
+                ForEach(groupedByCategory) { section in
+                    Section(header: Label("\(section.category.rawValue) (\(section.resources.count))", systemImage: section.category.systemImage)) {
                         ForEach(section.resources) { resource in
                             rowView(for: resource)
                         }

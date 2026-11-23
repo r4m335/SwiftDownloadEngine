@@ -990,5 +990,189 @@ final class BrowserMediaCandidateTests: XCTestCase {
         let byNewest = BrowserMediaCandidate.sorted([c1, c2], by: .newest)
         XCTAssertEqual(byNewest.map { $0.id }, ["c2", "c1"])
     }
+
+    func testResourceGroupingOptionsEnumAndDisplay() {
+        XCTAssertEqual(ResourceGroupingOption.none.rawValue, "None")
+        XCTAssertEqual(ResourceGroupingOption.domain.rawValue, "Domain")
+        XCTAssertEqual(ResourceGroupingOption.category.rawValue, "Category")
+        XCTAssertEqual(ResourceGroupingOption.type, .category)
+
+        XCTAssertEqual(ResourceGroupingOption.none.displayName, "None (Flat List)")
+        XCTAssertEqual(ResourceGroupingOption.domain.displayName, "By Domain")
+        XCTAssertEqual(ResourceGroupingOption.category.displayName, "By Category")
+
+        XCTAssertFalse(ResourceGroupingOption.none.iconName.isEmpty)
+        XCTAssertFalse(ResourceGroupingOption.domain.iconName.isEmpty)
+        XCTAssertFalse(ResourceGroupingOption.category.iconName.isEmpty)
+
+        XCTAssertEqual(ResourceGroupingOption.allCases.count, 3)
+    }
+
+    func testResourceGroupingByDomainAndCategory() {
+        let r1 = WebpageResource(
+            id: "r1",
+            url: URL(string: "https://video.example.com/movie.mp4")!,
+            title: "Movie Video",
+            suggestedFilename: "movie.mp4",
+            resourceType: .video,
+            discoveredAt: Date(timeIntervalSince1970: 100)
+        )
+        let r2 = WebpageResource(
+            id: "r2",
+            url: URL(string: "https://audio.example.com/track.mp3")!,
+            title: "Music Track",
+            suggestedFilename: "track.mp3",
+            resourceType: .audio,
+            discoveredAt: Date(timeIntervalSince1970: 200)
+        )
+        let r3 = WebpageResource(
+            id: "r3",
+            url: URL(string: "https://video.example.com/clip.mp4")!,
+            title: "Clip Video",
+            suggestedFilename: "clip.mp4",
+            resourceType: .video,
+            discoveredAt: Date(timeIntervalSince1970: 150)
+        )
+        let r4 = WebpageResource(
+            id: "r4",
+            url: URL(string: "https://assets.cdn.net/poster.jpg")!,
+            title: "Poster Image",
+            suggestedFilename: "poster.jpg",
+            resourceType: .image,
+            discoveredAt: Date(timeIntervalSince1970: 300)
+        )
+
+        let list = [r1, r2, r3, r4]
+
+        // Group by Domain
+        let domainGroups = WebpageResource.groupedByDomain(list)
+        // Domains sorted alphabetically: assets.cdn.net, audio.example.com, video.example.com
+        XCTAssertEqual(domainGroups.count, 3)
+        XCTAssertEqual(domainGroups[0].domain, "assets.cdn.net")
+        XCTAssertEqual(domainGroups[0].resources.map(\.id), ["r4"])
+        XCTAssertEqual(domainGroups[1].domain, "audio.example.com")
+        XCTAssertEqual(domainGroups[1].resources.map(\.id), ["r2"])
+        XCTAssertEqual(domainGroups[2].domain, "video.example.com")
+        XCTAssertEqual(domainGroups[2].resources.map(\.id), ["r1", "r3"])
+
+        // Group by Category
+        let categoryGroups = WebpageResource.groupedByCategory(list)
+        let groupCategories = categoryGroups.map(\.category)
+        XCTAssertTrue(groupCategories.contains(.video))
+        XCTAssertTrue(groupCategories.contains(.audio))
+        XCTAssertTrue(groupCategories.contains(.image))
+
+        let videoGroup = categoryGroups.first { $0.category == .video }
+        XCTAssertEqual(videoGroup?.resources.map(\.id), ["r1", "r3"])
+
+        let audioGroup = categoryGroups.first { $0.category == .audio }
+        XCTAssertEqual(audioGroup?.resources.map(\.id), ["r2"])
+
+        let imageGroup = categoryGroups.first { $0.category == .image }
+        XCTAssertEqual(imageGroup?.resources.map(\.id), ["r4"])
+    }
+
+    func testBrowserMediaCandidateDirectGrouping() {
+        let c1 = BrowserMediaCandidate(
+            id: "c1",
+            url: URL(string: "https://cdn.movies.com/v1.mp4"),
+            rawURL: "https://cdn.movies.com/v1.mp4",
+            kind: .directMedia,
+            suggestedFilename: "v1.mp4",
+            availability: .downloadable
+        )
+        let c2 = BrowserMediaCandidate(
+            id: "c2",
+            url: URL(string: "https://cdn.audio.com/a1.mp3"),
+            rawURL: "https://cdn.audio.com/a1.mp3",
+            kind: .directFile,
+            mimeType: "audio/mpeg",
+            suggestedFilename: "a1.mp3",
+            availability: .downloadable
+        )
+        let c3 = BrowserMediaCandidate(
+            id: "c3",
+            url: URL(string: "https://cdn.movies.com/v2.mp4"),
+            rawURL: "https://cdn.movies.com/v2.mp4",
+            kind: .directMedia,
+            suggestedFilename: "v2.mp4",
+            availability: .downloadable
+        )
+
+        let candidates = [c1, c2, c3]
+
+        // Check resourceType mapping
+        XCTAssertEqual(c1.resourceType, .video)
+        XCTAssertEqual(c2.resourceType, .audio)
+        XCTAssertEqual(c3.resourceType, .video)
+
+        // Group by Domain
+        let domainGroups = BrowserMediaCandidate.groupedByDomain(candidates)
+        XCTAssertEqual(domainGroups.count, 2)
+        XCTAssertEqual(domainGroups[0].domain, "cdn.audio.com")
+        XCTAssertEqual(domainGroups[0].candidates.map(\.id), ["c2"])
+        XCTAssertEqual(domainGroups[1].domain, "cdn.movies.com")
+        XCTAssertEqual(domainGroups[1].candidates.map(\.id), ["c1", "c3"])
+
+        // Group by Category
+        let categoryGroups = BrowserMediaCandidate.groupedByCategory(candidates)
+        XCTAssertEqual(categoryGroups.count, 2)
+        let videoCat = categoryGroups.first { $0.category == .video }
+        let audioCat = categoryGroups.first { $0.category == .audio }
+        XCTAssertEqual(videoCat?.candidates.map(\.id), ["c1", "c3"])
+        XCTAssertEqual(audioCat?.candidates.map(\.id), ["c2"])
+    }
+
+    @MainActor
+    func testBrowserViewModelGroupingControlsAndTabPersistence() {
+        let vm = BrowserViewModel()
+        XCTAssertEqual(vm.resourceGroupingOption, .none)
+
+        let r1 = WebpageResource(
+            id: "r1",
+            url: URL(string: "https://cdn.stream.com/video.m3u8")!,
+            title: "Master Stream",
+            suggestedFilename: "video.m3u8",
+            resourceType: .video,
+            discoveredAt: Date(timeIntervalSince1970: 200)
+        )
+        let r2 = WebpageResource(
+            id: "r2",
+            url: URL(string: "https://static.cdn.com/sound.mp3")!,
+            title: "Theme Song",
+            suggestedFilename: "sound.mp3",
+            resourceType: .audio,
+            discoveredAt: Date(timeIntervalSince1970: 100)
+        )
+
+        vm.discoveredResources = [r1, r2]
+
+        // Domain grouping query
+        let domainGroups = vm.groupedDiscoveredResourcesByDomain()
+        XCTAssertEqual(domainGroups.count, 2)
+        XCTAssertEqual(domainGroups[0].domain, "cdn.stream.com")
+        XCTAssertEqual(domainGroups[1].domain, "static.cdn.com")
+
+        // Category grouping query
+        let categoryGroups = vm.groupedDiscoveredResourcesByCategory()
+        XCTAssertEqual(categoryGroups.count, 2)
+
+        // Candidate grouping queries
+        let candidateDomainGroups = vm.groupedMediaCandidatesByDomain()
+        XCTAssertEqual(candidateDomainGroups.count, 2)
+
+        let candidateCatGroups = vm.groupedMediaCandidatesByCategory()
+        XCTAssertEqual(candidateCatGroups.count, 2)
+
+        // Test state updates & tab switching persistence
+        vm.addTab()
+        vm.resourceGroupingOption = .domain
+        vm.resourceSortOption = .size
+        vm.saveActiveTabResourceState()
+
+        let state = vm.resourceState()
+        XCTAssertEqual(state.groupingOption, .domain)
+        XCTAssertEqual(state.sortOption, .size)
+    }
 }
 

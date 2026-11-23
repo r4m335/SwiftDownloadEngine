@@ -112,6 +112,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
     @Published public var isShowingResourceInspector: Bool = false
     @Published public var isScanningResources: Bool = false
     @Published public var resourceSortOption: ResourceSortOption = .newest
+    @Published public var resourceGroupingOption: ResourceGroupingOption = .none
     @Published public var discoveredResources: [WebpageResource] = []
     @Published public var variantStreamItems: [String: HLSVariantStreamItem] = [:]
     @Published public var selectedResourceIDs: Set<String> = []
@@ -154,7 +155,73 @@ public final class BrowserViewModel: NSObject, ObservableObject {
             showsAllResources: showsAllResources,
             searchText: searchText
         )
-        return sorted.map { $0.toMediaCandidate() }
+        if !sorted.isEmpty {
+            return sorted.map { $0.toMediaCandidate() }
+        }
+        let option = sortOption ?? resourceSortOption
+        return BrowserMediaCandidate.sorted(mediaCandidates, by: option)
+    }
+
+    /// Groups discovered resources by domain according to the specified or active sort/grouping criteria.
+    public func groupedDiscoveredResourcesByDomain(
+        by sortOption: ResourceSortOption? = nil,
+        selectedCategory: WebpageResourceType? = nil,
+        showsAllResources: Bool = false,
+        searchText: String = ""
+    ) -> [(domain: String, resources: [WebpageResource])] {
+        let sorted = sortedDiscoveredResources(
+            by: sortOption,
+            selectedCategory: selectedCategory,
+            showsAllResources: showsAllResources,
+            searchText: searchText
+        )
+        return WebpageResource.groupedByDomain(sorted)
+    }
+
+    /// Groups discovered resources by category (WebpageResourceType).
+    public func groupedDiscoveredResourcesByCategory(
+        by sortOption: ResourceSortOption? = nil,
+        showsAllResources: Bool = false,
+        searchText: String = ""
+    ) -> [(category: WebpageResourceType, resources: [WebpageResource])] {
+        let sorted = sortedDiscoveredResources(
+            by: sortOption,
+            selectedCategory: nil,
+            showsAllResources: showsAllResources,
+            searchText: searchText
+        )
+        return WebpageResource.groupedByCategory(sorted)
+    }
+
+    /// Groups media candidates by domain according to the specified or active sort/grouping criteria.
+    public func groupedMediaCandidatesByDomain(
+        by sortOption: ResourceSortOption? = nil,
+        selectedCategory: WebpageResourceType? = nil,
+        showsAllResources: Bool = false,
+        searchText: String = ""
+    ) -> [(domain: String, candidates: [BrowserMediaCandidate])] {
+        let sorted = sortedMediaCandidates(
+            by: sortOption,
+            selectedCategory: selectedCategory,
+            showsAllResources: showsAllResources,
+            searchText: searchText
+        )
+        return BrowserMediaCandidate.groupedByDomain(sorted)
+    }
+
+    /// Groups media candidates by category (WebpageResourceType).
+    public func groupedMediaCandidatesByCategory(
+        by sortOption: ResourceSortOption? = nil,
+        showsAllResources: Bool = false,
+        searchText: String = ""
+    ) -> [(category: WebpageResourceType, candidates: [BrowserMediaCandidate])] {
+        let sorted = sortedMediaCandidates(
+            by: sortOption,
+            selectedCategory: nil,
+            showsAllResources: showsAllResources,
+            searchText: searchText
+        )
+        return BrowserMediaCandidate.groupedByCategory(sorted)
     }
 
     // Tab-scoped media grabber candidate & variant caches
@@ -173,7 +240,9 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         tabResourceStates[current] = BrowserTabResourceState(
             discoveredResources: discoveredResources,
             variantStreamItems: variantStreamItems,
-            selectedResourceIDs: selectedResourceIDs
+            selectedResourceIDs: selectedResourceIDs,
+            sortOption: resourceSortOption,
+            groupingOption: resourceGroupingOption
         )
     }
 
@@ -193,13 +262,20 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         variantStreamItems = restoredVariants
         selectedResourceIDs = restoredSelections
 
+        if let state = tabResourceStates[targetID] {
+            resourceSortOption = state.sortOption
+            resourceGroupingOption = state.groupingOption
+        }
+
         tabDiscoveredResources[targetID] = restoredResources
         tabVariantStreamItems[targetID] = restoredVariants
         tabSelectedResourceIDs[targetID] = restoredSelections
         tabResourceStates[targetID] = BrowserTabResourceState(
             discoveredResources: restoredResources,
             variantStreamItems: restoredVariants,
-            selectedResourceIDs: restoredSelections
+            selectedResourceIDs: restoredSelections,
+            sortOption: resourceSortOption,
+            groupingOption: resourceGroupingOption
         )
     }
 
@@ -210,19 +286,25 @@ public final class BrowserViewModel: NSObject, ObservableObject {
             return BrowserTabResourceState(
                 discoveredResources: discoveredResources,
                 variantStreamItems: variantStreamItems,
-                selectedResourceIDs: selectedResourceIDs
+                selectedResourceIDs: selectedResourceIDs,
+                sortOption: resourceSortOption,
+                groupingOption: resourceGroupingOption
             )
         } else if let targetID {
             return tabResourceStates[targetID] ?? BrowserTabResourceState(
                 discoveredResources: tabDiscoveredResources[targetID] ?? [],
                 variantStreamItems: tabVariantStreamItems[targetID] ?? [:],
-                selectedResourceIDs: tabSelectedResourceIDs[targetID] ?? []
+                selectedResourceIDs: tabSelectedResourceIDs[targetID] ?? [],
+                sortOption: resourceSortOption,
+                groupingOption: resourceGroupingOption
             )
         }
         return BrowserTabResourceState(
             discoveredResources: discoveredResources,
             variantStreamItems: variantStreamItems,
-            selectedResourceIDs: selectedResourceIDs
+            selectedResourceIDs: selectedResourceIDs,
+            sortOption: resourceSortOption,
+            groupingOption: resourceGroupingOption
         )
     }
 

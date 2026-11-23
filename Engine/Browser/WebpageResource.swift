@@ -44,6 +44,33 @@ public enum ResourceSortOption: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
+/// Explicit grouping options for discovered media and downloadable resources.
+public enum ResourceGroupingOption: String, CaseIterable, Identifiable, Sendable {
+    case none = "None"
+    case domain = "Domain"
+    case category = "Category"
+
+    public static let type: ResourceGroupingOption = .category
+
+    public var id: String { rawValue }
+
+    public var displayName: String {
+        switch self {
+        case .none: return "None (Flat List)"
+        case .domain: return "By Domain"
+        case .category: return "By Category"
+        }
+    }
+
+    public var iconName: String {
+        switch self {
+        case .none: return "list.bullet"
+        case .domain: return "globe"
+        case .category: return "square.grid.2x2"
+        }
+    }
+}
+
 /// Represents an identifiable resource discovered within a webpage's HTML or DOM tree.
 public struct WebpageResource: Identifiable, Hashable, Sendable {
     public let id: String
@@ -827,6 +854,28 @@ extension WebpageResource {
     /// Associated `BrowserMediaCandidate` representation.
     public var mediaCandidate: BrowserMediaCandidate {
         toMediaCandidate()
+    }
+}
+
+// MARK: - Explicit Resource Grouping
+
+extension WebpageResource {
+    /// Groups resources by their URL host domain, sorted alphabetically by domain.
+    public static func groupedByDomain(_ resources: [WebpageResource]) -> [(domain: String, resources: [WebpageResource])] {
+        let dict = Dictionary(grouping: resources) { res in
+            res.url.host?.lowercased() ?? "Other Domains"
+        }
+        return dict.map { (domain: $0.key, resources: $0.value) }
+            .sorted { $0.domain < $1.domain }
+    }
+
+    /// Groups resources by category (WebpageResourceType), ordered by category cases.
+    public static func groupedByCategory(_ resources: [WebpageResource]) -> [(category: WebpageResourceType, resources: [WebpageResource])] {
+        let dict = Dictionary(grouping: resources) { $0.resourceType }
+        return WebpageResourceType.allCases.compactMap { cat in
+            guard let list = dict[cat], !list.isEmpty else { return nil }
+            return (category: cat, resources: list)
+        }
     }
 }
 

@@ -64,15 +64,21 @@ public struct BrowserTabResourceState: Sendable, Equatable {
     public var discoveredResources: [WebpageResource]
     public var variantStreamItems: [String: HLSVariantStreamItem]
     public var selectedResourceIDs: Set<String>
+    public var sortOption: ResourceSortOption
+    public var groupingOption: ResourceGroupingOption
 
     public init(
         discoveredResources: [WebpageResource] = [],
         variantStreamItems: [String: HLSVariantStreamItem] = [:],
-        selectedResourceIDs: Set<String> = []
+        selectedResourceIDs: Set<String> = [],
+        sortOption: ResourceSortOption = .newest,
+        groupingOption: ResourceGroupingOption = .none
     ) {
         self.discoveredResources = discoveredResources
         self.variantStreamItems = variantStreamItems
         self.selectedResourceIDs = selectedResourceIDs
+        self.sortOption = sortOption
+        self.groupingOption = groupingOption
     }
 }
 

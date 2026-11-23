@@ -1022,3 +1022,48 @@ extension BrowserMediaCandidate {
         }
     }
 }
+
+// MARK: - Explicit Candidate Grouping
+
+extension BrowserMediaCandidate {
+    /// The mapped category of this candidate.
+    public var resourceType: WebpageResourceType {
+        switch kind {
+        case .directMedia, .hlsManifest, .dashManifest, .mediaSource, .protectedMedia:
+            return .video
+        case .completeBlob:
+            if let mime = mimeType?.lowercased(), mime.contains("audio") {
+                return .audio
+            } else {
+                return .video
+            }
+        case .directFile:
+            let ext = url.pathExtension.lowercased()
+            let isAudio = (mimeType?.lowercased().contains("audio") == true) ||
+                ["mp3", "m4a", "aac", "wav", "flac", "ogg"].contains(ext)
+            return isAudio ? .audio : .other
+        case .unknown:
+            return .other
+        }
+    }
+
+    /// Groups candidates by their URL host domain, sorted alphabetically by domain.
+    public static func groupedByDomain(_ candidates: [BrowserMediaCandidate]) -> [(domain: String, candidates: [BrowserMediaCandidate])] {
+        let dict = Dictionary(grouping: candidates) { cand in
+            cand.url.host?.lowercased() ?? "Other Domains"
+        }
+        return dict.map { (domain: $0.key, candidates: $0.value) }
+            .sorted { $0.domain < $1.domain }
+    }
+
+    /// Groups candidates by category (WebpageResourceType), ordered by category cases.
+    public static func groupedByCategory(_ candidates: [BrowserMediaCandidate]) -> [(category: WebpageResourceType, candidates: [BrowserMediaCandidate])] {
+        let dict = Dictionary(grouping: candidates) { cand in
+            cand.resourceType
+        }
+        return WebpageResourceType.allCases.compactMap { cat in
+            guard let list = dict[cat], !list.isEmpty else { return nil }
+            return (category: cat, candidates: list)
+        }
+    }
+}
