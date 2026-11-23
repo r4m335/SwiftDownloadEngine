@@ -6403,8 +6403,6 @@ final class BrowserWebViewSession {
         webView.uiDelegate = nil
         webView.configuration.userContentController.removeAllUserScripts()
         mediaDiscoveryBridge.reset()
-        blobCaptureService.receiver.reset()
-        mseCaptureService.receiver.reset()
     }
 }
 
