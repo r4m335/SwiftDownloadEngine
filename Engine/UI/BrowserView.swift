@@ -3439,8 +3439,42 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         _ observation: BrowserMediaDiscoveryObservation,
         tabID: UUID? = nil
     ) {
+        let enrichedObservation: BrowserMediaDiscoveryObservation
+        if let targetTabID = tabID ?? activeTabID {
+            let docGen = observation.documentGeneration ?? discoveryCoordinator.currentDocumentGeneration(for: targetTabID)
+            let navGen = observation.navigationGeneration ?? currentNavigationGeneration(for: targetTabID)
+            enrichedObservation = BrowserMediaDiscoveryObservation(
+                url: observation.url,
+                rawURL: observation.rawURL,
+                source: observation.source,
+                tag: observation.tag,
+                declaredType: observation.declaredType,
+                eventID: observation.eventID,
+                responseURL: observation.responseURL,
+                method: observation.method,
+                statusCode: observation.statusCode,
+                contentLength: observation.contentLength,
+                manifestKind: observation.manifestKind,
+                manifestPrefix: observation.manifestPrefix,
+                documentID: observation.documentID,
+                appendedByteCount: observation.appendedByteCount,
+                isPotentiallyProtected: observation.isPotentiallyProtected,
+                pageOrigin: observation.pageOrigin,
+                frameOrigin: observation.frameOrigin,
+                mayUseBrowserCredentials: observation.mayUseBrowserCredentials,
+                blobKind: observation.blobKind,
+                width: observation.width,
+                height: observation.height,
+                duration: observation.duration,
+                codecs: observation.codecs,
+                documentGeneration: docGen,
+                navigationGeneration: navGen
+            )
+        } else {
+            enrichedObservation = observation
+        }
         discoveryCoordinator.handleMediaDiscoveryObservation(
-            observation,
+            enrichedObservation,
             tabID: tabID,
             activeTabID: activeTabID,
             currentURL: currentURL,
@@ -6522,6 +6556,8 @@ public final class BrowserWebViewCoordinator: NSObject, WKNavigationDelegate, WK
         if let host = webView.url?.host, let vm = viewModel {
             if let tabID = self.tabID {
                 guard vm.isNavigationCurrent(tabID: tabID, generation: capturedGen, url: webView.url) else { return }
+                vm.discoveryCoordinator.setNavigationGeneration(capturedGen, for: tabID)
+                vm.discoveryCoordinator.nextDocumentGeneration(for: tabID)
             }
             vm.recordTabOrigin(host, for: tabID)
             let isWhitelisted = BrowserDomainMatcher.isDomainWhitelisted(

@@ -58,6 +58,8 @@ public struct BrowserMediaCandidate: Identifiable, Codable, Sendable, Equatable,
     public let duration: Double?
     public let codecs: String?
     public let audioLanguage: String?
+    public let documentGeneration: UInt64?
+    public let navigationGeneration: UInt64?
 
     public init(
         id: String,
@@ -82,7 +84,9 @@ public struct BrowserMediaCandidate: Identifiable, Codable, Sendable, Equatable,
         height: Int? = nil,
         duration: Double? = nil,
         codecs: String? = nil,
-        audioLanguage: String? = nil
+        audioLanguage: String? = nil,
+        documentGeneration: UInt64? = nil,
+        navigationGeneration: UInt64? = nil
     ) {
         self.id = id
         self.url = url
@@ -111,6 +115,8 @@ public struct BrowserMediaCandidate: Identifiable, Codable, Sendable, Equatable,
         self.duration = duration
         self.codecs = codecs
         self.audioLanguage = audioLanguage
+        self.documentGeneration = documentGeneration
+        self.navigationGeneration = navigationGeneration
     }
 
     /// Whether this media candidate represents a streaming master playlist or manifest (HLS or DASH).
@@ -184,7 +190,9 @@ public struct BrowserMediaCandidate: Identifiable, Codable, Sendable, Equatable,
             resolutionText: resText,
             duration: duration,
             codecs: codecs,
-            audioLanguage: audioLanguage
+            audioLanguage: audioLanguage,
+            documentGeneration: documentGeneration,
+            navigationGeneration: navigationGeneration
         )
     }
 
@@ -267,7 +275,9 @@ public enum BrowserMediaCandidateClassifier {
                 availability: .unsupported,
                 evidence: ["possible encrypted-media activity was observed"],
                 documentID: observation.documentID,
-                lastObserved: now
+                lastObserved: now,
+                documentGeneration: observation.documentGeneration,
+                navigationGeneration: observation.navigationGeneration
             )
         }
 
@@ -319,7 +329,9 @@ public enum BrowserMediaCandidateClassifier {
                 availability: availability,
                 evidence: evidence,
                 documentID: observation.documentID,
-                lastObserved: now
+                lastObserved: now,
+                documentGeneration: observation.documentGeneration,
+                navigationGeneration: observation.navigationGeneration
             )
         }
 
@@ -339,7 +351,9 @@ public enum BrowserMediaCandidateClassifier {
                     evidence: ["MediaSource streaming buffer observed (not a downloadable standalone Blob)"],
                     documentID: observation.documentID,
                     associatedManifestURL: nil,
-                    lastObserved: now
+                    lastObserved: now,
+                    documentGeneration: observation.documentGeneration,
+                    navigationGeneration: observation.navigationGeneration
                 )
             }
 
@@ -382,7 +396,9 @@ public enum BrowserMediaCandidateClassifier {
                     ? ["Blob metadata reports a supported type and size"]
                     : ["Blob URL was observed; size will be determined at in-browser export"],
                 documentID: observation.documentID,
-                lastObserved: now
+                lastObserved: now,
+                documentGeneration: observation.documentGeneration,
+                navigationGeneration: observation.navigationGeneration
             )
         }
 
@@ -407,7 +423,9 @@ public enum BrowserMediaCandidateClassifier {
                 reason: classification.reason,
                 documentID: observation.documentID,
                 cachedManifestText: observation.manifestPrefix,
-                lastObserved: now
+                lastObserved: now,
+                documentGeneration: observation.documentGeneration,
+                navigationGeneration: observation.navigationGeneration
             )
         }
         if classification.kind == .dash || observation.manifestKind == .dash {
@@ -421,7 +439,9 @@ public enum BrowserMediaCandidateClassifier {
                 reason: classification.reason,
                 documentID: observation.documentID,
                 cachedManifestText: observation.manifestPrefix,
-                lastObserved: now
+                lastObserved: now,
+                documentGeneration: observation.documentGeneration,
+                navigationGeneration: observation.navigationGeneration
             )
         }
 
@@ -471,7 +491,9 @@ public enum BrowserMediaCandidateClassifier {
             width: observation.width,
             height: observation.height,
             duration: observation.duration,
-            codecs: observation.codecs
+            codecs: observation.codecs,
+            documentGeneration: observation.documentGeneration,
+            navigationGeneration: observation.navigationGeneration
         )
     }
 
@@ -581,7 +603,9 @@ public enum BrowserMediaCandidateClassifier {
             height: h,
             duration: resource.duration,
             codecs: resource.codecs,
-            audioLanguage: resource.audioLanguage
+            audioLanguage: resource.audioLanguage,
+            documentGeneration: resource.documentGeneration,
+            navigationGeneration: resource.navigationGeneration
         )
     }
 
@@ -595,6 +619,39 @@ public enum BrowserMediaCandidateClassifier {
         return "url:\(components?.url?.absoluteString ?? url.absoluteString)"
     }
 
+    /// Computes a canonical media identity that normalizes away ephemeral, session-specific,
+    /// or cache-busting query parameters while preserving structural media identity.
+    public static func canonicalMediaIdentity(rawURL: String, url: URL?) -> String {
+        if rawURL.lowercased().hasPrefix("blob:") {
+            return "blob:\(rawURL)"
+        }
+        guard let url = url ?? URL(string: rawURL) else { return "raw:\(rawURL)" }
+        guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+            return "url:\(url.absoluteString)"
+        }
+        components.fragment = nil
+        let volatileParams: Set<String> = [
+            "_nocache", "nocache", "cb", "rnd", "ts", "timestamp", "t", "_",
+            "sig", "signature", "token", "auth_token", "jwt", "session_id", "sessionid",
+            "expires", "expire", "expiry", "nonce", "random", "cachebuster", "v"
+        ]
+        if let queryItems = components.queryItems, !queryItems.isEmpty {
+            let filteredItems = queryItems.filter { item in
+                let lower = item.name.lowercased()
+                return !volatileParams.contains(lower) && !lower.hasPrefix("utm_")
+            }
+            components.queryItems = filteredItems.isEmpty ? nil : filteredItems.sorted(by: { $0.name < $1.name })
+        }
+        if components.path.count > 1 && components.path.hasSuffix("/") {
+            components.path = String(components.path.dropLast())
+        }
+        let scheme = components.scheme?.lowercased() ?? "http"
+        let host = components.host?.lowercased() ?? ""
+        let path = components.path
+        let query = components.query.map { "?\($0)" } ?? ""
+        return "canonical:\(scheme)://\(host)\(path)\(query)"
+    }
+
     private static func manifestCandidate(
         identity: String,
         url: URL,
@@ -605,7 +662,9 @@ public enum BrowserMediaCandidateClassifier {
         reason: String,
         documentID: String?,
         cachedManifestText: String? = nil,
-        lastObserved: Date
+        lastObserved: Date,
+        documentGeneration: UInt64? = nil,
+        navigationGeneration: UInt64? = nil
     ) -> BrowserMediaCandidate {
         let isLive = (cachedManifestText?.contains("#EXT-X-TARGETDURATION") == true && cachedManifestText?.contains("#EXT-X-ENDLIST") == false) ||
             url.absoluteString.localizedCaseInsensitiveContains("/live/") ||
@@ -624,7 +683,9 @@ public enum BrowserMediaCandidateClassifier {
             documentID: documentID,
             cachedManifestText: cachedManifestText,
             lastObserved: lastObserved,
-            isLive: isLive
+            isLive: isLive,
+            documentGeneration: documentGeneration,
+            navigationGeneration: navigationGeneration
         )
     }
 
@@ -685,11 +746,126 @@ public enum BrowserMediaCandidateClassifier {
 public struct BrowserMediaCandidateCatalog: Sendable, Equatable {
     private var orderedIDs: [String] = []
     private var values: [String: BrowserMediaCandidate] = [:]
+    private var canonicalAliases: [String: String] = [:]
 
-    public init() {}
+    public var maxTotalCandidates: Int = 150
+    public var maxCandidatesPerDomain: Int = 25
+    public var evictedCandidatesCount: Int = 0
+    public var deduplicatedCandidatesCount: Int = 0
+
+    public init(maxTotalCandidates: Int = 150, maxCandidatesPerDomain: Int = 25) {
+        self.maxTotalCandidates = maxTotalCandidates
+        self.maxCandidatesPerDomain = maxCandidatesPerDomain
+    }
 
     public var candidates: [BrowserMediaCandidate] {
         orderedIDs.compactMap { values[$0] }
+    }
+
+    public func candidate(forID id: String) -> BrowserMediaCandidate? {
+        values[id] ?? canonicalAliases[id].flatMap { values[$0] }
+    }
+
+    public func candidateCanonicalKey(_ candidate: BrowserMediaCandidate) -> String {
+        BrowserMediaCandidateClassifier.canonicalMediaIdentity(
+            rawURL: candidate.rawURL,
+            url: candidate.url ?? candidate.finalURL
+        )
+    }
+
+    private func findExistingCandidateID(for candidate: BrowserMediaCandidate) -> String? {
+        if values[candidate.id] != nil {
+            return candidate.id
+        }
+        if let canonicalID = canonicalAliases[candidate.id], values[canonicalID] != nil {
+            return canonicalID
+        }
+        let canonicalKey = candidateCanonicalKey(candidate)
+        if let canonicalID = canonicalAliases[canonicalKey], values[canonicalID] != nil {
+            return canonicalID
+        }
+        if let match = values.values.first(where: { candidateCanonicalKey($0) == canonicalKey }) {
+            return match.id
+        }
+        return nil
+    }
+
+    private func candidateRetentionScore(_ candidate: BrowserMediaCandidate) -> Int {
+        if candidate.isExpired { return -10000 }
+        var score = 0
+        if candidate.isStreamingManifest { score += 10000 }
+        if candidate.isLive || candidate.isLiveStream { score += 5000 }
+        if candidate.blobKind == .mediaSource || candidate.kind == .mediaSource { score += 3000 }
+        if candidate.blobKind == .blob || candidate.kind == .completeBlob { score += 2000 }
+        if candidate.isActionable { score += 1000 }
+        if let w = candidate.width, let h = candidate.height, w > 0, h > 0 { score += 500 }
+        if (candidate.duration ?? 0) > 0 { score += 300 }
+        if candidate.cachedManifestText != nil { score += 200 }
+        let ageMinutes = max(0, -candidate.lastObserved.timeIntervalSinceNow / 60.0)
+        score -= Int(min(500, ageMinutes))
+        return score
+    }
+
+    public mutating func enforceRetentionCaps() {
+        guard values.count > maxTotalCandidates || hasDomainExceedingCap() else { return }
+
+        let candidatesList = candidates
+        var domainCounts: [String: Int] = [:]
+        for candidate in candidatesList {
+            let domain = candidate.url?.host?.lowercased() ?? "unknown"
+            domainCounts[domain, default: 0] += 1
+        }
+
+        var toEvictIDs = Set<String>()
+
+        // 1. Evict expired first if over total or domain cap
+        for candidate in candidatesList where candidate.isExpired && !candidate.isStreamingManifest && !candidate.isLiveStream {
+            toEvictIDs.insert(candidate.id)
+        }
+
+        // 2. Enforce per-domain cap
+        for (domain, count) in domainCounts where count > maxCandidatesPerDomain && domain != "unknown" {
+            let domainCandidates = candidatesList
+                .filter { ($0.url?.host?.lowercased() ?? "unknown") == domain && !toEvictIDs.contains($0.id) }
+                .sorted { candidateRetentionScore($0) < candidateRetentionScore($1) }
+
+            let excess = count - maxCandidatesPerDomain
+            for c in domainCandidates.prefix(excess) {
+                if !BrowserResourceDiscoveryCoordinator.isPreservedCandidateOnRescan(c) {
+                    toEvictIDs.insert(c.id)
+                }
+            }
+        }
+
+        // 3. Enforce global total cap
+        let remainingCandidates = candidatesList.filter { !toEvictIDs.contains($0.id) }
+        if remainingCandidates.count > maxTotalCandidates {
+            let excess = remainingCandidates.count - maxTotalCandidates
+            let sortedRemaining = remainingCandidates.sorted { candidateRetentionScore($0) < candidateRetentionScore($1) }
+            for c in sortedRemaining.prefix(excess) {
+                if !BrowserResourceDiscoveryCoordinator.isPreservedCandidateOnRescan(c) {
+                    toEvictIDs.insert(c.id)
+                }
+            }
+        }
+
+        for id in toEvictIDs {
+            values.removeValue(forKey: id)
+            orderedIDs.removeAll(where: { $0 == id })
+            evictedCandidatesCount += 1
+        }
+    }
+
+    private func hasDomainExceedingCap() -> Bool {
+        var domainCounts: [String: Int] = [:]
+        for candidate in candidates {
+            guard let host = candidate.url?.host?.lowercased() else { continue }
+            domainCounts[host, default: 0] += 1
+            if domainCounts[host]! > maxCandidatesPerDomain {
+                return true
+            }
+        }
+        return false
     }
 
     @discardableResult
@@ -750,7 +926,9 @@ public struct BrowserMediaCandidateCatalog: Sendable, Equatable {
                 height: candidate.height,
                 duration: candidate.duration,
                 codecs: candidate.codecs,
-                audioLanguage: candidate.audioLanguage
+                audioLanguage: candidate.audioLanguage,
+                documentGeneration: candidate.documentGeneration,
+                navigationGeneration: candidate.navigationGeneration
             )
             values[id] = candidate
         }
@@ -759,11 +937,15 @@ public struct BrowserMediaCandidateCatalog: Sendable, Equatable {
     public mutating func reset() {
         orderedIDs.removeAll(keepingCapacity: true)
         values.removeAll(keepingCapacity: true)
+        canonicalAliases.removeAll(keepingCapacity: true)
     }
 
     @discardableResult
     public mutating func merge(_ candidate: BrowserMediaCandidate) -> BrowserMediaCandidate {
-        guard let existing = values[candidate.id] else {
+        let canonicalKey = candidateCanonicalKey(candidate)
+        let matchedID = findExistingCandidateID(for: candidate)
+
+        guard let matchedID, let existing = values[matchedID] else {
             var newCandidate = candidate
             if (newCandidate.kind == .mediaSource || newCandidate.blobKind == .mediaSource), newCandidate.associatedManifestURL == nil {
                 if let manifestURL = values.values.first(where: { $0.kind == .hlsManifest || $0.kind == .dashManifest })?.url {
@@ -791,13 +973,21 @@ public struct BrowserMediaCandidateCatalog: Sendable, Equatable {
                         height: newCandidate.height,
                         duration: newCandidate.duration,
                         codecs: newCandidate.codecs,
-                        audioLanguage: newCandidate.audioLanguage
+                        audioLanguage: newCandidate.audioLanguage,
+                        documentGeneration: newCandidate.documentGeneration,
+                        navigationGeneration: newCandidate.navigationGeneration
                     )
                 }
             }
 
             orderedIDs.append(newCandidate.id)
             values[newCandidate.id] = newCandidate
+            canonicalAliases[newCandidate.id] = newCandidate.id
+            canonicalAliases[canonicalKey] = newCandidate.id
+            if let finalURL = newCandidate.finalURL {
+                let finalCanonical = BrowserMediaCandidateClassifier.canonicalMediaIdentity(rawURL: finalURL.absoluteString, url: finalURL)
+                canonicalAliases[finalCanonical] = newCandidate.id
+            }
 
             if (newCandidate.kind == .hlsManifest || newCandidate.kind == .dashManifest), let manifestURL = newCandidate.url {
                 for (id, val) in values where (val.kind == .mediaSource || val.blobKind == .mediaSource) && val.associatedManifestURL == nil {
@@ -824,17 +1014,78 @@ public struct BrowserMediaCandidateCatalog: Sendable, Equatable {
                         height: val.height,
                         duration: val.duration,
                         codecs: val.codecs,
-                        audioLanguage: val.audioLanguage
+                        audioLanguage: val.audioLanguage,
+                        documentGeneration: val.documentGeneration,
+                        navigationGeneration: val.navigationGeneration
                     )
                 }
             }
+            enforceRetentionCaps()
             return newCandidate
         }
 
+        if candidate.id != existing.id || canonicalKey != candidateCanonicalKey(existing) {
+            deduplicatedCandidatesCount += 1
+            canonicalAliases[candidate.id] = existing.id
+            canonicalAliases[canonicalKey] = existing.id
+        }
+
+        // Deterministic evidence merge: unique and sorted
         var uniqueEvidence: [String] = []
-        for item in existing.evidence + candidate.evidence where !uniqueEvidence.contains(item) {
+        for item in (existing.evidence + candidate.evidence) where !uniqueEvidence.contains(item) {
             uniqueEvidence.append(item)
         }
+        uniqueEvidence.sort()
+
+        let isCandidateNetwork = candidate.evidence.contains(where: {
+            $0.contains("network") || $0.contains("fetch") || $0.contains("xhr") || $0.contains("manifest")
+        })
+
+        // Precedence: Network authority for URL, MIME type, and Content-Length
+        let mergedURL: URL? = {
+            if isCandidateNetwork && candidate.url != nil { return candidate.url }
+            return existing.url ?? candidate.url
+        }()
+
+        let mergedMIME: String? = {
+            if isCandidateNetwork && candidate.mimeType != nil { return candidate.mimeType }
+            return existing.mimeType ?? candidate.mimeType
+        }()
+
+        let mergedSize: Int64? = {
+            if isCandidateNetwork && candidate.estimatedSize != nil { return candidate.estimatedSize }
+            return existing.estimatedSize ?? candidate.estimatedSize
+        }()
+
+        // Upgrade dimensions: prefer larger/known values
+        let mergedWidth: Int? = {
+            let ew = existing.width ?? 0
+            let cw = candidate.width ?? 0
+            if cw > ew { return candidate.width }
+            return ew > 0 ? existing.width : candidate.width
+        }()
+
+        let mergedHeight: Int? = {
+            let eh = existing.height ?? 0
+            let ch = candidate.height ?? 0
+            if ch > eh { return candidate.height }
+            return eh > 0 ? existing.height : candidate.height
+        }()
+
+        // Upgrade duration: prefer known non-zero
+        let mergedDuration: Double? = {
+            if let cd = candidate.duration, cd > 0 { return cd }
+            return existing.duration
+        }()
+
+        // Upgrade filename: if existing filename is generic and candidate offers a descriptive name
+        let mergedFilename: String = {
+            let genericNames = ["browser_blob.bin", "videoplayback", "video.mp4", "stream.m3u8", "media_source_capture"]
+            if genericNames.contains(existing.suggestedFilename) && !candidate.suggestedFilename.isEmpty && !genericNames.contains(candidate.suggestedFilename) {
+                return candidate.suggestedFilename
+            }
+            return existing.suggestedFilename
+        }()
 
         let isMediaSource = candidate.blobKind == .mediaSource || existing.blobKind == .mediaSource ||
             candidate.kind == .mediaSource || existing.kind == .mediaSource
@@ -872,17 +1123,19 @@ public struct BrowserMediaCandidateCatalog: Sendable, Equatable {
         }()
 
         let mergedIsLive = candidate.isLive || existing.isLive || candidate.isLiveStream || existing.isLiveStream
+        let mergedDocGen = max(existing.documentGeneration ?? 0, candidate.documentGeneration ?? 0)
+        let mergedNavGen = max(existing.navigationGeneration ?? 0, candidate.navigationGeneration ?? 0)
 
         let merged = BrowserMediaCandidate(
             id: existing.id,
-            url: existing.url ?? candidate.url,
+            url: mergedURL,
             rawURL: existing.rawURL,
             finalURL: candidate.finalURL ?? existing.finalURL,
             kind: mergedKind,
             blobKind: candidate.blobKind ?? existing.blobKind,
-            mimeType: existing.mimeType ?? candidate.mimeType,
-            suggestedFilename: existing.suggestedFilename == "browser_blob.bin" ? candidate.suggestedFilename : existing.suggestedFilename,
-            estimatedSize: candidate.estimatedSize ?? existing.estimatedSize,
+            mimeType: mergedMIME,
+            suggestedFilename: mergedFilename,
+            estimatedSize: mergedSize,
             availability: mergedAvailability,
             evidence: uniqueEvidence,
             documentID: candidate.documentID ?? existing.documentID,
@@ -892,13 +1145,17 @@ public struct BrowserMediaCandidateCatalog: Sendable, Equatable {
             cachedManifestText: candidate.cachedManifestText ?? existing.cachedManifestText,
             lastObserved: max(existing.lastObserved, candidate.lastObserved),
             isLive: mergedIsLive,
-            width: candidate.width ?? existing.width,
-            height: candidate.height ?? existing.height,
-            duration: candidate.duration ?? existing.duration,
+            width: mergedWidth,
+            height: mergedHeight,
+            duration: mergedDuration,
             codecs: candidate.codecs ?? existing.codecs,
-            audioLanguage: candidate.audioLanguage ?? existing.audioLanguage
+            audioLanguage: candidate.audioLanguage ?? existing.audioLanguage,
+            documentGeneration: mergedDocGen > 0 ? mergedDocGen : nil,
+            navigationGeneration: mergedNavGen > 0 ? mergedNavGen : nil
         )
-        values[candidate.id] = merged
+        values[existing.id] = merged
+        canonicalAliases[candidate.id] = existing.id
+        canonicalAliases[canonicalKey] = existing.id
 
         if (merged.kind == .hlsManifest || merged.kind == .dashManifest), let manifestURL = merged.url {
             for (id, val) in values where (val.kind == .mediaSource || val.blobKind == .mediaSource) && val.associatedManifestURL == nil {
@@ -925,7 +1182,9 @@ public struct BrowserMediaCandidateCatalog: Sendable, Equatable {
                     height: val.height,
                     duration: val.duration,
                     codecs: val.codecs,
-                    audioLanguage: val.audioLanguage
+                    audioLanguage: val.audioLanguage,
+                    documentGeneration: val.documentGeneration,
+                    navigationGeneration: val.navigationGeneration
                 )
             }
         }

@@ -113,6 +113,10 @@ public struct WebpageResource: Identifiable, Hashable, Sendable {
     public let audioLanguage: String?
     /// Whether this media stream represents an audio-video split representation requiring muxing.
     public let isAudioVideoSplit: Bool
+    /// Document generation index when this resource was discovered or inspected.
+    public let documentGeneration: UInt64?
+    /// Navigation generation index associated with the WebKit tab lifecycle.
+    public let navigationGeneration: UInt64?
 
     /// Formatted duration string for display (e.g. "03:45", "1:15:20").
     public var formattedDuration: String? {
@@ -239,7 +243,9 @@ public struct WebpageResource: Identifiable, Hashable, Sendable {
         duration: TimeInterval? = nil,
         codecs: String? = nil,
         audioLanguage: String? = nil,
-        isAudioVideoSplit: Bool = false
+        isAudioVideoSplit: Bool = false,
+        documentGeneration: UInt64? = nil,
+        navigationGeneration: UInt64? = nil
     ) {
         self.id = id
         self.url = url
@@ -265,6 +271,8 @@ public struct WebpageResource: Identifiable, Hashable, Sendable {
         self.codecs = codecs
         self.audioLanguage = audioLanguage
         self.isAudioVideoSplit = isAudioVideoSplit
+        self.documentGeneration = documentGeneration
+        self.navigationGeneration = navigationGeneration
     }
 
     /// Evaluates whether this resource URL or its signed variant URL has already passed its signed expiration timestamp.

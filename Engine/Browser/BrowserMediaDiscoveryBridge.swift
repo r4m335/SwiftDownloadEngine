@@ -47,6 +47,8 @@ public struct BrowserMediaDiscoveryObservation: Codable, Sendable, Equatable {
     public let height: Int?
     public let duration: Double?
     public let codecs: String?
+    public let documentGeneration: UInt64?
+    public let navigationGeneration: UInt64?
 
     public var isBlobSignal: Bool {
         url == nil && rawURL.lowercased().hasPrefix("blob:")
@@ -83,7 +85,9 @@ public struct BrowserMediaDiscoveryObservation: Codable, Sendable, Equatable {
         width: Int? = nil,
         height: Int? = nil,
         duration: Double? = nil,
-        codecs: String? = nil
+        codecs: String? = nil,
+        documentGeneration: UInt64? = nil,
+        navigationGeneration: UInt64? = nil
     ) {
         self.eventID = eventID
         self.url = url
@@ -108,6 +112,8 @@ public struct BrowserMediaDiscoveryObservation: Codable, Sendable, Equatable {
         self.height = height
         self.duration = duration
         self.codecs = codecs
+        self.documentGeneration = documentGeneration
+        self.navigationGeneration = navigationGeneration
     }
 }
 

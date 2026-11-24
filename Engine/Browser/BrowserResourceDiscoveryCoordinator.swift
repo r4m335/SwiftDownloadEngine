@@ -4,6 +4,23 @@ import Foundation
 import WebKit
 #endif
 
+/// Telemetry and diagnostic counters for media and resource discovery.
+public struct DiscoveryTelemetry: Sendable, Equatable {
+    public var droppedStaleDocumentObservationsCount: Int = 0
+    public var deduplicatedCandidatesCount: Int = 0
+    public var evictedCandidatesCount: Int = 0
+    public var probeTimeoutsCount: Int = 0
+    public var prunedCorruptedOrExpiredManifestsCount: Int = 0
+    public var totalObservationsReceived: Int = 0
+    public var totalCandidatesCataloged: Int = 0
+
+    public init() {}
+
+    public mutating func reset() {
+        self = DiscoveryTelemetry()
+    }
+}
+
 /// Coordinates media discovery across live DOM extraction, script bridge message observations,
 /// media candidate cataloging, tab-scoped caches, and adaptive streaming manifest expansion.
 ///
@@ -32,6 +49,7 @@ public final class BrowserResourceDiscoveryCoordinator: ObservableObject {
     @Published public var resourceScanError: String? = nil {
         didSet { onStateChanged?() }
     }
+    @Published public var telemetry = DiscoveryTelemetry()
 
     public var onStateChanged: (() -> Void)?
 
@@ -42,6 +60,11 @@ public final class BrowserResourceDiscoveryCoordinator: ObservableObject {
     public var tabSelectedResourceIDs: [UUID: Set<String>] = [:]
     public var mediaCandidateCatalogs: [UUID: BrowserMediaCandidateCatalog] = [:]
     private var activeProbeTasks: [UUID: [Task<Void, Never>]] = [:]
+
+    // Document generation and navigation correlation
+    public var tabDocumentGenerations: [UUID: UInt64] = [:]
+    public var tabNavigationGenerations: [UUID: UInt64] = [:]
+    public var tabDocumentIDs: [UUID: String] = [:]
 
     public init(
         bridge: BrowserMediaDiscoveryBridge? = nil,
@@ -390,15 +413,142 @@ public final class BrowserResourceDiscoveryCoordinator: ObservableObject {
         }
     }
 
+    // MARK: - Document & Navigation Generation Management
+
+    @discardableResult
+    public func nextDocumentGeneration(for tabID: UUID, documentID: String? = nil) -> UInt64 {
+        let next = tabDocumentGenerations[tabID, default: 0] &+ 1
+        tabDocumentGenerations[tabID] = next
+        if let documentID {
+            tabDocumentIDs[tabID] = documentID
+        }
+        return next
+    }
+
+    public func currentDocumentGeneration(for tabID: UUID) -> UInt64 {
+        tabDocumentGenerations[tabID, default: 0]
+    }
+
+    public func setNavigationGeneration(_ generation: UInt64, for tabID: UUID) {
+        tabNavigationGenerations[tabID] = generation
+    }
+
+    public func currentNavigationGeneration(for tabID: UUID) -> UInt64 {
+        tabNavigationGenerations[tabID, default: 0]
+    }
+
+    public func isObservationValidForCurrentDocument(
+        _ observation: BrowserMediaDiscoveryObservation,
+        tabID: UUID
+    ) -> Bool {
+        if let obsNavGen = observation.navigationGeneration,
+           let currentNavGen = tabNavigationGenerations[tabID],
+           obsNavGen < currentNavGen {
+            return false
+        }
+
+        if let obsDocGen = observation.documentGeneration,
+           let currentDocGen = tabDocumentGenerations[tabID],
+           obsDocGen < currentDocGen {
+            let isPreserved = observation.isManifestSignal ||
+                              observation.blobKind == .mediaSource ||
+                              observation.source == .mediaSource
+            if !isPreserved {
+                return false
+            }
+        }
+
+        if let obsDocID = observation.documentID,
+           let currentDocID = tabDocumentIDs[tabID],
+           obsDocID != currentDocID {
+            let isPreserved = observation.isManifestSignal ||
+                              observation.blobKind == .mediaSource ||
+                              observation.source == .mediaSource
+            if !isPreserved {
+                return false
+            }
+        }
+
+        return true
+    }
+
+    @discardableResult
+    public func pruneExpiredAndCorruptManifests(for tabID: UUID? = nil, activeTabID: UUID? = nil) -> Int {
+        let targetID = tabID ?? activeTabID
+        guard let targetID else { return 0 }
+        guard var catalog = mediaCandidateCatalogs[targetID] else { return 0 }
+
+        var prunedCount = 0
+        var validCandidates: [BrowserMediaCandidate] = []
+
+        for candidate in catalog.candidates {
+            if candidate.isExpired {
+                prunedCount += 1
+                continue
+            }
+
+            if let manifestText = candidate.cachedManifestText {
+                if candidate.kind == .hlsManifest {
+                    if !manifestText.contains("#EXTM3U") {
+                        prunedCount += 1
+                        continue
+                    }
+                } else if candidate.kind == .dashManifest {
+                    if !manifestText.contains("<MPD") && !manifestText.contains("<mpd") {
+                        prunedCount += 1
+                        continue
+                    }
+                }
+            }
+            validCandidates.append(candidate)
+        }
+
+        if prunedCount > 0 {
+            catalog.reset()
+            for cand in validCandidates {
+                catalog.merge(cand)
+            }
+            mediaCandidateCatalogs[targetID] = catalog
+            telemetry.prunedCorruptedOrExpiredManifestsCount += prunedCount
+            if targetID == activeTabID {
+                publishMediaCandidates(activeTabID: activeTabID)
+            }
+        }
+        return prunedCount
+    }
+
+    public func recordProbeTimeout(for tabID: UUID? = nil) {
+        telemetry.probeTimeoutsCount += 1
+    }
+
     public func ingestMediaObservation(
         _ observation: BrowserMediaDiscoveryObservation,
         tabID: UUID?,
         activeTabID: UUID?
     ) {
         guard let targetTabID = tabID ?? activeTabID else { return }
+        telemetry.totalObservationsReceived += 1
+
+        if !isObservationValidForCurrentDocument(observation, tabID: targetTabID) {
+            telemetry.droppedStaleDocumentObservationsCount += 1
+            BrowserDiagnosticLogger.shared.log(
+                category: .discovery,
+                message: "Rejected stale observation from superseded document/navigation generation (docGen: \(observation.documentGeneration ?? 0), navGen: \(observation.navigationGeneration ?? 0))",
+                url: observation.url,
+                tabID: targetTabID
+            )
+            return
+        }
+
         var catalog = mediaCandidateCatalogs[targetTabID] ?? BrowserMediaCandidateCatalog()
         if let candidate = catalog.ingest(observation: observation) {
+            telemetry.deduplicatedCandidatesCount += catalog.deduplicatedCandidatesCount
+            telemetry.evictedCandidatesCount += catalog.evictedCandidatesCount
+            catalog.deduplicatedCandidatesCount = 0
+            catalog.evictedCandidatesCount = 0
+
             mediaCandidateCatalogs[targetTabID] = catalog
+            telemetry.totalCandidatesCataloged = catalog.candidates.count
             if targetTabID == activeTabID { publishMediaCandidates(activeTabID: activeTabID) }
             if let resource = candidate.toWebpageResource() {
                 ingestMediaResource(resource, tabID: targetTabID, activeTabID: activeTabID)
@@ -664,7 +814,11 @@ public final class BrowserResourceDiscoveryCoordinator: ObservableObject {
             for task in tasks {
                 task.cancel()
             }
+            telemetry.probeTimeoutsCount += tasks.count
         }
+        tabDocumentGenerations.removeValue(forKey: tabID)
+        tabNavigationGenerations.removeValue(forKey: tabID)
+        tabDocumentIDs.removeValue(forKey: tabID)
         Task { [expander = streamManifestExpander] in
             await expander.cancelInFlight(for: tabID)
         }
