@@ -166,6 +166,9 @@ public struct DownloadsView: View {
                 // Bandwidth Dashboard (Milestone 4.3)
                 BandwidthDashboardSection(viewModel: viewModel)
 
+                // Live Stream Recording Status & Recovery Banners
+                LiveRecordingRecoverySection()
+
                 // Clipboard Auto-Detection Banner
                 if showClipboardBanner, let url = detectedClipboardURL {
                     HStack(spacing: 12) {
@@ -2301,6 +2304,133 @@ public struct ShareSheetView: UIViewControllerRepresentable {
     public func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
 }
 #endif
+
+public struct LiveRecordingRecoverySection: View {
+    @ObservedObject private var recorder = LiveStreamRecorder.shared
+
+    public init() {}
+
+    public var body: some View {
+        VStack(spacing: 8) {
+            if case .recording(let duration, let count, let bytes) = recorder.state {
+                HStack(spacing: 12) {
+                    Circle()
+                        .fill(Color.red)
+                        .frame(width: 10, height: 10)
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Live Recording: \(recorder.activeRequest?.title ?? "Stream")")
+                            .font(.subheadline.bold())
+                        Text("\(count) segments (\(String(format: "%.1f", duration))s) • \(ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file))")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+
+                    Spacer()
+
+                    Button("Pause") {
+                        recorder.pauseRecording()
+                    }
+                    .buttonStyle(.bordered)
+                    .font(.caption)
+
+                    Button("Stop") {
+                        Task { @MainActor in
+                            _ = try? await recorder.stopRecording()
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(.red)
+                    .font(.caption.bold())
+                }
+                .padding(10)
+                .background(Color.red.opacity(0.08))
+                .cornerRadius(8)
+                .padding(.horizontal)
+            } else if case .paused(let duration, let count, _) = recorder.state {
+                HStack(spacing: 12) {
+                    Image(systemName: "pause.circle.fill")
+                        .foregroundColor(.orange)
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Live Recording Paused: \(recorder.activeRequest?.title ?? "Stream")")
+                            .font(.subheadline.bold())
+                        Text("\(count) segments (\(String(format: "%.1f", duration))s)")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+
+                    Spacer()
+
+                    Button("Resume") {
+                        recorder.resumeRecording()
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .font(.caption.bold())
+
+                    Button("Stop") {
+                        Task { @MainActor in
+                            _ = try? await recorder.stopRecording()
+                        }
+                    }
+                    .buttonStyle(.bordered)
+                    .font(.caption)
+                }
+                .padding(10)
+                .background(Color.orange.opacity(0.08))
+                .cornerRadius(8)
+                .padding(.horizontal)
+            }
+
+            ForEach(recorder.interruptedRecordings) { item in
+                HStack(spacing: 12) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundColor(.yellow)
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Interrupted Recording: \(item.title)")
+                            .font(.subheadline.bold())
+                        Text("\(item.recordedSegmentCount) segments (\(String(format: "%.1f", item.recordedDurationSeconds))s) saved on disk")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+
+                    Spacer()
+
+                    Button("Resume") {
+                        Task { @MainActor in
+                            try? await recorder.resumeInterruptedRecording(sessionID: item.id)
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(.red)
+                    .font(.caption.bold())
+
+                    Button("Save") {
+                        Task { @MainActor in
+                            _ = try? await recorder.finalizeInterruptedRecording(sessionID: item.id)
+                        }
+                    }
+                    .buttonStyle(.bordered)
+                    .font(.caption)
+
+                    Button(action: {
+                        Task { @MainActor in
+                            await recorder.discardInterruptedRecording(sessionID: item.id)
+                        }
+                    }) {
+                        Image(systemName: "xmark.circle")
+                            .foregroundColor(.secondary)
+                    }
+                }
+                .padding(10)
+                .background(Color.yellow.opacity(0.12))
+                .cornerRadius(8)
+                .padding(.horizontal)
+            }
+        }
+    }
+}
 
 private extension Color {
     static var platformSecondaryBackground: Color {

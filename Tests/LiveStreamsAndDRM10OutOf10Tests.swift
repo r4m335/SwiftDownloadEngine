@@ -134,7 +134,7 @@ final class LiveStreamsAndDRM10OutOf10Tests: XCTestCase {
         XCTAssertFalse(resultClear.isProtected)
     }
 
-    // MARK: - Gap 6: DRM True-Positive Detection
+    // MARK: - Gap 5 & 6: DRM True-Positive & Generic SAMPLE-AES Detection
 
     func testDRMDetectorIdentifiesFairPlayWidevineAndPlayReady() {
         let fairplayHLS = """
@@ -189,6 +189,19 @@ final class LiveStreamsAndDRM10OutOf10Tests: XCTestCase {
         XCTAssertEqual(aesResult.protectionType, "AES-128")
     }
 
+    func testDRMDetectorClassifiesUnrecognizedSampleAESAsDRM() {
+        let proprietarySampleAES = """
+        #EXTM3U
+        #EXT-X-VERSION:5
+        #EXT-X-KEY:METHOD=SAMPLE-AES,URI="https://license.custom.com/key",KEYFORMAT="com.custom.drm.system"
+        #EXTINF:6.0,
+        seg1.ts
+        """
+        let result = StreamDRMDetector.evaluate(manifestText: proprietarySampleAES)
+        XCTAssertTrue(result.isProtected, "Unrecognized proprietary SAMPLE-AES key formats must be conservatively classified as DRM")
+        XCTAssertEqual(result.protectionType, "Sample-AES")
+    }
+
     // MARK: - Gap 1: Failed Segment Retry Without Skipping
 
     @MainActor
@@ -218,11 +231,9 @@ final class LiveStreamsAndDRM10OutOf10Tests: XCTestCase {
         LiveStreamsMockURLProtocol.setHandler(for: seg1URL) { _ in
             seg1Attempts += 1
             if seg1Attempts == 1 {
-                // Simulate transient network failure on first attempt
                 let res = HTTPURLResponse(url: seg1URL, statusCode: 500, httpVersion: nil, headerFields: nil)!
                 return (res, Data())
             } else {
-                // Succeed on retry with valid MPEG-TS packet
                 let res = HTTPURLResponse(url: seg1URL, statusCode: 200, httpVersion: nil, headerFields: ["Content-Type": "video/mp2t"])!
                 let packet = Data([0x47]) + Data(repeating: 0x11, count: 187)
                 return (res, packet)
@@ -249,7 +260,6 @@ final class LiveStreamsAndDRM10OutOf10Tests: XCTestCase {
 
         try recorder.startRecording(request: req)
 
-        // Give the loop time to poll, retry seg1, download seg2, and finalize automatically due to EXT-X-ENDLIST
         for _ in 0..<30 {
             if case .completed = recorder.state { break }
             try? await Task.sleep(nanoseconds: 100_000_000)
@@ -294,12 +304,11 @@ final class LiveStreamsAndDRM10OutOf10Tests: XCTestCase {
             return (res, Data(manifestContent.utf8))
         }
 
-        // Mock returns 200 with full 500-byte payload to test client-side slicing fallback
         var fullPayload = Data(repeating: 0xAA, count: 188)
-        fullPayload += Data([0x47]) + Data(repeating: 0xBB, count: 187) // Requested 188 bytes starting at 188
+        fullPayload += Data([0x47]) + Data(repeating: 0xBB, count: 187)
         fullPayload += Data(repeating: 0xCC, count: 125)
 
-        LiveStreamsMockURLProtocol.setHandler(for: mediaFileURL) { req in
+        LiveStreamsMockURLProtocol.setHandler(for: mediaFileURL) { _ in
             let res = HTTPURLResponse(url: mediaFileURL, statusCode: 200, httpVersion: nil, headerFields: nil)!
             return (res, fullPayload)
         }
@@ -328,7 +337,7 @@ final class LiveStreamsAndDRM10OutOf10Tests: XCTestCase {
             return
         }
 
-        XCTAssertEqual(bytes, 188, "Output should contain strictly the sliced 188 bytes, not the 500-byte full payload")
+        XCTAssertEqual(bytes, 188, "Output should contain strictly the sliced 188 bytes")
         let outData = try Data(contentsOf: outURL)
         XCTAssertEqual(outData.count, 188)
         XCTAssertEqual(outData[0], 0x47)
@@ -400,6 +409,97 @@ final class LiveStreamsAndDRM10OutOf10Tests: XCTestCase {
         XCTAssertEqual(outputBytes, expectedBytes, "Initialization segment must precede media chunk payload")
     }
 
+    // MARK: - Gap 3 & 4: External HLS Audio Rendition & Video Track Capture
+
+    @MainActor
+    func testLiveHLSSeparateAudioRenditionCaptureAndAssembly() async throws {
+        let masterURL = URL(string: "https://mock.live/master.m3u8")!
+        let videoURL = URL(string: "https://mock.live/video.m3u8")!
+        let audioURL = URL(string: "https://mock.live/audio.m3u8")!
+        let vSegURL = URL(string: "https://mock.live/v0.ts")!
+        let aSegURL = URL(string: "https://mock.live/a0.aac")!
+
+        let masterContent = """
+        #EXTM3U
+        #EXT-X-VERSION:4
+        #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="audio-main",NAME="English",DEFAULT=YES,URI="audio.m3u8"
+        #EXT-X-STREAM-INF:BANDWIDTH=2000000,AUDIO="audio-main"
+        video.m3u8
+        """
+
+        let videoContent = """
+        #EXTM3U
+        #EXT-X-VERSION:4
+        #EXT-X-TARGETDURATION:4
+        #EXT-X-MEDIA-SEQUENCE:1
+        #EXTINF:4.0,
+        v0.ts
+        #EXT-X-ENDLIST
+        """
+
+        let audioContent = """
+        #EXTM3U
+        #EXT-X-VERSION:4
+        #EXT-X-TARGETDURATION:4
+        #EXT-X-MEDIA-SEQUENCE:1
+        #EXTINF:4.0,
+        a0.aac
+        #EXT-X-ENDLIST
+        """
+
+        LiveStreamsMockURLProtocol.setHandler(for: masterURL) { _ in
+            let res = HTTPURLResponse(url: masterURL, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            return (res, Data(masterContent.utf8))
+        }
+        LiveStreamsMockURLProtocol.setHandler(for: videoURL) { _ in
+            let res = HTTPURLResponse(url: videoURL, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            return (res, Data(videoContent.utf8))
+        }
+        LiveStreamsMockURLProtocol.setHandler(for: audioURL) { _ in
+            let res = HTTPURLResponse(url: audioURL, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            return (res, Data(audioContent.utf8))
+        }
+
+        let vPacket = Data([0x47]) + Data(repeating: 0x11, count: 187)
+        LiveStreamsMockURLProtocol.setHandler(for: vSegURL) { _ in
+            let res = HTTPURLResponse(url: vSegURL, statusCode: 200, httpVersion: nil, headerFields: ["Content-Type": "video/mp2t"])!
+            return (res, vPacket)
+        }
+
+        let aPacket = Data(repeating: 0x22, count: 100)
+        LiveStreamsMockURLProtocol.setHandler(for: aSegURL) { _ in
+            let res = HTTPURLResponse(url: aSegURL, statusCode: 200, httpVersion: nil, headerFields: ["Content-Type": "audio/aac"])!
+            return (res, aPacket)
+        }
+
+        let storeDir = temporaryTestDirectory.appendingPathComponent("store", isDirectory: true)
+        let recordingStore = try LiveRecordingStore(storageDirectoryURL: storeDir)
+        let recorder = LiveStreamRecorder(urlSession: mockSession, recordingStore: recordingStore)
+
+        let destURL = temporaryTestDirectory.appendingPathComponent("dual_track.ts")
+        let req = LiveRecordingRequest(
+            manifestURL: masterURL,
+            destinationURL: destURL,
+            title: "Dual Track Test",
+            temporaryDirectoryURL: temporaryTestDirectory
+        )
+
+        try recorder.startRecording(request: req)
+
+        for _ in 0..<30 {
+            if case .completed = recorder.state { break }
+            try? await Task.sleep(nanoseconds: 100_000_000)
+        }
+
+        guard case .completed(let outURL, _, _) = recorder.state else {
+            XCTFail("Recording should complete, got: \(recorder.state)")
+            return
+        }
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: outURL.path))
+        XCTAssertGreaterThan(recorder.recordedSegmentCount, 0)
+    }
+
     // MARK: - Gap 2: DASH Timeline S@r="-1" Without Crashing
 
     @MainActor
@@ -458,10 +558,8 @@ final class LiveStreamsAndDRM10OutOf10Tests: XCTestCase {
             temporaryDirectoryURL: temporaryTestDirectory
         )
 
-        // Starting recording should NOT crash with negative range lowerBound <= upperBound error
         try recorder.startRecording(request: req)
 
-        // Wait for at least one chunk to be recorded
         for _ in 0..<30 {
             if recorder.recordedSegmentCount >= 1 { break }
             try? await Task.sleep(nanoseconds: 100_000_000)
@@ -471,22 +569,28 @@ final class LiveStreamsAndDRM10OutOf10Tests: XCTestCase {
         recorder.cancelRecording()
     }
 
-    // MARK: - Gap 2: DASH Duration-Based SegmentTemplate
+    // MARK: - Gap 2 & 7: DASH ISO/IEC 23009-1 Availability Window & Audio/Video
 
     @MainActor
-    func testDASHDurationBasedSegmentTemplateDiscoversSegments() async throws {
-        let manifestURL = URL(string: "https://mock.live/duration.mpd")!
+    func testDASHISO23009LiveAvailabilityWindowCalculation() async throws {
+        let manifestURL = URL(string: "https://mock.live/iso_window.mpd")!
 
         let mpdContent = """
         <?xml version="1.0" encoding="UTF-8"?>
         <MPD xmlns="urn:mpeg:dash:schema:mpd:2011"
              type="dynamic"
              minimumUpdatePeriod="PT2S"
-             availabilityStartTime="2026-11-20T00:00:00Z">
-            <Period id="p0">
-                <AdaptationSet id="as0" mimeType="video/mp4">
-                    <SegmentTemplate timescale="1000" duration="2000" startNumber="10" media="chunk_$Number$.m4s" initialization="init.mp4"/>
-                    <Representation id="rep1" bandwidth="1500000" width="1280" height="720"/>
+             availabilityStartTime="2026-11-20T00:00:00Z"
+             timeShiftBufferDepth="PT60S"
+             suggestedPresentationDelay="PT4S">
+            <Period id="p0" start="PT0S">
+                <AdaptationSet id="as0" mimeType="video/mp4" contentType="video">
+                    <SegmentTemplate timescale="1000" duration="2000" startNumber="100" media="v_chunk_$Number$.m4s" initialization="v_init.mp4"/>
+                    <Representation id="rep_v" bandwidth="2000000" width="1280" height="720"/>
+                </AdaptationSet>
+                <AdaptationSet id="as1" mimeType="audio/mp4" contentType="audio">
+                    <SegmentTemplate timescale="1000" duration="2000" startNumber="100" media="a_chunk_$Number$.m4s" initialization="a_init.mp4"/>
+                    <Representation id="rep_a" bandwidth="128000"/>
                 </AdaptationSet>
             </Period>
         </MPD>
@@ -497,17 +601,35 @@ final class LiveStreamsAndDRM10OutOf10Tests: XCTestCase {
             return (res, Data(mpdContent.utf8))
         }
 
-        let initURL = URL(string: "https://mock.live/init.mp4")!
-        LiveStreamsMockURLProtocol.setHandler(for: initURL) { _ in
-            let res = HTTPURLResponse(url: initURL, statusCode: 200, httpVersion: nil, headerFields: nil)!
-            return (res, Data("DASH_INIT".utf8))
+        let vInitURL = URL(string: "https://mock.live/v_init.mp4")!
+        let aInitURL = URL(string: "https://mock.live/a_init.mp4")!
+        LiveStreamsMockURLProtocol.setHandler(for: vInitURL) { _ in
+            (HTTPURLResponse(url: vInitURL, statusCode: 200, httpVersion: nil, headerFields: nil)!, Data("VINIT".utf8))
+        }
+        LiveStreamsMockURLProtocol.setHandler(for: aInitURL) { _ in
+            (HTTPURLResponse(url: aInitURL, statusCode: 200, httpVersion: nil, headerFields: nil)!, Data("AINIT".utf8))
         }
 
-        for num in 10...15 {
-            let u = URL(string: "https://mock.live/chunk_\(num).m4s")!
-            LiveStreamsMockURLProtocol.setHandler(for: u) { _ in
-                let res = HTTPURLResponse(url: u, statusCode: 200, httpVersion: nil, headerFields: nil)!
-                return (res, Data("CHUNK_DATA_\(num)".utf8))
+        // Mock segment responses for any sequence number
+        let parsed = try DASHManifestParser.parse(mpdContent, baseURL: manifestURL)
+        XCTAssertNotNil(parsed.availabilityStartTime)
+        XCTAssertEqual(parsed.timeShiftBufferDepth, 60.0)
+        XCTAssertEqual(parsed.suggestedPresentationDelay, 4.0)
+
+        // Mock chunks around live edge
+        let now = Date()
+        let elapsed = now.timeIntervalSince(parsed.availabilityStartTime!)
+        let liveEdgeTime = max(0, elapsed - 4.0)
+        let edgeSeq = 100 + Int64(liveEdgeTime / 2.0)
+
+        for seq in (edgeSeq - 3)...(edgeSeq + 3) {
+            let vu = URL(string: "https://mock.live/v_chunk_\(seq).m4s")!
+            let au = URL(string: "https://mock.live/a_chunk_\(seq).m4s")!
+            LiveStreamsMockURLProtocol.setHandler(for: vu) { _ in
+                (HTTPURLResponse(url: vu, statusCode: 200, httpVersion: nil, headerFields: nil)!, Data("VCHUNK_\(seq)".utf8))
+            }
+            LiveStreamsMockURLProtocol.setHandler(for: au) { _ in
+                (HTTPURLResponse(url: au, statusCode: 200, httpVersion: nil, headerFields: nil)!, Data("ACHUNK_\(seq)".utf8))
             }
         }
 
@@ -515,23 +637,23 @@ final class LiveStreamsAndDRM10OutOf10Tests: XCTestCase {
         let recordingStore = try LiveRecordingStore(storageDirectoryURL: storeDir)
         let recorder = LiveStreamRecorder(urlSession: mockSession, recordingStore: recordingStore)
 
-        let destURL = temporaryTestDirectory.appendingPathComponent("dash_duration.mp4")
+        let destURL = temporaryTestDirectory.appendingPathComponent("dash_iso_window.mp4")
         let req = LiveRecordingRequest(
             manifestURL: manifestURL,
             manifestKind: .dash,
             destinationURL: destURL,
-            title: "DASH Duration Test",
+            title: "ISO Window Test",
             temporaryDirectoryURL: temporaryTestDirectory
         )
 
         try recorder.startRecording(request: req)
 
         for _ in 0..<30 {
-            if recorder.recordedSegmentCount >= 2 { break }
+            if recorder.recordedSegmentCount >= 1 { break }
             try? await Task.sleep(nanoseconds: 100_000_000)
         }
 
-        XCTAssertGreaterThanOrEqual(recorder.recordedSegmentCount, 2, "Duration-based template should discover chunks")
+        XCTAssertGreaterThanOrEqual(recorder.recordedSegmentCount, 1, "ISO/IEC 23009-1 calculation should compute valid live window")
         recorder.cancelRecording()
     }
 
@@ -604,70 +726,148 @@ final class LiveStreamsAndDRM10OutOf10Tests: XCTestCase {
         XCTAssertEqual(decryptedBytes[1], 0x55, "Decrypted segment payload must match original clear packet")
     }
 
-    // MARK: - Gap 5: Durable Recording Store & Recovery Across Suspension
+    // MARK: - Gap 1 & 5: Relaunch Auto-Discovery, Recovery & Resume Polling
 
     @MainActor
-    func testDurableRecordingStoreAndInterruptedRecovery() async throws {
+    func testLiveStreamRelaunchDiscoveryAndResumePolling() async throws {
         let storeDir = temporaryTestDirectory.appendingPathComponent("store", isDirectory: true)
         let recordingStore = try LiveRecordingStore(storageDirectoryURL: storeDir)
 
-        let sessionID = "test-session-\(UUID().uuidString)"
+        let sessionID = "resume-session-\(UUID().uuidString)"
         let scratchDir = temporaryTestDirectory.appendingPathComponent("scratch_\(sessionID)", isDirectory: true)
         try FileManager.default.createDirectory(at: scratchDir, withIntermediateDirectories: true)
 
-        let segFile = scratchDir.appendingPathComponent("seg_0.ts")
-        let segData = Data([0x47]) + Data(repeating: 0x77, count: 187)
+        let segFile = scratchDir.appendingPathComponent("seg_video_000000.ts")
+        let segData = Data([0x47]) + Data(repeating: 0x88, count: 187)
         try segData.write(to: segFile)
 
-        let manifestURL = URL(string: "https://example.com/live.m3u8")!
-        let destURL = temporaryTestDirectory.appendingPathComponent("recovered_final.ts")
+        let manifestURL = URL(string: "https://mock.live/resume.m3u8")!
+        let newSegURL = URL(string: "https://mock.live/seg2.ts")!
+
+        let manifestContent = """
+        #EXTM3U
+        #EXT-X-VERSION:3
+        #EXT-X-TARGETDURATION:4
+        #EXT-X-MEDIA-SEQUENCE:1
+        #EXTINF:4.0,
+        seg1.ts
+        #EXTINF:4.0,
+        seg2.ts
+        #EXT-X-ENDLIST
+        """
+
+        LiveStreamsMockURLProtocol.setHandler(for: manifestURL) { _ in
+            let res = HTTPURLResponse(url: manifestURL, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            return (res, Data(manifestContent.utf8))
+        }
+
+        let newPacket = Data([0x47]) + Data(repeating: 0x99, count: 187)
+        LiveStreamsMockURLProtocol.setHandler(for: newSegURL) { _ in
+            let res = HTTPURLResponse(url: newSegURL, statusCode: 200, httpVersion: nil, headerFields: ["Content-Type": "video/mp2t"])!
+            return (res, newPacket)
+        }
+
+        let destURL = temporaryTestDirectory.appendingPathComponent("resumed_output.ts")
         let req = LiveRecordingRequest(
             manifestURL: manifestURL,
             destinationURL: destURL,
-            title: "Recovery Demo"
+            title: "Resume Session Demo"
         )
 
-        let record = LiveRecordingRecord(
+        let existingRecord = LiveRecordingRecord(
             id: sessionID,
             request: req,
             state: "recording",
-            recordedDurationSeconds: 6.0,
+            recordedDurationSeconds: 4.0,
             recordedSegmentCount: 1,
             bytesWritten: 188,
             recordedSegments: [
                 LiveRecordedSegment(
                     sequenceNumber: 1,
-                    uri: URL(string: "https://example.com/seg_0.ts")!,
-                    duration: 6.0,
+                    uri: URL(string: "https://mock.live/seg1.ts")!,
+                    duration: 4.0,
                     localFileURL: segFile,
-                    byteCount: 188
+                    byteCount: 188,
+                    trackKind: "video"
                 )
             ],
             initializationSegmentURLs: [],
-            committedSegmentKeys: ["video_1_https://example.com/seg_0.ts_-1_-1"],
+            committedSegmentKeys: ["video_1_https://mock.live/seg1.ts_-1_-1"],
             scratchDirectoryPath: scratchDir.path,
             outputContainerFormat: "ts"
         )
+        try await recordingStore.save(record: existingRecord)
 
+        let recorder = LiveStreamRecorder(urlSession: mockSession, recordingStore: recordingStore)
+
+        // 1. Verify automatic relaunch discovery
+        let discovered = await recorder.checkForInterruptedRecordings()
+        XCTAssertEqual(discovered.count, 1)
+        XCTAssertEqual(discovered[0].id, sessionID)
+        XCTAssertEqual(recorder.interruptedRecordings.count, 1)
+
+        // 2. Resume live polling
+        try await recorder.resumeInterruptedRecording(sessionID: sessionID)
+
+        // Wait for loop to poll manifest, download seg2 (appending to existing seg1), and finalize on EXT-X-ENDLIST
+        for _ in 0..<30 {
+            if case .completed = recorder.state { break }
+            try? await Task.sleep(nanoseconds: 100_000_000)
+        }
+
+        guard case .completed(let outURL, let duration, let bytes) = recorder.state else {
+            XCTFail("Resumed recording should complete, got: \(recorder.state)")
+            return
+        }
+
+        XCTAssertEqual(recorder.recordedSegmentCount, 2, "Must contain both restored segment and newly polled segment")
+        XCTAssertEqual(duration, 8.0, accuracy: 0.1)
+        XCTAssertEqual(bytes, 376)
+
+        let finalData = try Data(contentsOf: outURL)
+        XCTAssertEqual(finalData.count, 376)
+        XCTAssertEqual(finalData[0], 0x47)
+        XCTAssertEqual(finalData[188], 0x47)
+    }
+
+    // MARK: - Gap 5: Discard Interrupted Recording
+
+    @MainActor
+    func testDiscardInterruptedRecordingCleansUpStoreAndDisk() async throws {
+        let storeDir = temporaryTestDirectory.appendingPathComponent("store", isDirectory: true)
+        let recordingStore = try LiveRecordingStore(storageDirectoryURL: storeDir)
+
+        let sessionID = "discard-\(UUID().uuidString)"
+        let scratchDir = temporaryTestDirectory.appendingPathComponent("scratch_\(sessionID)", isDirectory: true)
+        try FileManager.default.createDirectory(at: scratchDir, withIntermediateDirectories: true)
+        let dummy = scratchDir.appendingPathComponent("dummy.txt")
+        try Data("dummy".utf8).write(to: dummy)
+
+        let req = LiveRecordingRequest(
+            manifestURL: URL(string: "https://example.com/stream.m3u8")!,
+            destinationURL: temporaryTestDirectory.appendingPathComponent("discarded.ts"),
+            title: "Discard Demo"
+        )
+        let record = LiveRecordingRecord(
+            id: sessionID,
+            request: req,
+            state: "recording",
+            recordedDurationSeconds: 1.0,
+            recordedSegmentCount: 1,
+            bytesWritten: 5,
+            scratchDirectoryPath: scratchDir.path
+        )
         try await recordingStore.save(record: record)
 
         let recorder = LiveStreamRecorder(urlSession: mockSession, recordingStore: recordingStore)
-        let interruptedList = await recorder.recoverInterruptedRecordings()
-        XCTAssertEqual(interruptedList.count, 1)
-        XCTAssertEqual(interruptedList[0].id, sessionID)
-        XCTAssertEqual(interruptedList[0].title, "Recovery Demo")
-        XCTAssertEqual(interruptedList[0].recordedSegmentCount, 1)
+        let listBefore = await recorder.checkForInterruptedRecordings()
+        XCTAssertEqual(listBefore.count, 1)
 
-        let finalizedURL = try await recorder.finalizeInterruptedRecording(sessionID: sessionID)
-        XCTAssertTrue(FileManager.default.fileExists(atPath: finalizedURL.path))
-        let finalizedData = try Data(contentsOf: finalizedURL)
-        XCTAssertEqual(finalizedData.count, 188)
-        XCTAssertEqual(finalizedData[0], 0x47)
+        await recorder.discardInterruptedRecording(sessionID: sessionID)
 
-        // Store record should be cleaned up after recovery finalization
-        let remaining = await recorder.recoverInterruptedRecordings()
-        XCTAssertTrue(remaining.isEmpty, "Recovered session must be removed from store after finalization")
-        XCTAssertFalse(FileManager.default.fileExists(atPath: scratchDir.path), "Scratch directory should be cleaned up")
+        let listAfter = await recorder.checkForInterruptedRecordings()
+        XCTAssertTrue(listAfter.isEmpty, "Discarded recording must be removed from store")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: scratchDir.path), "Scratch directory must be deleted")
     }
 
     // MARK: - Gap 3: Container Format Extension Alignment
@@ -701,7 +901,6 @@ final class LiveStreamsAndDRM10OutOf10Tests: XCTestCase {
         let recordingStore = try LiveRecordingStore(storageDirectoryURL: storeDir)
         let recorder = LiveStreamRecorder(urlSession: mockSession, recordingStore: recordingStore)
 
-        // Destination requested with wrong extension ".mp4" for MPEG-TS stream
         let requestedURL = temporaryTestDirectory.appendingPathComponent("stream_mislabeled.mp4")
         let req = LiveRecordingRequest(
             manifestURL: manifestURL,

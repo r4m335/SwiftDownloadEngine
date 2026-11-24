@@ -8,6 +8,10 @@ import Combine
 import UIKit
 #endif
 
+#if canImport(BackgroundTasks) && os(iOS)
+import BackgroundTasks
+#endif
+
 /// State transitions for an active live stream recording session.
 public enum LiveRecordingState: Equatable, Sendable {
     case idle
@@ -124,7 +128,7 @@ public enum LiveStreamRecorderError: LocalizedError, Equatable, Sendable {
 }
 
 /// Coordinates sliding-window manifest polling, segment deduplication, incremental disk writing,
-/// durable checkpointing, AES-128 decryption, and output container assembly for live HLS broadcasts and dynamic DASH streams.
+/// multi-track audio/video remuxing, durable checkpointing, and relaunch recovery for live HLS broadcasts and dynamic DASH streams.
 @MainActor
 public final class LiveStreamRecorder: ObservableObject {
 
@@ -135,12 +139,14 @@ public final class LiveStreamRecorder: ObservableObject {
     @Published public private(set) var recordedSegmentCount: Int = 0
     @Published public private(set) var bytesWritten: Int64 = 0
     @Published public private(set) var activeRequest: LiveRecordingRequest? = nil
+    @Published public private(set) var interruptedRecordings: [LiveRecordingRecoverySummary] = []
 
     private var currentSessionID: String? = nil
     private var committedSegmentKeys = Set<String>()
     private var failedSegmentAttempts: [String: Int] = [:]
     private var recordedSegments: [LiveRecordedSegment] = []
     private var initializationSegmentURLs: [URL] = []
+    private var trackInitializationURLs: [String: URL] = [:]
     private var cachedKeyData: [URL: Data] = [:]
     private var recordingTask: Task<Void, Never>? = nil
     private var isPaused: Bool = false
@@ -162,6 +168,10 @@ public final class LiveStreamRecorder: ObservableObject {
         self.urlSession = urlSession
         self.libraryStore = libraryStore
         self.recordingStore = recordingStore ?? (try? LiveRecordingStore())
+
+        Task { @MainActor in
+            _ = await self.checkForInterruptedRecordings()
+        }
     }
 
     // MARK: - Recording Control APIs
@@ -183,6 +193,7 @@ public final class LiveStreamRecorder: ObservableObject {
         self.failedSegmentAttempts.removeAll()
         self.recordedSegments.removeAll()
         self.initializationSegmentURLs.removeAll()
+        self.trackInitializationURLs.removeAll()
         self.cachedKeyData.removeAll()
         self.isPaused = false
 
@@ -273,6 +284,7 @@ public final class LiveStreamRecorder: ObservableObject {
         if let sid = currentSessionID {
             Task {
                 try? await self.recordingStore?.delete(sessionID: sid)
+                _ = await self.checkForInterruptedRecordings()
             }
         }
 
@@ -300,19 +312,104 @@ public final class LiveStreamRecorder: ObservableObject {
         self.currentSessionID = nil
         self.recordedSegments.removeAll()
         self.initializationSegmentURLs.removeAll()
+        self.trackInitializationURLs.removeAll()
         self.committedSegmentKeys.removeAll()
         self.failedSegmentAttempts.removeAll()
         self.cachedKeyData.removeAll()
         self.state = .cancelled
     }
 
-    // MARK: - Recovery APIs
+    // MARK: - Recovery & Resuming APIs
+
+    /// Scans for interrupted live recording sessions stored durably on disk and updates published list.
+    public func checkForInterruptedRecordings() async -> [LiveRecordingRecoverySummary] {
+        let summaries = await recoverInterruptedRecordings()
+        self.interruptedRecordings = summaries
+        return summaries
+    }
 
     /// Scans for interrupted live recording sessions stored durably on disk.
     public func recoverInterruptedRecordings() async -> [LiveRecordingRecoverySummary] {
         guard let store = recordingStore else { return [] }
         let records = await store.allInterruptedRecords()
         return records.map { LiveRecordingRecoverySummary(record: $0) }
+    }
+
+    /// Resumes live polling and segment appending for an interrupted recording session.
+    public func resumeInterruptedRecording(sessionID: String) async throws {
+        guard case .idle = state else {
+            throw LiveStreamRecorderError.alreadyRecording
+        }
+        guard let store = recordingStore else {
+            throw LiveStreamRecorderError.sessionNotFound(sessionID)
+        }
+        guard let record = await store.load(sessionID: sessionID) else {
+            throw LiveStreamRecorderError.sessionNotFound(sessionID)
+        }
+
+        let scratchDir = URL(fileURLWithPath: record.scratchDirectoryPath)
+        guard FileManager.default.fileExists(atPath: scratchDir.path) else {
+            try? await store.delete(sessionID: sessionID)
+            _ = await checkForInterruptedRecordings()
+            throw LiveStreamRecorderError.assemblyFailed("Scratch directory for session \(sessionID) no longer exists.")
+        }
+
+        self.currentSessionID = sessionID
+        self.activeRequest = record.request
+        self.sessionDirectory = scratchDir
+        self.recordedSegments = record.recordedSegments
+        self.initializationSegmentURLs = record.initializationSegmentURLs
+        self.committedSegmentKeys = Set(record.committedSegmentKeys)
+        self.recordedDurationSeconds = record.recordedDurationSeconds
+        self.recordedSegmentCount = record.recordedSegmentCount
+        self.bytesWritten = record.bytesWritten
+        self.isPaused = false
+        self.failedSegmentAttempts.removeAll()
+        self.cachedKeyData.removeAll()
+
+        self.trackInitializationURLs.removeAll()
+        for url in record.initializationSegmentURLs {
+            let filename = url.lastPathComponent
+            if filename.contains("video") {
+                self.trackInitializationURLs["video"] = url
+            } else if filename.contains("audio") {
+                self.trackInitializationURLs["audio"] = url
+            } else {
+                self.trackInitializationURLs["muxed"] = url
+            }
+        }
+
+        self.state = .recording(
+            duration: self.recordedDurationSeconds,
+            segmentCount: self.recordedSegmentCount,
+            bytesWritten: self.bytesWritten
+        )
+
+        #if canImport(UIKit) && !os(watchOS)
+        if bgTaskID == .invalid {
+            bgTaskID = UIApplication.shared.beginBackgroundTask(withName: "DownloadEngineKit.liveRecording") { [weak self] in
+                Task { @MainActor [weak self] in
+                    guard let self = self else { return }
+                    self.pauseRecording()
+                    if self.bgTaskID != .invalid {
+                        UIApplication.shared.endBackgroundTask(self.bgTaskID)
+                        self.bgTaskID = .invalid
+                    }
+                }
+            }
+        }
+        #endif
+
+        PipelineLogger.shared.log(
+            "[LiveStreamRecorder] Resuming live polling for session '\(record.request.title)' (\(sessionID)) with \(record.recordedSegments.count) existing segments."
+        )
+
+        self.recordingTask = Task { [weak self] in
+            guard let self = self else { return }
+            await self.runRecordingLoop(request: record.request, scratchDir: scratchDir)
+        }
+
+        _ = await checkForInterruptedRecordings()
     }
 
     /// Recovers and finalizes an interrupted recording session directly from disk.
@@ -327,6 +424,7 @@ public final class LiveStreamRecorder: ObservableObject {
         let scratchDir = URL(fileURLWithPath: record.scratchDirectoryPath)
         guard FileManager.default.fileExists(atPath: scratchDir.path) else {
             try? await store.delete(sessionID: sessionID)
+            _ = await checkForInterruptedRecordings()
             throw LiveStreamRecorderError.assemblyFailed("Scratch directory for session \(sessionID) no longer exists.")
         }
 
@@ -340,7 +438,19 @@ public final class LiveStreamRecorder: ObservableObject {
 
         try? await store.delete(sessionID: sessionID)
         try? FileManager.default.removeItem(at: scratchDir)
+        _ = await checkForInterruptedRecordings()
         return finalURL
+    }
+
+    /// Discards an interrupted recording session, removing scratch files and persisted metadata.
+    public func discardInterruptedRecording(sessionID: String) async {
+        guard let store = recordingStore else { return }
+        if let record = await store.load(sessionID: sessionID) {
+            let scratchDir = URL(fileURLWithPath: record.scratchDirectoryPath)
+            try? FileManager.default.removeItem(at: scratchDir)
+        }
+        try? await store.delete(sessionID: sessionID)
+        _ = await checkForInterruptedRecordings()
     }
 
     // MARK: - Internal Polling Loop
@@ -589,27 +699,36 @@ public final class LiveStreamRecorder: ObservableObject {
             throw LiveStreamRecorderError.streamIsNotLive
         }
 
-        guard let rep = inspection.selectedRepresentation else {
+        guard let videoRep = inspection.selectedRepresentation else {
             throw LiveStreamRecorderError.noSegmentsDiscovered
         }
+
+        // Discover matching audio representation from audio adaptation set
+        let audioRep = inspection.manifest.periods.first?.adaptationSets.first(where: {
+            $0.contentType == "audio" || ($0.mimeType?.lowercased().contains("audio") == true)
+        })?.representations.first
 
         var pollInterval = 4.0
         if let minBuffer = inspection.manifest.minBufferTime, minBuffer > 0 {
             pollInterval = minBuffer
         }
 
-        let template = rep.segmentTemplate ?? inspection.manifest.periods.first?.adaptationSets.first(where: {
-            $0.representations.contains(where: { $0.id == rep.id })
+        let videoTemplate = videoRep.segmentTemplate ?? inspection.manifest.periods.first?.adaptationSets.first(where: {
+            $0.representations.contains(where: { $0.id == videoRep.id })
         })?.segmentTemplate
 
-        // Download initialization segment if present
-        if let template = template, let initPattern = template.initialization, !initPattern.isEmpty {
+        let audioTemplate = audioRep?.segmentTemplate ?? inspection.manifest.periods.first?.adaptationSets.first(where: {
+            $0.representations.contains(where: { $0.id == audioRep?.id })
+        })?.segmentTemplate
+
+        // Download video initialization segment if present
+        if let template = videoTemplate, let initPattern = template.initialization, !initPattern.isEmpty {
             let expandedInitURL = try expandDASHPattern(
                 initPattern,
-                representation: rep,
+                representation: videoRep,
                 number: template.startNumber,
                 time: template.presentationTimeOffset,
-                baseURL: rep.baseURL ?? request.manifestURL
+                baseURL: videoRep.baseURL ?? request.manifestURL
             )
             try await downloadInitializationSegmentIfNeeded(
                 url: expandedInitURL,
@@ -620,7 +739,27 @@ public final class LiveStreamRecorder: ObservableObject {
             )
         }
 
-        if let template = template, !template.timeline.isEmpty, let mediaPattern = template.media {
+        // Download audio initialization segment if present
+        if let aRep = audioRep, let aTemplate = audioTemplate, let initPattern = aTemplate.initialization, !initPattern.isEmpty {
+            if let expandedAudioInitURL = try? expandDASHPattern(
+                initPattern,
+                representation: aRep,
+                number: aTemplate.startNumber,
+                time: aTemplate.presentationTimeOffset,
+                baseURL: aRep.baseURL ?? request.manifestURL
+            ) {
+                try? await downloadInitializationSegmentIfNeeded(
+                    url: expandedAudioInitURL,
+                    byteRange: nil,
+                    trackKind: "audio",
+                    scratchDir: scratchDir,
+                    requestContext: request.requestContext
+                )
+            }
+        }
+
+        // Process Timeline-based template
+        if let template = videoTemplate, !template.timeline.isEmpty, let mediaPattern = template.media {
             var runningTime: Int64 = template.presentationTimeOffset
             let timescale = template.timescale > 0 ? template.timescale : 1000
 
@@ -648,147 +787,85 @@ public final class LiveStreamRecorder: ObservableObject {
 
                 for r in 0...repeatCount {
                     let segTime = runningTime + Int64(r) * duration
-                    let key = "dash_video_\(rep.id ?? "rep")_\(segTime)"
-                    if committedSegmentKeys.contains(key) {
-                        continue
-                    }
-
                     let segDuration = Double(duration) / Double(timescale)
-                    let segURL = try expandDASHPattern(
-                        mediaPattern,
-                        representation: rep,
-                        number: Int64(recordedSegments.count + 1),
+
+                    // Download video chunk
+                    try await downloadDASHChunk(
+                        pattern: mediaPattern,
+                        representation: videoRep,
+                        trackKind: "video",
+                        seqNumber: Int64(recordedSegments.count + 1),
                         time: segTime,
-                        baseURL: rep.baseURL ?? request.manifestURL
+                        duration: segDuration,
+                        scratchDir: scratchDir,
+                        request: request
                     )
 
-                    let segOrder = recordedSegments.count
-                    let localURL = scratchDir.appendingPathComponent("seg_\(String(format: "%06d", segOrder)).m4s")
-
-                    var downloadedBytes: Int64? = nil
-                    for attempt in 1...3 {
-                        do {
-                            let bytes = try await downloadAndProcessSegment(
-                                url: segURL,
-                                byteRange: nil,
-                                encryption: nil,
-                                sequenceNumber: Int64(segOrder),
-                                destination: localURL,
-                                requestContext: request.requestContext
-                            )
-                            downloadedBytes = bytes
-                            break
-                        } catch {
-                            if attempt < 3 {
-                                try? await Task.sleep(nanoseconds: UInt64(attempt * 100_000_000))
-                            }
-                        }
-                    }
-
-                    if let bytes = downloadedBytes, bytes > 0 {
-                        let recorded = LiveRecordedSegment(
-                            sequenceNumber: Int64(segOrder),
-                            uri: segURL,
+                    // Download corresponding audio chunk if audio representation exists
+                    if let aRep = audioRep, let aTemplate = audioTemplate, let aMediaPattern = aTemplate.media {
+                        let aTime = aTemplate.presentationTimeOffset + (segTime - template.presentationTimeOffset)
+                        _ = try? await downloadDASHChunk(
+                            pattern: aMediaPattern,
+                            representation: aRep,
+                            trackKind: "audio",
+                            seqNumber: Int64(recordedSegments.count + 1),
+                            time: aTime,
                             duration: segDuration,
-                            localFileURL: localURL,
-                            byteCount: bytes,
-                            trackKind: "video"
-                        )
-                        self.recordedSegments.append(recorded)
-                        self.committedSegmentKeys.insert(key)
-                        self.recordedDurationSeconds += segDuration
-                        self.recordedSegmentCount += 1
-                        self.bytesWritten += bytes
-
-                        if !isPaused {
-                            self.state = .recording(
-                                duration: self.recordedDurationSeconds,
-                                segmentCount: self.recordedSegmentCount,
-                                bytesWritten: self.bytesWritten
-                            )
-                        }
-
-                        await persistSessionCheckpoint(state: "recording")
-                    } else {
-                        failedSegmentAttempts[key, default: 0] += 1
-                        PipelineLogger.shared.log(
-                            "[Live DASH Recording] Failed downloading chunk at time=\(segTime) (attempts=\(failedSegmentAttempts[key]!))"
+                            scratchDir: scratchDir,
+                            request: request
                         )
                     }
                 }
                 runningTime += Int64(repeatCount + 1) * duration
             }
-        } else if let template = template, let segDurationUnits = template.duration, segDurationUnits > 0, let mediaPattern = template.media {
-            // Duration-based template when timeline is empty
+        } else if let template = videoTemplate, let segDurationUnits = template.duration, segDurationUnits > 0, let mediaPattern = template.media {
+            // Duration-based template with standards-compliant ISO/IEC 23009-1 live availability window
             let timescale = template.timescale > 0 ? template.timescale : 1000
             let segDuration = Double(segDurationUnits) / Double(timescale)
             let baseNumber = template.startNumber > 0 ? template.startNumber : 1
-            let currentNumber = max(baseNumber, baseNumber + Int64(recordedSegments.count))
 
-            for segNumber in currentNumber...(currentNumber + 2) {
+            let now = Date()
+            let availStart = inspection.manifest.availabilityStartTime ?? now.addingTimeInterval(-3600)
+            let bufferDepth = inspection.manifest.timeShiftBufferDepth ?? inspection.manifest.minBufferTime ?? 30.0
+            let delay = inspection.manifest.suggestedPresentationDelay ?? (segDuration * 2.0)
+            let periodStart = inspection.manifest.periods.first?.start ?? 0.0
+
+            let elapsedWallClock = max(0, now.timeIntervalSince(availStart) - periodStart)
+            let liveEdgeTime = max(0, elapsedWallClock - delay)
+            let earliestAvailableTime = max(0, liveEdgeTime - bufferDepth)
+
+            let earliestSeq = baseNumber + Int64(earliestAvailableTime / segDuration)
+            let latestSeq = max(earliestSeq, baseNumber + Int64(liveEdgeTime / segDuration))
+
+            let windowStart = max(earliestSeq, latestSeq - 2)
+            for segNumber in windowStart...latestSeq {
                 let segTime = template.presentationTimeOffset + (segNumber - baseNumber) * segDurationUnits
-                let key = "dash_video_\(rep.id ?? "rep")_num_\(segNumber)"
-                if committedSegmentKeys.contains(key) {
-                    continue
-                }
 
-                let segURL = try expandDASHPattern(
-                    mediaPattern,
-                    representation: rep,
-                    number: segNumber,
+                try await downloadDASHChunk(
+                    pattern: mediaPattern,
+                    representation: videoRep,
+                    trackKind: "video",
+                    seqNumber: segNumber,
                     time: segTime,
-                    baseURL: rep.baseURL ?? request.manifestURL
+                    duration: segDuration,
+                    scratchDir: scratchDir,
+                    request: request
                 )
 
-                let segOrder = recordedSegments.count
-                let localURL = scratchDir.appendingPathComponent("seg_\(String(format: "%06d", segOrder)).m4s")
-
-                var downloadedBytes: Int64? = nil
-                for attempt in 1...3 {
-                    do {
-                        let bytes = try await downloadAndProcessSegment(
-                            url: segURL,
-                            byteRange: nil,
-                            encryption: nil,
-                            sequenceNumber: Int64(segOrder),
-                            destination: localURL,
-                            requestContext: request.requestContext
-                        )
-                        downloadedBytes = bytes
-                        break
-                    } catch {
-                        if attempt < 3 {
-                            try? await Task.sleep(nanoseconds: UInt64(attempt * 100_000_000))
-                        }
-                    }
-                }
-
-                if let bytes = downloadedBytes, bytes > 0 {
-                    let recorded = LiveRecordedSegment(
-                        sequenceNumber: segNumber,
-                        uri: segURL,
+                if let aRep = audioRep, let aTemplate = audioTemplate, let aMediaPattern = aTemplate.media {
+                    let aBase = aTemplate.startNumber > 0 ? aTemplate.startNumber : 1
+                    let aSegNum = aBase + (segNumber - baseNumber)
+                    let aTime = aTemplate.presentationTimeOffset + (aSegNum - aBase) * (aTemplate.duration ?? segDurationUnits)
+                    _ = try? await downloadDASHChunk(
+                        pattern: aMediaPattern,
+                        representation: aRep,
+                        trackKind: "audio",
+                        seqNumber: aSegNum,
+                        time: aTime,
                         duration: segDuration,
-                        localFileURL: localURL,
-                        byteCount: bytes,
-                        trackKind: "video"
+                        scratchDir: scratchDir,
+                        request: request
                     )
-                    self.recordedSegments.append(recorded)
-                    self.committedSegmentKeys.insert(key)
-                    self.recordedDurationSeconds += segDuration
-                    self.recordedSegmentCount += 1
-                    self.bytesWritten += bytes
-
-                    if !isPaused {
-                        self.state = .recording(
-                            duration: self.recordedDurationSeconds,
-                            segmentCount: self.recordedSegmentCount,
-                            bytesWritten: self.bytesWritten
-                        )
-                    }
-
-                    await persistSessionCheckpoint(state: "recording")
-                } else {
-                    failedSegmentAttempts[key, default: 0] += 1
                 }
             }
         } else {
@@ -796,6 +873,84 @@ public final class LiveStreamRecorder: ObservableObject {
         }
 
         return pollInterval
+    }
+
+    private func downloadDASHChunk(
+        pattern: String,
+        representation: DASHRepresentation,
+        trackKind: String,
+        seqNumber: Int64,
+        time: Int64,
+        duration: Double,
+        scratchDir: URL,
+        request: LiveRecordingRequest
+    ) async throws {
+        let key = "dash_\(trackKind)_\(representation.id ?? "rep")_\(time)_\(seqNumber)"
+        if committedSegmentKeys.contains(key) { return }
+
+        let segURL = try expandDASHPattern(
+            pattern,
+            representation: representation,
+            number: seqNumber,
+            time: time,
+            baseURL: representation.baseURL ?? request.manifestURL
+        )
+
+        let segOrder = recordedSegments.count
+        let localURL = scratchDir.appendingPathComponent("seg_\(trackKind)_\(String(format: "%06d", segOrder)).m4s")
+
+        var downloadedBytes: Int64? = nil
+        for attempt in 1...3 {
+            do {
+                let bytes = try await downloadAndProcessSegment(
+                    url: segURL,
+                    byteRange: nil,
+                    encryption: nil,
+                    sequenceNumber: seqNumber,
+                    destination: localURL,
+                    requestContext: request.requestContext
+                )
+                downloadedBytes = bytes
+                break
+            } catch {
+                if attempt < 3 {
+                    try? await Task.sleep(nanoseconds: UInt64(attempt * 100_000_000))
+                }
+            }
+        }
+
+        if let bytes = downloadedBytes, bytes > 0 {
+            let recorded = LiveRecordedSegment(
+                sequenceNumber: seqNumber,
+                uri: segURL,
+                duration: duration,
+                localFileURL: localURL,
+                byteCount: bytes,
+                trackKind: trackKind
+            )
+            self.recordedSegments.append(recorded)
+            self.committedSegmentKeys.insert(key)
+            if trackKind != "audio" {
+                self.recordedDurationSeconds += duration
+            }
+            self.recordedSegmentCount += 1
+            self.bytesWritten += bytes
+
+            if !isPaused {
+                self.state = .recording(
+                    duration: self.recordedDurationSeconds,
+                    segmentCount: self.recordedSegmentCount,
+                    bytesWritten: self.bytesWritten
+                )
+            }
+
+            await persistSessionCheckpoint(state: "recording")
+        } else {
+            failedSegmentAttempts[key, default: 0] += 1
+            PipelineLogger.shared.log(
+                "[Live DASH Recording] Failed chunk (\(trackKind)) seq=\(seqNumber) time=\(time) (attempt=\(failedSegmentAttempts[key]!))"
+            )
+        }
     }
 
     // MARK: - Finalization & Assembly
@@ -847,6 +1002,8 @@ public final class LiveStreamRecorder: ObservableObject {
             bytesWritten: self.bytesWritten
         )
 
+        _ = await checkForInterruptedRecordings()
+
         PipelineLogger.shared.log(
             "[\(cat)] Live recording successfully completed -> \(finalOutputURL.lastPathComponent) (\(self.bytesWritten) bytes, \(String(format: "%.1f", self.recordedDurationSeconds))s)"
         )
@@ -862,6 +1019,9 @@ public final class LiveStreamRecorder: ObservableObject {
     ) async throws -> URL {
         let destDir = destinationURL.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: destDir, withIntermediateDirectories: true)
+
+        let videoSegments = segments.filter { $0.trackKind == "video" || $0.trackKind == "muxed" }
+        let audioSegments = segments.filter { $0.trackKind == "audio" }
 
         var detectedContainer: DetectedFileType? = nil
         if let firstInit = initializationSegments.first(where: { FileManager.default.fileExists(atPath: $0.path) }) {
@@ -883,6 +1043,56 @@ public final class LiveStreamRecorder: ObservableObject {
             targetURL = destinationURL
         }
 
+        // Multi-track remuxing when both separate video and audio tracks were captured
+        if !videoSegments.isEmpty && !audioSegments.isEmpty {
+            let videoInit = trackInitializationURLs["video"] ?? initializationSegments.first(where: { $0.lastPathComponent.contains("video") })
+            let audioInit = trackInitializationURLs["audio"] ?? initializationSegments.first(where: { $0.lastPathComponent.contains("audio") })
+
+            let videoTrack = MediaAssemblyTrack(
+                kind: .video,
+                container: isMPEGTS ? .mpegTS : .fragmentedMP4,
+                metadata: MediaAssemblyTrackMetadata(),
+                initializationSegment: videoInit.map {
+                    MediaAssemblySegment(fileURL: $0, role: .initialization, order: 0)
+                },
+                mediaSegments: videoSegments.enumerated().map { idx, s in
+                    MediaAssemblySegment(fileURL: s.localFileURL, role: .media, order: idx + 1, actualByteCount: s.byteCount)
+                }
+            )
+
+            let audioTrack = MediaAssemblyTrack(
+                kind: .audio,
+                container: isMPEGTS ? .mpegTS : .fragmentedMP4,
+                metadata: MediaAssemblyTrackMetadata(),
+                initializationSegment: audioInit.map {
+                    MediaAssemblySegment(fileURL: $0, role: .initialization, order: 0)
+                },
+                mediaSegments: audioSegments.enumerated().map { idx, s in
+                    MediaAssemblySegment(fileURL: s.localFileURL, role: .media, order: idx + 1, actualByteCount: s.byteCount)
+                }
+            )
+
+            let assemblyReq = MediaAssemblyRequest(
+                sourceLifecycle: .vod,
+                container: isMPEGTS ? .mpegTS : .isoBaseMediaFile,
+                encryption: .clear,
+                tracks: [videoTrack, audioTrack],
+                destinationURL: targetURL,
+                temporaryDirectoryURL: scratchDir
+            )
+
+            do {
+                let assemblyOutput = try await MediaAssembler.assemble(assemblyReq)
+                let finalBytes = (try? FileManager.default.attributesOfItem(atPath: assemblyOutput.publishedDestinationURL.path)[.size] as? Int64) ?? bytesWritten
+                self.bytesWritten = finalBytes
+                _ = await (libraryStore ?? .shared).scanLibrary(in: destDir)
+                return assemblyOutput.publishedDestinationURL
+            } catch {
+                PipelineLogger.shared.log("[LiveStreamRecorder] MediaAssembler multi-track remux failed: \(error.localizedDescription). Falling back to direct concatenation.")
+            }
+        }
+
+        // Single-track or fallback ordered assembly
         let stagingOutputURL = scratchDir.appendingPathComponent("assembled_live_output.\(targetURL.pathExtension)")
         if FileManager.default.fileExists(atPath: stagingOutputURL.path) {
             try? FileManager.default.removeItem(at: stagingOutputURL)
@@ -948,7 +1158,7 @@ public final class LiveStreamRecorder: ObservableObject {
         let key = "init_\(trackKind)_\(url.absoluteString)_\(byteRange?.length ?? -1)_\(byteRange?.offset ?? -1)"
         if committedSegmentKeys.contains(key) { return }
 
-        let initFileName = "init_\(trackKind)_\(initializationSegmentURLs.count).mp4"
+        let initFileName = "init_\(trackKind).mp4"
         let localURL = scratchDir.appendingPathComponent(initFileName)
 
         _ = try await downloadAndProcessSegment(
@@ -961,6 +1171,7 @@ public final class LiveStreamRecorder: ObservableObject {
         )
 
         initializationSegmentURLs.append(localURL)
+        trackInitializationURLs[trackKind] = localURL
         committedSegmentKeys.insert(key)
         PipelineLogger.shared.log("[LiveStreamRecorder] Downloaded initialization segment for track '\(trackKind)' (\(localURL.lastPathComponent))")
     }

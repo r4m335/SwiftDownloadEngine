@@ -710,6 +710,9 @@ public struct DASHManifest: Codable, Sendable, Equatable {
     public let profiles: String?
     public let mediaPresentationDuration: Double?
     public let minBufferTime: Double?
+    public let availabilityStartTime: Date?
+    public let timeShiftBufferDepth: Double?
+    public let suggestedPresentationDelay: Double?
     public let baseURL: URL?
     public let periods: [DASHPeriod]
 
@@ -719,6 +722,9 @@ public struct DASHManifest: Codable, Sendable, Equatable {
         profiles: String? = nil,
         mediaPresentationDuration: Double? = nil,
         minBufferTime: Double? = nil,
+        availabilityStartTime: Date? = nil,
+        timeShiftBufferDepth: Double? = nil,
+        suggestedPresentationDelay: Double? = nil,
         baseURL: URL? = nil,
         periods: [DASHPeriod] = []
     ) {
@@ -727,6 +733,9 @@ public struct DASHManifest: Codable, Sendable, Equatable {
         self.profiles = profiles
         self.mediaPresentationDuration = mediaPresentationDuration
         self.minBufferTime = minBufferTime
+        self.availabilityStartTime = availabilityStartTime
+        self.timeShiftBufferDepth = timeShiftBufferDepth
+        self.suggestedPresentationDelay = suggestedPresentationDelay
         self.baseURL = baseURL
         self.periods = periods
     }

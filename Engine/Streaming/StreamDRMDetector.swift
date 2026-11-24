@@ -92,6 +92,18 @@ public enum StreamDRMDetector {
                     )
                 }
 
+                if upper.contains("METHOD=SAMPLE-AES") || upper.contains("METHOD=SAMPLE-AES-CTR") || upper.contains("METHOD=SAMPLE-AES-CENC") {
+                    let isIdentity = upper.contains("KEYFORMAT=\"IDENTITY\"") || upper.contains("KEYFORMAT=IDENTITY")
+                    let hasExplicitFormat = upper.contains("KEYFORMAT=")
+                    if hasExplicitFormat && !isIdentity {
+                        return DRMResult(
+                            isProtected: true,
+                            protectionType: "Sample-AES",
+                            reason: "HLS Sample-AES DRM encryption detected with proprietary key format"
+                        )
+                    }
+                }
+
                 if upper.contains("METHOD=AES-128") {
                     hasAES128 = true
                 }

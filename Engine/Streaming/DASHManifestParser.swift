@@ -91,6 +91,9 @@ public enum DASHManifestParser {
             profiles: node.attribute("profiles"),
             mediaPresentationDuration: try parseOptionalDuration(node.attribute("mediaPresentationDuration"), name: "mediaPresentationDuration"),
             minBufferTime: try parseOptionalDuration(node.attribute("minBufferTime"), name: "minBufferTime"),
+            availabilityStartTime: parseOptionalDate(node.attribute("availabilityStartTime")),
+            timeShiftBufferDepth: try parseOptionalDuration(node.attribute("timeShiftBufferDepth"), name: "timeShiftBufferDepth"),
+            suggestedPresentationDelay: try parseOptionalDuration(node.attribute("suggestedPresentationDelay"), name: "suggestedPresentationDelay"),
             baseURL: resolvedBase,
             periods: periods
         )
@@ -360,6 +363,15 @@ public enum DASHManifestParser {
             throw ManifestParserError.malformed(reason: "\(name) contains an invalid duration.")
         }
         return duration
+    }
+
+    private static func parseOptionalDate(_ value: String?) -> Date? {
+        guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else { return nil }
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = formatter.date(from: value) { return date }
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter.date(from: value)
     }
 
     private static func parseDuration(_ value: String) -> Double? {

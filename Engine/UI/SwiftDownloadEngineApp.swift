@@ -470,6 +470,7 @@ public struct SwiftDownloadEngineApp: App {
                     if let orchestrator = viewModel.streamingOrchestrator {
                         await orchestrator.restoreStreamingTransfers(resumeInterrupted: true)
                     }
+                    _ = await LiveStreamRecorder.shared.checkForInterruptedRecordings()
                     await viewModel.reconcileSchedule()
                 }
             case .background:
