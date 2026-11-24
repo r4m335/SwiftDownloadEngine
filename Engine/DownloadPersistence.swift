@@ -422,12 +422,16 @@ public struct DownloadRecord: Codable, Equatable, Identifiable, Sendable, Schema
         self.updatedAt = Date()
     }
 
-    private func normalizeValidator(_ validator: String) -> String {
+    public static func normalizeValidator(_ validator: String) -> String {
         var trimmed = validator.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.hasPrefix("W/") || trimmed.hasPrefix("w/") {
             trimmed = String(trimmed.dropFirst(2))
         }
         return trimmed.trimmingCharacters(in: CharacterSet(charactersIn: "\""))
+    }
+
+    private func normalizeValidator(_ validator: String) -> String {
+        Self.normalizeValidator(validator)
     }
 }
 

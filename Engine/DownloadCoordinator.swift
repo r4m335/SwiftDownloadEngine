@@ -473,14 +473,16 @@ public actor DownloadCoordinator {
            !headers.isEmpty {
             PipelineLogger.shared.log("[DownloadCoordinator] Successfully refreshed credentials via credentialRefreshHandler for \(BrowserURLResolver.sanitizeURLForLogging(url))")
             refreshed = headers
-        } else if let snapshot = DownloadRequestEnricher.sharedSessionSnapshot {
+        } else if let snapshot = DownloadRequestEnricher.sharedSessionSnapshot.snapshot {
             var headers: [String: String] = [:]
-            if !snapshot.cookies.isEmpty {
-                let cookieHeader = snapshot.cookies.map { "\($0.key)=\($0.value)" }.joined(separator: "; ")
-                headers["Cookie"] = cookieHeader
+            if !snapshot.allCookies.isEmpty {
+                let matching = snapshot.allCookies.filter { DownloadRequestEnricher.cookieMatches(cookieDomain: $0.domain, isSecure: $0.isSecure, path: $0.path, url: url) }
+                if !matching.isEmpty {
+                    headers["Cookie"] = matching.map { "\($0.name)=\($0.value)" }.joined(separator: "; ")
+                }
             }
-            if let ua = snapshot.userAgent, !ua.isEmpty {
-                headers["User-Agent"] = ua
+            if !snapshot.userAgent.isEmpty {
+                headers["User-Agent"] = snapshot.userAgent
             }
             if !headers.isEmpty {
                 PipelineLogger.shared.log("[DownloadCoordinator] Refreshed credentials from active sharedSessionSnapshot for \(BrowserURLResolver.sanitizeURLForLogging(url))")
