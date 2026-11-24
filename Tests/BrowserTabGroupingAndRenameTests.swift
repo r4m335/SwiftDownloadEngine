@@ -302,6 +302,7 @@ final class BrowserTabGroupingAndRenameTests: XCTestCase {
 
     func testCloseTabAfterSwipeUpdatesActiveTabAndPrunesEmptyGroup() {
         var manager = BrowserTabManager()
+        let initialTab = manager.tabs[0].id
         let tab1 = manager.createTab(select: true)
         let tab2 = manager.createTab(select: false)
 
@@ -317,9 +318,9 @@ final class BrowserTabGroupingAndRenameTests: XCTestCase {
         XCTAssertEqual(manager.groups.count, 1)
 
         // Close last remaining tab in group -> group is automatically cleaned up
-        let finalActiveID = manager.closeTab(tab2)
-        XCTAssertNil(finalActiveID)
-        XCTAssertEqual(manager.tabs.count, 0)
+        let nextActiveID = manager.closeTab(tab2)
+        XCTAssertEqual(nextActiveID, initialTab)
+        XCTAssertEqual(manager.tabs.count, 1)
         XCTAssertEqual(manager.groups.count, 0)
     }
 }

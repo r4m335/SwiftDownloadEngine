@@ -742,6 +742,7 @@ final class LiveStreamsAndDRM10OutOf10Tests: XCTestCase {
         try segData.write(to: segFile)
 
         let manifestURL = URL(string: "https://mock.live/resume.m3u8")!
+        let oldSegURL = URL(string: "https://mock.live/seg1.ts")!
         let newSegURL = URL(string: "https://mock.live/seg2.ts")!
 
         let manifestContent = """
@@ -759,6 +760,11 @@ final class LiveStreamsAndDRM10OutOf10Tests: XCTestCase {
         LiveStreamsMockURLProtocol.setHandler(for: manifestURL) { _ in
             let res = HTTPURLResponse(url: manifestURL, statusCode: 200, httpVersion: nil, headerFields: nil)!
             return (res, Data(manifestContent.utf8))
+        }
+
+        LiveStreamsMockURLProtocol.setHandler(for: oldSegURL) { _ in
+            let res = HTTPURLResponse(url: oldSegURL, statusCode: 200, httpVersion: nil, headerFields: ["Content-Type": "video/mp2t"])!
+            return (res, segData)
         }
 
         let newPacket = Data([0x47]) + Data(repeating: 0x99, count: 187)
@@ -788,11 +794,11 @@ final class LiveStreamsAndDRM10OutOf10Tests: XCTestCase {
                     duration: 4.0,
                     localFileURL: segFile,
                     byteCount: 188,
-                    trackKind: "video"
+                    trackKind: "muxed"
                 )
             ],
             initializationSegmentURLs: [],
-            committedSegmentKeys: ["video_1_https://mock.live/seg1.ts_-1_-1"],
+            committedSegmentKeys: ["muxed_1_https://mock.live/seg1.ts_-1_-1"],
             scratchDirectoryPath: scratchDir.path,
             outputContainerFormat: "ts"
         )
