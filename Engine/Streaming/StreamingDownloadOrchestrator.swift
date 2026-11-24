@@ -3569,7 +3569,6 @@ public actor StreamingDownloadOrchestrator {
             try Task.checkCancellation()
             let parentID = hlsParentID(for: proposal)
             if isPaused(transferID: proposal.transferID) || isPaused(transferID: parentID) ||
-               isCancelled(transferID: proposal.transferID) || isCancelled(transferID: parentID) ||
                isHandoffInProgress(transferID: proposal.transferID) || isHandoffInProgress(transferID: parentID) {
                 throw StreamingDownloadOrchestratorError.cancelled
             }

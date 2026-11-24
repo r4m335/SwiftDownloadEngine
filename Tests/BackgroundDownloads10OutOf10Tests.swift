@@ -53,9 +53,8 @@ final class BackgroundDownloads10OutOf10Tests: XCTestCase {
             backgroundSessionManager: bgManager
         )
 
-        let candidate = try StreamingManifestCandidate(url: manifestURL)
-        var proposal = try await orchestrator.prepare(candidate: candidate)
-        proposal.transportPolicy = .foreground
+        let candidate = try StreamingManifestCandidate(url: manifestURL, transportPolicy: .foreground)
+        let proposal = try await orchestrator.prepare(candidate: candidate)
         let transferID = proposal.transferID
 
         // Pre-create segment 0 on disk to simulate it finishing right before handoff
