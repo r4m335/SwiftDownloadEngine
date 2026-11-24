@@ -1018,7 +1018,10 @@ final class StreamManifestResourceExpanderTests: XCTestCase {
 
         // Navigating to a new URL cancels probes for active tab
         vm.load(url: URL(string: "https://example.com/page2")!)
-        await Task.yield()
+        for _ in 0..<30 {
+            if !(await expander.hasInFlightTasks(for: tabID)) { break }
+            try? await Task.sleep(nanoseconds: 50_000_000)
+        }
 
         let hasInFlight = await expander.hasInFlightTasks(for: tabID)
         XCTAssertFalse(hasInFlight)

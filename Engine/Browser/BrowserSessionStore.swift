@@ -210,6 +210,7 @@ public final class BrowserSessionStore {
             schemaVersion: session.schemaVersion,
             activeTabID: safeActiveID,
             tabs: safeTabs,
+            groups: session.groups,
             savedAt: session.savedAt
         )
     }
