@@ -779,22 +779,28 @@ public final class DownloadManagerViewModel: ObservableObject {
             let infoHash = task.infoHash
             let name = task.name
             switch task.state {
-            case .downloading:
+            case .downloading, .checking:
+                let remainingBytes = (task.progress.totalBytes > task.progress.bytesDownloaded)
+                    ? Double(task.progress.totalBytes - task.progress.bytesDownloaded)
+                    : 0.0
+                let eta = (task.progress.downloadBytesPerSecond > 0 && remainingBytes > 0)
+                    ? (remainingBytes / Double(task.progress.downloadBytesPerSecond))
+                    : nil
+
                 DownloadNotificationManager.updateTransferProgress(
                     transferID: infoHash,
                     filename: name,
-                    progress: task.progress,
-                    speedBytesPerSecond: Double(task.downloadRate),
-                    remainingSeconds: task.estimatedSecondsRemaining,
+                    progress: task.progress.progressFraction,
+                    speedBytesPerSecond: Double(task.progress.downloadBytesPerSecond),
+                    remainingSeconds: eta,
                     stateDescription: "Downloading"
                 )
             case .finished:
                 DownloadNotificationManager.postTorrentCompletedNotification(name: name, infoHash: infoHash)
             case .seeding:
-                if task.isSeedingStopped {
-                    DownloadNotificationManager.postTorrentSeedingStoppedNotification(name: name, infoHash: infoHash, reason: "Seeding quota reached")
-                }
-            case .error(let err):
+                break
+            case .error:
+                let err = task.errorMessage ?? "BitTorrent error"
                 if err.localizedCaseInsensitiveContains("disk") || err.localizedCaseInsensitiveContains("space") {
                     DownloadNotificationManager.postTorrentDiskFullNotification(name: name, infoHash: infoHash, availableBytes: 0)
                 } else {
