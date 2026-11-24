@@ -176,12 +176,9 @@ public enum LIDPreviewPreflight {
             return .failure(.blobResourceUnsupported)
         }
 
-        if candidate.isSegmentChunk {
-            return .failure(.segmentChunkUnsupported)
-        }
-
-        if candidate.isExpired(now: now) {
-            return .failure(.tokenExpired(candidate.url))
+        if candidate.isExpired {
+            let targetURL = candidate.finalURL ?? candidate.url ?? URL(string: candidate.rawURL) ?? URL(fileURLWithPath: "/")
+            return .failure(.tokenExpired(targetURL))
         }
 
         guard let resource = candidate.toWebpageResource() else {
