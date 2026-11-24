@@ -83,7 +83,14 @@ final class LIDMediaEngineProtocolTests: XCTestCase {
         let engine = LIDPlaybackEngine()
         XCTAssertEqual(engine.playbackState, .idle)
 
-        let testSource = LIDPlayerSource.localFile(url: URL(fileURLWithPath: "/tmp/sample.ts"), title: "Sample")
+        let tempFile = FileManager.default.temporaryDirectory.appendingPathComponent("sample_\(UUID().uuidString).ts")
+        var tsData = Data([0x47])
+        tsData.append(contentsOf: Array(repeating: UInt8(0x00), count: 187))
+        tsData.append(0x47)
+        try? tsData.write(to: tempFile)
+        defer { try? FileManager.default.removeItem(at: tempFile) }
+
+        let testSource = LIDPlayerSource.localFile(url: tempFile, title: "Sample")
         engine.load(source: testSource, autoPlay: false, resumeFromHistory: false)
         XCTAssertEqual(engine.activeBackendType, .vlcKit)
 
