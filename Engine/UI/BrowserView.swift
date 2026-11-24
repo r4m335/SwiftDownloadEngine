@@ -4695,7 +4695,43 @@ public struct BrowserView: View {
             )
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            addressBarHeader
+            VStack(spacing: 6) {
+                if viewModel.detectedMediaCount > 0 && !isAddressBarFocused && !isModalPresented && viewModel.currentURL != nil {
+                    HStack {
+                        Spacer()
+                        Button {
+                            #if canImport(UIKit)
+                            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                            #endif
+                            viewModel.openResourceInspector()
+                        } label: {
+                            HStack(spacing: 6) {
+                                Image(systemName: "arrow.down.circle.fill")
+                                    .font(.system(size: 14, weight: .bold))
+                                    .foregroundColor(.blue)
+                                Text("\(viewModel.detectedMediaCount) Media Found")
+                                    .font(.caption.weight(.bold))
+                                    .foregroundColor(.primary)
+                                Image(systemName: "chevron.right")
+                                    .font(.system(size: 10, weight: .bold))
+                                    .foregroundColor(.secondary)
+                            }
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 7)
+                            .background(.ultraThinMaterial, in: Capsule())
+                            .overlay(Capsule().stroke(Color.blue.opacity(0.35), lineWidth: 1))
+                            .shadow(color: .black.opacity(0.12), radius: 6, x: 0, y: 2)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("\(viewModel.detectedMediaCount) downloadable media detected. Tap to open resource inspector.")
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                    }
+                    .padding(.horizontal, 14)
+                    .animation(.spring(response: 0.35, dampingFraction: 0.8), value: viewModel.detectedMediaCount)
+                }
+
+                addressBarHeader
+            }
         }
         .overlay(alignment: .top) {
             VStack(spacing: 8) {
@@ -5015,14 +5051,14 @@ public struct BrowserView: View {
                         : "Find Resources")
                 }
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 8)
-            #if canImport(UIKit)
-            .background(Color(UIColor.secondarySystemBackground))
-            #else
-            .background(Color.secondary.opacity(0.15))
-            #endif
-            .cornerRadius(10)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 9)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .stroke(Color.primary.opacity(0.08), lineWidth: 1)
+            )
+            .shadow(color: .black.opacity(0.06), radius: 4, x: 0, y: 2)
 
             if isAddressBarFocused {
                 Button("Go") {
@@ -5034,8 +5070,9 @@ public struct BrowserView: View {
         }
         }
         .padding(.horizontal, 12)
-        .padding(.top, 4)
+        .padding(.top, 6)
         .padding(.bottom, 8)
+        .background(.ultraThinMaterial)
     }
 
     private var searchEngineQuickSwitcher: some View {
@@ -5860,6 +5897,9 @@ public struct BrowserTabCardView: View {
                 .onEnded { value in
                     let shouldClose = BrowserTabSwipePolicy.shouldClose(translationX: Double(value.translation.width), translationY: Double(value.translation.height))
                     if shouldClose {
+                        #if canImport(UIKit)
+                        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                        #endif
                         withAnimation(.easeOut(duration: 0.2)) {
                             if abs(value.translation.width) > abs(value.translation.height) {
                                 dragOffset.width = value.translation.width > 0 ? 350 : -350

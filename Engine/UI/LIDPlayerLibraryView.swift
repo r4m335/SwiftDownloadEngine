@@ -7,6 +7,10 @@ import SwiftUI
 import UIKit
 #endif
 
+#if canImport(AVFoundation)
+import AVFoundation
+#endif
+
 /// Tab sections in the unified player library.
 public enum LIDLibrarySection: String, CaseIterable, Identifiable {
     case all = "All Media"
@@ -43,6 +47,7 @@ public struct LIDPlayerLibraryView: View {
     @State private var selectedSection: LIDLibrarySection = .all
     @State private var mediaFilter: LIDMediaType = .all
     @State private var searchText: String = ""
+    @AppStorage("mediaLibraryGridView") private var isGridView: Bool = false
 
     // Playback presentation
     @State private var activePlaybackURL: URL? = nil
@@ -243,7 +248,9 @@ public struct LIDPlayerLibraryView: View {
         HStack(spacing: 8) {
             ForEach([LIDMediaType.all, .video, .audio], id: \.self) { type in
                 Button {
-                    mediaFilter = type
+                    withAnimation(.spring(response: 0.25, dampingFraction: 0.8)) {
+                        mediaFilter = type
+                    }
                 } label: {
                     Text(type.rawValue)
                         .font(.caption.bold())
@@ -253,8 +260,23 @@ public struct LIDPlayerLibraryView: View {
                         .foregroundColor(mediaFilter == type ? .white : .primary)
                         .cornerRadius(16)
                 }
+                .buttonStyle(.plain)
             }
             Spacer()
+
+            Button {
+                withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                    isGridView.toggle()
+                }
+            } label: {
+                Image(systemName: isGridView ? "list.bullet" : "square.grid.2x2")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundColor(.primary)
+                    .padding(7)
+                    .background(.ultraThinMaterial, in: Circle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(isGridView ? "Switch to List View" : "Switch to Grid View")
         }
         .padding(.horizontal)
         .padding(.bottom, 6)
@@ -272,6 +294,22 @@ public struct LIDPlayerLibraryView: View {
         return Group {
             if filtered.isEmpty {
                 emptyStateView(icon: "film", title: "No Media Found", message: "Completed video and audio downloads will appear here.")
+            } else if isGridView {
+                ScrollView {
+                    LazyVGrid(
+                        columns: [
+                            GridItem(.flexible(), spacing: 14),
+                            GridItem(.flexible(), spacing: 14)
+                        ],
+                        spacing: 16
+                    ) {
+                        ForEach(filtered) { item in
+                            mediaGridCard(for: item)
+                        }
+                    }
+                    .padding(.horizontal)
+                    .padding(.vertical, 8)
+                }
             } else {
                 List {
                     ForEach(filtered) { item in
@@ -417,20 +455,144 @@ public struct LIDPlayerLibraryView: View {
         }
     }
 
-    // MARK: - Media Row Component
+    // MARK: - Media Row & Grid Components
+
+    @ViewBuilder
+    private func mediaGridCard(for item: LIDMediaItem) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            ZStack(alignment: .bottomTrailing) {
+                LIDMediaThumbnailView(url: item.url, mediaType: item.mediaType)
+                    .frame(height: 112)
+                    .frame(maxWidth: .infinity)
+                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+
+                HStack(spacing: 4) {
+                    if item.isFavorite {
+                        Image(systemName: "star.fill")
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundColor(.yellow)
+                            .padding(4)
+                            .background(.ultraThinMaterial, in: Circle())
+                    }
+
+                    Text(item.url.pathExtension.uppercased())
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 3)
+                        .background(Color.black.opacity(0.65))
+                        .clipShape(Capsule())
+                }
+                .padding(6)
+
+                if item.progressFraction > 0.02 && !item.isCompleted {
+                    VStack {
+                        Spacer()
+                        ProgressView(value: item.progressFraction)
+                            .frame(height: 3)
+                            .tint(.blue)
+                            .background(Color.black.opacity(0.4))
+                    }
+                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(item.title)
+                    .font(.caption.weight(.semibold))
+                    .foregroundColor(.primary)
+                    .lineLimit(2)
+
+                Text(ByteCountFormatter.string(fromByteCount: item.fileSize, countStyle: .file))
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+            }
+            .padding(.horizontal, 4)
+        }
+        .padding(8)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(Color.primary.opacity(0.06), lineWidth: 1)
+        )
+        .contentShape(Rectangle())
+        .onTapGesture {
+            playMedia(item)
+        }
+        .contextMenu {
+            mediaContextMenuItems(for: item)
+        }
+    }
+
+    @ViewBuilder
+    private func mediaContextMenuItems(for item: LIDMediaItem) -> some View {
+        Button {
+            playMedia(item)
+        } label: {
+            Label("Play in LID Player", systemImage: "play.fill")
+        }
+
+        Button {
+            libraryStore.toggleFavorite(for: item)
+        } label: {
+            Label(item.isFavorite ? "Remove from Favorites" : "Add to Favorites", systemImage: item.isFavorite ? "star.slash" : "star.fill")
+        }
+
+        Button {
+            itemToAddToPlaylist = item
+        } label: {
+            Label("Add to Playlist", systemImage: "text.badge.plus")
+        }
+
+        Button {
+            itemToAddToFolder = item
+        } label: {
+            Label("Add to Folder", systemImage: "folder.badge.plus")
+        }
+
+        Button {
+            itemForMetadataEdit = item
+            editTitle = item.title
+            editTags = item.tags.joined(separator: ", ")
+            editNotes = item.notes ?? ""
+        } label: {
+            Label("Edit Metadata", systemImage: "tag")
+        }
+
+        Button {
+            inspectingMediaURL = item.url
+        } label: {
+            Label("Media Info", systemImage: "info.circle")
+        }
+
+        #if canImport(UIKit)
+        Button {
+            shareMediaFile(url: item.url)
+        } label: {
+            Label("Share", systemImage: "square.and.arrow.up")
+        }
+        #endif
+
+        Button {
+            itemToRename = item
+            renameText = item.title
+        } label: {
+            Label("Rename", systemImage: "pencil")
+        }
+
+        Button(role: .destructive) {
+            itemToDelete = item
+        } label: {
+            Label("Delete File", systemImage: "trash")
+        }
+    }
 
     private func mediaRow(for item: LIDMediaItem, showResumeBadge: Bool = false) -> some View {
         HStack(spacing: 12) {
-            // Media Icon
-            ZStack {
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(item.mediaType == .video ? Color.blue.opacity(0.15) : Color.orange.opacity(0.15))
-                    .frame(width: 44, height: 44)
-
-                Image(systemName: item.mediaType == .video ? "film" : "music.note")
-                    .font(.system(size: 20))
-                    .foregroundColor(item.mediaType == .video ? .blue : .orange)
-            }
+            // Media Thumbnail / Icon
+            LIDMediaThumbnailView(url: item.url, mediaType: item.mediaType)
+                .frame(width: 48, height: 48)
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
 
             // Title & Details
             VStack(alignment: .leading, spacing: 4) {
@@ -484,59 +646,7 @@ public struct LIDPlayerLibraryView: View {
 
             // Context Menu Actions
             Menu {
-                Button {
-                    playMedia(item)
-                } label: {
-                    Label("Play in LID Player", systemImage: "play.fill")
-                }
-
-                Button {
-                    itemToAddToPlaylist = item
-                } label: {
-                    Label("Add to Playlist", systemImage: "text.badge.plus")
-                }
-
-                Button {
-                    itemToAddToFolder = item
-                } label: {
-                    Label("Add to Folder", systemImage: "folder.badge.plus")
-                }
-
-                Button {
-                    itemForMetadataEdit = item
-                    editTitle = item.title
-                    editTags = item.tags.joined(separator: ", ")
-                    editNotes = item.notes ?? ""
-                } label: {
-                    Label("Edit Metadata", systemImage: "tag")
-                }
-
-                Button {
-                    inspectingMediaURL = item.url
-                } label: {
-                    Label("Media Info", systemImage: "info.circle")
-                }
-
-                #if canImport(UIKit)
-                Button {
-                    shareMediaFile(url: item.url)
-                } label: {
-                    Label("Share", systemImage: "square.and.arrow.up")
-                }
-                #endif
-
-                Button {
-                    itemToRename = item
-                    renameText = item.title
-                } label: {
-                    Label("Rename", systemImage: "pencil")
-                }
-
-                Button(role: .destructive) {
-                    itemToDelete = item
-                } label: {
-                    Label("Delete File", systemImage: "trash")
-                }
+                mediaContextMenuItems(for: item)
             } label: {
                 Image(systemName: "ellipsis")
                     .font(.system(size: 18))
@@ -1013,6 +1123,98 @@ extension View {
         self.listStyle(InsetGroupedListStyle())
         #else
         self.listStyle(PlainListStyle())
+        #endif
+    }
+}
+
+// MARK: - Asynchronous Media Thumbnail Loader & View
+
+#if canImport(UIKit)
+private final class LIDThumbnailCache {
+    static let shared = LIDThumbnailCache()
+    private let cache = NSCache<NSURL, UIImage>()
+
+    func image(for url: URL) -> UIImage? {
+        cache.object(forKey: url as NSURL)
+    }
+
+    func setImage(_ image: UIImage, for url: URL) {
+        cache.setObject(image, forKey: url as NSURL)
+    }
+}
+#endif
+
+private struct LIDMediaThumbnailView: View {
+    let url: URL
+    let mediaType: LIDMediaType
+
+    #if canImport(UIKit)
+    @State private var thumbnail: UIImage? = nil
+    #endif
+
+    var body: some View {
+        ZStack {
+            LinearGradient(
+                colors: mediaType == .video
+                    ? [Color.blue.opacity(0.24), Color.indigo.opacity(0.18)]
+                    : [Color.orange.opacity(0.24), Color.pink.opacity(0.18)],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+
+            #if canImport(UIKit)
+            if let image = thumbnail {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFill()
+            } else {
+                fallbackIcon
+            }
+            #else
+            fallbackIcon
+            #endif
+        }
+        .task(id: url) {
+            await loadThumbnailIfNeeded()
+        }
+    }
+
+    private var fallbackIcon: some View {
+        Image(systemName: mediaType == .video ? "film.fill" : "music.note")
+            .font(.system(size: 20, weight: .semibold))
+            .foregroundColor(mediaType == .video ? .blue : .orange)
+    }
+
+    private func loadThumbnailIfNeeded() async {
+        guard mediaType == .video else { return }
+        #if canImport(UIKit) && canImport(AVFoundation)
+        if let cached = LIDThumbnailCache.shared.image(for: url) {
+            self.thumbnail = cached
+            return
+        }
+        let targetURL = url
+        let image: UIImage? = await Task.detached(priority: .utility) {
+            let asset = AVURLAsset(url: targetURL)
+            let generator = AVAssetImageGenerator(asset: asset)
+            generator.appliesPreferredTrackTransform = true
+            generator.maximumSize = CGSize(width: 320, height: 180)
+            let time = CMTime(seconds: 1.5, preferredTimescale: 600)
+            if let cgImage = try? generator.copyCGImage(at: time, actualTime: nil) {
+                return UIImage(cgImage: cgImage)
+            }
+            let zeroTime = CMTime.zero
+            if let cgImage = try? generator.copyCGImage(at: zeroTime, actualTime: nil) {
+                return UIImage(cgImage: cgImage)
+            }
+            return nil
+        }.value
+
+        if let generated = image {
+            LIDThumbnailCache.shared.setImage(generated, for: url)
+            await MainActor.run {
+                self.thumbnail = generated
+            }
+        }
         #endif
     }
 }

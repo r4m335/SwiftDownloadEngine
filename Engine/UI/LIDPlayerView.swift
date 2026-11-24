@@ -840,63 +840,94 @@ public struct LIDPlayerView: View {
                         .font(.system(size: 14, weight: .bold))
                         .foregroundColor(.white)
                 }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 8)
-                .background(Color.black.opacity(0.85))
-                .cornerRadius(20)
+                .padding(.horizontal, 18)
+                .padding(.vertical, 9)
+                .background(.ultraThinMaterial, in: Capsule())
+                .overlay(Capsule().stroke(Color.yellow.opacity(0.4), lineWidth: 1))
+                .preferredColorScheme(.dark)
+                .shadow(color: .black.opacity(0.3), radius: 8)
                 .padding(.top, 50)
+                .transition(.scale.combined(with: .opacity))
             }
 
             if showBrightnessHUD {
-                hudPill(icon: "sun.max.fill", label: "Brightness", value: brightnessLevel)
+                hudPill(icon: "sun.max.fill", label: "Brightness", value: brightnessLevel, accent: .yellow)
+                    .transition(.scale.combined(with: .opacity))
             }
 
             if showVolumeHUD {
-                hudPill(icon: volumeLevel > 0 ? "speaker.wave.3.fill" : "speaker.slash.fill", label: "Volume", value: volumeLevel)
+                hudPill(icon: volumeLevel > 0 ? "speaker.wave.3.fill" : "speaker.slash.fill", label: "Volume", value: volumeLevel, accent: .cyan)
+                    .transition(.scale.combined(with: .opacity))
             }
 
             if showSeekHUD {
-                Text(seekHUDText)
-                    .font(.headline.bold())
-                    .foregroundColor(.white)
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 10)
-                    .background(Color.black.opacity(0.75))
-                    .cornerRadius(12)
-                    .padding(.top, 60)
+                HStack(spacing: 8) {
+                    if seekHUDText.hasPrefix("-") {
+                        Image(systemName: seekIconName(seconds: playerSettings.seekIntervalSeconds, isForward: false))
+                            .font(.system(size: 18, weight: .bold))
+                            .foregroundColor(.white)
+                    } else if seekHUDText.hasPrefix("+") {
+                        Image(systemName: seekIconName(seconds: playerSettings.seekIntervalSeconds, isForward: true))
+                            .font(.system(size: 18, weight: .bold))
+                            .foregroundColor(.white)
+                    }
+                    Text(seekHUDText)
+                        .font(.headline.bold())
+                        .foregroundColor(.white)
+                }
+                .padding(.horizontal, 18)
+                .padding(.vertical, 10)
+                .background(.ultraThinMaterial, in: Capsule())
+                .overlay(Capsule().stroke(Color.white.opacity(0.2), lineWidth: 1))
+                .preferredColorScheme(.dark)
+                .shadow(color: .black.opacity(0.3), radius: 8)
+                .padding(.top, 60)
+                .transition(.scale.combined(with: .opacity))
             }
 
             Spacer()
         }
+        .animation(.spring(response: 0.25, dampingFraction: 0.8), value: showSeekHUD)
+        .animation(.spring(response: 0.25, dampingFraction: 0.8), value: isHoldingSpeedBoost)
         .allowsHitTesting(false)
     }
 
-    private func hudPill(icon: String, label: String, value: Double) -> some View {
+    private func hudPill(icon: String, label: String, value: Double, accent: Color = .white) -> some View {
         VStack(spacing: 8) {
             HStack(spacing: 8) {
                 Image(systemName: icon)
-                    .font(.system(size: 20))
-                    .foregroundColor(.white)
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundColor(accent)
                 Text(label)
                     .font(.caption.bold())
                     .foregroundColor(.white)
+                Spacer()
+                Text("\(Int(max(0, min(value, 1)) * 100))%")
+                    .font(.caption2.monospacedDigit().bold())
+                    .foregroundColor(.white.opacity(0.8))
             }
             GeometryReader { p in
                 ZStack(alignment: .leading) {
                     Capsule()
-                        .fill(Color.white.opacity(0.3))
+                        .fill(Color.white.opacity(0.25))
                         .frame(height: 6)
                     Capsule()
-                        .fill(Color.white)
+                        .fill(LinearGradient(colors: [accent, .white], startPoint: .leading, endPoint: .trailing))
                         .frame(width: max(0, min(CGFloat(value) * p.size.width, p.size.width)), height: 6)
                 }
             }
-            .frame(width: 140, height: 6)
+            .frame(width: 150, height: 6)
         }
+        .frame(width: 150)
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
-        .background(Color.black.opacity(0.75))
-        .cornerRadius(14)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .stroke(Color.white.opacity(0.18), lineWidth: 1)
+        )
+        .preferredColorScheme(.dark)
+        .shadow(color: .black.opacity(0.35), radius: 10)
         .padding(.top, 60)
     }
 
@@ -912,9 +943,10 @@ public struct LIDPlayerView: View {
                     Image(systemName: "xmark")
                         .font(.system(size: 14, weight: .bold))
                         .foregroundColor(.white)
-                        .padding(8)
-                        .background(Color.black.opacity(0.5))
-                        .clipShape(Circle())
+                        .padding(10)
+                        .background(.ultraThinMaterial, in: Circle())
+                        .overlay(Circle().stroke(Color.white.opacity(0.2), lineWidth: 1))
+                        .preferredColorScheme(.dark)
                 }
 
                 Text(title)

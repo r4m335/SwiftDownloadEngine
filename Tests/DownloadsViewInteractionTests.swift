@@ -474,6 +474,52 @@ final class DownloadsViewInteractionTests: XCTestCase {
         XCTAssertTrue(menuActionInvoked, "Three-dot menu actions must be directly callable without long-press requirement")
         XCTAssertFalse(detailsInvoked, "Direct three-dot menu action must not trigger row tap navigation")
     }
+
+    @MainActor
+    func testUnifiedTransferRowView_CompactModePreservesMenuAndActions() {
+        var paused = false
+        let transfer = UnifiedTransfer(
+            id: "t-compact",
+            name: "archive.zip",
+            type: .http,
+            state: .downloading,
+            completedBytes: 512,
+            totalBytes: 1024,
+            destinationURL: tempDirectory.appendingPathComponent("archive.zip"),
+            source: "https://example.com/archive.zip"
+        )
+
+        let compactRow = UnifiedTransferRowView(
+            viewModel: viewModel,
+            transfer: transfer,
+            isSelectingMultiple: false,
+            isCompact: true,
+            onPause: { paused = true }
+        )
+
+        XCTAssertTrue(compactRow.isCompact)
+        compactRow.onPause()
+        XCTAssertTrue(paused)
+    }
+
+    @MainActor
+    func testEmptyDownloadsState_QuickActionsInvokeCallbacks() {
+        var addTriggered = false
+        var browserTriggered = false
+
+        let emptyState = EmptyDownloadsState(
+            filter: .all,
+            category: nil,
+            onAddDownload: { addTriggered = true },
+            onOpenBrowser: { browserTriggered = true }
+        )
+
+        emptyState.onAddDownload?()
+        emptyState.onOpenBrowser?()
+
+        XCTAssertTrue(addTriggered)
+        XCTAssertTrue(browserTriggered)
+    }
 #else
     func testDownloadsViewInteractionLinuxNoOp() {
         // SwiftUI is not available on Linux platforms.

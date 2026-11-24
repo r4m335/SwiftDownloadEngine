@@ -128,6 +128,8 @@ public struct DownloadsView: View {
     @State private var selectedIDs: Set<String> = []
     /// Controls the bulk-delete confirmation alert.
     @State private var showBulkDeleteAlert: Bool = false
+    /// Toggles between rich card layout and high-density compact rows.
+    @AppStorage("downloadsCompactMode") private var isCompactMode: Bool = false
 
     private var trailingToolbarPlacement: ToolbarItemPlacement {
         #if os(iOS)
@@ -611,12 +613,28 @@ public struct DownloadsView: View {
 
         Menu {
             Button {
+                withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                    isCompactMode.toggle()
+                }
+                triggerHaptic(.light)
+            } label: {
+                Label(
+                    isCompactMode ? "Switch to Card View" : "Switch to Compact Rows",
+                    systemImage: isCompactMode ? "rectangle.grid.1x2" : "list.bullet"
+                )
+            }
+
+            Divider()
+
+            Button {
+                triggerHaptic(.medium)
                 Task { @MainActor in await viewModel.pauseAll() }
             } label: {
                 Label("Pause All", systemImage: "pause.circle")
             }
 
             Button {
+                triggerHaptic(.medium)
                 Task { @MainActor in await viewModel.resumeAll() }
             } label: {
                 Label("Resume All", systemImage: "play.circle")
@@ -633,6 +651,7 @@ public struct DownloadsView: View {
             Divider()
 
             Button(role: .destructive) {
+                triggerHaptic(.heavy)
                 Task { @MainActor in await viewModel.cancelAll(deleteFiles: false) }
             } label: {
                 Label("Cancel All", systemImage: "stop.circle")
@@ -642,6 +661,7 @@ public struct DownloadsView: View {
         }
 
         Button {
+            triggerHaptic(.light)
             viewModel.addDownloadPrefilledURL = nil
             viewModel.showAddDownloadSheet = true
             activeSheet = .addDownload
@@ -699,7 +719,20 @@ public struct DownloadsView: View {
     private func transferListView(for filter: DownloadFilter) -> some View {
         let transfers = viewModel.filteredTransfers(for: filter)
         if transfers.isEmpty {
-            EmptyDownloadsState(filter: filter, category: viewModel.selectedCategory)
+            EmptyDownloadsState(
+                filter: filter,
+                category: viewModel.selectedCategory,
+                onAddDownload: {
+                    triggerHaptic(.light)
+                    viewModel.addDownloadPrefilledURL = nil
+                    viewModel.showAddDownloadSheet = true
+                    activeSheet = .addDownload
+                },
+                onOpenBrowser: {
+                    triggerHaptic(.light)
+                    viewModel.selectedTab = 1
+                }
+            )
         } else if viewModel.selectedGroupingOption == .none {
             List {
                 ForEach(transfers) { transfer in
@@ -759,7 +792,7 @@ public struct DownloadsView: View {
                       : "circle")
                     .font(.title3)
                     .foregroundColor(selectedIDs.contains(transfer.id) ? .blue : .secondary)
-                    .animation(.easeInOut(duration: 0.15), value: selectedIDs.contains(transfer.id))
+                    .animation(.spring(response: 0.25, dampingFraction: 0.75), value: selectedIDs.contains(transfer.id))
                     .transition(.scale.combined(with: .opacity))
                     .onTapGesture {
                         toggleSelection(for: transfer.id)
@@ -770,6 +803,7 @@ public struct DownloadsView: View {
                 viewModel: viewModel,
                 transfer: transfer,
                 isSelectingMultiple: isSelectingMultiple,
+                isCompact: isCompactMode,
                 onTapContent: {
                     if isSelectingMultiple {
                         toggleSelection(for: transfer.id)
@@ -777,38 +811,70 @@ public struct DownloadsView: View {
                         showTransferDetails(transfer)
                     }
                 },
-                onOpen: { openTransferFile(transfer) },
-                onSaveToFiles: { saveTransferToFiles(transfer) },
-                onShare: { shareTransferFile(transfer) },
-                onCopyLink: { copyTransferLink(transfer) },
+                onOpen: { triggerHaptic(.light); openTransferFile(transfer) },
+                onSaveToFiles: { triggerHaptic(.light); saveTransferToFiles(transfer) },
+                onShare: { triggerHaptic(.light); shareTransferFile(transfer) },
+                onCopyLink: { triggerHaptic(.light); copyTransferLink(transfer) },
                 onShowDetails: { showTransferDetails(transfer) },
-                onPause: { pauseTransfer(transfer) },
-                onResume: { resumeTransfer(transfer) },
-                onRetry: { Task { await viewModel.retryTransfer(transfer) } },
+                onPause: { triggerHaptic(.medium); pauseTransfer(transfer) },
+                onResume: { triggerHaptic(.medium); resumeTransfer(transfer) },
+                onRetry: {
+                    triggerHaptic(.medium)
+                    Task { await viewModel.retryTransfer(transfer) }
+                },
                 onUpdateLink: { activeSheet = .updateDownloadLink(transfer) },
                 onRefreshFromBrowser: { viewModel.startBrowserLinkRefresh(for: transfer) },
-                onRemoveQueue: { removeTransferFromQueue(transfer) },
-                onDeleteFile: { promptDeleteTransferFile(transfer) }
+                onRemoveQueue: { triggerHaptic(.medium); removeTransferFromQueue(transfer) },
+                onDeleteFile: { triggerHaptic(.heavy); promptDeleteTransferFile(transfer) }
             )
         }
         .onLongPressGesture(minimumDuration: 0.45) {
             guard !isSelectingMultiple else { return }
-            withAnimation(.easeInOut(duration: 0.2)) {
+            withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
                 isSelectingMultiple = true
                 selectedIDs = [transfer.id]
             }
-            #if canImport(UIKit)
-            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-            #endif
+            triggerHaptic(.medium)
         }
+        #if os(iOS)
+        .listRowSeparator(isCompactMode ? .visible : .hidden)
+        #endif
+        .listRowInsets(EdgeInsets(
+            top: isCompactMode ? 6 : 6,
+            leading: isCompactMode ? 16 : 14,
+            bottom: isCompactMode ? 6 : 6,
+            trailing: isCompactMode ? 16 : 14
+        ))
         .listRowBackground(
             isSelectingMultiple && selectedIDs.contains(transfer.id)
                 ? Color.blue.opacity(0.08)
                 : Color.clear
         )
+        .swipeActions(edge: .leading, allowsFullSwipe: true) {
+            if !isSelectingMultiple {
+                if transfer.state == .completed {
+                    Button {
+                        triggerHaptic(.light)
+                        shareTransferFile(transfer)
+                    } label: {
+                        Label("Share", systemImage: "square.and.arrow.up")
+                    }
+                    .tint(.blue)
+                } else {
+                    Button {
+                        triggerHaptic(.light)
+                        showTransferDetails(transfer)
+                    } label: {
+                        Label("Details", systemImage: "info.circle")
+                    }
+                    .tint(.indigo)
+                }
+            }
+        }
         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
             if !isSelectingMultiple {
                 Button(role: .destructive) {
+                    triggerHaptic(.medium)
                     removeTransferFromQueue(transfer)
                 } label: {
                     Label("Remove", systemImage: "trash")
@@ -816,6 +882,7 @@ public struct DownloadsView: View {
 
                 if transfer.canResume {
                     Button {
+                        triggerHaptic(.medium)
                         resumeTransfer(transfer)
                     } label: {
                         Label("Resume", systemImage: "play.fill")
@@ -823,6 +890,7 @@ public struct DownloadsView: View {
                     .tint(.green)
                 } else if transfer.canPause {
                     Button {
+                        triggerHaptic(.medium)
                         pauseTransfer(transfer)
                     } label: {
                         Label("Pause", systemImage: "pause.fill")
@@ -833,9 +901,26 @@ public struct DownloadsView: View {
         }
     }
 
+    private enum HapticStyle {
+        case light, medium, heavy
+    }
+
+    private func triggerHaptic(_ style: HapticStyle) {
+        #if canImport(UIKit)
+        let uiStyle: UIImpactFeedbackGenerator.FeedbackStyle
+        switch style {
+        case .light: uiStyle = .light
+        case .medium: uiStyle = .medium
+        case .heavy: uiStyle = .heavy
+        }
+        UIImpactFeedbackGenerator(style: uiStyle).impactOccurred()
+        #endif
+    }
+
     // MARK: - Multi-Select Helpers
 
     private func toggleSelection(for id: String) {
+        triggerHaptic(.light)
         withAnimation(.easeInOut(duration: 0.1)) {
             if selectedIDs.contains(id) {
                 selectedIDs.remove(id)
@@ -1308,10 +1393,57 @@ public struct VerticalThreeDotsButtonLabel: View {
 
 // MARK: - Unified Transfer Row View
 
+private struct GradientTransferProgressBar: View {
+    let progress: Double
+    let isIndeterminate: Bool
+    let gradientColors: [Color]
+    let height: CGFloat
+
+    @State private var shimmerOffset: CGFloat = -0.5
+
+    init(progress: Double, isIndeterminate: Bool, gradientColors: [Color], height: CGFloat = 6) {
+        self.progress = progress
+        self.isIndeterminate = isIndeterminate
+        self.gradientColors = gradientColors
+        self.height = height
+    }
+
+    var body: some View {
+        GeometryReader { geo in
+            ZStack(alignment: .leading) {
+                Capsule()
+                    .fill(Color.secondary.opacity(0.16))
+                    .frame(height: height)
+
+                if isIndeterminate {
+                    Capsule()
+                        .fill(LinearGradient(colors: gradientColors, startPoint: .leading, endPoint: .trailing))
+                        .frame(width: max(36, geo.size.width * 0.35), height: height)
+                        .offset(x: shimmerOffset * geo.size.width)
+                        .onAppear {
+                            withAnimation(.easeInOut(duration: 1.1).repeatForever(autoreverses: true)) {
+                                shimmerOffset = 0.65
+                            }
+                        }
+                } else {
+                    let clamped = max(0.0, min(progress, 1.0))
+                    Capsule()
+                        .fill(LinearGradient(colors: gradientColors, startPoint: .leading, endPoint: .trailing))
+                        .frame(width: max(clamped > 0 ? height : 0, geo.size.width * clamped), height: height)
+                        .animation(.spring(response: 0.35, dampingFraction: 0.85), value: clamped)
+                }
+            }
+            .clipShape(Capsule())
+        }
+        .frame(height: height)
+    }
+}
+
 public struct UnifiedTransferRowView: View {
     public let viewModel: DownloadManagerViewModel
     public let transfer: UnifiedTransfer
     public var isSelectingMultiple: Bool
+    public var isCompact: Bool = false
     public var onTapContent: (() -> Void)?
     public let onOpen: () -> Void
     public let onSaveToFiles: () -> Void
@@ -1330,6 +1462,7 @@ public struct UnifiedTransferRowView: View {
         viewModel: DownloadManagerViewModel,
         transfer: UnifiedTransfer,
         isSelectingMultiple: Bool = false,
+        isCompact: Bool = false,
         onTapContent: (() -> Void)? = nil,
         onOpen: @escaping () -> Void = {},
         onSaveToFiles: @escaping () -> Void = {},
@@ -1347,6 +1480,7 @@ public struct UnifiedTransferRowView: View {
         self.viewModel = viewModel
         self.transfer = transfer
         self.isSelectingMultiple = isSelectingMultiple
+        self.isCompact = isCompact
         self.onTapContent = onTapContent
         self.onOpen = onOpen
         self.onSaveToFiles = onSaveToFiles
@@ -1363,23 +1497,40 @@ public struct UnifiedTransferRowView: View {
     }
 
     public var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            // Header: Name, clock icon, TypeBadge, UnifiedStatusBadge, and visible Three-Dot (⋮) Menu
-            HStack(alignment: .center, spacing: 6) {
-                Text(transfer.name)
-                    .font(.headline)
-                    .lineLimit(1)
+        let content = VStack(alignment: .leading, spacing: isCompact ? 5 : 8) {
+            // Header: Media Icon Badge, Name, clock icon, TypeBadge, UnifiedStatusBadge, and visible Three-Dot (⋮) Menu
+            HStack(alignment: .center, spacing: isCompact ? 8 : 10) {
+                if !isCompact {
+                    transferIconBadge
+                }
 
-                if viewModel.isScheduled(transferID: transfer.id) {
-                    Image(systemName: "clock.fill")
-                        .font(.caption2)
-                        .foregroundColor(.indigo)
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 5) {
+                        Text(transfer.name)
+                            .font(isCompact ? .subheadline.weight(.semibold) : .headline)
+                            .lineLimit(1)
+
+                        if viewModel.isScheduled(transferID: transfer.id) {
+                            Image(systemName: "clock.fill")
+                                .font(.caption2)
+                                .foregroundColor(.indigo)
+                        }
+                    }
+
+                    if !isCompact {
+                        HStack(spacing: 5) {
+                            TypeBadge(type: transfer.type)
+                            UnifiedStatusBadge(state: transfer.state)
+                        }
+                    }
                 }
 
                 Spacer(minLength: 4)
 
-                TypeBadge(type: transfer.type)
-                UnifiedStatusBadge(state: transfer.state)
+                if isCompact {
+                    TypeBadge(type: transfer.type)
+                    UnifiedStatusBadge(state: transfer.state)
+                }
 
                 // Visible three-dot (⋮) menu button directly on download row
                 if !isSelectingMultiple {
@@ -1409,17 +1560,14 @@ public struct UnifiedTransferRowView: View {
                 }
             }
 
-            // Progress Bar
-            if let total = transfer.totalBytes, total > 0 {
-                ProgressView(value: transfer.progressFraction)
-                    .progressViewStyle(LinearProgressViewStyle(tint: statusColor))
-            } else if transfer.state == .downloading {
-                ProgressView()
-                    .progressViewStyle(LinearProgressViewStyle(tint: statusColor))
-            } else {
-                ProgressView(value: transfer.progressFraction)
-                    .progressViewStyle(LinearProgressViewStyle(tint: statusColor))
-            }
+            // Sleek Gradient Progress Bar
+            let isIndeterminate = (transfer.totalBytes ?? 0) <= 0 && transfer.state == .downloading
+            GradientTransferProgressBar(
+                progress: transfer.progressFraction,
+                isIndeterminate: isIndeterminate,
+                gradientColors: progressGradientColors,
+                height: isCompact ? 4 : 6
+            )
 
             // Metrics: Size & Speed
             HStack {
@@ -1443,28 +1591,33 @@ public struct UnifiedTransferRowView: View {
                 Spacer()
 
                 if transfer.state == .downloading {
-                    if transfer.isTorrent {
-                        Text("↓ \(UIFormatters.formatSpeed(transfer.downloadSpeedBytesPerSecond))  ↑ \(UIFormatters.formatSpeed(transfer.uploadSpeedBytesPerSecond))")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                    } else {
-                        Text(UIFormatters.formatSpeed(transfer.downloadSpeedBytesPerSecond))
-                            .font(.caption)
-                            .foregroundColor(.secondary)
+                    HStack(spacing: 4) {
+                        Circle()
+                            .fill(Color.blue)
+                            .frame(width: 6, height: 6)
+                        if transfer.isTorrent {
+                            Text("↓ \(UIFormatters.formatSpeed(transfer.downloadSpeedBytesPerSecond))  ↑ \(UIFormatters.formatSpeed(transfer.uploadSpeedBytesPerSecond))")
+                                .font(.caption.weight(.medium))
+                                .foregroundColor(.blue)
+                        } else {
+                            Text(UIFormatters.formatSpeed(transfer.downloadSpeedBytesPerSecond))
+                                .font(.caption.weight(.medium))
+                                .foregroundColor(.blue)
+                        }
                     }
                 } else if transfer.state == .seeding {
                     Text("Seeding • ↑ \(UIFormatters.formatSpeed(transfer.uploadSpeedBytesPerSecond))")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
+                        .font(.caption.weight(.medium))
+                        .foregroundColor(.teal)
                 } else {
                     Text("\(Int(transfer.progressFraction * 100))%")
-                        .font(.caption)
+                        .font(.caption.weight(.semibold))
                         .foregroundColor(.secondary)
                 }
             }
 
-            // Extra metrics for torrent: Peers & Seeds
-            if transfer.isTorrent {
+            // Extra metrics for torrent: Peers & Seeds (hidden in compact mode)
+            if !isCompact && transfer.isTorrent {
                 HStack {
                     Text("Peers: \(transfer.connectedPeers ?? 0) • Seeds: \(transfer.connectedSeeds ?? 0)")
                         .font(.caption2)
@@ -1478,45 +1631,69 @@ public struct UnifiedTransferRowView: View {
                 }
             }
 
-            // Quick Inline Action Controls
-            HStack(spacing: 12) {
-                if transfer.canPause {
-                    Button(action: onPause) {
-                        Label("Pause", systemImage: "pause.fill")
-                            .font(.caption2)
+            // Quick Inline Action Controls (hidden in compact mode since swipe actions handle them)
+            if !isCompact {
+                HStack(spacing: 10) {
+                    if transfer.canPause {
+                        Button(action: onPause) {
+                            Label("Pause", systemImage: "pause.fill")
+                                .font(.caption2.weight(.semibold))
+                        }
+                        .buttonStyle(.bordered)
+                        .tint(.orange)
+                    } else if transfer.canResume {
+                        Button(action: onResume) {
+                            Label("Resume", systemImage: "play.fill")
+                                .font(.caption2.weight(.semibold))
+                        }
+                        .buttonStyle(.bordered)
+                        .tint(.green)
+                    } else if transfer.canRetry {
+                        Button(action: onRetry) {
+                            Label("Retry", systemImage: "arrow.clockwise")
+                                .font(.caption2.weight(.semibold))
+                        }
+                        .buttonStyle(.bordered)
+                        .tint(.blue)
+                    } else if transfer.state == .completed {
+                        Button(action: onOpen) {
+                            Label("Open File", systemImage: "doc.text")
+                                .font(.caption2.weight(.semibold))
+                        }
+                        .buttonStyle(.bordered)
+                        .tint(.blue)
+
+                        Button(action: onShare) {
+                            Label("Share", systemImage: "square.and.arrow.up")
+                                .font(.caption2.weight(.semibold))
+                        }
+                        .buttonStyle(.bordered)
+                        .tint(.secondary)
                     }
-                    .buttonStyle(.bordered)
-                    .tint(.orange)
-                } else if transfer.canResume {
-                    Button(action: onResume) {
-                        Label("Resume", systemImage: "play.fill")
-                            .font(.caption2)
-                    }
-                    .buttonStyle(.bordered)
-                    .tint(.green)
-                } else if transfer.canRetry {
-                    Button(action: onRetry) {
-                        Label("Retry", systemImage: "arrow.clockwise")
-                            .font(.caption2)
-                    }
-                    .buttonStyle(.bordered)
-                    .tint(.blue)
-                } else if transfer.state == .completed {
-                    Button(action: onOpen) {
-                        Label("Open File", systemImage: "doc.text")
-                            .font(.caption2)
-                    }
-                    .buttonStyle(.bordered)
-                    .tint(.blue)
                 }
+                .padding(.top, 2)
             }
-            .padding(.top, 2)
+        }
+
+        Group {
+            if isCompact {
+                content
+                    .padding(.vertical, 4)
+            } else {
+                content
+                    .padding(12)
+                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                            .stroke(statusColor.opacity(0.18), lineWidth: 1)
+                    )
+                    .shadow(color: Color.black.opacity(0.04), radius: 5, x: 0, y: 2)
+            }
         }
         .contentShape(Rectangle())
         .onTapGesture {
             onTapContent?()
         }
-        .padding(.vertical, 4)
         .contextMenu {
             UnifiedTransferMenuContent(
                 transfer: transfer,
@@ -1535,6 +1712,38 @@ public struct UnifiedTransferRowView: View {
                 onRemoveQueue: onRemoveQueue,
                 onDeleteFile: onDeleteFile
             )
+        }
+    }
+
+    private var transferIconBadge: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(statusColor.opacity(0.14))
+                .frame(width: 38, height: 38)
+
+            Image(systemName: iconNameForTransfer)
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundColor(statusColor)
+        }
+    }
+
+    private var iconNameForTransfer: String {
+        switch transfer.type {
+        case .torrent: return "arrow.triangle.2.circlepath"
+        case .hls, .dash, .streaming: return "dot.radiowaves.left.and.right"
+        case .http:
+            return transfer.category.iconName
+        }
+    }
+
+    private var progressGradientColors: [Color] {
+        switch transfer.state {
+        case .downloading: return [.blue, .cyan]
+        case .completed: return [.green, .mint]
+        case .paused: return [.orange, .yellow]
+        case .failed: return [.red, .pink]
+        case .queued: return [.gray, .secondary]
+        case .seeding: return [.purple, .indigo]
         }
     }
 
@@ -2041,8 +2250,11 @@ public struct QueueSummaryHeader: View {
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 6)
-        .background(Color.platformSecondaryBackground)
-        .cornerRadius(10)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(Color.primary.opacity(0.06), lineWidth: 1)
+        )
         .padding(.horizontal)
     }
 }
@@ -2130,6 +2342,12 @@ public struct BandwidthDashboardSection: View {
                         .foregroundColor(.blue)
                         .font(.subheadline)
 
+                    if viewModel.currentTotalDownloadSpeed > 0 || viewModel.currentTotalUploadSpeed > 0 {
+                        Circle()
+                            .fill(Color.green)
+                            .frame(width: 7, height: 7)
+                    }
+
                     Text("Bandwidth Throughput")
                         .font(.caption.bold())
                         .foregroundColor(.primary)
@@ -2139,11 +2357,11 @@ public struct BandwidthDashboardSection: View {
                     // Compact preview when collapsed
                     HStack(spacing: 8) {
                         Text("↓ \(UIFormatters.formatSpeed(viewModel.currentTotalDownloadSpeed))")
-                            .font(.caption)
+                            .font(.caption.weight(.medium))
                             .foregroundColor(.blue)
 
                         Text("↑ \(UIFormatters.formatSpeed(viewModel.currentTotalUploadSpeed))")
-                            .font(.caption)
+                            .font(.caption.weight(.medium))
                             .foregroundColor(.green)
                     }
 
@@ -2151,9 +2369,11 @@ public struct BandwidthDashboardSection: View {
                         .font(.caption2)
                         .foregroundColor(.secondary)
                 }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 8)
+                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                 .padding(.horizontal)
-                .padding(.vertical, 6)
-                .background(Color.platformSecondaryBackground.opacity(0.8))
+                .padding(.top, 4)
             }
             .buttonStyle(PlainButtonStyle())
 
@@ -2258,26 +2478,80 @@ public struct CategoryFilterBar: View {
 public struct EmptyDownloadsState: View {
     public let filter: DownloadFilter
     public var category: DownloadCategory? = nil
+    public var onAddDownload: (() -> Void)? = nil
+    public var onOpenBrowser: (() -> Void)? = nil
 
-    public init(filter: DownloadFilter, category: DownloadCategory? = nil) {
+    public init(
+        filter: DownloadFilter,
+        category: DownloadCategory? = nil,
+        onAddDownload: (() -> Void)? = nil,
+        onOpenBrowser: (() -> Void)? = nil
+    ) {
         self.filter = filter
         self.category = category
+        self.onAddDownload = onAddDownload
+        self.onOpenBrowser = onOpenBrowser
     }
 
     public var body: some View {
-        VStack(spacing: 12) {
+        VStack(spacing: 16) {
             Spacer()
-            Image(systemName: category?.iconName ?? "arrow.down.circle")
-                .font(.system(size: 48))
-                .foregroundColor(.secondary)
-            Text(emptyTitle)
-                .font(.headline)
-                .foregroundColor(.secondary)
-            Text("Tap the + button to enqueue a new download URL.")
-                .font(.caption)
-                .foregroundColor(.secondary)
-                .multilineTextAlignment(.center)
-                .padding(.horizontal)
+            ZStack {
+                Circle()
+                    .fill(
+                        LinearGradient(
+                            colors: [Color.blue.opacity(0.18), Color.cyan.opacity(0.10)],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+                    .frame(width: 90, height: 90)
+
+                Image(systemName: category?.iconName ?? "arrow.down.circle.fill")
+                    .font(.system(size: 40, weight: .semibold))
+                    .foregroundColor(.blue)
+            }
+
+            VStack(spacing: 6) {
+                Text(emptyTitle)
+                    .font(.title3.weight(.semibold))
+                    .foregroundColor(.primary)
+                Text("Add a direct link, magnet URI, or browse sites with automatic media capture.")
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 32)
+            }
+
+            if onAddDownload != nil || onOpenBrowser != nil {
+                HStack(spacing: 12) {
+                    if let onAddDownload = onAddDownload {
+                        Button(action: onAddDownload) {
+                            Label("Add Link", systemImage: "plus.circle.fill")
+                                .font(.subheadline.weight(.semibold))
+                                .padding(.horizontal, 14)
+                                .padding(.vertical, 9)
+                                .background(Color.blue)
+                                .foregroundColor(.white)
+                                .clipShape(Capsule())
+                        }
+                        .buttonStyle(.plain)
+                    }
+
+                    if let onOpenBrowser = onOpenBrowser {
+                        Button(action: onOpenBrowser) {
+                            Label("Open Browser", systemImage: "globe")
+                                .font(.subheadline.weight(.semibold))
+                                .padding(.horizontal, 14)
+                                .padding(.vertical, 9)
+                                .background(.regularMaterial, in: Capsule())
+                                .overlay(Capsule().stroke(Color.primary.opacity(0.12), lineWidth: 1))
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.top, 4)
+            }
             Spacer()
         }
     }
