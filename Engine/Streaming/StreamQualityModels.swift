@@ -6,7 +6,7 @@ import SwiftUI
 
 /// Represents an available stream rendition/variant (e.g. 1080p, 720p, 480p, Audio Only)
 /// for interactive user selection before initiating a streaming download.
-public struct StreamQualityOption: Identifiable, Sendable, Equatable, Hashable {
+public struct StreamQualityOption: Identifiable, Sendable, Equatable, Hashable, Codable {
     public let id: String
     public let label: String
     public let qualityBadge: String
