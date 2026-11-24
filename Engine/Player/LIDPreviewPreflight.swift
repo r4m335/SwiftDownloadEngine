@@ -168,11 +168,11 @@ public enum LIDPreviewPreflight {
         title: String? = nil,
         now: Date = Date()
     ) -> Result<LIDPlayerSource, LIDPreviewPreflightError> {
-        if candidate.isDRMProtected || candidate.kind == .protectedMedia {
-            return .failure(.drmProtected(type: candidate.drmScheme ?? "DRM"))
+        if candidate.kind == .protectedMedia {
+            return .failure(.drmProtected(type: "DRM"))
         }
 
-        if candidate.isBlob {
+        if candidate.kind == .completeBlob || candidate.blobKind != nil {
             return .failure(.blobResourceUnsupported)
         }
 
