@@ -53,9 +53,13 @@ public struct SpeedChartView: View {
 
             timeAxisLabels
         }
-        .padding(12)
-        .background(Color.secondary.opacity(0.08))
-        .cornerRadius(12)
+        .padding(14)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(Color.primary.opacity(0.06), lineWidth: 1)
+        )
+        .shadow(color: .black.opacity(0.04), radius: 5, x: 0, y: 2)
     }
 
     // MARK: - Header Metrics
@@ -63,18 +67,23 @@ public struct SpeedChartView: View {
     private var metricsHeader: some View {
         HStack(alignment: .top) {
             // Download Speed
-            HStack(spacing: 6) {
-                Image(systemName: "arrow.down.circle.fill")
-                    .foregroundColor(.blue)
-                    .font(.system(size: 16))
+            HStack(spacing: 8) {
+                ZStack {
+                    Circle()
+                        .fill(Color.blue.opacity(0.14))
+                        .frame(width: 28, height: 28)
+                    Image(systemName: "arrow.down")
+                        .foregroundColor(.blue)
+                        .font(.system(size: 13, weight: .bold))
+                }
 
                 VStack(alignment: .leading, spacing: 1) {
-                    Text("↓ \(UIFormatters.formatSpeed(currentDownloadSpeed))")
-                        .font(.subheadline.bold())
+                    Text(UIFormatters.formatSpeed(currentDownloadSpeed))
+                        .font(.subheadline.monospacedDigit().bold())
                         .foregroundColor(.primary)
 
                     Text("Peak: \(UIFormatters.formatSpeed(peakDownloadSpeed))")
-                        .font(.system(size: 10))
+                        .font(.system(size: 10, weight: .medium))
                         .foregroundColor(.secondary)
                 }
             }
@@ -82,19 +91,24 @@ public struct SpeedChartView: View {
             Spacer()
 
             // Upload Speed
-            HStack(spacing: 6) {
-                Image(systemName: "arrow.up.circle.fill")
-                    .foregroundColor(.green)
-                    .font(.system(size: 16))
-
+            HStack(spacing: 8) {
                 VStack(alignment: .trailing, spacing: 1) {
-                    Text("↑ \(UIFormatters.formatSpeed(currentUploadSpeed))")
-                        .font(.subheadline.bold())
+                    Text(UIFormatters.formatSpeed(currentUploadSpeed))
+                        .font(.subheadline.monospacedDigit().bold())
                         .foregroundColor(.primary)
 
                     Text("Peak: \(UIFormatters.formatSpeed(peakUploadSpeed))")
-                        .font(.system(size: 10))
+                        .font(.system(size: 10, weight: .medium))
                         .foregroundColor(.secondary)
+                }
+
+                ZStack {
+                    Circle()
+                        .fill(Color.green.opacity(0.14))
+                        .frame(width: 28, height: 28)
+                    Image(systemName: "arrow.up")
+                        .foregroundColor(.green)
+                        .font(.system(size: 13, weight: .bold))
                 }
             }
         }

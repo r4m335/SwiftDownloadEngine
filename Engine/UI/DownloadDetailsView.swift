@@ -131,40 +131,35 @@ public struct DownloadDetailsView: View {
     @ViewBuilder
     private func torrentHeaderSection(_ transfer: UnifiedTransfer) -> some View {
         Section {
-            VStack(alignment: .leading, spacing: 10) {
-                HStack {
+            HStack(spacing: 14) {
+                TransferDetailsProgressRing(
+                    progress: transfer.progressFraction,
+                    color: detailAccentColor(for: transfer.state)
+                )
+
+                VStack(alignment: .leading, spacing: 6) {
                     Text(transfer.name)
-                        .font(.title3.bold())
+                        .font(.headline.bold())
                         .lineLimit(2)
-                    Spacer()
-                    TypeBadge(type: .torrent)
-                    UnifiedStatusBadge(state: transfer.state)
-                }
 
-                if let total = transfer.totalBytes, total > 0 {
-                    ProgressView(value: transfer.progressFraction)
-                        .progressViewStyle(LinearProgressViewStyle())
+                    HStack(spacing: 6) {
+                        TypeBadge(type: .torrent)
+                        UnifiedStatusBadge(state: transfer.state)
+                    }
 
-                    HStack {
-                        Text("\(Int(transfer.progressFraction * 100))% Complete")
-                            .font(.subheadline)
-                            .foregroundColor(.secondary)
-                        Spacer()
+                    if let total = transfer.totalBytes, total > 0 {
                         Text("\(UIFormatters.formatBytes(transfer.completedBytes)) of \(UIFormatters.formatBytes(total))")
-                            .font(.subheadline)
+                            .font(.caption.monospacedDigit())
                             .foregroundColor(.secondary)
-                    }
-                } else {
-                    HStack {
-                        ProgressView()
-                            .padding(.trailing, 6)
+                    } else {
                         Text("Fetching torrent metadata...")
-                            .font(.subheadline)
+                            .font(.caption)
                             .foregroundColor(.secondary)
                     }
                 }
+                Spacer(minLength: 0)
             }
-            .padding(.vertical, 4)
+            .padding(.vertical, 6)
         }
     }
 
@@ -667,33 +662,33 @@ public struct DownloadDetailsView: View {
         List {
             // Header Status & Progress
             Section {
-                VStack(alignment: .leading, spacing: 10) {
-                    HStack {
+                HStack(spacing: 14) {
+                    TransferDetailsProgressRing(
+                        progress: transfer.progressFraction,
+                        color: detailAccentColor(for: transfer.state)
+                    )
+
+                    VStack(alignment: .leading, spacing: 6) {
                         Text(transfer.name)
-                            .font(.title3.bold())
-                        Spacer()
-                        TypeBadge(type: transfer.type)
-                        if let snap = snapshot {
-                            StatusBadge(state: snap.state)
-                        } else {
-                            UnifiedStatusBadge(state: transfer.state)
+                            .font(.headline.bold())
+                            .lineLimit(2)
+
+                        HStack(spacing: 6) {
+                            TypeBadge(type: transfer.type)
+                            if let snap = snapshot {
+                                StatusBadge(state: snap.state)
+                            } else {
+                                UnifiedStatusBadge(state: transfer.state)
+                            }
                         }
-                    }
 
-                    ProgressView(value: transfer.progressFraction)
-                        .progressViewStyle(LinearProgressViewStyle())
-
-                    HStack {
-                        Text("\(Int(transfer.progressFraction * 100))% Complete")
-                            .font(.subheadline)
-                            .foregroundColor(.secondary)
-                        Spacer()
                         Text("\(UIFormatters.formatBytes(transfer.completedBytes)) of \(transfer.totalBytes.map(UIFormatters.formatBytes) ?? "Unknown")")
-                            .font(.subheadline)
+                            .font(.caption.monospacedDigit())
                             .foregroundColor(.secondary)
                     }
+                    Spacer(minLength: 0)
                 }
-                .padding(.vertical, 4)
+                .padding(.vertical, 6)
             }
 
             // Failure Diagnostics
@@ -1082,6 +1077,39 @@ public struct DownloadDetailsView: View {
             self.torrentTrackers = fetched
             self.isLoadingTrackers = false
         }
+    }
+    private func detailAccentColor(for state: UnifiedTransferState) -> Color {
+        switch state {
+        case .downloading: return .blue
+        case .completed: return .green
+        case .paused: return .orange
+        case .failed: return .red
+        case .queued: return .gray
+        case .seeding: return .purple
+        }
+    }
+}
+
+private struct TransferDetailsProgressRing: View {
+    let progress: Double
+    let color: Color
+
+    var body: some View {
+        let clamped = max(0.0, min(progress, 1.0))
+        ZStack {
+            Circle()
+                .stroke(color.opacity(0.18), lineWidth: 5)
+            Circle()
+                .trim(from: 0, to: clamped)
+                .stroke(color, style: StrokeStyle(lineWidth: 5, lineCap: .round))
+                .rotationEffect(.degrees(-90))
+                .animation(.spring(response: 0.4, dampingFraction: 0.8), value: clamped)
+
+            Text("\(Int(clamped * 100))%")
+                .font(.system(size: 13, weight: .bold).monospacedDigit())
+                .foregroundColor(.primary)
+        }
+        .frame(width: 54, height: 54)
     }
 }
 

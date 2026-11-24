@@ -280,7 +280,7 @@ public struct AddDownloadView: View {
     private var httpSingleURLSections: some View {
         // Section 1: URL Entry & Inspection Trigger
         Section(header: Text("Source URL")) {
-            HStack {
+            HStack(spacing: 8) {
                 TextField("https://example.com/file.zip", text: $urlString)
                 #if canImport(UIKit)
                     .keyboardType(.URL)
@@ -291,27 +291,13 @@ public struct AddDownloadView: View {
                         inspectURL(newURL)
                     }
 
-                #if canImport(UIKit)
-                Button {
-                    if let pasteboard = UIPasteboard.general.string {
-                        urlString = pasteboard
-                        inspectURL(pasteboard)
-                    }
-                } label: {
-                    Image(systemName: "doc.on.clipboard")
-                        .foregroundColor(.blue)
+                PasteClearAccessory(text: $urlString) { pasted in
+                    inspectURL(pasted)
+                } onClear: {
+                    inspectionResult = nil
+                    errorMessage = nil
+                    successMessage = nil
                 }
-                #elseif canImport(AppKit)
-                Button {
-                    if let pasteboard = NSPasteboard.general.string(forType: .string) {
-                        urlString = pasteboard
-                        inspectURL(pasteboard)
-                    }
-                } label: {
-                    Image(systemName: "doc.on.clipboard")
-                        .foregroundColor(.blue)
-                }
-                #endif
             }
 
             if isInspectingURL {
@@ -1069,7 +1055,7 @@ public struct AddDownloadView: View {
             .pickerStyle(SegmentedPickerStyle())
 
             if torrentInputMode == .magnet {
-                HStack {
+                HStack(spacing: 8) {
                     TextField("magnet:?xt=urn:btih:...", text: $magnetURI)
                     #if canImport(UIKit)
                         .autocapitalization(.none)
@@ -1079,27 +1065,9 @@ public struct AddDownloadView: View {
                             processMagnetURI(newURI)
                         }
 
-                    #if canImport(UIKit)
-                    Button {
-                        if let pasteboard = UIPasteboard.general.string {
-                            magnetURI = pasteboard
-                            processMagnetURI(pasteboard)
-                        }
-                    } label: {
-                        Image(systemName: "doc.on.clipboard")
-                            .foregroundColor(.blue)
+                    PasteClearAccessory(text: $magnetURI) { pasted in
+                        processMagnetURI(pasted)
                     }
-                    #elseif canImport(AppKit)
-                    Button {
-                        if let pasteboard = NSPasteboard.general.string(forType: .string) {
-                            magnetURI = pasteboard
-                            processMagnetURI(pasteboard)
-                        }
-                    } label: {
-                        Image(systemName: "doc.on.clipboard")
-                            .foregroundColor(.blue)
-                    }
-                    #endif
                 }
 
                 if isMagnetValid {
@@ -1342,6 +1310,58 @@ public struct AddDownloadView: View {
                 errorMessage = error.localizedDescription
                 isSubmitting = false
             }
+        }
+    }
+}
+
+private struct PasteClearAccessory: View {
+    @Binding var text: String
+    var onPaste: (String) -> Void
+    var onClear: (() -> Void)? = nil
+
+    var body: some View {
+        HStack(spacing: 8) {
+            if !text.isEmpty {
+                Button {
+                    text = ""
+                    onClear?()
+                    #if canImport(UIKit)
+                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                    #endif
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundColor(.secondary)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Clear input")
+            }
+
+            #if canImport(UIKit)
+            Button {
+                if let pasteboard = UIPasteboard.general.string {
+                    text = pasteboard
+                    onPaste(pasteboard)
+                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                }
+            } label: {
+                Image(systemName: "doc.on.clipboard")
+                    .foregroundColor(.blue)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Paste from clipboard")
+            #elseif canImport(AppKit)
+            Button {
+                if let pasteboard = NSPasteboard.general.string(forType: .string) {
+                    text = pasteboard
+                    onPaste(pasteboard)
+                }
+            } label: {
+                Image(systemName: "doc.on.clipboard")
+                    .foregroundColor(.blue)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Paste from clipboard")
+            #endif
         }
     }
 }

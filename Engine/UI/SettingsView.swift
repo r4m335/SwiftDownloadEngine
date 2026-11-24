@@ -13,83 +13,68 @@ public struct SettingsView: View {
     public var body: some View {
         NavigationView {
             List {
+                // Quick Overview Summary Card
+                Section {
+                    HStack(spacing: 16) {
+                        overviewStat(
+                            value: "\(viewModel.statusCounts.active)",
+                            label: "Active",
+                            icon: "arrow.down.circle.fill",
+                            color: .blue
+                        )
+                        Divider()
+                        overviewStat(
+                            value: "\(viewModel.statusCounts.completed)",
+                            label: "Completed",
+                            icon: "checkmark.circle.fill",
+                            color: .green
+                        )
+                        Divider()
+                        overviewStat(
+                            value: "\(viewModel.statusCounts.paused)",
+                            label: "Paused",
+                            icon: "pause.circle.fill",
+                            color: .orange
+                        )
+                    }
+                    .padding(.vertical, 6)
+                }
+
                 Section(header: Text("Preferences Categories")) {
                     // Category 1: Downloader
                     NavigationLink {
                         DownloaderSettingsView(viewModel: viewModel)
                     } label: {
-                        HStack(spacing: 14) {
-                            ZStack {
-                                RoundedRectangle(cornerRadius: 8)
-                                    .fill(Color.blue)
-                                    .frame(width: 36, height: 36)
-                                Image(systemName: "arrow.down.circle.fill")
-                                    .font(.system(size: 20))
-                                    .foregroundColor(.white)
-                            }
-
-                            VStack(alignment: .leading, spacing: 3) {
-                                Text("Downloader")
-                                    .font(.headline)
-                                Text("Concurrency, network, bandwidth limits, storage, BitTorrent & scheduler")
-                                    .font(.caption)
-                                    .foregroundColor(.secondary)
-                                    .lineLimit(2)
-                            }
-                            .padding(.vertical, 4)
-                        }
+                        SettingsCategoryRow(
+                            title: "Downloader",
+                            subtitle: "Concurrency, network, bandwidth limits, storage, BitTorrent & scheduler",
+                            icon: "arrow.down.circle.fill",
+                            gradient: [.blue, .cyan]
+                        )
                     }
 
                     // Category 2: Browser
                     NavigationLink {
                         BrowserSettingsView(viewModel: viewModel)
                     } label: {
-                        HStack(spacing: 14) {
-                            ZStack {
-                                RoundedRectangle(cornerRadius: 8)
-                                    .fill(Color.indigo)
-                                    .frame(width: 36, height: 36)
-                                Image(systemName: "globe")
-                                    .font(.system(size: 20))
-                                    .foregroundColor(.white)
-                            }
-
-                            VStack(alignment: .leading, spacing: 3) {
-                                Text("Browser")
-                                    .font(.headline)
-                                Text("Search engine, homepage, privacy shields, ad blocking & reader mode")
-                                    .font(.caption)
-                                    .foregroundColor(.secondary)
-                                    .lineLimit(2)
-                            }
-                            .padding(.vertical, 4)
-                        }
+                        SettingsCategoryRow(
+                            title: "Browser",
+                            subtitle: "Search engine, homepage, privacy shields, ad blocking & reader mode",
+                            icon: "globe",
+                            gradient: [.indigo, .purple]
+                        )
                     }
 
                     // Category 3: Media Player
                     NavigationLink {
                         MediaPlayerSettingsView()
                     } label: {
-                        HStack(spacing: 14) {
-                            ZStack {
-                                RoundedRectangle(cornerRadius: 8)
-                                    .fill(Color.orange)
-                                    .frame(width: 36, height: 36)
-                                Image(systemName: "play.tv.fill")
-                                    .font(.system(size: 20))
-                                    .foregroundColor(.white)
-                            }
-
-                            VStack(alignment: .leading, spacing: 3) {
-                                Text("Media Player")
-                                    .font(.headline)
-                                Text("Playback speed, aspect ratio, subtitles, audio, gestures & orientation")
-                                    .font(.caption)
-                                    .foregroundColor(.secondary)
-                                    .lineLimit(2)
-                            }
-                            .padding(.vertical, 4)
-                        }
+                        SettingsCategoryRow(
+                            title: "Media Player",
+                            subtitle: "Playback speed, aspect ratio, subtitles, audio, gestures & orientation",
+                            icon: "play.tv.fill",
+                            gradient: [.orange, .pink]
+                        )
                     }
                 }
 
@@ -97,73 +82,34 @@ public struct SettingsView: View {
                     NavigationLink {
                         AboutView()
                     } label: {
-                        HStack(spacing: 14) {
-                            ZStack {
-                                RoundedRectangle(cornerRadius: 8)
-                                    .fill(Color.gray)
-                                    .frame(width: 36, height: 36)
-                                Image(systemName: "info.circle.fill")
-                                    .font(.system(size: 20))
-                                    .foregroundColor(.white)
-                            }
-
-                            VStack(alignment: .leading, spacing: 3) {
-                                Text("About")
-                                    .font(.headline)
-                                Text("Application version, engine details & open source licenses")
-                                    .font(.caption)
-                                    .foregroundColor(.secondary)
-                            }
-                            .padding(.vertical, 4)
-                        }
+                        SettingsCategoryRow(
+                            title: "About",
+                            subtitle: "Application version, engine details & open source licenses",
+                            icon: "info.circle.fill",
+                            gradient: [.gray, .secondary]
+                        )
                     }
 
                     NavigationLink {
                         AppPrivacyView()
                     } label: {
-                        HStack(spacing: 14) {
-                            ZStack {
-                                RoundedRectangle(cornerRadius: 8)
-                                    .fill(Color.green)
-                                    .frame(width: 36, height: 36)
-                                Image(systemName: "hand.raised.shield.fill")
-                                    .font(.system(size: 18))
-                                    .foregroundColor(.white)
-                            }
-
-                            VStack(alignment: .leading, spacing: 3) {
-                                Text("App Privacy & Policy")
-                                    .font(.headline)
-                                Text("Nutrition label, zero tracking & Privacy Manifest")
-                                    .font(.caption)
-                                    .foregroundColor(.secondary)
-                            }
-                            .padding(.vertical, 4)
-                        }
+                        SettingsCategoryRow(
+                            title: "App Privacy & Policy",
+                            subtitle: "Nutrition label, zero tracking & Privacy Manifest",
+                            icon: "hand.raised.shield.fill",
+                            gradient: [.green, .mint]
+                        )
                     }
 
                     NavigationLink {
                         OpenSourceLicensesView()
                     } label: {
-                        HStack(spacing: 14) {
-                            ZStack {
-                                RoundedRectangle(cornerRadius: 8)
-                                    .fill(Color.teal)
-                                    .frame(width: 36, height: 36)
-                                Image(systemName: "doc.text.fill")
-                                    .font(.system(size: 18))
-                                    .foregroundColor(.white)
-                            }
-
-                            VStack(alignment: .leading, spacing: 3) {
-                                Text("Open Source Licenses")
-                                    .font(.headline)
-                                Text("Third-party attributions, BSD, Boost, and LGPL notices")
-                                    .font(.caption)
-                                    .foregroundColor(.secondary)
-                            }
-                            .padding(.vertical, 4)
-                        }
+                        SettingsCategoryRow(
+                            title: "Open Source Licenses",
+                            subtitle: "Third-party attributions, BSD, Boost, and LGPL notices",
+                            icon: "doc.text.fill",
+                            gradient: [.teal, .blue]
+                        )
                     }
 
                     HStack {
@@ -195,6 +141,54 @@ public struct SettingsView: View {
             .listStyle(PlainListStyle())
             #endif
             .navigationTitle("Settings")
+        }
+    }
+
+    @ViewBuilder
+    private func overviewStat(value: String, label: String, icon: String, color: Color) -> some View {
+        VStack(spacing: 4) {
+            HStack(spacing: 4) {
+                Image(systemName: icon)
+                    .font(.caption)
+                    .foregroundColor(color)
+                Text(value)
+                    .font(.headline.monospacedDigit().bold())
+                    .foregroundColor(.primary)
+            }
+            Text(label)
+                .font(.caption2)
+                .foregroundColor(.secondary)
+        }
+        .frame(maxWidth: .infinity)
+    }
+}
+
+private struct SettingsCategoryRow: View {
+    let title: String
+    let subtitle: String
+    let icon: String
+    let gradient: [Color]
+
+    var body: some View {
+        HStack(spacing: 14) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    .fill(LinearGradient(colors: gradient, startPoint: .topLeading, endPoint: .bottomTrailing))
+                    .frame(width: 38, height: 38)
+                Image(systemName: icon)
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundColor(.white)
+            }
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(.headline)
+                Text(subtitle)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .lineLimit(2)
+            }
+            .padding(.vertical, 4)
         }
     }
 }
