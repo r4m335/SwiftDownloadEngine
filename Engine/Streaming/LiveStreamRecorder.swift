@@ -964,6 +964,8 @@ public final class LiveStreamRecorder: ObservableObject {
             throw LiveStreamRecorderError.notRecording
         }
 
+        let sessionID = self.currentSessionID ?? UUID().uuidString
+
         guard !recordedSegments.isEmpty else {
             throw LiveStreamRecorderError.noSegmentsDiscovered
         }
@@ -1010,8 +1012,8 @@ public final class LiveStreamRecorder: ObservableObject {
         PipelineLogger.shared.log(
             "[\(cat)] Live recording successfully completed -> \(finalOutputURL.lastPathComponent) (\(self.bytesWritten) bytes, \(String(format: "%.1f", self.recordedDurationSeconds))s)"
         )
-        DownloadNotificationManager.postLiveRecordingStoppedNotification(sessionID: sid, title: request.title, duration: self.recordedDurationSeconds)
-        DownloadNotificationManager.postLiveRecordingCompletedNotification(sessionID: sid, title: request.title, fileURL: finalOutputURL, duration: self.recordedDurationSeconds)
+        DownloadNotificationManager.postLiveRecordingStoppedNotification(sessionID: sessionID, title: request.title, duration: self.recordedDurationSeconds)
+        DownloadNotificationManager.postLiveRecordingCompletedNotification(sessionID: sessionID, title: request.title, fileURL: finalOutputURL, duration: self.recordedDurationSeconds)
 
         return finalOutputURL
     }
