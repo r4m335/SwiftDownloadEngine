@@ -72,6 +72,7 @@ public final class LIDPlaybackEngine: NSObject, ObservableObject, LIDMediaEngine
     private var loadingWatchdogTimer: Timer? = nil
     private var renderingWatchdogTimer: Timer? = nil
     public private(set) var currentSessionId: String = "IDLE"
+    @Published public private(set) var sessionGeneration: UInt64 = 0
 
     public init(
         historyStore: LIDPlaybackHistoryStore = .shared,
@@ -253,8 +254,12 @@ public final class LIDPlaybackEngine: NSObject, ObservableObject, LIDMediaEngine
         let sid = sessionId ?? String(UUID().uuidString.prefix(8).uppercased())
         self.currentSessionId = sid
         Self.activeSessionIdForLogging = sid
+        self.sessionGeneration &+= 1
+        let currentGen = self.sessionGeneration
         vlcBackend.activeSessionId = sid
         avBackend.activeSessionId = sid
+        vlcBackend.activeSessionGeneration = currentGen
+        avBackend.activeSessionGeneration = currentGen
 
         PipelineLogger.shared.logPlayer(
             session: sid,
@@ -412,6 +417,9 @@ public final class LIDPlaybackEngine: NSObject, ObservableObject, LIDMediaEngine
         Self.deactivateAudioSession()
         #endif
 
+        self.sessionGeneration &+= 1
+        vlcBackend.activeSessionGeneration = 0
+        avBackend.activeSessionGeneration = 0
         vlcBackend.stop()
         avBackend.stop()
 
@@ -655,7 +663,8 @@ public final class LIDPlaybackEngine: NSObject, ObservableObject, LIDMediaEngine
     // MARK: - LIDMediaEngineDelegate Implementation
 
     public func engineDidUpdateState(_ engine: LIDMediaEngineProtocol, state: LIDPlaybackState) {
-        guard engine.backendType == self.activeBackendType else { return }
+        guard engine.backendType == self.activeBackendType,
+              engine.activeSessionGeneration == self.sessionGeneration else { return }
         self.playbackState = state
         if state.isPlaying || state.isPaused || state.isFailed {
             cancelLoadingWatchdog()
@@ -667,7 +676,8 @@ public final class LIDPlaybackEngine: NSObject, ObservableObject, LIDMediaEngine
     }
 
     public func engineDidUpdateTime(_ engine: LIDMediaEngineProtocol, currentSeconds: Double, durationSeconds: Double) {
-        guard engine.backendType == self.activeBackendType else { return }
+        guard engine.backendType == self.activeBackendType,
+              engine.activeSessionGeneration == self.sessionGeneration else { return }
         self.currentPositionSeconds = currentSeconds
         if durationSeconds > 0 {
             self.durationSeconds = durationSeconds
@@ -683,18 +693,21 @@ public final class LIDPlaybackEngine: NSObject, ObservableObject, LIDMediaEngine
     }
 
     public func engineDidUpdateBuffering(_ engine: LIDMediaEngineProtocol, bufferedSeconds: Double) {
-        guard engine.backendType == self.activeBackendType else { return }
+        guard engine.backendType == self.activeBackendType,
+              engine.activeSessionGeneration == self.sessionGeneration else { return }
         self.bufferedDurationSeconds = bufferedSeconds
     }
 
     public func engineDidUpdateMetadata(_ engine: LIDMediaEngineProtocol, metadata: LIDMediaMetadata) {
-        guard engine.backendType == self.activeBackendType else { return }
+        guard engine.backendType == self.activeBackendType,
+              engine.activeSessionGeneration == self.sessionGeneration else { return }
         self.metadata = metadata
         updateNowPlaying()
     }
 
     public func engineDidFail(_ engine: LIDMediaEngineProtocol, error: String) {
-        guard engine.backendType == self.activeBackendType else { return }
+        guard engine.backendType == self.activeBackendType,
+              engine.activeSessionGeneration == self.sessionGeneration else { return }
 
         // If AVFoundation fails on a network or HLS stream (e.g. 403 Forbidden, unauthorized, or unsupported codec),
         // automatically fall back to VLCKit to handle the direct stream transport.
@@ -727,6 +740,7 @@ public final class LIDPlaybackEngine: NSObject, ObservableObject, LIDMediaEngine
         #endif
         self.playbackState = .loading
         self.startLoadingWatchdog()
+        self.vlcBackend.activeSessionGeneration = self.sessionGeneration
         self.vlcBackend.load(source: source, autoPlay: true)
     }
 

@@ -18,6 +18,7 @@ public final class LIDAVFoundationBackend: NSObject, LIDMediaEngineProtocol {
     public let backendType: LIDMediaEngineBackendType = .avFoundation
     public weak var delegate: LIDMediaEngineDelegate?
     public var activeSessionId: String = "IDLE"
+    public var activeSessionGeneration: UInt64 = 0
 
     public private(set) var playbackState: LIDPlaybackState = .idle
     public private(set) var currentPositionSeconds: Double = 0.0
@@ -246,6 +247,7 @@ public final class LIDAVFoundationBackend: NSObject, LIDMediaEngineProtocol {
         #endif
 
         self.currentLoadedSource = nil
+        self.activeSessionGeneration = 0
         self.currentPositionSeconds = 0.0
         self.durationSeconds = 0.0
         self.bufferedDurationSeconds = 0.0

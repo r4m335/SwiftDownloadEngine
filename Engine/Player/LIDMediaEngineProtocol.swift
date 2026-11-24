@@ -46,6 +46,9 @@ public protocol LIDMediaEngineProtocol: AnyObject {
     /// Event delegate receiving normalized playback updates.
     var delegate: LIDMediaEngineDelegate? { get set }
 
+    /// Current session generation counter matching the playback controller session generation.
+    var activeSessionGeneration: UInt64 { get set }
+
     /// Current normalized playback state.
     var playbackState: LIDPlaybackState { get }
 

@@ -403,8 +403,8 @@ public struct BrowserResourceInspectorSheet: View {
                 set: { if !$0 { drmWarningAlert = nil } }
             )) {
                 Alert(
-                    title: Text("DRM-Protected Stream"),
-                    message: Text(drmWarningAlert ?? "This stream is encrypted with Digital Rights Management and cannot be played directly or downloaded."),
+                    title: Text("Playback Notice"),
+                    message: Text(drmWarningAlert ?? "This stream cannot be played directly."),
                     dismissButton: .default(Text("OK"))
                 )
             }
@@ -681,17 +681,16 @@ public struct BrowserResourceInspectorSheet: View {
                 }
             },
             onPreview: {
-                if resource.isDRMProtected || cand?.kind == .protectedMedia {
-                    drmWarningAlert = "This media stream is encrypted with Digital Rights Management (\(resource.drmProtectionType ?? "DRM")) and cannot be played directly."
-                    return
-                }
-                if resource.isBlobResource {
-                    drmWarningAlert = "Browser blob media cannot be previewed in external player. Please download it directly."
-                    return
-                }
                 let title = resource.suggestedFilename.isEmpty ? resource.title : resource.suggestedFilename
-                if let source = LIDPlayerSource.make(from: resource, title: title) {
+                let preflight = LIDPreviewPreflight.preflight(resource: resource, title: title)
+                switch preflight {
+                case .success(let source):
                     activePlaybackSource = source
+                case .failure(let error):
+                    if case .tokenExpired = error {
+                        viewModel.refreshResourceToken(for: resource)
+                    }
+                    drmWarningAlert = error.localizedDescription
                 }
             },
             onOpenBrowser: {

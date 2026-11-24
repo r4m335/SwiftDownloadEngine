@@ -51,6 +51,7 @@ public final class LIDVLCKitBackend: NSObject, LIDMediaEngineProtocol, VLCMediaP
     public let backendType: LIDMediaEngineBackendType = .vlcKit
     public weak var delegate: LIDMediaEngineDelegate?
     public var activeSessionId: String = "IDLE"
+    public var activeSessionGeneration: UInt64 = 0
 
     public var videoTrackCount: Int {
         player.videoTracks.count
@@ -266,6 +267,7 @@ public final class LIDVLCKitBackend: NSObject, LIDMediaEngineProtocol, VLCMediaP
         player.stop()
         player.media = nil
         self.currentLoadedSource = nil
+        self.activeSessionGeneration = 0
         self.currentPositionSeconds = 0.0
         self.durationSeconds = 0.0
         self.bufferedDurationSeconds = 0.0
@@ -628,6 +630,7 @@ public final class LIDVLCKitBackend: NSObject, LIDMediaEngineProtocol {
     public let backendType: LIDMediaEngineBackendType = .vlcKit
     public weak var delegate: LIDMediaEngineDelegate?
     public var activeSessionId: String = "IDLE"
+    public var activeSessionGeneration: UInt64 = 0
     public var videoTrackCount: Int { 1 }
     public var hasAttachedDrawable: Bool { true }
 
@@ -672,6 +675,7 @@ public final class LIDVLCKitBackend: NSObject, LIDMediaEngineProtocol {
 
     public func stop() {
         self.currentLoadedSource = nil
+        self.activeSessionGeneration = 0
         self.playbackState = .idle
         delegate?.engineDidUpdateState(self, state: .idle)
     }

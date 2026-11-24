@@ -79,61 +79,65 @@ public struct FilePreviewContainerView: View {
     }
 
     public var body: some View {
-        #if os(iOS)
-        NavigationView {
-            ZStack(alignment: .topLeading) {
-                #if canImport(QuickLook) && canImport(UIKit)
-                FilePreviewController(url: url)
-                    .ignoresSafeArea(edges: .bottom)
-                #else
-                fallbackView
-                #endif
+        if LIDPreviewPreflight.isMediaURL(url) {
+            LIDPlayerView(url: url, title: url.lastPathComponent, onDismiss: dismiss)
+        } else {
+            #if os(iOS)
+            NavigationView {
+                ZStack(alignment: .topLeading) {
+                    #if canImport(QuickLook) && canImport(UIKit)
+                    FilePreviewController(url: url)
+                        .ignoresSafeArea(edges: .bottom)
+                    #else
+                    fallbackView
+                    #endif
 
-                // Floating "Done" overlay button in top-left corner
-                // Guarantees dismissibility even when the video player or QuickLook hides the navigation bar
-                Button(action: dismiss) {
-                    HStack(spacing: 6) {
-                        Image(systemName: "xmark.circle.fill")
-                            .font(.system(size: 18, weight: .bold))
-                        Text("Done")
-                            .font(.system(size: 15, weight: .semibold))
+                    // Floating "Done" overlay button in top-left corner
+                    // Guarantees dismissibility even when the video player or QuickLook hides the navigation bar
+                    Button(action: dismiss) {
+                        HStack(spacing: 6) {
+                            Image(systemName: "xmark.circle.fill")
+                                .font(.system(size: 18, weight: .bold))
+                            Text("Done")
+                                .font(.system(size: 15, weight: .semibold))
+                        }
+                        .foregroundColor(.primary)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 8)
+                        .background(.ultraThinMaterial)
+                        .clipShape(Capsule())
+                        .shadow(color: Color.black.opacity(0.2), radius: 6, x: 0, y: 2)
                     }
-                    .foregroundColor(.primary)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 8)
-                    .background(.ultraThinMaterial)
-                    .clipShape(Capsule())
-                    .shadow(color: Color.black.opacity(0.2), radius: 6, x: 0, y: 2)
+                    .padding(.top, 12)
+                    .padding(.leading, 16)
                 }
-                .padding(.top, 12)
-                .padding(.leading, 16)
-            }
-            .navigationTitle(url.lastPathComponent)
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .navigationBarLeading) {
-                    Button("Done") {
-                        dismiss()
+                .navigationTitle(url.lastPathComponent)
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .navigationBarLeading) {
+                        Button("Done") {
+                            dismiss()
+                        }
+                        .font(.body.weight(.semibold))
                     }
-                    .font(.body.weight(.semibold))
                 }
             }
-        }
-        .navigationViewStyle(.stack)
-        #else
-        VStack(spacing: 0) {
-            HStack {
-                Button("Done") { dismiss() }
-                    .keyboardShortcut(.cancelAction)
-                Spacer()
-                Text(url.lastPathComponent).font(.headline)
-                Spacer()
+            .navigationViewStyle(.stack)
+            #else
+            VStack(spacing: 0) {
+                HStack {
+                    Button("Done") { dismiss() }
+                        .keyboardShortcut(.cancelAction)
+                    Spacer()
+                    Text(url.lastPathComponent).font(.headline)
+                    Spacer()
+                }
+                .padding()
+                Divider()
+                fallbackView
             }
-            .padding()
-            Divider()
-            fallbackView
+            #endif
         }
-        #endif
     }
 
     private func dismiss() {
