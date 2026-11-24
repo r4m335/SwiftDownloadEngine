@@ -629,6 +629,10 @@ public final class DownloadManagerViewModel: ObservableObject {
         // Fetch authoritative initial snapshots
         await refreshSnapshots()
 
+        DownloadNotificationManager.actionDelegate = self
+        let activeIDs = Set(downloads.filter { $0.state == .downloading || $0.state == .paused }.map(\.id))
+        await DownloadNotificationManager.reconcileActiveNotifications(knownActiveTransferIDs: activeIDs)
+
         // Start live bandwidth throughput sampling (Milestone 4.3)
         startBandwidthSampling()
 
@@ -770,7 +774,39 @@ public final class DownloadManagerViewModel: ObservableObject {
     /// Reloads torrent snapshots directly from `TorrentEngine`.
     public func refreshTorrentSnapshots() async {
         guard let te = torrentEngine else { return }
-        self.torrentTasks = await te.allTasks()
+        let tasks = await te.allTasks()
+        for task in tasks {
+            let infoHash = task.infoHash
+            let name = task.name
+            switch task.state {
+            case .downloading:
+                DownloadNotificationManager.updateTransferProgress(
+                    transferID: infoHash,
+                    filename: name,
+                    progress: task.progress,
+                    speedBytesPerSecond: Double(task.downloadRate),
+                    remainingSeconds: task.estimatedSecondsRemaining,
+                    stateDescription: "Downloading"
+                )
+            case .finished:
+                DownloadNotificationManager.postTorrentCompletedNotification(name: name, infoHash: infoHash)
+            case .seeding:
+                if task.isSeedingStopped {
+                    DownloadNotificationManager.postTorrentSeedingStoppedNotification(name: name, infoHash: infoHash, reason: "Seeding quota reached")
+                }
+            case .error(let err):
+                if err.localizedCaseInsensitiveContains("disk") || err.localizedCaseInsensitiveContains("space") {
+                    DownloadNotificationManager.postTorrentDiskFullNotification(name: name, infoHash: infoHash, availableBytes: 0)
+                } else {
+                    DownloadNotificationManager.postTorrentFailedNotification(name: name, infoHash: infoHash, error: err)
+                }
+            case .paused:
+                DownloadNotificationManager.postTorrentPausedNotification(name: name, infoHash: infoHash)
+            default:
+                break
+            }
+        }
+        self.torrentTasks = tasks
         self.torrentQueueSummary = await te.queueSnapshot()
         self.torrentSessionStatus = await te.status()
         rebuildUnifiedTransfers()
@@ -852,18 +888,77 @@ public final class DownloadManagerViewModel: ObservableObject {
 
     private func handleEngineEvent(_ event: DownloadEvent) {
         switch event {
-        case .added(let snap),
-             .queued(let snap),
-             .started(let snap),
-             .progressUpdated(let snap),
-             .paused(let snap),
-             .resumed(let snap),
-             .completed(let snap),
-             .failed(let snap, _),
-             .cancelled(let snap):
+        case .added(let snap):
             upsertSnapshot(snap)
+            DownloadNotificationManager.postDownloadQueuedNotification(
+                filename: snap.destinationURL.lastPathComponent,
+                downloadID: snap.id
+            )
+
+        case .queued(let snap):
+            upsertSnapshot(snap)
+            DownloadNotificationManager.postDownloadQueuedNotification(
+                filename: snap.destinationURL.lastPathComponent,
+                downloadID: snap.id
+            )
+
+        case .started(let snap):
+            upsertSnapshot(snap)
+            DownloadNotificationManager.postDownloadStartedNotification(
+                filename: snap.destinationURL.lastPathComponent,
+                downloadID: snap.id
+            )
+
+        case .progressUpdated(let snap):
+            upsertSnapshot(snap)
+            DownloadNotificationManager.updateTransferProgress(
+                transferID: snap.id,
+                filename: snap.destinationURL.lastPathComponent,
+                progress: snap.progressFraction,
+                speedBytesPerSecond: snap.currentBytesPerSecond,
+                remainingSeconds: snap.estimatedTimeRemaining,
+                stateDescription: "Downloading"
+            )
+
+        case .paused(let snap):
+            upsertSnapshot(snap)
+            DownloadNotificationManager.postDownloadPausedNotification(
+                filename: snap.destinationURL.lastPathComponent,
+                downloadID: snap.id
+            )
+
+        case .resumed(let snap):
+            upsertSnapshot(snap)
+            DownloadNotificationManager.postDownloadResumedNotification(
+                filename: snap.destinationURL.lastPathComponent,
+                downloadID: snap.id
+            )
+
+        case .completed(let snap):
+            upsertSnapshot(snap)
+            DownloadNotificationManager.postDownloadCompletedNotification(
+                filename: snap.destinationURL.lastPathComponent,
+                downloadID: snap.id,
+                destinationURL: snap.destinationURL
+            )
+
+        case .failed(let snap, let error):
+            upsertSnapshot(snap)
+            DownloadNotificationManager.postDownloadFailedNotification(
+                filename: snap.destinationURL.lastPathComponent,
+                downloadID: snap.id,
+                error: error
+            )
+
+        case .cancelled(let snap):
+            upsertSnapshot(snap)
+            DownloadNotificationManager.postDownloadCancelledNotification(
+                filename: snap.destinationURL.lastPathComponent,
+                downloadID: snap.id
+            )
 
         case .removed(let id):
+            DownloadNotificationManager.removeAllNotifications(for: id)
             downloads.removeAll { $0.id == id }
             if selectedDownload?.id == id {
                 selectedDownload = nil
@@ -1099,6 +1194,12 @@ public final class DownloadManagerViewModel: ObservableObject {
 
         let destURL = FileConflictResolver.uniqueDestinationURL(desiredFilename: resolvedFilename, directory: targetDirectory)
         let sanitizedLimit: Int64? = speedLimitBytesPerSecond.flatMap { $0 > 0 ? $0 : nil }
+
+        // Request notification permission immediately before the first meaningful download starts
+        Task {
+            _ = await DownloadNotificationManager.requestPermissionBeforeFirstDownload()
+        }
+
         let request = DownloadRequest(
             url: url,
             destinationURL: destURL,
@@ -1251,6 +1352,8 @@ public final class DownloadManagerViewModel: ObservableObject {
     public func retryDownload(id: DownloadID) async throws {
         do {
             try await engine.retryDownload(id: id)
+            let filename = downloads.first(where: { $0.id == id })?.destinationURL.lastPathComponent ?? "Download"
+            DownloadNotificationManager.postDownloadRetriedNotification(filename: filename, downloadID: id, attempt: 1)
         } catch {
             self.errorMessage = error.localizedDescription
             throw error
@@ -2284,5 +2387,35 @@ extension DownloadManagerViewModel: BrowserMagnetDelegate {
 
     public func handleMagnetLink(_ magnet: MagnetLink) async throws {
         _ = try await addTorrent(magnetURI: magnet.uri.absoluteString)
+    }
+}
+
+// MARK: - DownloadNotificationActionDelegate Conformance
+
+extension DownloadManagerViewModel: DownloadNotificationActionDelegate {
+    public func handleNotificationAction(actionIdentifier: String, transferID: String, userInfo: [String: Any]) {
+        Task { @MainActor in
+            switch actionIdentifier {
+            case DownloadNotificationAction.pause:
+                try? await self.pauseTransfer(id: transferID)
+            case DownloadNotificationAction.resume:
+                try? await self.resumeTransfer(id: transferID)
+            case DownloadNotificationAction.cancel:
+                try? await self.cancelDownload(id: transferID)
+            case DownloadNotificationAction.retry:
+                try? await self.retryDownload(id: transferID)
+            case DownloadNotificationAction.remove:
+                try? await self.cancelDownload(id: transferID, deleteFile: true)
+            case DownloadNotificationAction.openInFiles:
+                if let path = userInfo[DownloadNotificationManager.destinationURLUserInfoKey] as? String {
+                    let fileURL = URL(fileURLWithPath: path)
+                    #if canImport(UIKit) && !os(watchOS)
+                    UIApplication.shared.open(fileURL)
+                    #endif
+                }
+            default:
+                break
+            }
+        }
     }
 }

@@ -227,6 +227,7 @@ public final class LiveStreamRecorder: ObservableObject {
         PipelineLogger.shared.log(
             "[\(logCategory(for: request.manifestKind))] Starting live capture for '\(request.title)' [session: \(sessionID)] -> \(scratchDir.lastPathComponent)"
         )
+        DownloadNotificationManager.postLiveRecordingStartedNotification(sessionID: sessionID, title: request.title)
 
         self.recordingTask = Task { [weak self] in
             guard let self = self else { return }
@@ -399,6 +400,7 @@ public final class LiveStreamRecorder: ObservableObject {
         PipelineLogger.shared.log(
             "[LiveStreamRecorder] Resuming live polling for session '\(record.request.title)' (\(sessionID)) with \(record.recordedSegments.count) existing segments."
         )
+        DownloadNotificationManager.postLiveRecordingRecoveredNotification(sessionID: sessionID, title: record.request.title)
 
         self.recordingTask = Task { [weak self] in
             guard let self = self else { return }
@@ -500,6 +502,11 @@ public final class LiveStreamRecorder: ObservableObject {
                     let err = "Live stream interrupted: server failed to respond after multiple attempts."
                     self.state = .failed(error: err)
                     await self.persistSessionCheckpoint(state: "failed")
+                    DownloadNotificationManager.postLiveRecordingInterruptedNotification(
+                        sessionID: currentSessionID ?? "unknown",
+                        title: request.title,
+                        reason: err
+                    )
                     return
                 }
             }
@@ -1003,6 +1010,8 @@ public final class LiveStreamRecorder: ObservableObject {
         PipelineLogger.shared.log(
             "[\(cat)] Live recording successfully completed -> \(finalOutputURL.lastPathComponent) (\(self.bytesWritten) bytes, \(String(format: "%.1f", self.recordedDurationSeconds))s)"
         )
+        DownloadNotificationManager.postLiveRecordingStoppedNotification(sessionID: sid, title: request.title, duration: self.recordedDurationSeconds)
+        DownloadNotificationManager.postLiveRecordingCompletedNotification(sessionID: sid, title: request.title, fileURL: finalOutputURL, duration: self.recordedDurationSeconds)
 
         return finalOutputURL
     }
