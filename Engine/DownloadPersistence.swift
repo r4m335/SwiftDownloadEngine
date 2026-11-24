@@ -359,8 +359,8 @@ public struct DownloadRecord: Codable, Equatable, Identifiable, Sendable, Schema
 
         // 2. Strong validator check (ETag)
         if let persistedETag = eTag, let remoteETag = remoteETag {
-            let normalizedPersisted = normalizeValidator(persistedETag)
-            let normalizedRemote = normalizeValidator(remoteETag)
+            let normalizedPersisted = Self.normalizeValidator(persistedETag)
+            let normalizedRemote = Self.normalizeValidator(remoteETag)
             if normalizedPersisted != normalizedRemote {
                 return .validatorMismatch(
                     persistedETag: persistedETag,
@@ -428,10 +428,6 @@ public struct DownloadRecord: Codable, Equatable, Identifiable, Sendable, Schema
             trimmed = String(trimmed.dropFirst(2))
         }
         return trimmed.trimmingCharacters(in: CharacterSet(charactersIn: "\""))
-    }
-
-    private func normalizeValidator(_ validator: String) -> String {
-        Self.normalizeValidator(validator)
     }
 }
 

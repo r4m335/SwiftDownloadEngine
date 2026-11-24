@@ -423,7 +423,7 @@ final class DownloadCoordinatorTests: XCTestCase {
 
             if range == "bytes=0-" || range == "bytes=0-0" {
                 let headers = [
-                    "Content-Range": "bytes 0-0/400",
+                    "Content-Range": "bytes 0-0/\(totalSize)",
                     "ETag": "\"resume-v1\""
                 ]
                 let resp = HTTPURLResponse(url: testURL, statusCode: 206, httpVersion: "HTTP/1.1", headerFields: headers)!
@@ -507,7 +507,7 @@ final class DownloadCoordinatorTests: XCTestCase {
             let range = request.value(forHTTPHeaderField: "Range") ?? ""
             if range == "bytes=0-" || range == "bytes=0-0" {
                 let headers = [
-                    "Content-Range": "bytes 0-0/200",
+                    "Content-Range": "bytes 0-0/\(totalSize)",
                     "ETag": "\"etag-v2\""
                 ]
                 let resp = HTTPURLResponse(url: testURL, statusCode: 206, httpVersion: "HTTP/1.1", headerFields: headers)!
@@ -721,7 +721,7 @@ final class DownloadCoordinatorTests: XCTestCase {
             let range = request.value(forHTTPHeaderField: "Range") ?? ""
             if range == "bytes=0-" || range == "bytes=0-0" {
                 let headers = [
-                    "Content-Range": "bytes 0-0/1000",
+                    "Content-Range": "bytes 0-0/\(totalSize)",
                     "Content-Length": "1",
                     "ETag": "\"etag-checksum\""
                 ]
@@ -783,7 +783,7 @@ final class DownloadCoordinatorTests: XCTestCase {
             let range = request.value(forHTTPHeaderField: "Range") ?? ""
             if range == "bytes=0-" || range == "bytes=0-0" {
                 let headers = [
-                    "Content-Range": "bytes 0-0/500",
+                    "Content-Range": "bytes 0-0/\(totalSize)",
                     "Content-Length": "1",
                     "ETag": "\"etag-valid-sha\""
                 ]

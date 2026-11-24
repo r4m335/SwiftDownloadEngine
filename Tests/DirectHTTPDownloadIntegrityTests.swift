@@ -1,6 +1,46 @@
 import XCTest
 @testable import DownloadEngineKit
 
+private final class AtomicCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _count = 0
+
+    init(_ initial: Int = 0) {
+        self._count = initial
+    }
+
+    var count: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return _count
+    }
+
+    @discardableResult
+    func increment() -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        _count += 1
+        return _count
+    }
+}
+
+private final class AtomicFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _value = false
+
+    var isSet: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return _value
+    }
+
+    func set() {
+        lock.lock()
+        defer { lock.unlock() }
+        _value = true
+    }
+}
+
 final class DirectHTTPDownloadIntegrityTests: XCTestCase {
     private var tempDirectory: URL!
     private var session: URLSession!
@@ -144,10 +184,10 @@ final class DirectHTTPDownloadIntegrityTests: XCTestCase {
         let destURL = tempDirectory.appendingPathComponent("mutated_etag.bin")
         let totalSize: Int64 = 1000
 
-        var requestCount = 0
+        let requestCounter = AtomicCounter()
         MockURLProtocol.setHandler(for: testURL) { req in
-            requestCount += 1
-            if requestCount == 1 {
+            let count = requestCounter.increment()
+            if count == 1 {
                 // Probe: return 200 with Accept-Ranges: none (forces single-stream)
                 let headers = [
                     "Content-Length": "\(totalSize)",
@@ -167,7 +207,7 @@ final class DirectHTTPDownloadIntegrityTests: XCTestCase {
             }
         }
 
-        let store = try DownloadPersistenceStore(inMemory: true)
+        let store = DownloadPersistenceStore(inMemory: true)
         let coordinator = try DownloadCoordinator(session: session, persistenceStore: store)
         let request = DownloadRequest(
             url: testURL,
@@ -188,10 +228,10 @@ final class DirectHTTPDownloadIntegrityTests: XCTestCase {
         let destURL = tempDirectory.appendingPathComponent("mutated_len.bin")
         let probeSize: Int64 = 2000
 
-        var requestCount = 0
+        let requestCounter = AtomicCounter()
         MockURLProtocol.setHandler(for: testURL) { req in
-            requestCount += 1
-            if requestCount == 1 {
+            let count = requestCounter.increment()
+            if count == 1 {
                 // Probe: length 2000, no ranges
                 let headers = [
                     "Content-Length": "\(probeSize)",
@@ -209,7 +249,7 @@ final class DirectHTTPDownloadIntegrityTests: XCTestCase {
             }
         }
 
-        let store = try DownloadPersistenceStore(inMemory: true)
+        let store = DownloadPersistenceStore(inMemory: true)
         let coordinator = try DownloadCoordinator(session: session, persistenceStore: store)
         let request = DownloadRequest(
             url: testURL,
@@ -236,13 +276,13 @@ final class DirectHTTPDownloadIntegrityTests: XCTestCase {
         let expiredToken = "Bearer old-expired-token"
         let freshToken = "Bearer fresh-valid-token"
 
-        var tokenRefreshInvoked = false
+        let tokenRefreshFlag = AtomicFlag()
         DownloadCoordinator.credentialRefreshHandler = { url in
-            tokenRefreshInvoked = true
+            tokenRefreshFlag.set()
             return ["Authorization": freshToken]
         }
 
-        var segmentHitCount = 0
+        let segmentHits = AtomicCounter()
 
         MockURLProtocol.setHandler(for: testURL) { req in
             let range = req.value(forHTTPHeaderField: "Range") ?? ""
@@ -257,11 +297,11 @@ final class DirectHTTPDownloadIntegrityTests: XCTestCase {
                 return (resp, Data([payload[0]]))
             }
 
-            segmentHitCount += 1
+            let count = segmentHits.increment()
             let authHeader = req.value(forHTTPHeaderField: "Authorization")
 
             // Simulate token expiring on the first worker attempt
-            if segmentHitCount == 1 && authHeader != freshToken {
+            if count == 1 && authHeader != freshToken {
                 let resp = HTTPURLResponse(url: testURL, statusCode: 401, httpVersion: "HTTP/1.1", headerFields: [:])!
                 return (resp, Data("Unauthorized".utf8))
             }
@@ -282,7 +322,7 @@ final class DirectHTTPDownloadIntegrityTests: XCTestCase {
             return (resp, slice)
         }
 
-        let store = try DownloadPersistenceStore(inMemory: true)
+        let store = DownloadPersistenceStore(inMemory: true)
         let coordinator = try DownloadCoordinator(session: session, persistenceStore: store)
         let request = DownloadRequest(
             url: testURL,
@@ -294,7 +334,7 @@ final class DirectHTTPDownloadIntegrityTests: XCTestCase {
 
         try await coordinator.start(request)
 
-        XCTAssertTrue(tokenRefreshInvoked, "Credential refresh handler must be invoked on 401")
+        XCTAssertTrue(tokenRefreshFlag.isSet, "Credential refresh handler must be invoked on 401")
         let downloadedData = try Data(contentsOf: destURL)
         XCTAssertEqual(downloadedData, payload, "Downloaded file data must match source after transparent auth refresh")
     }
@@ -306,13 +346,13 @@ final class DirectHTTPDownloadIntegrityTests: XCTestCase {
         let payload = Data(repeating: 0x7E, count: Int(totalSize))
 
         let freshCookie = "session_id=new-valid-session"
-        var refreshCount = 0
+        let refreshCounter = AtomicCounter()
         DownloadCoordinator.credentialRefreshHandler = { _ in
-            refreshCount += 1
+            refreshCounter.increment()
             return ["Cookie": freshCookie]
         }
 
-        var streamRequests = 0
+        let streamRequestsCounter = AtomicCounter()
         MockURLProtocol.setHandler(for: testURL) { req in
             let range = req.value(forHTTPHeaderField: "Range")
             if range != nil {
@@ -326,9 +366,9 @@ final class DirectHTTPDownloadIntegrityTests: XCTestCase {
                 return (resp, Data())
             }
 
-            streamRequests += 1
+            let streamCount = streamRequestsCounter.increment()
             let cookie = req.value(forHTTPHeaderField: "Cookie")
-            if streamRequests == 1 && cookie != freshCookie {
+            if streamCount == 1 && cookie != freshCookie {
                 // First GET returns 403 Forbidden
                 let resp = HTTPURLResponse(url: testURL, statusCode: 403, httpVersion: "HTTP/1.1", headerFields: [:])!
                 return (resp, Data("Forbidden".utf8))
@@ -344,7 +384,7 @@ final class DirectHTTPDownloadIntegrityTests: XCTestCase {
             return (resp, payload)
         }
 
-        let store = try DownloadPersistenceStore(inMemory: true)
+        let store = DownloadPersistenceStore(inMemory: true)
         let coordinator = try DownloadCoordinator(session: session, persistenceStore: store)
         let request = DownloadRequest(
             url: testURL,
@@ -355,7 +395,7 @@ final class DirectHTTPDownloadIntegrityTests: XCTestCase {
 
         try await coordinator.start(request)
 
-        XCTAssertEqual(refreshCount, 1, "Credential refresh handler should be invoked on 403")
+        XCTAssertEqual(refreshCounter.count, 1, "Credential refresh handler should be invoked on 403")
         let downloadedData = try Data(contentsOf: destURL)
         XCTAssertEqual(downloadedData, payload, "Single-stream download must succeed after transparent auth refresh")
     }

@@ -565,7 +565,9 @@ private final class RedirectCaptureDelegate: NSObject, URLSessionTaskDelegate, @
         _taskWasCancelled = true
         let task = _activeTask
         lock.unlock()
-        task?.cancel()
+        if let task, task.state == .running || task.state == .suspended {
+            task.cancel()
+        }
     }
 
     #if canImport(Darwin)
