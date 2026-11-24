@@ -17,6 +17,7 @@ public enum BrowserDiagnosticCategory: String, Codable, Sendable, CaseIterable {
     case cookie
     case policy
     case blobCapture
+    case discovery
 }
 
 /// A structured diagnostic record capturing lifecycle events in the in-app browser.
