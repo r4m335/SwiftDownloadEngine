@@ -542,9 +542,11 @@ jobs:
             -Xlinker -liconv \
             -Xlinker -framework -Xlinker Security \
             -Xlinker -framework -Xlinker SystemConfiguration \
+            -Xlinker -framework -Xlinker UserNotifications \
             Engine/Configuration/EngineConfiguration.swift \
             Engine/Streaming/PipelineLogger.swift \
             Engine/DurableStorage.swift \
+            Engine/Notifications/DownloadNotificationManager.swift \
             Engine/TorrentModels.swift \
             Engine/TorrentPersistenceStore.swift \
             Engine/TorrentQueueScheduler.swift \
