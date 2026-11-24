@@ -32,6 +32,8 @@ NS_SWIFT_NAME(TorrentBridgeStatus)
 @property (nonatomic, readonly) TorrentBridgeState state;
 @property (nonatomic, readonly) int64_t totalDone;
 @property (nonatomic, readonly) int64_t totalWanted;
+@property (nonatomic, readonly) int64_t allTimeUpload;
+@property (nonatomic, readonly) int64_t allTimeDownload;
 @property (nonatomic, readonly) double downloadPayloadRate;
 @property (nonatomic, readonly) double uploadPayloadRate;
 @property (nonatomic, readonly) NSInteger numPeers;
@@ -47,12 +49,29 @@ NS_SWIFT_NAME(TorrentBridgeStatus)
                            state:(TorrentBridgeState)state
                        totalDone:(int64_t)totalDone
                      totalWanted:(int64_t)totalWanted
+                   allTimeUpload:(int64_t)allTimeUpload
+                 allTimeDownload:(int64_t)allTimeDownload
              downloadPayloadRate:(double)downloadPayloadRate
                uploadPayloadRate:(double)uploadPayloadRate
                         numPeers:(NSInteger)numPeers
                         numSeeds:(NSInteger)numSeeds
                         progress:(float)progress
                     errorMessage:(nullable NSString *)errorMessage NS_DESIGNATED_INITIALIZER;
+
+- (instancetype)initWithInfoHash:(NSString *)infoHash
+                      infoHashV1:(nullable NSString *)infoHashV1
+                      infoHashV2:(nullable NSString *)infoHashV2
+                            name:(NSString *)name
+                        savePath:(NSString *)savePath
+                           state:(TorrentBridgeState)state
+                       totalDone:(int64_t)totalDone
+                     totalWanted:(int64_t)totalWanted
+             downloadPayloadRate:(double)downloadPayloadRate
+               uploadPayloadRate:(double)uploadPayloadRate
+                        numPeers:(NSInteger)numPeers
+                        numSeeds:(NSInteger)numSeeds
+                        progress:(float)progress
+                    errorMessage:(nullable NSString *)errorMessage;
 
 - (instancetype)initWithInfoHash:(NSString *)infoHash
                             name:(NSString *)name
@@ -346,6 +365,44 @@ NS_SWIFT_NAME(TorrentSessionBridge)
 /// Forces an immediate re-announce to all trackers for the target torrent.
 - (BOOL)forceReannounceForTorrentWithHash:(NSString *)infoHash
                                     error:(NSError * _Nullable * _Nullable)error NS_SWIFT_NAME(forceReannounce(forTorrentWithHash:));
+
+// MARK: - Bandwidth & Rate Limits
+
+/// Sets the global session download rate limit in bytes per second (0 = unlimited).
+- (BOOL)setSessionDownloadLimit:(NSInteger)bytesPerSecond
+                          error:(NSError * _Nullable * _Nullable)error NS_SWIFT_NAME(setDownloadLimit(_:));
+
+/// Sets the global session upload rate limit in bytes per second (0 = unlimited).
+- (BOOL)setSessionUploadLimit:(NSInteger)bytesPerSecond
+                        error:(NSError * _Nullable * _Nullable)error NS_SWIFT_NAME(setUploadLimit(_:));
+
+/// Returns the current global session download rate limit in bytes per second (0 = unlimited).
+- (NSInteger)sessionDownloadLimit NS_SWIFT_NAME(sessionDownloadLimit());
+
+/// Returns the current global session upload rate limit in bytes per second (0 = unlimited).
+- (NSInteger)sessionUploadLimit NS_SWIFT_NAME(sessionUploadLimit());
+
+/// Sets the download rate limit for an individual torrent in bytes per second (0 = unlimited).
+- (BOOL)setDownloadLimit:(NSInteger)bytesPerSecond
+      forTorrentWithHash:(NSString *)infoHash
+                   error:(NSError * _Nullable * _Nullable)error NS_SWIFT_NAME(setDownloadLimit(_:forTorrentWithHash:));
+
+/// Sets the upload rate limit for an individual torrent in bytes per second (0 = unlimited).
+- (BOOL)setUploadLimit:(NSInteger)bytesPerSecond
+    forTorrentWithHash:(NSString *)infoHash
+                 error:(NSError * _Nullable * _Nullable)error NS_SWIFT_NAME(setUploadLimit(_:forTorrentWithHash:));
+
+/// Returns the download rate limit for an individual torrent in bytes per second (0 = unlimited).
+- (NSInteger)downloadLimitForTorrentWithHash:(NSString *)infoHash NS_SWIFT_NAME(downloadLimit(forTorrentWithHash:));
+
+/// Returns the upload rate limit for an individual torrent in bytes per second (0 = unlimited).
+- (NSInteger)uploadLimitForTorrentWithHash:(NSString *)infoHash NS_SWIFT_NAME(uploadLimit(forTorrentWithHash:));
+
+// MARK: - Error Recovery & Piece Hash Integrity
+
+/// Clears sticky errors and triggers a full piece hash recheck for the target torrent.
+- (BOOL)recheckTorrentWithHash:(NSString *)infoHash
+                         error:(NSError * _Nullable * _Nullable)error NS_SWIFT_NAME(recheckTorrent(withHash:));
 
 @end
 

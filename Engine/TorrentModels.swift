@@ -98,6 +98,7 @@ public struct TorrentProgress: Codable, Equatable, Sendable {
     public let connectedPeers: Int
     public let activeSeeds: Int
     public let progressFraction: Double
+    public let bytesUploaded: Int64
 
     public init(
         bytesDownloaded: Int64 = 0,
@@ -106,7 +107,8 @@ public struct TorrentProgress: Codable, Equatable, Sendable {
         uploadBytesPerSecond: Double = 0,
         connectedPeers: Int = 0,
         activeSeeds: Int = 0,
-        progressFraction: Double = 0
+        progressFraction: Double = 0,
+        bytesUploaded: Int64 = 0
     ) {
         self.bytesDownloaded = max(0, bytesDownloaded)
         self.totalBytes = max(0, totalBytes)
@@ -115,6 +117,23 @@ public struct TorrentProgress: Codable, Equatable, Sendable {
         self.connectedPeers = max(0, connectedPeers)
         self.activeSeeds = max(0, activeSeeds)
         self.progressFraction = min(1, max(0, progressFraction))
+        self.bytesUploaded = max(0, bytesUploaded)
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case bytesDownloaded, totalBytes, downloadBytesPerSecond, uploadBytesPerSecond, connectedPeers, activeSeeds, progressFraction, bytesUploaded
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.bytesDownloaded = try container.decodeIfPresent(Int64.self, forKey: .bytesDownloaded) ?? 0
+        self.totalBytes = try container.decodeIfPresent(Int64.self, forKey: .totalBytes) ?? 0
+        self.downloadBytesPerSecond = try container.decodeIfPresent(Double.self, forKey: .downloadBytesPerSecond) ?? 0
+        self.uploadBytesPerSecond = try container.decodeIfPresent(Double.self, forKey: .uploadBytesPerSecond) ?? 0
+        self.connectedPeers = try container.decodeIfPresent(Int.self, forKey: .connectedPeers) ?? 0
+        self.activeSeeds = try container.decodeIfPresent(Int.self, forKey: .activeSeeds) ?? 0
+        self.progressFraction = try container.decodeIfPresent(Double.self, forKey: .progressFraction) ?? 0
+        self.bytesUploaded = try container.decodeIfPresent(Int64.self, forKey: .bytesUploaded) ?? 0
     }
 }
 
@@ -254,22 +273,54 @@ public struct TorrentTrackerURLValidator {
 /// (iOS device builds, macOS, Linux, and Windows) without requiring native libtorrent symbols.
 public struct TorrentMetadataParser: Sendable {
 
-    /// Extracts the 40-character hex (or 32-character base32) info-hash from a magnet URI string.
+    /// Extracts the info-hash from a magnet URI string, supporting both BitTorrent V1 (urn:btih:) and BitTorrent V2 (urn:btmh:).
     public static func extractInfoHash(from magnetURI: String) -> String? {
         guard let components = URLComponents(string: magnetURI),
               let queryItems = components.queryItems else {
             return nil
         }
+        var v1Hash: String?
+        var v2Hash: String?
         for item in queryItems where item.name == "xt" {
             guard let value = item.value?.lowercased() else { continue }
             if value.hasPrefix("urn:btih:") {
                 let hash = String(value.dropFirst("urn:btih:".count))
                 if hash.count == 40 || hash.count == 32 {
-                    return hash
+                    v1Hash = hash
+                }
+            } else if value.hasPrefix("urn:btmh:") {
+                let hash = String(value.dropFirst("urn:btmh:".count))
+                if hash.count == 68 && hash.hasPrefix("1220") {
+                    v2Hash = hash
                 }
             }
         }
-        return nil
+        return v1Hash ?? v2Hash
+    }
+
+    /// Extracts both BitTorrent V1 and V2 info-hashes if present in the magnet URI.
+    public static func extractAllInfoHashes(from magnetURI: String) -> (v1: String?, v2: String?) {
+        guard let components = URLComponents(string: magnetURI),
+              let queryItems = components.queryItems else {
+            return (nil, nil)
+        }
+        var v1Hash: String?
+        var v2Hash: String?
+        for item in queryItems where item.name == "xt" {
+            guard let value = item.value?.lowercased() else { continue }
+            if value.hasPrefix("urn:btih:") {
+                let hash = String(value.dropFirst("urn:btih:".count))
+                if hash.count == 40 || hash.count == 32 {
+                    v1Hash = hash
+                }
+            } else if value.hasPrefix("urn:btmh:") {
+                let hash = String(value.dropFirst("urn:btmh:".count))
+                if hash.count == 68 && hash.hasPrefix("1220") {
+                    v2Hash = hash
+                }
+            }
+        }
+        return (v1Hash, v2Hash)
     }
 
     /// Extracts the display name from the `dn=` parameter of a magnet URI string.
@@ -407,6 +458,10 @@ public struct TorrentTask: Identifiable, Codable, Equatable, Sendable {
     public var filePriorities: [Int: TorrentFilePriority]?
     public var seedingPreference: SeedingPreference?
     public var trackers: [TorrentTrackerInfo]?
+    public var isSuspended: Bool
+    public var downloadLimit: Int
+    public var uploadLimit: Int
+    public var isSeedingComplete: Bool
 
     public var structuredInfoHash: TorrentInfoHash {
         TorrentInfoHash(v1: infoHashV1 ?? (infoHash.count == 40 ? infoHash : nil),
@@ -430,7 +485,11 @@ public struct TorrentTask: Identifiable, Codable, Equatable, Sendable {
         isSequentialDownload: Bool = false,
         filePriorities: [Int: TorrentFilePriority]? = nil,
         seedingPreference: SeedingPreference? = nil,
-        trackers: [TorrentTrackerInfo]? = nil
+        trackers: [TorrentTrackerInfo]? = nil,
+        isSuspended: Bool = false,
+        downloadLimit: Int = 0,
+        uploadLimit: Int = 0,
+        isSeedingComplete: Bool = false
     ) {
         self.id = id
         self.source = source
@@ -450,6 +509,10 @@ public struct TorrentTask: Identifiable, Codable, Equatable, Sendable {
         self.filePriorities = filePriorities
         self.seedingPreference = seedingPreference
         self.trackers = trackers
+        self.isSuspended = isSuspended
+        self.downloadLimit = max(0, downloadLimit)
+        self.uploadLimit = max(0, uploadLimit)
+        self.isSeedingComplete = isSeedingComplete
     }
 }
 
@@ -459,6 +522,8 @@ public struct TorrentRecord: Identifiable, Codable, Equatable, Sendable, SchemaV
 
     public let id: UUID
     public let infoHash: String
+    public var infoHashV1: String?
+    public var infoHashV2: String?
     public let source: String
     public var name: String
     public let savePath: URL
@@ -477,10 +542,15 @@ public struct TorrentRecord: Identifiable, Codable, Equatable, Sendable, SchemaV
     public var customTrackers: [String]?
     public var schemaVersion: Int
     public var errorMessage: String?
+    public var seedingStartedAt: Date?
+    public var totalUploadedBytes: Int64
+    public var isSeedingComplete: Bool
 
     public init(
         id: UUID = UUID(),
         infoHash: String,
+        infoHashV1: String? = nil,
+        infoHashV2: String? = nil,
         source: String,
         name: String,
         savePath: URL,
@@ -498,10 +568,16 @@ public struct TorrentRecord: Identifiable, Codable, Equatable, Sendable, SchemaV
         seedingPreference: SeedingPreference? = nil,
         customTrackers: [String]? = nil,
         schemaVersion: Int = TorrentRecord.currentSchemaVersion,
-        errorMessage: String? = nil
+        errorMessage: String? = nil,
+        seedingStartedAt: Date? = nil,
+        totalUploadedBytes: Int64 = 0,
+        isSeedingComplete: Bool = false
     ) {
         self.id = id
-        self.infoHash = infoHash.lowercased()
+        let clean = infoHash.lowercased()
+        self.infoHash = clean
+        self.infoHashV1 = infoHashV1?.lowercased() ?? (clean.count == 40 ? clean : nil)
+        self.infoHashV2 = infoHashV2?.lowercased() ?? (clean.count == 64 ? clean : nil)
         self.source = source
         self.name = name
         self.savePath = savePath
@@ -520,16 +596,21 @@ public struct TorrentRecord: Identifiable, Codable, Equatable, Sendable, SchemaV
         self.customTrackers = customTrackers
         self.schemaVersion = schemaVersion
         self.errorMessage = errorMessage
+        self.seedingStartedAt = seedingStartedAt
+        self.totalUploadedBytes = max(0, totalUploadedBytes)
+        self.isSeedingComplete = isSeedingComplete
     }
 
     enum CodingKeys: String, CodingKey {
-        case id, infoHash, source, name, savePath, createdAt, updatedAt, state, progress, priority, sequenceIndex, isExplicitlyPaused, isSequentialDownload, seedRatioLimit, fastResumeFileName, filePriorities, seedingPreference, customTrackers, schemaVersion, errorMessage
+        case id, infoHash, infoHashV1, infoHashV2, source, name, savePath, createdAt, updatedAt, state, progress, priority, sequenceIndex, isExplicitlyPaused, isSequentialDownload, seedRatioLimit, fastResumeFileName, filePriorities, seedingPreference, customTrackers, schemaVersion, errorMessage, seedingStartedAt, totalUploadedBytes, isSeedingComplete
     }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decode(UUID.self, forKey: .id)
         infoHash = try container.decode(String.self, forKey: .infoHash)
+        infoHashV1 = try container.decodeIfPresent(String.self, forKey: .infoHashV1)
+        infoHashV2 = try container.decodeIfPresent(String.self, forKey: .infoHashV2)
         source = try container.decode(String.self, forKey: .source)
         name = try container.decode(String.self, forKey: .name)
         savePath = try container.decode(URL.self, forKey: .savePath)
@@ -548,6 +629,9 @@ public struct TorrentRecord: Identifiable, Codable, Equatable, Sendable, SchemaV
         customTrackers = try container.decodeIfPresent([String].self, forKey: .customTrackers)
         schemaVersion = try container.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 1
         errorMessage = try container.decodeIfPresent(String.self, forKey: .errorMessage)
+        seedingStartedAt = try container.decodeIfPresent(Date.self, forKey: .seedingStartedAt)
+        totalUploadedBytes = try container.decodeIfPresent(Int64.self, forKey: .totalUploadedBytes) ?? 0
+        isSeedingComplete = try container.decodeIfPresent(Bool.self, forKey: .isSeedingComplete) ?? false
     }
 }
 
@@ -612,19 +696,22 @@ public struct TorrentSessionStatus: Equatable, Sendable {
     public let listenPort: UInt
     public let portRange: ClosedRange<UInt>
     public let libtorrentVersion: String
+    public let isNativeBackend: Bool
 
     public init(
         isRunning: Bool,
         isListening: Bool,
         listenPort: UInt,
         portRange: ClosedRange<UInt> = 6881...6891,
-        libtorrentVersion: String
+        libtorrentVersion: String,
+        isNativeBackend: Bool = true
     ) {
         self.isRunning = isRunning
         self.isListening = isListening
         self.listenPort = listenPort
         self.portRange = portRange
         self.libtorrentVersion = libtorrentVersion
+        self.isNativeBackend = isNativeBackend
     }
 }
 

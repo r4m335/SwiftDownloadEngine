@@ -1698,6 +1698,93 @@ public final class DownloadManagerViewModel: ObservableObject {
         }
     }
 
+    // MARK: - Torrent Background Lifecycle
+
+    public func suspendTorrentEngineForBackground() async {
+        torrentRefreshTask?.cancel()
+        torrentRefreshTask = nil
+        if let te = torrentEngine {
+            await te.suspendForBackground()
+        }
+        await refreshTorrentSnapshots()
+    }
+
+    public func resumeTorrentEngineFromBackground() async {
+        if let te = torrentEngine {
+            await te.resumeFromBackground()
+            startTorrentPolling()
+        }
+        await refreshTorrentSnapshots()
+    }
+
+    // MARK: - Bandwidth & Rate Limits
+
+    public func setSessionTorrentDownloadLimit(_ bytesPerSecond: Int) async throws {
+        guard let te = torrentEngine else { return }
+        try await te.setSessionDownloadLimit(bytesPerSecond)
+    }
+
+    public func setSessionTorrentUploadLimit(_ bytesPerSecond: Int) async throws {
+        guard let te = torrentEngine else { return }
+        try await te.setSessionUploadLimit(bytesPerSecond)
+    }
+
+    public func setTorrentDownloadLimit(bytesPerSecond: Int, for infoHash: String) async throws {
+        guard let te = torrentEngine else { return }
+        try await te.setDownloadLimit(bytesPerSecond, for: infoHash)
+        await refreshTorrentSnapshots()
+    }
+
+    public func setTorrentUploadLimit(bytesPerSecond: Int, for infoHash: String) async throws {
+        guard let te = torrentEngine else { return }
+        try await te.setUploadLimit(bytesPerSecond, for: infoHash)
+        await refreshTorrentSnapshots()
+    }
+
+    public func setTorrentDownloadLimit(id: UUID, bytesPerSecond: Int) async throws {
+        guard let task = torrentTasks.first(where: { $0.id == id }) else { return }
+        try await setTorrentDownloadLimit(bytesPerSecond: bytesPerSecond, for: task.infoHash)
+    }
+
+    public func setTorrentUploadLimit(id: UUID, bytesPerSecond: Int) async throws {
+        guard let task = torrentTasks.first(where: { $0.id == id }) else { return }
+        try await setTorrentUploadLimit(bytesPerSecond: bytesPerSecond, for: task.infoHash)
+    }
+
+    // MARK: - Error Recovery & Piece Hash Integrity
+
+    public func recheckTorrent(infoHash: String) async throws {
+        guard let te = torrentEngine else { return }
+        do {
+            try await te.recheckTorrent(withHash: infoHash)
+            await refreshTorrentSnapshots()
+        } catch {
+            self.errorMessage = error.localizedDescription
+            throw error
+        }
+    }
+
+    public func retryTorrent(infoHash: String) async throws {
+        guard let te = torrentEngine else { return }
+        do {
+            try await te.retryTorrent(withHash: infoHash)
+            await refreshTorrentSnapshots()
+        } catch {
+            self.errorMessage = error.localizedDescription
+            throw error
+        }
+    }
+
+    public func recheckTorrent(id: UUID) async throws {
+        guard let task = torrentTasks.first(where: { $0.id == id }) else { return }
+        try await recheckTorrent(infoHash: task.infoHash)
+    }
+
+    public func retryTorrent(id: UUID) async throws {
+        guard let task = torrentTasks.first(where: { $0.id == id }) else { return }
+        try await retryTorrent(infoHash: task.infoHash)
+    }
+
     /// Configures and persists the default seeding preference for new torrents.
     public func updateSeedingSettings(defaultPreference: SeedingPreference) {
         self.defaultSeedingPreference = defaultPreference
@@ -2189,6 +2276,10 @@ extension DownloadManagerViewModel: BrowserDownloadDelegate {
 extension DownloadManagerViewModel: BrowserMagnetDelegate {
     public var isTorrentEngineAvailable: Bool {
         torrentEngine != nil
+    }
+
+    public var isTorrentBackendNative: Bool {
+        torrentEngine != nil && TorrentEngine.isNativeBackendAvailable
     }
 
     public func handleMagnetLink(_ magnet: MagnetLink) async throws {

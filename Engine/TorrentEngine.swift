@@ -9,6 +9,8 @@ public typealias TorrentSession = TorrentEngine
 ///
 /// Milestone 4: Torrent Persistence, Fast-Resume, Crash Recovery, and Queue Management.
 public actor TorrentEngine {
+    public static let isNativeBackendAvailable: Bool = true
+
     private let bridge: TorrentSessionBridge
     private let persistenceStore: TorrentPersistenceStore
     private var scheduler: TorrentQueueScheduler?
@@ -18,6 +20,8 @@ public actor TorrentEngine {
     private let defaultMaxConcurrentTorrents: Int
     public private(set) var configuration: EngineConfiguration
     private var isRunning = false
+    private var isSuspended = false
+    private var periodicResumeTask: Task<Void, Never>? = nil
     private var tasks: [String: TorrentTask] = [:]
 
     public init(
@@ -66,6 +70,12 @@ public actor TorrentEngine {
     public func updateConfiguration(_ newConfig: EngineConfiguration) async throws {
         self.configuration = newConfig
         try await setMaxConcurrentTorrents(newConfig.maxConcurrentTorrents)
+        if let dl = newConfig.torrentDownloadRateLimit {
+            try? await setSessionDownloadLimit(dl)
+        }
+        if let ul = newConfig.torrentUploadRateLimit {
+            try? await setSessionUploadLimit(ul)
+        }
     }
 
     /// Starts the native session, restores persisted torrents with fast-resume, and starts queue scheduling.
@@ -139,6 +149,17 @@ public actor TorrentEngine {
             try? bridge.pauseTorrent(withHash: h)
         }
 
+        // 5. Apply bandwidth limits if configured
+        if let dl = configuration.torrentDownloadRateLimit {
+            try? bridge.setDownloadLimit(dl)
+        }
+        if let ul = configuration.torrentUploadRateLimit {
+            try? bridge.setUploadLimit(ul)
+        }
+
+        // 6. Start periodic fast-resume persistence
+        startPeriodicFastResumeSaving()
+
         // Update task cache
         _ = await allTasks()
     }
@@ -146,6 +167,8 @@ public actor TorrentEngine {
     /// Stops the native session safely, saving fast-resume data for active torrents before session shutdown.
     public func stop(timeoutSeconds: TimeInterval = 4.0) async {
         guard isRunning else { return }
+        periodicResumeTask?.cancel()
+        periodicResumeTask = nil
 
         // 1. Request fast-resume data for all valid torrents
         let currentStatuses = bridge.allTorrentStatuses()
@@ -223,7 +246,8 @@ public actor TorrentEngine {
             isListening: bridge.isListening,
             listenPort: UInt(max(0, bridge.listenPort)),
             portRange: UInt(portStart)...UInt(portEnd),
-            libtorrentVersion: TorrentSessionBridge.libtorrentVersion()
+            libtorrentVersion: TorrentSessionBridge.libtorrentVersion(),
+            isNativeBackend: true
         )
     }
 
@@ -271,6 +295,11 @@ public actor TorrentEngine {
         isSequential: Bool = false
     ) async throws -> TorrentTask {
         guard isRunning else { throw TorrentEngineError.sessionNotRunning }
+        if let preHash = Self.extractInfoHash(from: magnetURI),
+           let sched = scheduler,
+           let dup = await sched.isDuplicate(infoHash: preHash, source: magnetURI) {
+            throw TorrentEngineError.duplicateTorrent(dup)
+        }
         let savePath = saveDirectoryURL?.path ?? storageDirectoryURL.path
         let hash = try bridge.addTorrent(withMagnetURI: magnetURI, savePath: savePath)
 
@@ -280,23 +309,28 @@ public actor TorrentEngine {
 
         let displayName = name ?? Self.extractDisplayName(from: magnetURI) ?? "Magnet \(hash.prefix(8))"
         if let sched = scheduler {
-            let record = try await sched.enqueue(
-                infoHash: hash,
-                source: magnetURI,
-                name: displayName,
-                savePath: saveDirectoryURL ?? storageDirectoryURL,
-                priority: priority,
-                isExplicitlyPaused: isExplicitlyPaused,
-                isSequential: isSequential
-            )
+            do {
+                let record = try await sched.enqueue(
+                    infoHash: hash,
+                    source: magnetURI,
+                    name: displayName,
+                    savePath: saveDirectoryURL ?? storageDirectoryURL,
+                    priority: priority,
+                    isExplicitlyPaused: isExplicitlyPaused,
+                    isSequential: isSequential
+                )
 
-            if isExplicitlyPaused {
-                bridge.setExplicitlyPaused(true, forTorrentWithHash: hash)
-                try? bridge.pauseTorrent(withHash: hash)
-            } else if record.state == .downloading {
-                try? await safeResumeTorrent(withHash: hash, source: "addTorrent.magnet")
-            } else {
-                try? bridge.pauseTorrent(withHash: hash)
+                if isExplicitlyPaused {
+                    bridge.setExplicitlyPaused(true, forTorrentWithHash: hash)
+                    try? bridge.pauseTorrent(withHash: hash)
+                } else if record.state == .downloading {
+                    try? await safeResumeTorrent(withHash: hash, source: "addTorrent.magnet")
+                } else {
+                    try? bridge.pauseTorrent(withHash: hash)
+                }
+            } catch {
+                try? bridge.removeTorrent(withHash: hash, deleteFiles: false)
+                throw error
             }
         }
 
@@ -322,6 +356,12 @@ public actor TorrentEngine {
         isSequential: Bool = false
     ) async throws -> TorrentTask {
         guard isRunning else { throw TorrentEngineError.sessionNotRunning }
+        if let fileData = try? Data(contentsOf: fileURL),
+           let parsed = Self.extractBencodedInfo(from: fileData),
+           let sched = scheduler,
+           let dup = await sched.isDuplicate(infoHash: parsed.infoHash, source: fileURL.path) {
+            throw TorrentEngineError.duplicateTorrent(dup)
+        }
         let savePath = saveDirectoryURL?.path ?? storageDirectoryURL.path
         let hash = try bridge.addTorrent(withFilePath: fileURL.path, savePath: savePath)
 
@@ -331,23 +371,28 @@ public actor TorrentEngine {
 
         let displayName = name ?? fileURL.deletingPathExtension().lastPathComponent
         if let sched = scheduler {
-            let record = try await sched.enqueue(
-                infoHash: hash,
-                source: fileURL.path,
-                name: displayName,
-                savePath: saveDirectoryURL ?? storageDirectoryURL,
-                priority: priority,
-                isExplicitlyPaused: isExplicitlyPaused,
-                isSequential: isSequential
-            )
+            do {
+                let record = try await sched.enqueue(
+                    infoHash: hash,
+                    source: fileURL.path,
+                    name: displayName,
+                    savePath: saveDirectoryURL ?? storageDirectoryURL,
+                    priority: priority,
+                    isExplicitlyPaused: isExplicitlyPaused,
+                    isSequential: isSequential
+                )
 
-            if isExplicitlyPaused {
-                bridge.setExplicitlyPaused(true, forTorrentWithHash: hash)
-                try? bridge.pauseTorrent(withHash: hash)
-            } else if record.state == .downloading {
-                try? await safeResumeTorrent(withHash: hash, source: "addTorrent.file")
-            } else {
-                try? bridge.pauseTorrent(withHash: hash)
+                if isExplicitlyPaused {
+                    bridge.setExplicitlyPaused(true, forTorrentWithHash: hash)
+                    try? bridge.pauseTorrent(withHash: hash)
+                } else if record.state == .downloading {
+                    try? await safeResumeTorrent(withHash: hash, source: "addTorrent.file")
+                } else {
+                    try? bridge.pauseTorrent(withHash: hash)
+                }
+            } catch {
+                try? bridge.removeTorrent(withHash: hash, deleteFiles: false)
+                throw error
             }
         }
 
@@ -373,6 +418,11 @@ public actor TorrentEngine {
         isSequential: Bool = false
     ) async throws -> TorrentTask {
         guard isRunning else { throw TorrentEngineError.sessionNotRunning }
+        if let parsed = Self.extractBencodedInfo(from: data),
+           let sched = scheduler,
+           let dup = await sched.isDuplicate(infoHash: parsed.infoHash, source: "raw-buffer") {
+            throw TorrentEngineError.duplicateTorrent(dup)
+        }
         let savePath = saveDirectoryURL?.path ?? storageDirectoryURL.path
         let hash = try bridge.addTorrent(with: data, savePath: savePath)
 
@@ -382,23 +432,28 @@ public actor TorrentEngine {
 
         let displayName = name ?? "Torrent \(hash.prefix(8))"
         if let sched = scheduler {
-            let record = try await sched.enqueue(
-                infoHash: hash,
-                source: "raw-buffer",
-                name: displayName,
-                savePath: saveDirectoryURL ?? storageDirectoryURL,
-                priority: priority,
-                isExplicitlyPaused: isExplicitlyPaused,
-                isSequential: isSequential
-            )
+            do {
+                let record = try await sched.enqueue(
+                    infoHash: hash,
+                    source: "raw-buffer",
+                    name: displayName,
+                    savePath: saveDirectoryURL ?? storageDirectoryURL,
+                    priority: priority,
+                    isExplicitlyPaused: isExplicitlyPaused,
+                    isSequential: isSequential
+                )
 
-            if isExplicitlyPaused {
-                bridge.setExplicitlyPaused(true, forTorrentWithHash: hash)
-                try? bridge.pauseTorrent(withHash: hash)
-            } else if record.state == .downloading {
-                try? await safeResumeTorrent(withHash: hash, source: "addTorrent.buffer")
-            } else {
-                try? bridge.pauseTorrent(withHash: hash)
+                if isExplicitlyPaused {
+                    bridge.setExplicitlyPaused(true, forTorrentWithHash: hash)
+                    try? bridge.pauseTorrent(withHash: hash)
+                } else if record.state == .downloading {
+                    try? await safeResumeTorrent(withHash: hash, source: "addTorrent.buffer")
+                } else {
+                    try? bridge.pauseTorrent(withHash: hash)
+                }
+            } catch {
+                try? bridge.removeTorrent(withHash: hash, deleteFiles: false)
+                throw error
             }
         }
 
@@ -717,9 +772,16 @@ public actor TorrentEngine {
                 t.seedingPreference = rec.seedingPreference
 
                 if (t.state == .seeding || t.state == .finished) && !t.isExplicitlyPaused {
-                    if await sched.shouldStopSeeding(infoHash: key, totalUploaded: t.progress.bytesDownloaded, totalDownloaded: t.progress.totalBytes, elapsedSeedingSeconds: 0) {
+                    let totalUploaded = max(rec.totalUploadedBytes, bridgeStatus.allTimeUpload)
+                    let totalDownloaded = max(1, bridgeStatus.allTimeDownload > 0 ? bridgeStatus.allTimeDownload : bridgeStatus.totalDone)
+                    let elapsed = rec.seedingStartedAt.map { max(0, Date().timeIntervalSince($0)) } ?? 0
+
+                    if rec.isSeedingComplete || await sched.shouldStopSeeding(infoHash: key, totalUploaded: totalUploaded, totalDownloaded: totalDownloaded, elapsedSeedingSeconds: elapsed) {
                         try? bridge.pauseTorrent(withHash: key)
+                        try? await sched.markSeedingComplete(infoHash: key)
                         t.state = .finished
+                        t.isSeedingComplete = true
+                        DownloadNotificationManager.postTorrentSeedingStoppedNotification(name: t.name, infoHash: key, reason: "Seeding limit reached")
                     }
                 }
                 tasks[key] = t
@@ -755,9 +817,16 @@ public actor TorrentEngine {
                     task.seedingPreference = rec.seedingPreference
 
                     if (task.state == .seeding || task.state == .finished) && !task.isExplicitlyPaused {
-                        if await sched.shouldStopSeeding(infoHash: key, totalUploaded: task.progress.bytesDownloaded, totalDownloaded: task.progress.totalBytes, elapsedSeedingSeconds: 0) {
+                        let totalUploaded = max(rec.totalUploadedBytes, task.progress.bytesUploaded)
+                        let totalDownloaded = max(1, task.progress.totalBytes)
+                        let elapsed = rec.seedingStartedAt.map { max(0, Date().timeIntervalSince($0)) } ?? 0
+
+                        if rec.isSeedingComplete || await sched.shouldStopSeeding(infoHash: key, totalUploaded: totalUploaded, totalDownloaded: totalDownloaded, elapsedSeedingSeconds: elapsed) {
                             try? bridge.pauseTorrent(withHash: key)
+                            try? await sched.markSeedingComplete(infoHash: key)
                             task.state = .finished
+                            task.isSeedingComplete = true
+                            DownloadNotificationManager.postTorrentSeedingStoppedNotification(name: task.name, infoHash: key, reason: "Seeding limit reached")
                         }
                     }
                     tasks[key] = task
@@ -780,7 +849,8 @@ public actor TorrentEngine {
             uploadBytesPerSecond: status.uploadPayloadRate,
             connectedPeers: status.numPeers,
             activeSeeds: status.numSeeds,
-            progressFraction: Double(status.progress)
+            progressFraction: Double(status.progress),
+            bytesUploaded: status.allTimeUpload
         )
         let saveURL = URL(fileURLWithPath: status.savePath)
         let isSequential = bridge.isSequentialDownload(forTorrentWithHash: key)
@@ -793,6 +863,16 @@ public actor TorrentEngine {
             }
             existing.errorMessage = status.errorMessage
             existing.isSequentialDownload = isSequential
+            existing.infoHashV1 = status.infoHashV1
+            existing.infoHashV2 = status.infoHashV2
+
+            if state == .finished || state == .seeding || status.progress >= 1.0 {
+                DownloadNotificationManager.postTorrentCompletedNotification(name: existing.name, infoHash: key)
+            }
+            if state == .error, let err = status.errorMessage, !err.isEmpty {
+                DownloadNotificationManager.postTorrentFailedNotification(name: existing.name, infoHash: key, error: err)
+            }
+
             tasks[key] = existing
             return existing
         } else {
@@ -805,7 +885,7 @@ public actor TorrentEngine {
                 }
                 return key
             }()
-            let task = TorrentTask(
+            var task = TorrentTask(
                 source: source ?? "magnet:?xt=urn:btih:\(key)",
                 name: fallbackName,
                 savePath: saveURL,
@@ -813,8 +893,16 @@ public actor TorrentEngine {
                 progress: progress,
                 errorMessage: status.errorMessage,
                 infoHash: key,
+                infoHashV1: status.infoHashV1,
+                infoHashV2: status.infoHashV2,
                 isSequentialDownload: isSequential
             )
+            if state == .finished || state == .seeding || status.progress >= 1.0 {
+                DownloadNotificationManager.postTorrentCompletedNotification(name: task.name, infoHash: key)
+            }
+            if state == .error, let err = status.errorMessage, !err.isEmpty {
+                DownloadNotificationManager.postTorrentFailedNotification(name: task.name, infoHash: key, error: err)
+            }
             tasks[key] = task
             return task
         }
@@ -842,6 +930,165 @@ public actor TorrentEngine {
 
     public func connectPeer(address: String, port: UInt, toTorrentWithHash infoHash: String) throws {
         try bridge.connectPeer(address: address, port: Int(port), toTorrentWithHash: infoHash)
+    }
+
+    // MARK: - Bandwidth & Speed Limits
+
+    public func setSessionDownloadLimit(_ bytesPerSecond: Int) async throws {
+        try bridge.setDownloadLimit(bytesPerSecond)
+    }
+
+    public func setSessionUploadLimit(_ bytesPerSecond: Int) async throws {
+        try bridge.setUploadLimit(bytesPerSecond)
+    }
+
+    public func sessionDownloadLimit() async -> Int {
+        bridge.sessionDownloadLimit()
+    }
+
+    public func sessionUploadLimit() async -> Int {
+        bridge.sessionUploadLimit()
+    }
+
+    public func setDownloadLimit(_ bytesPerSecond: Int, for infoHash: String) async throws {
+        try bridge.setDownloadLimit(bytesPerSecond, forTorrentWithHash: infoHash.lowercased())
+        tasks[infoHash.lowercased()]?.downloadLimit = bytesPerSecond
+    }
+
+    public func setUploadLimit(_ bytesPerSecond: Int, for infoHash: String) async throws {
+        try bridge.setUploadLimit(bytesPerSecond, forTorrentWithHash: infoHash.lowercased())
+        tasks[infoHash.lowercased()]?.uploadLimit = bytesPerSecond
+    }
+
+    public func downloadLimit(for infoHash: String) async -> Int {
+        bridge.downloadLimit(forTorrentWithHash: infoHash.lowercased())
+    }
+
+    public func uploadLimit(for infoHash: String) async -> Int {
+        bridge.uploadLimit(forTorrentWithHash: infoHash.lowercased())
+    }
+
+    // MARK: - Error Recovery & Piece Hash Integrity
+
+    public func recheckTorrent(withHash infoHash: String) async throws {
+        let key = infoHash.lowercased()
+        try bridge.recheckTorrent(withHash: key)
+        if var rec = await scheduler?.record(for: key) {
+            rec.errorMessage = nil
+            if rec.state == .error {
+                rec.state = .checking
+            }
+            try? await persistenceStore.saveRecord(rec)
+        }
+        tasks[key]?.errorMessage = nil
+        if tasks[key]?.state == .error {
+            tasks[key]?.state = .checking
+        }
+    }
+
+    public func retryTorrent(withHash infoHash: String) async throws {
+        let key = infoHash.lowercased()
+        try bridge.recheckTorrent(withHash: key)
+        try bridge.forceReannounce(forTorrentWithHash: key)
+        if var rec = await scheduler?.record(for: key) {
+            rec.errorMessage = nil
+            rec.state = .queued
+            try? await persistenceStore.saveRecord(rec)
+        }
+        tasks[key]?.errorMessage = nil
+        let changes = await scheduler?.pumpQueue()
+        for h in changes?.promoted ?? [] {
+            try? await safeResumeTorrent(withHash: h, source: "retryTorrent")
+        }
+        _ = await task(for: key)
+    }
+
+    // MARK: - Background Lifecycle & Fast-Resume Persistence
+
+    /// Requests and saves fast-resume data to disk for all active torrents.
+    public func saveFastResumeState(timeoutSeconds: TimeInterval = 2.0) async {
+        let currentStatuses = bridge.allTorrentStatuses()
+        for s in currentStatuses {
+            try? bridge.requestResumeData(forTorrentWithHash: s.infoHash)
+        }
+        let deadline = Date().addingTimeInterval(timeoutSeconds)
+        var pendingHashes = Set(currentStatuses.map { $0.infoHash.lowercased() })
+
+        while !pendingHashes.isEmpty && Date() < deadline {
+            bridge.pollAlerts()
+            for h in Array(pendingHashes) {
+                if bridge.isResumeDataReady(forTorrentWithHash: h) {
+                    if let data = bridge.resumeData(forTorrentWithHash: h) {
+                        try? await persistenceStore.saveResumeData(data, for: h)
+                    }
+                    pendingHashes.remove(h)
+                } else if bridge.resumeDataError(forTorrentWithHash: h) != nil {
+                    pendingHashes.remove(h)
+                }
+            }
+            if !pendingHashes.isEmpty {
+                try? await Task.sleep(nanoseconds: 50_000_000) // 50ms
+            }
+        }
+    }
+
+    /// Prepares the torrent engine for iOS background suspension by saving fast-resume data and pausing handles.
+    public func suspendForBackground() async {
+        guard isRunning, !isSuspended else { return }
+        isSuspended = true
+        periodicResumeTask?.cancel()
+        periodicResumeTask = nil
+
+        // 1. Save fast-resume state
+        await saveFastResumeState(timeoutSeconds: 2.0)
+
+        // 2. Pause active native handles to halt socket/network activity
+        let statuses = bridge.allTorrentStatuses()
+        for s in statuses where s.state == .downloading || s.state == .seeding {
+            try? bridge.pauseTorrent(withHash: s.infoHash)
+            tasks[s.infoHash.lowercased()]?.isSuspended = true
+        }
+
+        // 3. Persist current snapshot to disk
+        _ = await allTasks()
+    }
+
+    /// Resumes the torrent engine from background suspension without destroying the session.
+    public func resumeFromBackground() async {
+        guard isRunning, isSuspended else { return }
+        isSuspended = false
+
+        // 1. Unset suspended flags on tasks
+        for k in tasks.keys {
+            tasks[k]?.isSuspended = false
+        }
+
+        // 2. Pump queue and resume eligible downloads
+        if let sched = scheduler {
+            let changes = await sched.pumpQueue()
+            for h in changes.promoted {
+                try? await safeResumeTorrent(withHash: h, source: "resumeFromBackground.promoted")
+            }
+            let records = await sched.allRecords()
+            for rec in records where rec.state == .downloading && !rec.isExplicitlyPaused {
+                try? await safeResumeTorrent(withHash: rec.infoHash, source: "resumeFromBackground.active")
+            }
+        }
+
+        // 3. Restart periodic fast-resume saving
+        startPeriodicFastResumeSaving()
+        _ = await allTasks()
+    }
+
+    private func startPeriodicFastResumeSaving() {
+        periodicResumeTask?.cancel()
+        periodicResumeTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 60_000_000_000) // 60s
+                guard !Task.isCancelled else { break }
+                await self?.saveFastResumeState(timeoutSeconds: 1.5)
+            }
+        }
     }
 
     deinit {
@@ -878,6 +1125,8 @@ private extension TorrentState {
 /// Fallback TorrentEngine for environments without native LibTorrent bridging (e.g. Linux WSL unit tests / headless CI).
 /// Implements identical public actor interface backed by TorrentPersistenceStore and TorrentQueueScheduler.
 public actor TorrentEngine {
+    public static let isNativeBackendAvailable: Bool = false
+
     private let persistenceStore: TorrentPersistenceStore
     private var scheduler: TorrentQueueScheduler?
     private let storageDirectoryURL: URL
@@ -886,7 +1135,14 @@ public actor TorrentEngine {
     private var currentMaxConcurrentTorrents: Int
     public private(set) var configuration: EngineConfiguration
     private var isRunning = false
+    public private(set) var isSuspended: Bool = false
     private var tasks: [String: TorrentTask] = [:]
+
+    private var _sessionDownloadLimit: Int = 0
+    private var _sessionUploadLimit: Int = 0
+    private var _torrentDownloadLimits: [String: Int] = [:]
+    private var _torrentUploadLimits: [String: Int] = [:]
+    private var periodicResumeTask: Task<Void, Never>?
 
     public init(
         configuration: EngineConfiguration = .default,
@@ -929,6 +1185,12 @@ public actor TorrentEngine {
     public func updateConfiguration(_ newConfig: EngineConfiguration) async throws {
         self.configuration = newConfig
         try await setMaxConcurrentTorrents(newConfig.maxConcurrentTorrents)
+        if let dl = newConfig.torrentDownloadRateLimit {
+            try? await setSessionDownloadLimit(dl)
+        }
+        if let ul = newConfig.torrentUploadRateLimit {
+            try? await setSessionUploadLimit(ul)
+        }
     }
 
     public func start() async throws {
@@ -954,7 +1216,12 @@ public actor TorrentEngine {
                 isExplicitlyPaused: record.isExplicitlyPaused,
                 isSequentialDownload: record.isSequentialDownload,
                 filePriorities: record.filePriorities,
-                seedingPreference: record.seedingPreference
+                seedingPreference: record.seedingPreference,
+                infoHashV1: record.infoHashV1,
+                infoHashV2: record.infoHashV2,
+                downloadLimit: _torrentDownloadLimits[record.infoHash.lowercased()] ?? 0,
+                uploadLimit: _torrentUploadLimits[record.infoHash.lowercased()] ?? 0,
+                isSeedingComplete: record.isSeedingComplete
             )
             if let custom = record.customTrackers {
                 task.trackers = custom.enumerated().map { idx, u in
@@ -963,9 +1230,19 @@ public actor TorrentEngine {
             }
             tasks[record.infoHash.lowercased()] = task
         }
+
+        if let dl = configuration.torrentDownloadRateLimit {
+            _sessionDownloadLimit = dl
+        }
+        if let ul = configuration.torrentUploadRateLimit {
+            _sessionUploadLimit = ul
+        }
+        startPeriodicFastResumeSaving()
     }
 
     public func stop(timeoutSeconds: TimeInterval = 4.0) async {
+        periodicResumeTask?.cancel()
+        periodicResumeTask = nil
         isRunning = false
     }
 
@@ -985,22 +1262,32 @@ public actor TorrentEngine {
         guard let infoHash = Self.extractInfoHash(from: magnetURI) else {
             throw TorrentEngineError.invalidMagnetURI(magnetURI)
         }
-        if tasks[infoHash] != nil {
+        guard let sched = scheduler else { throw TorrentEngineError.sessionNotRunning }
+        if let duplicate = await sched.isDuplicate(infoHash: infoHash, source: magnetURI) {
+            throw TorrentEngineError.duplicateTorrent(duplicate)
+        }
+        if tasks[infoHash.lowercased()] != nil {
             throw TorrentEngineError.duplicateTorrent(infoHash)
         }
         let saveDir = saveDirectoryURL ?? storageDirectoryURL
         let resolvedName = name ?? Self.extractDisplayName(from: magnetURI) ?? "Torrent-\(infoHash.prefix(8))"
+        let hashes = TorrentMetadataParser.extractAllInfoHashes(from: magnetURI)
 
-        guard let sched = scheduler else { throw TorrentEngineError.sessionNotRunning }
-        let record = try await sched.enqueue(
-            infoHash: infoHash,
-            source: magnetURI,
-            name: resolvedName,
-            savePath: saveDir.appendingPathComponent(resolvedName),
-            priority: priority,
-            isExplicitlyPaused: isExplicitlyPaused,
-            isSequential: isSequential
-        )
+        let record: TorrentRecord
+        do {
+            record = try await sched.enqueue(
+                infoHash: infoHash,
+                source: magnetURI,
+                name: resolvedName,
+                savePath: saveDir.appendingPathComponent(resolvedName),
+                priority: priority,
+                isExplicitlyPaused: isExplicitlyPaused,
+                isSequential: isSequential
+            )
+        } catch {
+            throw error
+        }
+
         let task = TorrentTask(
             id: record.id,
             source: record.source,
@@ -1011,9 +1298,11 @@ public actor TorrentEngine {
             infoHash: record.infoHash,
             priority: record.priority,
             isExplicitlyPaused: record.isExplicitlyPaused,
-            isSequentialDownload: isSequential
+            isSequentialDownload: isSequential,
+            infoHashV1: hashes.v1,
+            infoHashV2: hashes.v2
         )
-        tasks[infoHash] = task
+        tasks[infoHash.lowercased()] = task
         return task
     }
 
@@ -1065,21 +1354,30 @@ public actor TorrentEngine {
             infoHash = (sha1.count == 40 ? sha1 : sha1.padding(toLength: 40, withPad: "0", startingAt: 0)).lowercased()
             displayName = name ?? "Torrent-\(infoHash.prefix(8))"
         }
+        guard let sched = scheduler else { throw TorrentEngineError.sessionNotRunning }
+        if let duplicate = await sched.isDuplicate(infoHash: infoHash, source: "raw-buffer") {
+            throw TorrentEngineError.duplicateTorrent(duplicate)
+        }
         if tasks[infoHash] != nil {
             throw TorrentEngineError.duplicateTorrent(infoHash)
         }
         let saveDir = saveDirectoryURL ?? storageDirectoryURL
 
-        guard let sched = scheduler else { throw TorrentEngineError.sessionNotRunning }
-        let record = try await sched.enqueue(
-            infoHash: infoHash,
-            source: "raw-buffer",
-            name: displayName,
-            savePath: saveDir.appendingPathComponent(displayName),
-            priority: priority,
-            isExplicitlyPaused: isExplicitlyPaused,
-            isSequential: isSequential
-        )
+        let record: TorrentRecord
+        do {
+            record = try await sched.enqueue(
+                infoHash: infoHash,
+                source: "raw-buffer",
+                name: displayName,
+                savePath: saveDir.appendingPathComponent(displayName),
+                priority: priority,
+                isExplicitlyPaused: isExplicitlyPaused,
+                isSequential: isSequential
+            )
+        } catch {
+            throw error
+        }
+
         let task = TorrentTask(
             id: record.id,
             source: record.source,
@@ -1173,12 +1471,32 @@ public actor TorrentEngine {
             task.isExplicitlyPaused = rec.isExplicitlyPaused
             task.filePriorities = rec.filePriorities
             task.seedingPreference = rec.seedingPreference
+            task.infoHashV1 = rec.infoHashV1
+            task.infoHashV2 = rec.infoHashV2
+            task.downloadLimit = _torrentDownloadLimits[hash] ?? 0
+            task.uploadLimit = _torrentUploadLimits[hash] ?? 0
+            task.isSuspended = isSuspended
+            task.isSeedingComplete = rec.isSeedingComplete
+
             if rec.isExplicitlyPaused {
                 task.state = .paused
             } else if rec.state == .queued {
                 task.state = .queued
             } else {
                 task.state = rec.state
+            }
+
+            if (task.state == .seeding || task.state == .finished) && !task.isExplicitlyPaused {
+                let totalUploaded = max(rec.totalUploadedBytes, task.progress.bytesUploaded)
+                let totalDownloaded = max(1, task.progress.totalBytes)
+                let elapsed = rec.seedingStartedAt.map { max(0, Date().timeIntervalSince($0)) } ?? 0
+
+                if rec.isSeedingComplete || await scheduler?.shouldStopSeeding(infoHash: hash, totalUploaded: totalUploaded, totalDownloaded: totalDownloaded, elapsedSeedingSeconds: elapsed) == true {
+                    try? await scheduler?.markSeedingComplete(infoHash: hash)
+                    task.state = .finished
+                    task.isSeedingComplete = true
+                    DownloadNotificationManager.postTorrentSeedingStoppedNotification(name: task.name, infoHash: hash, reason: "Seeding limit reached")
+                }
             }
             tasks[hash] = task
         }
@@ -1366,6 +1684,13 @@ public actor TorrentEngine {
                 t.isExplicitlyPaused = rec.isExplicitlyPaused
                 t.filePriorities = rec.filePriorities
                 t.seedingPreference = rec.seedingPreference
+                t.infoHashV1 = rec.infoHashV1
+                t.infoHashV2 = rec.infoHashV2
+                t.downloadLimit = _torrentDownloadLimits[hash] ?? 0
+                t.uploadLimit = _torrentUploadLimits[hash] ?? 0
+                t.isSuspended = isSuspended
+                t.isSeedingComplete = rec.isSeedingComplete
+
                 if rec.isExplicitlyPaused {
                     t.state = .paused
                 } else if rec.state == .queued {
@@ -1373,6 +1698,20 @@ public actor TorrentEngine {
                 } else {
                     t.state = rec.state
                 }
+
+                if (t.state == .seeding || t.state == .finished) && !t.isExplicitlyPaused {
+                    let totalUploaded = max(rec.totalUploadedBytes, t.progress.bytesUploaded)
+                    let totalDownloaded = max(1, t.progress.totalBytes)
+                    let elapsed = rec.seedingStartedAt.map { max(0, Date().timeIntervalSince($0)) } ?? 0
+
+                    if rec.isSeedingComplete || await scheduler?.shouldStopSeeding(infoHash: hash, totalUploaded: totalUploaded, totalDownloaded: totalDownloaded, elapsedSeedingSeconds: elapsed) == true {
+                        try? await scheduler?.markSeedingComplete(infoHash: hash)
+                        t.state = .finished
+                        t.isSeedingComplete = true
+                        DownloadNotificationManager.postTorrentSeedingStoppedNotification(name: t.name, infoHash: hash, reason: "Seeding limit reached")
+                    }
+                }
+                tasks[hash] = t
             }
             result.append(t)
         }
@@ -1385,7 +1724,8 @@ public actor TorrentEngine {
             isListening: isRunning,
             listenPort: UInt(portStart),
             portRange: UInt(portStart)...UInt(portEnd),
-            libtorrentVersion: "mock-1.0"
+            libtorrentVersion: "mock-1.0",
+            isNativeBackend: false
         )
     }
 
@@ -1411,6 +1751,130 @@ public actor TorrentEngine {
     }
 
     public func saveState() async throws {}
+
+    // MARK: - Bandwidth & Speed Limits
+
+    public func setSessionDownloadLimit(_ bytesPerSecond: Int) async throws {
+        _sessionDownloadLimit = bytesPerSecond
+    }
+
+    public func setSessionUploadLimit(_ bytesPerSecond: Int) async throws {
+        _sessionUploadLimit = bytesPerSecond
+    }
+
+    public func sessionDownloadLimit() async -> Int {
+        _sessionDownloadLimit
+    }
+
+    public func sessionUploadLimit() async -> Int {
+        _sessionUploadLimit
+    }
+
+    public func setDownloadLimit(_ bytesPerSecond: Int, for infoHash: String) async throws {
+        let key = infoHash.lowercased()
+        guard tasks[key] != nil else { throw TorrentEngineError.torrentNotFound }
+        _torrentDownloadLimits[key] = bytesPerSecond
+        tasks[key]?.downloadLimit = bytesPerSecond
+    }
+
+    public func setUploadLimit(_ bytesPerSecond: Int, for infoHash: String) async throws {
+        let key = infoHash.lowercased()
+        guard tasks[key] != nil else { throw TorrentEngineError.torrentNotFound }
+        _torrentUploadLimits[key] = bytesPerSecond
+        tasks[key]?.uploadLimit = bytesPerSecond
+    }
+
+    public func downloadLimit(for infoHash: String) async -> Int {
+        _torrentDownloadLimits[infoHash.lowercased()] ?? 0
+    }
+
+    public func uploadLimit(for infoHash: String) async -> Int {
+        _torrentUploadLimits[infoHash.lowercased()] ?? 0
+    }
+
+    // MARK: - Error Recovery & Piece Hash Integrity
+
+    public func recheckTorrent(withHash infoHash: String) async throws {
+        let key = infoHash.lowercased()
+        guard tasks[key] != nil else { throw TorrentEngineError.torrentNotFound }
+        if var rec = await scheduler?.record(for: key) {
+            rec.errorMessage = nil
+            if rec.state == .error {
+                rec.state = .checking
+            }
+            try? await persistenceStore.saveRecord(rec)
+        }
+        tasks[key]?.errorMessage = nil
+        if tasks[key]?.state == .error {
+            tasks[key]?.state = .checking
+        }
+    }
+
+    public func retryTorrent(withHash infoHash: String) async throws {
+        let key = infoHash.lowercased()
+        guard tasks[key] != nil else { throw TorrentEngineError.torrentNotFound }
+        if var rec = await scheduler?.record(for: key) {
+            rec.errorMessage = nil
+            rec.state = .queued
+            try? await persistenceStore.saveRecord(rec)
+        }
+        tasks[key]?.errorMessage = nil
+        let changes = await scheduler?.pumpQueue()
+        for h in changes?.promoted ?? [] {
+            if var t = tasks[h] {
+                t.state = .downloading
+                tasks[h] = t
+            }
+        }
+        _ = await task(for: key)
+    }
+
+    // MARK: - Background Lifecycle & Fast-Resume Persistence
+
+    public func saveFastResumeState(timeoutSeconds: TimeInterval = 2.0) async {
+        let records = await scheduler?.allRecords() ?? []
+        for rec in records {
+            try? await persistenceStore.saveRecord(rec)
+        }
+    }
+
+    public func suspendForBackground() async {
+        guard isRunning, !isSuspended else { return }
+        isSuspended = true
+        periodicResumeTask?.cancel()
+        periodicResumeTask = nil
+
+        await saveFastResumeState()
+
+        for k in tasks.keys {
+            tasks[k]?.isSuspended = true
+        }
+    }
+
+    public func resumeFromBackground() async {
+        guard isRunning, isSuspended else { return }
+        isSuspended = false
+
+        for k in tasks.keys {
+            tasks[k]?.isSuspended = false
+        }
+
+        if let sched = scheduler {
+            _ = await sched.pumpQueue()
+        }
+        startPeriodicFastResumeSaving()
+    }
+
+    private func startPeriodicFastResumeSaving() {
+        periodicResumeTask?.cancel()
+        periodicResumeTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 60_000_000_000) // 60s
+                guard !Task.isCancelled else { break }
+                await self?.saveFastResumeState()
+            }
+        }
+    }
 
     public static func extractInfoHash(from magnetURI: String) -> String? {
         TorrentMetadataParser.extractInfoHash(from: magnetURI)

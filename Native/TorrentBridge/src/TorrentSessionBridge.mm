@@ -73,6 +73,8 @@ static std::string infoHashToHex(const libtorrent::info_hash_t &ih) {
                            state:(TorrentBridgeState)state
                        totalDone:(int64_t)totalDone
                      totalWanted:(int64_t)totalWanted
+                   allTimeUpload:(int64_t)allTimeUpload
+                 allTimeDownload:(int64_t)allTimeDownload
              downloadPayloadRate:(double)downloadPayloadRate
                uploadPayloadRate:(double)uploadPayloadRate
                         numPeers:(NSInteger)numPeers
@@ -90,6 +92,8 @@ static std::string infoHashToHex(const libtorrent::info_hash_t &ih) {
         _state = state;
         _totalDone = totalDone;
         _totalWanted = totalWanted;
+        _allTimeUpload = allTimeUpload;
+        _allTimeDownload = allTimeDownload;
         _downloadPayloadRate = downloadPayloadRate;
         _uploadPayloadRate = uploadPayloadRate;
         _numPeers = numPeers;
@@ -98,6 +102,38 @@ static std::string infoHashToHex(const libtorrent::info_hash_t &ih) {
         _errorMessage = [errorMessage copy];
     }
     return self;
+}
+
+- (instancetype)initWithInfoHash:(NSString *)infoHash
+                      infoHashV1:(nullable NSString *)infoHashV1
+                      infoHashV2:(nullable NSString *)infoHashV2
+                            name:(NSString *)name
+                        savePath:(NSString *)savePath
+                           state:(TorrentBridgeState)state
+                       totalDone:(int64_t)totalDone
+                     totalWanted:(int64_t)totalWanted
+             downloadPayloadRate:(double)downloadPayloadRate
+               uploadPayloadRate:(double)uploadPayloadRate
+                        numPeers:(NSInteger)numPeers
+                        numSeeds:(NSInteger)numSeeds
+                        progress:(float)progress
+                    errorMessage:(nullable NSString *)errorMessage {
+    return [self initWithInfoHash:infoHash
+                       infoHashV1:infoHashV1
+                       infoHashV2:infoHashV2
+                             name:name
+                         savePath:savePath
+                            state:state
+                        totalDone:totalDone
+                      totalWanted:totalWanted
+                    allTimeUpload:0
+                  allTimeDownload:totalDone
+              downloadPayloadRate:downloadPayloadRate
+                uploadPayloadRate:uploadPayloadRate
+                         numPeers:numPeers
+                         numSeeds:numSeeds
+                         progress:progress
+                     errorMessage:errorMessage];
 }
 
 - (instancetype)initWithInfoHash:(NSString *)infoHash
@@ -432,6 +468,8 @@ static std::string infoHashToHex(const libtorrent::info_hash_t &ih) {
                                                    state:bridgeState
                                                totalDone:st.total_done
                                              totalWanted:st.total_wanted
+                                           allTimeUpload:st.all_time_upload
+                                         allTimeDownload:st.all_time_download
                                      downloadPayloadRate:static_cast<double>(st.download_payload_rate)
                                        uploadPayloadRate:static_cast<double>(st.upload_payload_rate)
                                                 numPeers:static_cast<NSInteger>(st.num_peers)
@@ -1366,6 +1404,120 @@ static std::string infoHashToHex(const libtorrent::info_hash_t &ih) {
     }
 
     it->second.force_reannounce();
+    return YES;
+}
+
+// MARK: - Bandwidth & Rate Limits
+
+- (BOOL)setSessionDownloadLimit:(NSInteger)bytesPerSecond error:(NSError * _Nullable * _Nullable)error {
+    std::lock_guard<std::mutex> lock(_sessionMutex);
+    if (!_session) {
+        if (error) {
+            *error = [NSError errorWithDomain:@"com.r4m335.TorrentSessionBridge"
+                                         code:2001
+                                     userInfo:@{NSLocalizedDescriptionKey: @"Torrent session is not running"}];
+        }
+        return NO;
+    }
+    libtorrent::settings_pack pack;
+    pack.set_int(libtorrent::settings_pack::download_rate_limit, static_cast<int>(bytesPerSecond));
+    _session->apply_settings(pack);
+    return YES;
+}
+
+- (BOOL)setSessionUploadLimit:(NSInteger)bytesPerSecond error:(NSError * _Nullable * _Nullable)error {
+    std::lock_guard<std::mutex> lock(_sessionMutex);
+    if (!_session) {
+        if (error) {
+            *error = [NSError errorWithDomain:@"com.r4m335.TorrentSessionBridge"
+                                         code:2001
+                                     userInfo:@{NSLocalizedDescriptionKey: @"Torrent session is not running"}];
+        }
+        return NO;
+    }
+    libtorrent::settings_pack pack;
+    pack.set_int(libtorrent::settings_pack::upload_rate_limit, static_cast<int>(bytesPerSecond));
+    _session->apply_settings(pack);
+    return YES;
+}
+
+- (NSInteger)sessionDownloadLimit {
+    std::lock_guard<std::mutex> lock(_sessionMutex);
+    if (!_session) return 0;
+    return _session->get_settings().get_int(libtorrent::settings_pack::download_rate_limit);
+}
+
+- (NSInteger)sessionUploadLimit {
+    std::lock_guard<std::mutex> lock(_sessionMutex);
+    if (!_session) return 0;
+    return _session->get_settings().get_int(libtorrent::settings_pack::upload_rate_limit);
+}
+
+- (BOOL)setDownloadLimit:(NSInteger)bytesPerSecond forTorrentWithHash:(NSString *)infoHash error:(NSError * _Nullable * _Nullable)error {
+    std::lock_guard<std::mutex> lock(_sessionMutex);
+    std::string key = [infoHash.lowercaseString UTF8String];
+    auto it = _torrents.find(key);
+    if (it == _torrents.end() || !it->second.is_valid()) {
+        if (error) {
+            *error = [NSError errorWithDomain:@"com.r4m335.TorrentSessionBridge"
+                                         code:2002
+                                     userInfo:@{NSLocalizedDescriptionKey: @"Torrent not found"}];
+        }
+        return NO;
+    }
+    it->second.set_download_limit(static_cast<int>(bytesPerSecond));
+    return YES;
+}
+
+- (BOOL)setUploadLimit:(NSInteger)bytesPerSecond forTorrentWithHash:(NSString *)infoHash error:(NSError * _Nullable * _Nullable)error {
+    std::lock_guard<std::mutex> lock(_sessionMutex);
+    std::string key = [infoHash.lowercaseString UTF8String];
+    auto it = _torrents.find(key);
+    if (it == _torrents.end() || !it->second.is_valid()) {
+        if (error) {
+            *error = [NSError errorWithDomain:@"com.r4m335.TorrentSessionBridge"
+                                         code:2002
+                                     userInfo:@{NSLocalizedDescriptionKey: @"Torrent not found"}];
+        }
+        return NO;
+    }
+    it->second.set_upload_limit(static_cast<int>(bytesPerSecond));
+    return YES;
+}
+
+- (NSInteger)downloadLimitForTorrentWithHash:(NSString *)infoHash {
+    std::lock_guard<std::mutex> lock(_sessionMutex);
+    std::string key = [infoHash.lowercaseString UTF8String];
+    auto it = _torrents.find(key);
+    if (it == _torrents.end() || !it->second.is_valid()) return 0;
+    return it->second.download_limit();
+}
+
+- (NSInteger)uploadLimitForTorrentWithHash:(NSString *)infoHash {
+    std::lock_guard<std::mutex> lock(_sessionMutex);
+    std::string key = [infoHash.lowercaseString UTF8String];
+    auto it = _torrents.find(key);
+    if (it == _torrents.end() || !it->second.is_valid()) return 0;
+    return it->second.upload_limit();
+}
+
+// MARK: - Error Recovery & Piece Hash Integrity
+
+- (BOOL)recheckTorrentWithHash:(NSString *)infoHash error:(NSError * _Nullable * _Nullable)error {
+    std::lock_guard<std::mutex> lock(_sessionMutex);
+    std::string key = [infoHash.lowercaseString UTF8String];
+    auto it = _torrents.find(key);
+    if (it == _torrents.end() || !it->second.is_valid()) {
+        if (error) {
+            *error = [NSError errorWithDomain:@"com.r4m335.TorrentSessionBridge"
+                                         code:2002
+                                     userInfo:@{NSLocalizedDescriptionKey: @"Torrent not found"}];
+        }
+        return NO;
+    }
+    _torrentErrors.erase(key);
+    it->second.clear_error();
+    it->second.force_recheck();
     return YES;
 }
 

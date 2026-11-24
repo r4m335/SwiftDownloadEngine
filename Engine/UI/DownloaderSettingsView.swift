@@ -148,6 +148,14 @@ public struct DownloaderSettingsView: View {
                             .font(.caption)
                             .foregroundColor(.secondary)
                     }
+
+                    HStack {
+                        Text("Backend Engine")
+                        Spacer()
+                        Text(viewModel.isTorrentBackendNative ? "libtorrent 2.0 (Native)" : "Embedded Fallback")
+                            .font(.caption)
+                            .foregroundColor(viewModel.isTorrentBackendNative ? .green : .orange)
+                    }
                 }
 
                 // Section 5: BitTorrent Seeding Policy

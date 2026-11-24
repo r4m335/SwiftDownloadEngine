@@ -14,6 +14,20 @@ public enum DownloadNotificationManager: Sendable {
     /// Key in Notification userInfo containing the final filename.
     public static let filenameUserInfoKey = "filename"
 
+    /// Notification name broadcast via NotificationCenter when a torrent download finishes.
+    public static let torrentDidCompleteNotification = Notification.Name("DownloadEngineKit.TorrentDidComplete")
+
+    /// Notification name broadcast via NotificationCenter when a torrent finishes its seeding ratio/duration.
+    public static let torrentSeedingDidStopNotification = Notification.Name("DownloadEngineKit.TorrentSeedingDidStop")
+
+    /// Notification name broadcast via NotificationCenter when a torrent fails.
+    public static let torrentDidFailNotification = Notification.Name("DownloadEngineKit.TorrentDidFail")
+
+    public static let torrentInfoHashUserInfoKey = "infoHash"
+    public static let torrentNameUserInfoKey = "name"
+    public static let torrentReasonUserInfoKey = "reason"
+    public static let torrentErrorUserInfoKey = "error"
+
     private static let lock = NSLock()
     private static var notifiedIDs: Set<String> = []
     private static var isInitialized = false
@@ -126,6 +140,127 @@ public enum DownloadNotificationManager: Sendable {
             }
         }
         #endif
+    }
+
+    /// Dispatches a local user notification and broadcasts when a torrent finishes downloading.
+    public static func postTorrentCompletedNotification(name: String, infoHash: String) {
+        let key = "torrent-completed-\(infoHash.lowercased())"
+        lock.lock()
+        ensureLoadedLocked()
+        if notifiedIDs.contains(key) {
+            lock.unlock()
+            return
+        }
+        notifiedIDs.insert(key)
+        savePersistedNotifiedIDsLocked()
+        lock.unlock()
+
+        NotificationCenter.default.post(
+            name: torrentDidCompleteNotification,
+            object: nil,
+            userInfo: [
+                torrentInfoHashUserInfoKey: infoHash,
+                torrentNameUserInfoKey: name
+            ]
+        )
+
+        #if canImport(UserNotifications)
+        guard Bundle.main.bundleIdentifier != nil,
+              NSClassFromString("XCTest") == nil,
+              !Bundle.main.bundlePath.contains("Developer/usr/bin") else {
+            return
+        }
+        let center = UNUserNotificationCenter.current()
+        let content = UNMutableNotificationContent()
+        content.title = "Torrent Complete"
+        content.body = name
+        content.sound = .default
+
+        let trigger = UNTimeIntervalNotificationTrigger(timeInterval: 0.1, repeats: false)
+        let request = UNNotificationRequest(
+            identifier: key,
+            content: content,
+            trigger: trigger
+        )
+        center.add(request) { error in
+            if let error {
+                PipelineLogger.shared.log(stage: .coordinator, message: "[DownloadNotificationManager] Failed to post torrent notification for \(infoHash): \(error.localizedDescription)")
+            }
+        }
+        #endif
+    }
+
+    /// Dispatches a local user notification and broadcasts when a torrent stops seeding.
+    public static func postTorrentSeedingStoppedNotification(name: String, infoHash: String, reason: String) {
+        let key = "torrent-seeding-stopped-\(infoHash.lowercased())"
+        lock.lock()
+        ensureLoadedLocked()
+        if notifiedIDs.contains(key) {
+            lock.unlock()
+            return
+        }
+        notifiedIDs.insert(key)
+        savePersistedNotifiedIDsLocked()
+        lock.unlock()
+
+        NotificationCenter.default.post(
+            name: torrentSeedingDidStopNotification,
+            object: nil,
+            userInfo: [
+                torrentInfoHashUserInfoKey: infoHash,
+                torrentNameUserInfoKey: name,
+                torrentReasonUserInfoKey: reason
+            ]
+        )
+
+        #if canImport(UserNotifications)
+        guard Bundle.main.bundleIdentifier != nil,
+              NSClassFromString("XCTest") == nil,
+              !Bundle.main.bundlePath.contains("Developer/usr/bin") else {
+            return
+        }
+        let center = UNUserNotificationCenter.current()
+        let content = UNMutableNotificationContent()
+        content.title = "Seeding Finished"
+        content.body = "\(name): \(reason)"
+        content.sound = .default
+
+        let trigger = UNTimeIntervalNotificationTrigger(timeInterval: 0.1, repeats: false)
+        let request = UNNotificationRequest(
+            identifier: key,
+            content: content,
+            trigger: trigger
+        )
+        center.add(request) { error in
+            if let error {
+                PipelineLogger.shared.log(stage: .coordinator, message: "[DownloadNotificationManager] Failed to post seeding stopped notification for \(infoHash): \(error.localizedDescription)")
+            }
+        }
+        #endif
+    }
+
+    /// Dispatches a local user notification and broadcasts when a torrent fails.
+    public static func postTorrentFailedNotification(name: String, infoHash: String, error: String) {
+        let key = "torrent-failed-\(infoHash.lowercased())"
+        lock.lock()
+        ensureLoadedLocked()
+        if notifiedIDs.contains(key) {
+            lock.unlock()
+            return
+        }
+        notifiedIDs.insert(key)
+        savePersistedNotifiedIDsLocked()
+        lock.unlock()
+
+        NotificationCenter.default.post(
+            name: torrentDidFailNotification,
+            object: nil,
+            userInfo: [
+                torrentInfoHashUserInfoKey: infoHash,
+                torrentNameUserInfoKey: name,
+                torrentErrorUserInfoKey: error
+            ]
+        )
     }
 
     /// Resets the notified download tracking (primarily for unit tests).

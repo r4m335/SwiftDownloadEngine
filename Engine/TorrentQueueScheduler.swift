@@ -44,6 +44,33 @@ public actor TorrentQueueScheduler {
 
     // MARK: - Enqueue & Registration
 
+    /// Checks whether an info-hash or source magnet link (V1, V2, or Hybrid) is already tracked in the queue.
+    /// Returns the matching info-hash if a duplicate exists, or nil otherwise.
+    public func isDuplicate(infoHash: String, source: String? = nil) -> String? {
+        let key = infoHash.lowercased()
+        if let existing = records[key] {
+            return existing.infoHash
+        }
+        var candidateHashes: Set<String> = [key]
+        if let source, source.hasPrefix("magnet:") {
+            let (v1, v2) = TorrentMetadataParser.extractAllInfoHashes(from: source)
+            if let v1 { candidateHashes.insert(v1.lowercased()) }
+            if let v2 { candidateHashes.insert(v2.lowercased()) }
+        }
+        for rec in records.values {
+            if candidateHashes.contains(rec.infoHash.lowercased()) {
+                return rec.infoHash
+            }
+            if let v1 = rec.infoHashV1?.lowercased(), candidateHashes.contains(v1) {
+                return rec.infoHash
+            }
+            if let v2 = rec.infoHashV2?.lowercased(), candidateHashes.contains(v2) {
+                return rec.infoHash
+            }
+        }
+        return nil
+    }
+
     /// Enqueues a new torrent into the scheduler.
     @discardableResult
     public func enqueue(
@@ -56,13 +83,17 @@ public actor TorrentQueueScheduler {
         isSequential: Bool = false
     ) async throws -> TorrentRecord {
         let key = infoHash.lowercased()
-        guard records[key] == nil else {
-            throw TorrentEngineError.duplicateTorrent(key)
+        if let dup = isDuplicate(infoHash: key, source: source) {
+            throw TorrentEngineError.duplicateTorrent(dup)
         }
+
+        let (v1, v2) = TorrentMetadataParser.extractAllInfoHashes(from: source)
 
         sequenceCounter += 1
         let record = TorrentRecord(
             infoHash: key,
+            infoHashV1: v1,
+            infoHashV2: v2,
             source: source,
             name: name,
             savePath: savePath,
@@ -196,6 +227,7 @@ public actor TorrentQueueScheduler {
     public func shouldStopSeeding(infoHash: String, totalUploaded: Int64, totalDownloaded: Int64, elapsedSeedingSeconds: TimeInterval) -> Bool {
         let key = infoHash.lowercased()
         guard let record = records[key] else { return false }
+        if record.isSeedingComplete { return true }
         let pref = record.seedingPreference ?? (record.seedRatioLimit.map { SeedingPreference(mode: .ratio, targetRatio: $0) }) ?? SeedingPreference.default
 
         switch pref.mode {
@@ -210,6 +242,17 @@ public actor TorrentQueueScheduler {
         case .indefinitely:
             return false
         }
+    }
+
+    /// Marks seeding complete for a torrent and durably persists it.
+    public func markSeedingComplete(infoHash: String) async throws {
+        let key = infoHash.lowercased()
+        guard var record = records[key] else { return }
+        record.isSeedingComplete = true
+        record.state = .finished
+        record.updatedAt = Date()
+        try await persistenceStore.saveRecord(record)
+        records[key] = record
     }
 
     // MARK: - Progress & State Transitions
@@ -230,12 +273,21 @@ public actor TorrentQueueScheduler {
 
         let oldState = record.state
         record.progress = progress
+        if progress.bytesUploaded > 0 {
+            record.totalUploadedBytes = max(record.totalUploadedBytes, progress.bytesUploaded)
+        }
         if let newState = state {
             if record.isExplicitlyPaused {
                 // Invariant: An explicitly paused torrent must NEVER transition to active or queued states
                 record.state = .paused
             } else {
                 record.state = newState
+            }
+            if newState == .seeding && record.seedingStartedAt == nil {
+                record.seedingStartedAt = Date()
+            }
+            if newState == .finished {
+                record.isSeedingComplete = true
             }
         }
         if let err = errorMessage {

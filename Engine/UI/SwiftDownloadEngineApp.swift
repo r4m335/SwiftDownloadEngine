@@ -442,8 +442,9 @@ public struct SwiftDownloadEngineApp: App {
                     await viewModel.startObserving()
                     do {
                         try await viewModel.startTorrentEngine()
+                        await viewModel.resumeTorrentEngineFromBackground()
                     } catch {
-                        PipelineLogger.shared.log(stage: .ui, message: "Failed to start torrent engine on active: \(error)")
+                        PipelineLogger.shared.log(stage: .ui, message: "Failed to start/resume torrent engine on active: \(error)")
                     }
                     if !hasRestoredQueue {
                         hasRestoredQueue = true
@@ -479,6 +480,7 @@ public struct SwiftDownloadEngineApp: App {
                         if let orchestrator = viewModel.streamingOrchestrator {
                             await orchestrator.pauseAll()
                         }
+                        await viewModel.suspendTorrentEngineForBackground()
                         if bgTaskID != .invalid {
                             UIApplication.shared.endBackgroundTask(bgTaskID)
                             bgTaskID = .invalid
@@ -491,20 +493,24 @@ public struct SwiftDownloadEngineApp: App {
                     await viewModel.engine.handoffActiveDownloadsToBackground()
                     await viewModel.handoffActiveStreamingToBackground()
                     let hasActiveStreaming = await viewModel.streamingOrchestrator?.hasActiveTransfers() ?? false
-                    if !hasActiveStreaming {
+                    let hasActiveTorrents = viewModel.torrentTasks.contains { $0.state == .downloading || $0.state == .seeding }
+
+                    if !hasActiveStreaming && !hasActiveTorrents {
                         if let orchestrator = viewModel.streamingOrchestrator {
                             await orchestrator.pauseAll()
                         }
+                        await viewModel.suspendTorrentEngineForBackground()
                         #if canImport(UIKit) && !os(watchOS)
                         if bgTaskID != .invalid {
                             UIApplication.shared.endBackgroundTask(bgTaskID)
                             bgTaskID = .invalid
                         }
                         #endif
+                    } else if !hasActiveTorrents {
+                        await viewModel.suspendTorrentEngineForBackground()
                     }
                     await viewModel.refreshSnapshots()
                     await viewModel.refreshTorrentSnapshots()
-                    try? await viewModel.stopTorrentEngine()
                     await viewModel.scheduleCoordinator.prepareForBackground()
                 }
             case .inactive:

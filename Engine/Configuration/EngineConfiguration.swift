@@ -22,6 +22,8 @@ public struct EngineConfiguration: Sendable, Equatable {
     public var maxConcurrentTorrents: Int
     public var defaultTorrentPriority: TorrentPriority
     public var defaultSeedingPreference: SeedingPreference
+    public var torrentDownloadRateLimit: Int?
+    public var torrentUploadRateLimit: Int?
 
     public static let `default` = EngineConfiguration(
         maxConcurrentDownloads: 3,
@@ -35,7 +37,9 @@ public struct EngineConfiguration: Sendable, Equatable {
         allowCellular: true,
         maxConcurrentTorrents: 3,
         defaultTorrentPriority: .normal,
-        defaultSeedingPreference: SeedingPreference(mode: .ratio, targetRatio: 1.0, targetDurationSeconds: 3600)
+        defaultSeedingPreference: SeedingPreference(mode: .ratio, targetRatio: 1.0, targetDurationSeconds: 3600),
+        torrentDownloadRateLimit: nil,
+        torrentUploadRateLimit: nil
     )
 
     public init(
@@ -50,7 +54,9 @@ public struct EngineConfiguration: Sendable, Equatable {
         allowCellular: Bool = true,
         maxConcurrentTorrents: Int = 3,
         defaultTorrentPriority: TorrentPriority = .normal,
-        defaultSeedingPreference: SeedingPreference = SeedingPreference(mode: .ratio, targetRatio: 1.0, targetDurationSeconds: 3600)
+        defaultSeedingPreference: SeedingPreference = SeedingPreference(mode: .ratio, targetRatio: 1.0, targetDurationSeconds: 3600),
+        torrentDownloadRateLimit: Int? = nil,
+        torrentUploadRateLimit: Int? = nil
     ) {
         self.maxConcurrentDownloads = max(1, maxConcurrentDownloads)
         self.maxGlobalRequests = max(1, maxGlobalRequests)
@@ -64,5 +70,7 @@ public struct EngineConfiguration: Sendable, Equatable {
         self.maxConcurrentTorrents = max(1, maxConcurrentTorrents)
         self.defaultTorrentPriority = defaultTorrentPriority
         self.defaultSeedingPreference = defaultSeedingPreference
+        self.torrentDownloadRateLimit = torrentDownloadRateLimit
+        self.torrentUploadRateLimit = torrentUploadRateLimit
     }
 }
