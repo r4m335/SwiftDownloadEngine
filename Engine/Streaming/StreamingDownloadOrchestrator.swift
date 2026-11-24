@@ -609,6 +609,9 @@ public actor DownloadCoordinatorSegmentExecutor: StreamingSegmentExecutor {
                 PipelineLogger.shared.log(stage: .coordinator, message: "Failed to cancel segment \(id): \(error)")
             }
         }
+        while !(activeRequestIDs[transferID]?.isEmpty ?? true) {
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
     }
 }
 
@@ -788,6 +791,10 @@ public actor URLSessionStreamingSegmentExecutor: StreamingSegmentExecutor {
         return activeTasks.removeValue(forKey: transferID) ?? []
     }
 
+    public func hasActiveTasks(for transferID: String) -> Bool {
+        return !(activeTasks[transferID]?.isEmpty ?? true)
+    }
+
     public func execute(
         _ request: StreamingSegmentTransferRequest,
         progress: (@Sendable (Double) -> Void)? = nil
@@ -806,7 +813,33 @@ public actor URLSessionStreamingSegmentExecutor: StreamingSegmentExecutor {
                 PipelineLogger.shared.log("[URLSessionStreamingSegmentExecutor] Segment \(request.identity.order) encountered retryable error (\(error.localizedDescription)). Retrying attempt \(attempt + 1)/\(maxAttempts)...")
             }
         ) {
-            let (tempURL, response) = try await session.download(for: urlRequest)
+            let (tempURL, response): (URL, URLResponse) = try await withTaskCancellationHandler {
+                try await withCheckedThrowingContinuation { continuation in
+                    let transferID = request.identity.transferID
+                    var taskRef: URLSessionDownloadTask?
+                    let task = self.session.downloadTask(with: urlRequest) { [weak self] tempURL, response, error in
+                        if let self, let taskRef {
+                            Task { [weak self] in
+                                await self?.unregisterActiveTask(transferID: transferID, task: taskRef)
+                            }
+                        }
+                        if let error = error {
+                            continuation.resume(throwing: error)
+                        } else if let tempURL = tempURL, let response = response {
+                            continuation.resume(returning: (tempURL, response))
+                        } else {
+                            continuation.resume(throwing: URLError(.unknown))
+                        }
+                    }
+                    taskRef = task
+                    self.registerActiveTask(transferID: transferID, task: task)
+                    task.resume()
+                }
+            } onCancel: {
+                Task {
+                    await self.cancel(transferID: request.identity.transferID)
+                }
+            }
             guard let httpResponse = response as? HTTPURLResponse else {
                 throw StreamingDownloadOrchestratorError.segmentTransferFailed(order: request.identity.order)
             }
@@ -895,6 +928,9 @@ public actor URLSessionStreamingSegmentExecutor: StreamingSegmentExecutor {
         let tasks = takeActiveTasks(for: transferID)
         for task in tasks {
             task.cancel()
+        }
+        while hasActiveTasks(for: transferID) {
+            try? await Task.sleep(nanoseconds: 10_000_000)
         }
     }
 }
@@ -1002,6 +1038,7 @@ public actor StreamingDownloadOrchestrator {
     private var completedTransfers: [String: StreamingTransferResult] = [:]
     private var pausedTransfers: Set<String> = []
     private var cancelledTransfers: Set<String> = []
+    private var handoffInProgressTransfers: Set<String> = []
     private var registeredTransferIDs: [String: String] = [:]
     private var candidatesByTransfer: [String: StreamingManifestCandidate] = [:]
     public struct CachedManifestEntry: Sendable {
@@ -1228,8 +1265,27 @@ public actor StreamingDownloadOrchestrator {
             runningTransfers.remove(k)
             pausedTransfers.insert(k)
         }
+        let parentID = hlsParentID(for: transferID)
+
+        // 1. Cancel in-flight segment tasks in the executor and await their termination
+        await segmentExecutor.cancel(transferID: transferID)
+        if let mapped = registeredTransferIDs[transferID] {
+            await segmentExecutor.cancel(transferID: mapped)
+        }
+        if parentID != transferID {
+            await segmentExecutor.cancel(transferID: parentID)
+        }
+
+        // 2. Reconcile committed checkpoints with disk before completing pause
+        if let hlsRec = try? await hlsPersistenceStore?.load(id: parentID) {
+            await reconcileCompletedSegmentsWithDisk(transferID: parentID, directory: hlsRec.segmentDirectoryURL)
+        } else if let dashRec = try? await dashPersistenceStore?.load(id: transferID) {
+            await reconcileDASHCompletedSegmentsWithDisk(transferID: transferID, directory: dashRec.segmentDirectoryURL)
+        }
+
+        // 3. Persist paused state
         try await persistHLSState(
-            id: hlsParentID(for: transferID),
+            id: parentID,
             state: .paused
         )
         _ = try? await dashPersistenceStore?.updateState(id: transferID, state: .paused)
@@ -1316,6 +1372,54 @@ public actor StreamingDownloadOrchestrator {
         if cancelledTransfers.contains(transferID) { return true }
         if let mapped = registeredTransferIDs[transferID], cancelledTransfers.contains(mapped) { return true }
         return false
+    }
+
+    public func isHandoffInProgress(transferID: String) -> Bool {
+        if handoffInProgressTransfers.contains(transferID) { return true }
+        if let mapped = registeredTransferIDs[transferID], handoffInProgressTransfers.contains(mapped) { return true }
+        let parentID = hlsParentID(for: transferID)
+        if handoffInProgressTransfers.contains(parentID) { return true }
+        return false
+    }
+
+    /// Reconciles committed segments with disk and marks any missing completed checkpoints in the HLS persistence store.
+    private func reconcileCompletedSegmentsWithDisk(transferID: String, directory: URL) async {
+        guard let persistence = hlsPersistenceStore else { return }
+        guard let record = try? await persistence.load(id: transferID) else { return }
+        guard let files = try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: [.fileSizeKey]) else { return }
+        let partFiles = files.filter { $0.pathExtension.lowercased() == "part" }
+        for file in partFiles {
+            let baseName = file.deletingPathExtension().lastPathComponent
+            let components = baseName.split(separator: "_")
+            if let first = components.first, let order = Int(first) {
+                let size = FileManager.default.fileSize(atPath: file.path) ?? 0
+                if size > 0 && !record.completedSegmentOrders.contains(order) {
+                    _ = try? await persistence.markSegmentCompleted(id: transferID, order: order)
+                }
+            }
+        }
+    }
+
+    /// Reconciles committed segments with disk and marks any missing completed checkpoints in the DASH persistence store.
+    private func reconcileDASHCompletedSegmentsWithDisk(transferID: String, directory: URL) async {
+        guard let persistence = dashPersistenceStore else { return }
+        guard let record = try? await persistence.load(id: transferID) else { return }
+        guard let files = try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: [.fileSizeKey]) else { return }
+        let partFiles = files.filter { $0.pathExtension.lowercased() == "part" }
+        var newlyCompleted: Set<Int> = []
+        for file in partFiles {
+            let baseName = file.deletingPathExtension().lastPathComponent
+            let components = baseName.split(separator: "_")
+            if let first = components.first, let order = Int(first) {
+                let size = FileManager.default.fileSize(atPath: file.path) ?? 0
+                if size > 0 && !record.completedSegmentOrders.contains(order) {
+                    newlyCompleted.insert(order)
+                }
+            }
+        }
+        if !newlyCompleted.isEmpty {
+            _ = try? await persistence.updateCompletedSegmentOrders(id: transferID, completedOrders: newlyCompleted)
+        }
     }
 
     public private(set) var configuration: EngineConfiguration
@@ -1776,7 +1880,8 @@ public actor StreamingDownloadOrchestrator {
                 }
                 if record.completedSegmentOrders.count >= record.totalSegments,
                    !runningTransfers.contains(record.id),
-                   !activeAssemblyOperations.contains(record.id) {
+                   !activeAssemblyOperations.contains(record.id),
+                   !isHandoffInProgress(transferID: record.id) {
                     PipelineLogger.shared.log("[HLS Background] All \(record.totalSegments) segments downloaded for \(record.id). Triggering assembly...")
                     await self.resumePersistedHLS(record)
                 }
@@ -1810,7 +1915,8 @@ public actor StreamingDownloadOrchestrator {
                 }
                 if record.completedSegmentOrders.count >= record.totalSegments,
                    !runningTransfers.contains(record.id),
-                   !activeAssemblyOperations.contains(record.id) {
+                   !activeAssemblyOperations.contains(record.id),
+                   !isHandoffInProgress(transferID: record.id) {
                     PipelineLogger.shared.log("[DASH Background] All \(record.totalSegments) segments downloaded for \(record.id). Triggering assembly...")
                     await self.resumePersistedDASH(record)
                 }
@@ -1880,16 +1986,50 @@ public actor StreamingDownloadOrchestrator {
             guard let dir = segmentDir else { continue }
 
             do {
+                // 1. Mark handoff in progress
+                self.handoffInProgressTransfers.insert(parentID)
+                self.handoffInProgressTransfers.insert(id)
+                self.handoffInProgressTransfers.insert(proposal.transferID)
+
+                // 2. Cancel active foreground segment executor tasks and await full termination/detachment
+                await self.segmentExecutor.cancel(transferID: id)
+                if parentID != id {
+                    await self.segmentExecutor.cancel(transferID: parentID)
+                }
+                if proposal.transferID != id && proposal.transferID != parentID {
+                    await self.segmentExecutor.cancel(transferID: proposal.transferID)
+                }
+
+                // 3. Reconcile completed segments from disk before scheduling remaining resources
+                if proposal.manifest.kind == .hls {
+                    await reconcileCompletedSegmentsWithDisk(transferID: parentID, directory: dir)
+                } else if proposal.manifest.kind == .dash {
+                    await reconcileDASHCompletedSegmentsWithDisk(transferID: proposal.transferID, directory: dir)
+                }
+
+                // 4. Update proposal policy to background
                 proposal.transportPolicy = .background
                 self.proposals[parentID] = proposal
                 self.proposals[id] = proposal
+                self.proposals[proposal.transferID] = proposal
+
+                // 5. Schedule remaining uncompleted segments in background transport
                 let scheduled = try await scheduleBackgroundStreaming(
                     proposal: proposal,
                     destinationDirectory: dir,
                     backgroundManager: manager
                 )
+
+                // 6. Transition out of handoffInProgress to background running
+                self.handoffInProgressTransfers.remove(parentID)
+                self.handoffInProgressTransfers.remove(id)
+                self.handoffInProgressTransfers.remove(proposal.transferID)
+
                 PipelineLogger.shared.log("[StreamingOrchestrator] Successfully handed off streaming transfer \(id) (\(scheduled.count) segments) to background transport.")
             } catch {
+                self.handoffInProgressTransfers.remove(parentID)
+                self.handoffInProgressTransfers.remove(id)
+                self.handoffInProgressTransfers.remove(proposal.transferID)
                 PipelineLogger.shared.log("[StreamingOrchestrator] Failed to hand off streaming transfer \(id) to background: \(error.localizedDescription)")
             }
         }
@@ -3220,20 +3360,24 @@ public actor StreamingDownloadOrchestrator {
             }
         } catch is CancellationError {
             PipelineLogger.shared.log("\(pipelineTag) Error: Segment download cancelled.")
-            await handleHLSCancellation(
-                parentID: parentID,
-                transferID: proposal.transferID,
-                proposal: proposal.manifest.kind == .hls ? proposal : nil
-            )
-            throw StreamingDownloadOrchestratorError.cancelled
-        } catch let error as StreamingDownloadOrchestratorError {
-            PipelineLogger.shared.log("\(pipelineTag) Error: \(error.localizedDescription)")
-            if case .cancelled = error {
+            if !isPaused(transferID: parentID) && !isPaused(transferID: proposal.transferID) && !isHandoffInProgress(transferID: parentID) && !isHandoffInProgress(transferID: proposal.transferID) {
                 await handleHLSCancellation(
                     parentID: parentID,
                     transferID: proposal.transferID,
                     proposal: proposal.manifest.kind == .hls ? proposal : nil
                 )
+            }
+            throw StreamingDownloadOrchestratorError.cancelled
+        } catch let error as StreamingDownloadOrchestratorError {
+            PipelineLogger.shared.log("\(pipelineTag) Error: \(error.localizedDescription)")
+            if case .cancelled = error {
+                if !isPaused(transferID: parentID) && !isPaused(transferID: proposal.transferID) && !isHandoffInProgress(transferID: parentID) && !isHandoffInProgress(transferID: proposal.transferID) {
+                    await handleHLSCancellation(
+                        parentID: parentID,
+                        transferID: proposal.transferID,
+                        proposal: proposal.manifest.kind == .hls ? proposal : nil
+                    )
+                }
             }
             throw error
         } catch {
@@ -3387,14 +3531,27 @@ public actor StreamingDownloadOrchestrator {
 
         while true {
             try Task.checkCancellation()
+            let parentID = hlsParentID(for: proposal)
+            if isPaused(transferID: proposal.transferID) || isPaused(transferID: parentID) ||
+               isCancelled(transferID: proposal.transferID) || isCancelled(transferID: parentID) ||
+               isHandoffInProgress(transferID: proposal.transferID) || isHandoffInProgress(transferID: parentID) {
+                throw StreamingDownloadOrchestratorError.cancelled
+            }
             do {
                 try await segmentExecutor.execute(request, progress: nil)
                 break
             } catch is CancellationError {
                 throw StreamingDownloadOrchestratorError.cancelled
+            } catch let urlErr as URLError where urlErr.code == .cancelled {
+                throw StreamingDownloadOrchestratorError.cancelled
             } catch let err as StreamingDownloadOrchestratorError where err == .cancelled {
                 throw err
             } catch {
+                if isPaused(transferID: proposal.transferID) || isPaused(transferID: parentID) ||
+                   isCancelled(transferID: proposal.transferID) || isCancelled(transferID: parentID) ||
+                   isHandoffInProgress(transferID: proposal.transferID) || isHandoffInProgress(transferID: parentID) {
+                    throw StreamingDownloadOrchestratorError.cancelled
+                }
                 attempts += 1
                 if attempts < maxAttempts && HTTPRetryPolicy.isRetryable(error) {
                     PipelineLogger.shared.log("\(pipelineTag) Segment \(resource.identity.order) encountered transient network error: \(error.localizedDescription). Retrying attempt \(attempts + 1)/\(maxAttempts)...")
@@ -3615,18 +3772,22 @@ public actor StreamingDownloadOrchestrator {
             )
             try Task.checkCancellation()
         } catch is CancellationError {
-            await handleHLSCancellation(
-                parentID: parentID,
-                transferID: parentID,
-                proposal: runProposal
-            )
+            if !isPaused(transferID: parentID) && !isPaused(transferID: proposal.transferID) && !isHandoffInProgress(transferID: parentID) {
+                await handleHLSCancellation(
+                    parentID: parentID,
+                    transferID: parentID,
+                    proposal: runProposal
+                )
+            }
             throw StreamingDownloadOrchestratorError.cancelled
         } catch let error as StreamingDownloadOrchestratorError where error == .cancelled {
-            await handleHLSCancellation(
-                parentID: parentID,
-                transferID: parentID,
-                proposal: runProposal
-            )
+            if !isPaused(transferID: parentID) && !isPaused(transferID: proposal.transferID) && !isHandoffInProgress(transferID: parentID) {
+                await handleHLSCancellation(
+                    parentID: parentID,
+                    transferID: parentID,
+                    proposal: runProposal
+                )
+            }
             throw error
         } catch let error as StreamingDownloadOrchestratorError where error == .transferAlreadyRunning {
             PipelineLogger.shared.log("[HLS Pipeline] Duplicate resume request rejected for \(parentID). Preserving active transfer state.")
@@ -3639,11 +3800,13 @@ public actor StreamingDownloadOrchestrator {
                               (error as? StreamingDownloadOrchestratorError) == .cancelled ||
                               error is CancellationError
             if isCancelled {
-                await handleHLSCancellation(
-                    parentID: parentID,
-                    transferID: parentID,
-                    proposal: runProposal
-                )
+                if !isPaused(transferID: parentID) && !isPaused(transferID: proposal.transferID) && !isHandoffInProgress(transferID: parentID) {
+                    await handleHLSCancellation(
+                        parentID: parentID,
+                        transferID: parentID,
+                        proposal: runProposal
+                    )
+                }
                 throw StreamingDownloadOrchestratorError.cancelled
             }
             if let engine = self.downloadEngine {

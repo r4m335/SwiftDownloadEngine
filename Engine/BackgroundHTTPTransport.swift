@@ -10,6 +10,8 @@ import FoundationNetworking
 public enum BackgroundTransportError: Error, LocalizedError, Equatable, Sendable {
     case invalidHTTPResponse
     case unexpectedStatus(expected: Int, actual: Int)
+    case authenticationRequired(status: Int)
+    case expiredOrMissing(status: Int)
     case invalidContentRange
     case contentRangeMismatch(expectedStart: Int64, expectedEnd: Int64, actualStart: Int64, actualEnd: Int64)
     case totalSizeMismatch(expected: Int64, actual: Int64)
@@ -28,6 +30,10 @@ public enum BackgroundTransportError: Error, LocalizedError, Equatable, Sendable
             return "Server returned a non-HTTP response"
         case .unexpectedStatus(let expected, let actual):
             return "Unexpected HTTP status: expected \(expected), received \(actual)"
+        case .authenticationRequired(let status):
+            return "Authentication required or access denied (HTTP \(status))"
+        case .expiredOrMissing(let status):
+            return "Resource expired or missing (HTTP \(status))"
         case .invalidContentRange:
             return "Missing or malformed Content-Range response header"
         case .contentRangeMismatch(let expS, let expE, let actS, let actE):
@@ -385,7 +391,13 @@ public enum BackgroundResponseValidator {
 
         // 1. Status Code Validation
         // Range requests MUST return 206 Partial Content.
-        // A 200 OK means the remote server ignored the byte range and sent the entire file from byte 0.
+        // Explicitly classify 401/403 (auth) and 404/410 (expired/missing) so they are not treated as retryable 206 mismatches.
+        if httpResponse.statusCode == 401 || httpResponse.statusCode == 403 {
+            throw BackgroundTransportError.authenticationRequired(status: httpResponse.statusCode)
+        }
+        if httpResponse.statusCode == 404 || httpResponse.statusCode == 410 {
+            throw BackgroundTransportError.expiredOrMissing(status: httpResponse.statusCode)
+        }
         if httpResponse.statusCode != 206 {
             throw BackgroundTransportError.unexpectedStatus(expected: 206, actual: httpResponse.statusCode)
         }
@@ -756,6 +768,12 @@ public final class BackgroundDownloadSessionManager: NSObject, @unchecked Sendab
     /// Failure notification hook: (downloadID, segmentID, error)
     public var onSegmentFailed: (@Sendable (String, Int, Error) -> Void)?
 
+    /// Authentication failure hook: (downloadID, segmentID, statusCode)
+    public var onAuthenticationRequired: (@Sendable (String, Int, Int) -> Void)?
+
+    /// Resource expired or missing hook: (downloadID, segmentID, statusCode)
+    public var onResourceExpired: (@Sendable (String, Int, Int) -> Void)?
+
     /// Completion notification hook for an entire download: (downloadID, destinationURL)
     public var onDownloadCompleted: (@Sendable (String, URL) -> Void)?
 
@@ -997,11 +1015,15 @@ public final class BackgroundDownloadSessionManager: NSObject, @unchecked Sendab
         let resumeURL = resumeDataURL(downloadID: download.id, segmentID: segment.id)
         let task: URLSessionDownloadTask
         if FileManager.default.fileExists(atPath: resumeURL.path),
-           let resumeData = try? Data(contentsOf: resumeURL),
-           isValidResumeData(resumeData) {
-            task = session.downloadTask(withResumeData: resumeData)
-            try? FileManager.default.removeItem(at: resumeURL)
-            PipelineLogger.shared.log(stage: .transport, message: "[BackgroundDownloadSessionManager] Resumed download task with resumeData for download \(download.id), segment \(segment.id)")
+           let resumeData = try? Data(contentsOf: resumeURL) {
+            if isValidResumeData(resumeData) {
+                task = session.downloadTask(withResumeData: resumeData)
+                try? FileManager.default.removeItem(at: resumeURL)
+                PipelineLogger.shared.log(stage: .transport, message: "[BackgroundDownloadSessionManager] Resumed download task with resumeData for download \(download.id), segment \(segment.id)")
+            } else {
+                try? FileManager.default.removeItem(at: resumeURL)
+                task = session.downloadTask(with: request)
+            }
         } else {
             task = session.downloadTask(with: request)
         }
@@ -1650,9 +1672,16 @@ extension BackgroundDownloadSessionManager: URLSessionDownloadDelegate {
         let sessID = self.sessionIdentifier
         guard let rawError = error else { return }
 
+        let responseStatus = (task.response as? HTTPURLResponse)?.statusCode
+        let errorStatus = HTTPRetryPolicy.backgroundHTTPStatusCode(rawError)
+        let statusCode = responseStatus ?? errorStatus ?? 0
         let finalError: Error
-        if let httpResponse = task.response as? HTTPURLResponse, httpResponse.statusCode >= 400 {
-            finalError = BackgroundTransportError.unexpectedStatus(expected: 206, actual: httpResponse.statusCode)
+        if statusCode == 401 || statusCode == 403 {
+            finalError = BackgroundTransportError.authenticationRequired(status: statusCode)
+        } else if statusCode == 404 || statusCode == 410 {
+            finalError = BackgroundTransportError.expiredOrMissing(status: statusCode)
+        } else if statusCode >= 400 {
+            finalError = BackgroundTransportError.unexpectedStatus(expected: 206, actual: statusCode)
         } else {
             finalError = rawError
         }
@@ -1663,8 +1692,8 @@ extension BackgroundDownloadSessionManager: URLSessionDownloadDelegate {
             if let rec = await self.mappingStore.record(sessionIdentifier: sessID, taskIdentifier: taskID) {
                 let nsError = rawError as NSError
                 let resumeData = nsError.userInfo[NSURLSessionDownloadTaskResumeData] as? Data
+                let resumeURL = self.resumeDataURL(downloadID: rec.downloadID, segmentID: rec.segmentID)
                 if let resumeData {
-                    let resumeURL = self.resumeDataURL(downloadID: rec.downloadID, segmentID: rec.segmentID)
                     do {
                         try resumeData.write(to: resumeURL)
                         PipelineLogger.shared.log(stage: .transport, message: "[BackgroundDownloadSessionManager] Saved resumeData for download \(rec.downloadID), segment \(rec.segmentID) (\(resumeData.count) bytes)")
@@ -1676,12 +1705,73 @@ extension BackgroundDownloadSessionManager: URLSessionDownloadDelegate {
                 // Bug #20: Reconcile persisted progress against actual committed file on disk when a task fails or is interrupted
                 await reconcileSegmentWithDisk(downloadID: rec.downloadID, segmentID: rec.segmentID, partURL: rec.destinationPartURL)
 
+                // Check for permanent errors (401/403/404/410)
+                let isAuthError = statusCode == 401 || statusCode == 403 || {
+                    if let bg = finalError as? BackgroundTransportError, case .authenticationRequired = bg { return true }
+                    return false
+                }()
+                let isExpiredError = statusCode == 404 || statusCode == 410 || {
+                    if let bg = finalError as? BackgroundTransportError, case .expiredOrMissing = bg { return true }
+                    return false
+                }()
+                let isPermanent = isAuthError || isExpiredError
+
+                if isAuthError {
+                    self.onAuthenticationRequired?(rec.downloadID, rec.segmentID, statusCode)
+                } else if isExpiredError {
+                    self.onResourceExpired?(rec.downloadID, rec.segmentID, statusCode)
+                }
+
+                // Compute reconciled segment offsets from both disk and persistence
+                let diskSize = FileManager.default.fileSize(atPath: rec.destinationPartURL.path) ?? 0
+                var persistedBytes: Int64 = 0
+                if let dlRec = try? await self.persistenceStore?.fetch(tag: rec.downloadID),
+                   let seg = dlRec.segments.first(where: { $0.id == rec.segmentID }) {
+                    persistedBytes = seg.completedBytes
+                }
+                let committedBytes = max(0, min(rec.segmentLength > 0 ? rec.segmentLength : Int64.max, max(diskSize, persistedBytes)))
+                let baseStart = rec.segmentLength > 0 ? (rec.endOffset - rec.segmentLength + 1) : rec.startOffset
+                let nextStartOffset = baseStart + committedBytes
+                let remainingBytes = rec.endOffset - nextStartOffset + 1
+
+                // Check for stale/corrupted task records that conflict with disk/range bounds
+                let isStaleRecord = (rec.segmentLength > 0 && rec.endOffset < rec.startOffset) || (rec.segmentLength > 0 && committedBytes > rec.segmentLength)
+
+                if isStaleRecord {
+                    PipelineLogger.shared.log(stage: .transport, message: "[BackgroundDownloadSessionManager] Rejecting stale task record with conflicting bounds for download \(rec.downloadID), segment \(rec.segmentID)")
+                    try? FileManager.default.removeItem(at: resumeURL)
+                    do {
+                        try await self.mappingStore.markFailed(sessionIdentifier: sessID, taskIdentifier: taskID, error: "Stale task record bounds conflict")
+                    } catch {}
+                    self.notifyFailed(downloadID: rec.downloadID, segmentID: rec.segmentID, error: BackgroundTransportError.contentRangeMismatch(expectedStart: rec.startOffset, expectedEnd: rec.endOffset, actualStart: nextStartOffset, actualEnd: rec.endOffset))
+                    return
+                }
+
+                // If all segment bytes are already committed to disk, mark completed without making a new network request
+                if rec.segmentLength > 0 && remainingBytes <= 0 {
+                    PipelineLogger.shared.log(stage: .transport, message: "[BackgroundDownloadSessionManager] Reconciled segment \(rec.segmentID) is already complete on disk (\(committedBytes)/\(rec.segmentLength) bytes).")
+                    try? FileManager.default.removeItem(at: resumeURL)
+                    do {
+                        try await self.mappingStore.markCompleted(sessionIdentifier: sessID, taskIdentifier: taskID, finalBytes: committedBytes)
+                    } catch {}
+                    if let persistence = self.persistenceStore {
+                        _ = try? await persistence.updateSegmentProgress(tag: rec.downloadID, segmentID: rec.segmentID, completedBytes: rec.segmentLength)
+                        if let dlRec = try? await persistence.fetch(tag: rec.downloadID), dlRec.isAllSegmentsCompleted {
+                            let filename = dlRec.suggestedFilename ?? dlRec.destinationURL.lastPathComponent
+                            DownloadNotificationManager.postDownloadCompletedNotification(filename: filename, downloadID: rec.downloadID)
+                            self.onDownloadCompleted?(rec.downloadID, dlRec.destinationURL)
+                        }
+                    }
+                    self.notifyCompleted(downloadID: rec.downloadID, segmentID: rec.segmentID, partURL: rec.destinationPartURL)
+                    return
+                }
+
                 // Apple Task Interruption Recovery:
                 // If the task was interrupted (resumeData present or transient network error), and retries remain (< 3),
                 // automatically reschedule and resume directly in the background URLSession with exponential backoff.
-                let isTransient = isTransientNetworkError(nsError)
+                let isTransient = !isPermanent && isTransientNetworkError(nsError)
                 let isCancelled = nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled
-                let canRecover = autoRetryOnInterruption && (resumeData != nil || isTransient) && !isCancelled && rec.retryCount < 3
+                let canRecover = autoRetryOnInterruption && (resumeData != nil || isTransient) && !isCancelled && !isPermanent && rec.retryCount < 3
 
                 if canRecover {
                     let nextRetry = rec.retryCount + 1
@@ -1691,16 +1781,18 @@ extension BackgroundDownloadSessionManager: URLSessionDownloadDelegate {
                     let newTask: URLSessionDownloadTask
                     if let resumeData, self.isValidResumeData(resumeData) {
                         newTask = self.session.downloadTask(withResumeData: resumeData)
+                        try? FileManager.default.removeItem(at: resumeURL)
                         PipelineLogger.shared.log(stage: .transport, message: "[BackgroundDownloadSessionManager] Apple task interruption recovery: restarting task with resumeData for download \(rec.downloadID), segment \(rec.segmentID) (attempt \(nextRetry)/3, backoff: \(backoffSeconds)s)")
                     } else {
+                        try? FileManager.default.removeItem(at: resumeURL)
                         var request = URLRequest(url: rec.originalURL)
                         request.setValue("identity", forHTTPHeaderField: "Accept-Encoding")
-                        if rec.endOffset > 0 || rec.startOffset > 0 {
-                            request.setValue("bytes=\(rec.startOffset)-\(rec.endOffset)", forHTTPHeaderField: "Range")
+                        if rec.endOffset > 0 || nextStartOffset > 0 {
+                            request.setValue("bytes=\(nextStartOffset)-\(rec.endOffset)", forHTTPHeaderField: "Range")
                         }
                         request = DownloadRequestEnricher.enrich(request)
                         newTask = self.session.downloadTask(with: request)
-                        PipelineLogger.shared.log(stage: .transport, message: "[BackgroundDownloadSessionManager] Apple task interruption recovery: restarting task with transient error backoff for download \(rec.downloadID), segment \(rec.segmentID) (attempt \(nextRetry)/3, backoff: \(backoffSeconds)s)")
+                        PipelineLogger.shared.log(stage: .transport, message: "[BackgroundDownloadSessionManager] Apple task interruption recovery: restarting task with range bytes=\(nextStartOffset)-\(rec.endOffset) for download \(rec.downloadID), segment \(rec.segmentID) (attempt \(nextRetry)/3, backoff: \(backoffSeconds)s)")
                     }
 
                     #if canImport(Darwin)
@@ -1715,15 +1807,15 @@ extension BackgroundDownloadSessionManager: URLSessionDownloadDelegate {
                         downloadID: rec.downloadID,
                         segmentID: rec.segmentID,
                         originalURL: rec.originalURL,
-                        startOffset: rec.startOffset,
+                        startOffset: nextStartOffset,
                         endOffset: rec.endOffset,
-                        expectedBytes: rec.expectedBytes,
-                        initialSegmentCompletedBytes: rec.initialSegmentCompletedBytes,
+                        expectedBytes: max(0, remainingBytes),
+                        initialSegmentCompletedBytes: committedBytes,
                         segmentLength: rec.segmentLength,
                         destinationPartURL: rec.destinationPartURL,
                         createdAt: rec.createdAt,
                         updatedAt: Date(),
-                        completedBytes: rec.completedBytes,
+                        completedBytes: 0,
                         isCompleted: false,
                         errorDescription: nil,
                         retryCount: nextRetry

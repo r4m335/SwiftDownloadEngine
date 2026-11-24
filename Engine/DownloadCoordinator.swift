@@ -501,6 +501,20 @@ public actor DownloadCoordinator {
         self.requestBudget = requestBudget ?? SharedRequestBudget(maxGlobalRequests: 12)
         self.globalBandwidthLimiter = globalBandwidthLimiter ?? BandwidthLimiter(bytesPerSecond: nil)
         self.backgroundSessionManager = backgroundSessionManager
+        if let bg = backgroundSessionManager {
+            wireBackgroundAuthRecovery(bg)
+        }
+    }
+
+    private func wireBackgroundAuthRecovery(_ manager: BackgroundDownloadSessionManager) {
+        manager.onAuthenticationRequired = { [weak self] downloadID, segmentID, status in
+            Task { [weak self] in
+                guard let self else { return }
+                if let rec = try? await self.persistenceStore.fetch(tag: downloadID) {
+                    _ = await self.attemptCredentialRefresh(for: rec.originalURL, downloadID: downloadID)
+                }
+            }
+        }
     }
 
     private func headersForPersistence(_ request: DownloadRequest) -> [String: String] {
@@ -514,6 +528,7 @@ public actor DownloadCoordinator {
     /// Sets or updates the associated background session manager.
     public func setBackgroundSessionManager(_ manager: BackgroundDownloadSessionManager) {
         self.backgroundSessionManager = manager
+        wireBackgroundAuthRecovery(manager)
     }
 
     /// Returns the associated background session manager if configured.

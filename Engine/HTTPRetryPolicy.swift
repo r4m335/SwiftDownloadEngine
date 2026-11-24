@@ -136,7 +136,8 @@ enum HTTPRetryPolicy {
             case .invalidHTTPResponse, .invalidContentRange, .contentRangeMismatch,
                  .totalSizeMismatch, .contentRangeWildcardTotalRejected,
                  .htmlErrorPageReceived, .taskNotFound, .temporaryFileMissing,
-                 .fileRelocationFailed, .corruptedMappingStore, .cancelled:
+                 .fileRelocationFailed, .corruptedMappingStore, .cancelled,
+                 .authenticationRequired, .expiredOrMissing:
                 return false
             }
         }
@@ -145,9 +146,17 @@ enum HTTPRetryPolicy {
     }
 
     static func backgroundHTTPStatusCode(_ error: Error) -> Int? {
-        if let backgroundError = error as? BackgroundTransportError,
-           case .unexpectedStatus(_, let actual) = backgroundError {
-            return actual
+        if let backgroundError = error as? BackgroundTransportError {
+            switch backgroundError {
+            case .unexpectedStatus(_, let actual):
+                return actual
+            case .authenticationRequired(let status):
+                return status
+            case .expiredOrMissing(let status):
+                return status
+            default:
+                break
+            }
         }
         let nsError = error as NSError
         if let response = (nsError.userInfo["response"] ?? nsError.userInfo["NSErrorFailingURLResponseKey"]) as? HTTPURLResponse {

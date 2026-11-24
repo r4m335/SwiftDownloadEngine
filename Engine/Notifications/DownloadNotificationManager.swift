@@ -16,15 +16,79 @@ public enum DownloadNotificationManager: Sendable {
 
     private static let lock = NSLock()
     private static var notifiedIDs: Set<String> = []
+    private static var isInitialized = false
+    private static var customPersistenceFileURL: URL? = nil
+
+    private static var persistenceFileURL: URL? {
+        if let custom = customPersistenceFileURL {
+            return custom
+        }
+        let fileManager = FileManager.default
+        let baseDir: URL
+        if let appSupport = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first {
+            baseDir = appSupport.appendingPathComponent("SwiftDownloadEngine", isDirectory: true)
+        } else {
+            baseDir = fileManager.temporaryDirectory.appendingPathComponent("SwiftDownloadEngine", isDirectory: true)
+        }
+        try? fileManager.createDirectory(at: baseDir, withIntermediateDirectories: true)
+        return baseDir.appendingPathComponent("notified_downloads.json")
+    }
+
+    /// Sets an explicit URL for durable notification tracking storage (useful for tests or custom store dirs).
+    public static func setPersistenceFileURL(_ url: URL?) {
+        lock.lock()
+        defer { lock.unlock() }
+        customPersistenceFileURL = url
+        isInitialized = false
+        notifiedIDs.removeAll()
+        ensureLoadedLocked()
+    }
+
+    private static func ensureLoadedLocked() {
+        guard !isInitialized else { return }
+        isInitialized = true
+        guard let url = persistenceFileURL,
+              let data = try? Data(contentsOf: url),
+              let array = try? JSONDecoder().decode([String].self, from: data) else {
+            return
+        }
+        notifiedIDs = Set(array)
+    }
+
+    private static func savePersistedNotifiedIDsLocked() {
+        guard let url = persistenceFileURL else { return }
+        if let data = try? JSONEncoder().encode(Array(notifiedIDs)) {
+            try? data.write(to: url, options: .atomic)
+        }
+    }
+
+    /// Returns whether a given download ID has already been notified.
+    public static func isNotified(downloadID: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        ensureLoadedLocked()
+        return notifiedIDs.contains(downloadID)
+    }
+
+    /// Clears a single download ID from the notified set if needed.
+    public static func clearNotifiedID(downloadID: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        ensureLoadedLocked()
+        notifiedIDs.remove(downloadID)
+        savePersistedNotifiedIDsLocked()
+    }
 
     /// Dispatches a local user notification and broadcasts an in-process notification when a download completes.
     public static func postDownloadCompletedNotification(filename: String, downloadID: String) {
         lock.lock()
+        ensureLoadedLocked()
         if notifiedIDs.contains(downloadID) {
             lock.unlock()
             return
         }
         notifiedIDs.insert(downloadID)
+        savePersistedNotifiedIDsLocked()
         lock.unlock()
 
         // Broadcast in-process notification for UI, observers, and integration tests
@@ -69,5 +133,6 @@ public enum DownloadNotificationManager: Sendable {
         lock.lock()
         defer { lock.unlock() }
         notifiedIDs.removeAll()
+        savePersistedNotifiedIDsLocked()
     }
 }
