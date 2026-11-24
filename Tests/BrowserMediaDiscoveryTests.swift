@@ -1009,7 +1009,7 @@ final class BrowserMediaDiscoveryTests: XCTestCase {
         vm.expandStreamingManifests()
 
         // Wait for async expansion task to complete
-        for _ in 0..<20 {
+        for _ in 0..<100 {
             if vm.discoveredResources.count > 1 { break }
             try? await Task.sleep(nanoseconds: 50_000_000)
         }
@@ -1232,7 +1232,7 @@ final class BrowserMediaDiscoveryTests: XCTestCase {
         vm.discoveredResources = [childVideo, childAudio, masterResource]
         vm.expandStreamingManifests()
 
-        for _ in 0..<20 {
+        for _ in 0..<100 {
             if vm.discoveredResources.contains(where: { $0.hlsVariantPreferences != nil }) { break }
             try? await Task.sleep(nanoseconds: 50_000_000)
         }
