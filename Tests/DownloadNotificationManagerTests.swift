@@ -72,17 +72,6 @@ final class DownloadNotificationManagerTests: XCTestCase {
         let downloadID = "http-\(UUID().uuidString)"
         let filename = "sample_video.mp4"
 
-        let events: [Notification.Name] = [
-            DownloadNotificationManager.downloadDidQueueNotification,
-            DownloadNotificationManager.downloadDidStartNotification,
-            DownloadNotificationManager.downloadDidPausedNotification(filename: filename, id: downloadID),
-            DownloadNotificationManager.downloadDidResumeNotification,
-            DownloadNotificationManager.downloadDidRetryNotification,
-            DownloadNotificationManager.downloadDidFailNotification,
-            DownloadNotificationManager.downloadDidCancelNotification,
-            DownloadNotificationManager.downloadDidCompleteNotification
-        ]
-
         var receivedNames = Set<Notification.Name>()
         var observers: [NSObjectProtocol] = []
 
@@ -121,10 +110,6 @@ final class DownloadNotificationManagerTests: XCTestCase {
         for name in allNames {
             XCTAssertTrue(receivedNames.contains(name), "Missing lifecycle event: \(name.rawValue)")
         }
-    }
-
-    private static func downloadDidPausedNotification(filename: String, id: String) -> Notification.Name {
-        DownloadNotificationManager.downloadDidPauseNotification
     }
 
     // MARK: - 3. Complete Lifecycle Notifications: Torrent Swarms
