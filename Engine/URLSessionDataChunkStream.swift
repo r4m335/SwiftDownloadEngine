@@ -221,7 +221,7 @@ final class URLSessionDataChunkStream: NSObject, URLSessionDataDelegate, @unchec
         }
 
         guard shouldProcess else { return }
-        session.invalidateAndCancel()
+        delegateSession?.invalidateAndCancel()
         responseToFail?.resume(throwing: error ?? URLError(.badServerResponse))
         if let error {
             nextToResume?.resume(throwing: error)

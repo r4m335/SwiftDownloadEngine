@@ -168,10 +168,6 @@ public final class LiveStreamRecorder: ObservableObject {
         self.urlSession = urlSession
         self.libraryStore = libraryStore
         self.recordingStore = recordingStore ?? (try? LiveRecordingStore())
-
-        Task { @MainActor in
-            _ = await self.checkForInterruptedRecordings()
-        }
     }
 
     // MARK: - Recording Control APIs

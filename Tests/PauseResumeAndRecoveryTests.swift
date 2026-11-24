@@ -18,6 +18,7 @@ final class PauseResumeAndRecoveryTests: XCTestCase {
     private var tempDirectory: URL!
     private var persistenceStore: DownloadPersistenceStore!
     private var coordinator: DownloadCoordinator!
+    private var session: URLSession!
 
     override func setUp() async throws {
         try await super.setUp()
@@ -35,13 +36,16 @@ final class PauseResumeAndRecoveryTests: XCTestCase {
 
         let storeURL = tempDirectory.appendingPathComponent("Store", isDirectory: true)
         persistenceStore = try DownloadPersistenceStore(storageDirectoryURL: storeURL)
-        coordinator = try DownloadCoordinator(session: .shared, persistenceStore: persistenceStore)
+        session = ForegroundURLSession.make()
+        coordinator = try DownloadCoordinator(session: session, persistenceStore: persistenceStore)
     }
 
     override func tearDown() async throws {
         server?.stop()
         server = nil
         coordinator = nil
+        session?.invalidateAndCancel()
+        session = nil
         persistenceStore = nil
         if let tempDirectory {
             try? FileManager.default.removeItem(at: tempDirectory)
@@ -411,7 +415,7 @@ final class PauseResumeAndRecoveryTests: XCTestCase {
         // 2. Simulate process 2 (Fresh Process Launch):
         // Fresh store and fresh coordinator with zero in-memory active tasks
         let freshStore = try DownloadPersistenceStore(storageDirectoryURL: storeDir)
-        let freshCoordinator = try DownloadCoordinator(session: .shared, persistenceStore: freshStore)
+        let freshCoordinator = try DownloadCoordinator(session: session, persistenceStore: freshStore)
 
         let resumeRequest = DownloadRequest(
             id: "proc-recover",
@@ -461,7 +465,7 @@ final class PauseResumeAndRecoveryTests: XCTestCase {
         // Destination file does NOT exist on disk!
         XCTAssertFalse(FileManager.default.fileExists(atPath: destURL.path))
 
-        let freshCoordinator = try DownloadCoordinator(session: .shared, persistenceStore: store)
+        let freshCoordinator = try DownloadCoordinator(session: session, persistenceStore: store)
         let request = DownloadRequest(
             id: "dest-deleted",
             url: server.url(for: path),
@@ -561,7 +565,7 @@ final class PauseResumeAndRecoveryTests: XCTestCase {
         server.register(path: path, data: payload, chunkDelayMs: 0)
 
         // Launch fresh coordinator in parent process (simulating application restart)
-        let recoveryCoordinator = try DownloadCoordinator(session: .shared, persistenceStore: store)
+        let recoveryCoordinator = try DownloadCoordinator(session: session, persistenceStore: store)
         let resumeReq = DownloadRequest(
             id: "sigkill-download",
             url: server.url(for: path),
