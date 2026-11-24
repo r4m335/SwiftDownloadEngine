@@ -181,21 +181,27 @@ final class TorrentSupport10OutOf10Tests: XCTestCase {
         // Update session limits dynamically
         try await engine.setSessionDownloadLimit(1_000_000)
         try await engine.setSessionUploadLimit(250_000)
-        XCTAssertEqual(await engine.sessionDownloadLimit(), 1_000_000)
-        XCTAssertEqual(await engine.sessionUploadLimit(), 250_000)
+        let sDl = await engine.sessionDownloadLimit()
+        let sUl = await engine.sessionUploadLimit()
+        XCTAssertEqual(sDl, 1_000_000)
+        XCTAssertEqual(sUl, 250_000)
 
         // Add a torrent and set per-torrent rate limits
         let hash = "4444444444444444444444444444444444444444"
-        let task = try await engine.addTorrent(
+        _ = try await engine.addTorrent(
             magnetURI: "magnet:?xt=urn:btih:\(hash)&dn=SpeedLimitTest"
         )
-        XCTAssertEqual(await engine.downloadLimit(for: hash), 0)
-        XCTAssertEqual(await engine.uploadLimit(for: hash), 0)
+        let initialDl = await engine.downloadLimit(for: hash)
+        let initialUl = await engine.uploadLimit(for: hash)
+        XCTAssertEqual(initialDl, 0)
+        XCTAssertEqual(initialUl, 0)
 
         try await engine.setDownloadLimit(350_000, for: hash)
         try await engine.setUploadLimit(75_000, for: hash)
-        XCTAssertEqual(await engine.downloadLimit(for: hash), 350_000)
-        XCTAssertEqual(await engine.uploadLimit(for: hash), 75_000)
+        let updatedDl = await engine.downloadLimit(for: hash)
+        let updatedUl = await engine.uploadLimit(for: hash)
+        XCTAssertEqual(updatedDl, 350_000)
+        XCTAssertEqual(updatedUl, 75_000)
 
         let updatedTask = await engine.task(for: hash)
         XCTAssertEqual(updatedTask?.downloadLimit, 350_000)
@@ -218,18 +224,21 @@ final class TorrentSupport10OutOf10Tests: XCTestCase {
             magnetURI: "magnet:?xt=urn:btih:\(hash)&dn=BackgroundTest"
         )
 
-        XCTAssertFalse(await engine.isSuspended)
+        let initialSuspended = await engine.isSuspended
+        XCTAssertFalse(initialSuspended)
 
         // Suspend for background (simulating iOS expiration handler)
         await engine.suspendForBackground()
-        XCTAssertTrue(await engine.isSuspended)
+        let suspended = await engine.isSuspended
+        XCTAssertTrue(suspended)
 
         let suspendedTask = await engine.task(for: hash)
         XCTAssertTrue(suspendedTask?.isSuspended == true)
 
         // Resume from background on app return to foreground
         await engine.resumeFromBackground()
-        XCTAssertFalse(await engine.isSuspended)
+        let resumed = await engine.isSuspended
+        XCTAssertFalse(resumed)
 
         let resumedTask = await engine.task(for: hash)
         XCTAssertFalse(resumedTask?.isSuspended == true)
@@ -307,8 +316,8 @@ final class TorrentSupport10OutOf10Tests: XCTestCase {
             object: nil,
             queue: .main
         ) { notif in
-            XCTAssertEqual(notif.userInfo?[DownloadNotificationManager.userInfoTorrentNameKey] as? String, "Linux ISO")
-            XCTAssertEqual(notif.userInfo?[DownloadNotificationManager.userInfoTorrentHashKey] as? String, "test-hash-1")
+            XCTAssertEqual(notif.userInfo?[DownloadNotificationManager.torrentNameUserInfoKey] as? String, "Linux ISO")
+            XCTAssertEqual(notif.userInfo?[DownloadNotificationManager.torrentInfoHashUserInfoKey] as? String, "test-hash-1")
             expComplete.fulfill()
         }
 
@@ -317,8 +326,8 @@ final class TorrentSupport10OutOf10Tests: XCTestCase {
             object: nil,
             queue: .main
         ) { notif in
-            XCTAssertEqual(notif.userInfo?[DownloadNotificationManager.userInfoTorrentNameKey] as? String, "Linux ISO")
-            XCTAssertEqual(notif.userInfo?[DownloadNotificationManager.userInfoTorrentReasonKey] as? String, "Ratio reached")
+            XCTAssertEqual(notif.userInfo?[DownloadNotificationManager.torrentNameUserInfoKey] as? String, "Linux ISO")
+            XCTAssertEqual(notif.userInfo?[DownloadNotificationManager.torrentReasonUserInfoKey] as? String, "Ratio reached")
             expSeedingStop.fulfill()
         }
 
@@ -327,8 +336,8 @@ final class TorrentSupport10OutOf10Tests: XCTestCase {
             object: nil,
             queue: .main
         ) { notif in
-            XCTAssertEqual(notif.userInfo?[DownloadNotificationManager.userInfoTorrentNameKey] as? String, "Linux ISO")
-            XCTAssertEqual(notif.userInfo?[DownloadNotificationManager.userInfoTorrentErrorKey] as? String, "Tracker timeout")
+            XCTAssertEqual(notif.userInfo?[DownloadNotificationManager.torrentNameUserInfoKey] as? String, "Linux ISO")
+            XCTAssertEqual(notif.userInfo?[DownloadNotificationManager.torrentErrorUserInfoKey] as? String, "Tracker timeout")
             expFailed.fulfill()
         }
 
