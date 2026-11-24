@@ -1964,6 +1964,12 @@ extension DownloadFilter {
         case .paused: return .orange
         case .completed: return .green
         case .failed: return .red
+        case .liveRecordings: return .purple
+        case .torrents: return .teal
+        case .http: return .blue
+        case .hls: return .indigo
+        case .dash: return .cyan
+        case .archived: return .gray
         }
     }
 }
