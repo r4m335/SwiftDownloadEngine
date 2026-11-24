@@ -40,8 +40,8 @@ final class BrowserPlaybackRoutingTests: XCTestCase {
         let streamURL = URL(string: "https://auth.stream.org/playlist.m3u8")!
         let context = BrowserRequestContext(
             url: streamURL,
+            pageURL: URL(string: "https://auth.stream.org/portal")!,
             userAgent: "CustomSafari/1.0",
-            referer: "https://auth.stream.org/portal",
             cookies: [
                 BrowserCookie(name: "session_token", value: "secret123", domain: "auth.stream.org", path: "/")
             ],
@@ -54,8 +54,7 @@ final class BrowserPlaybackRoutingTests: XCTestCase {
             title: "Secured HLS",
             suggestedFilename: "playlist.m3u8",
             resourceType: .video,
-            isStreamingManifest: true,
-            streamingManifestKind: .hls,
+            mimeType: "application/vnd.apple.mpegurl",
             requestContext: context
         )
 
