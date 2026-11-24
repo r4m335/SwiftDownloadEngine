@@ -167,7 +167,7 @@ final class DirectHTTPDownloadIntegrityTests: XCTestCase {
             }
         }
 
-        let store = DownloadPersistenceStore(inMemory: true)
+        let store = try DownloadPersistenceStore(inMemory: true)
         let coordinator = DownloadCoordinator(session: session, persistenceStore: store)
         let request = DownloadRequest(
             url: testURL,
@@ -176,7 +176,7 @@ final class DirectHTTPDownloadIntegrityTests: XCTestCase {
         )
 
         do {
-            try await coordinator.start(request: request)
+            try await coordinator.start(request)
             XCTFail("Single-stream download must fail when remote resource mutates its ETag")
         } catch let DownloadCoordinatorError.unexpectedSingleStreamError(reason) {
             XCTAssertTrue(reason.contains("Resource mutated"), "Reason should indicate mutation: \(reason)")
@@ -209,7 +209,7 @@ final class DirectHTTPDownloadIntegrityTests: XCTestCase {
             }
         }
 
-        let store = DownloadPersistenceStore(inMemory: true)
+        let store = try DownloadPersistenceStore(inMemory: true)
         let coordinator = DownloadCoordinator(session: session, persistenceStore: store)
         let request = DownloadRequest(
             url: testURL,
@@ -218,7 +218,7 @@ final class DirectHTTPDownloadIntegrityTests: XCTestCase {
         )
 
         do {
-            try await coordinator.start(request: request)
+            try await coordinator.start(request)
             XCTFail("Single-stream download must fail when remote Content-Length mutates")
         } catch let DownloadCoordinatorError.unexpectedSingleStreamError(reason) {
             XCTAssertTrue(reason.contains("Content-Length changed"), "Reason should indicate length change: \(reason)")
@@ -282,7 +282,7 @@ final class DirectHTTPDownloadIntegrityTests: XCTestCase {
             return (resp, slice)
         }
 
-        let store = DownloadPersistenceStore(inMemory: true)
+        let store = try DownloadPersistenceStore(inMemory: true)
         let coordinator = DownloadCoordinator(session: session, persistenceStore: store)
         let request = DownloadRequest(
             url: testURL,
@@ -292,7 +292,7 @@ final class DirectHTTPDownloadIntegrityTests: XCTestCase {
             retryCount: 2
         )
 
-        try await coordinator.start(request: request)
+        try await coordinator.start(request)
 
         XCTAssertTrue(tokenRefreshInvoked, "Credential refresh handler must be invoked on 401")
         let downloadedData = try Data(contentsOf: destURL)
@@ -344,7 +344,7 @@ final class DirectHTTPDownloadIntegrityTests: XCTestCase {
             return (resp, payload)
         }
 
-        let store = DownloadPersistenceStore(inMemory: true)
+        let store = try DownloadPersistenceStore(inMemory: true)
         let coordinator = DownloadCoordinator(session: session, persistenceStore: store)
         let request = DownloadRequest(
             url: testURL,
@@ -353,7 +353,7 @@ final class DirectHTTPDownloadIntegrityTests: XCTestCase {
             transportPolicy: .foreground
         )
 
-        try await coordinator.start(request: request)
+        try await coordinator.start(request)
 
         XCTAssertEqual(refreshCount, 1, "Credential refresh handler should be invoked on 403")
         let downloadedData = try Data(contentsOf: destURL)
