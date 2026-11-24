@@ -29,30 +29,119 @@ public struct DownloadByteRange: Sendable, Equatable, Codable, Hashable {
     }
 }
 
-/// Defines network usage policy for downloads (e.g. Wi-Fi Only vs Any Network).
-public enum DownloadNetworkPolicy: String, Codable, Sendable, Equatable, CaseIterable {
-    case anyNetwork = "anyNetwork"
-    case wifiOnly = "wifiOnly"
+/// Defines network usage policy for downloads (e.g. Wi-Fi Only vs Any Network, expensive networks, constrained networks).
+public struct DownloadNetworkPolicy: Codable, Sendable, Equatable, Hashable, CaseIterable {
+    public var allowsCellularAccess: Bool
+    public var allowsExpensiveNetworkAccess: Bool
+    public var allowsConstrainedNetworkAccess: Bool
 
-    public var allowsCellularAccess: Bool {
-        switch self {
-        case .anyNetwork: return true
-        case .wifiOnly: return false
-        }
+    public init(
+        allowsCellularAccess: Bool = true,
+        allowsExpensiveNetworkAccess: Bool = true,
+        allowsConstrainedNetworkAccess: Bool = false
+    ) {
+        self.allowsCellularAccess = allowsCellularAccess
+        self.allowsExpensiveNetworkAccess = allowsExpensiveNetworkAccess
+        self.allowsConstrainedNetworkAccess = allowsConstrainedNetworkAccess
     }
 
-    /// Whether transfers are permitted over expensive networks (e.g. personal hotspots, metered Wi-Fi).
-    public var allowsExpensiveNetworkAccess: Bool {
-        switch self {
-        case .anyNetwork: return true
-        case .wifiOnly: return false
-        }
+    public static let anyNetwork = DownloadNetworkPolicy(
+        allowsCellularAccess: true,
+        allowsExpensiveNetworkAccess: true,
+        allowsConstrainedNetworkAccess: false
+    )
+
+    public static let wifiOnly = DownloadNetworkPolicy(
+        allowsCellularAccess: false,
+        allowsExpensiveNetworkAccess: false,
+        allowsConstrainedNetworkAccess: false
+    )
+
+    public static let wifiAllowExpensive = DownloadNetworkPolicy(
+        allowsCellularAccess: false,
+        allowsExpensiveNetworkAccess: true,
+        allowsConstrainedNetworkAccess: false
+    )
+
+    public static let unrestricted = DownloadNetworkPolicy(
+        allowsCellularAccess: true,
+        allowsExpensiveNetworkAccess: true,
+        allowsConstrainedNetworkAccess: true
+    )
+
+    public static var allCases: [DownloadNetworkPolicy] {
+        [.anyNetwork, .wifiOnly, .wifiAllowExpensive, .unrestricted]
     }
 
-    /// Whether transfers are permitted when the device is in Low Data Mode (constrained network).
-    /// Defaults to false so user-enabled Low Data Mode is strictly respected.
-    public var allowsConstrainedNetworkAccess: Bool {
-        return false
+    enum CodingKeys: String, CodingKey {
+        case allowsCellularAccess
+        case allowsExpensiveNetworkAccess
+        case allowsConstrainedNetworkAccess
+    }
+
+    public init(from decoder: Decoder) throws {
+        if let singleValue = try? decoder.singleValueContainer(),
+           let stringVal = try? singleValue.decode(String.self) {
+            switch stringVal {
+            case "wifiOnly":
+                self = .wifiOnly
+            case "wifiAllowExpensive":
+                self = .wifiAllowExpensive
+            case "unrestricted":
+                self = .unrestricted
+            case "anyNetwork":
+                fallthrough
+            default:
+                self = .anyNetwork
+            }
+            return
+        }
+
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.allowsCellularAccess = try container.decodeIfPresent(Bool.self, forKey: .allowsCellularAccess) ?? true
+        self.allowsExpensiveNetworkAccess = try container.decodeIfPresent(Bool.self, forKey: .allowsExpensiveNetworkAccess) ?? true
+        self.allowsConstrainedNetworkAccess = try container.decodeIfPresent(Bool.self, forKey: .allowsConstrainedNetworkAccess) ?? false
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        if self == .anyNetwork {
+            var container = encoder.singleValueContainer()
+            try container.encode("anyNetwork")
+        } else if self == .wifiOnly {
+            var container = encoder.singleValueContainer()
+            try container.encode("wifiOnly")
+        } else if self == .wifiAllowExpensive {
+            var container = encoder.singleValueContainer()
+            try container.encode("wifiAllowExpensive")
+        } else if self == .unrestricted {
+            var container = encoder.singleValueContainer()
+            try container.encode("unrestricted")
+        } else {
+            var container = encoder.container(keyedBy: CodingKeys.self)
+            try container.encode(allowsCellularAccess, forKey: .allowsCellularAccess)
+            try container.encode(allowsExpensiveNetworkAccess, forKey: .allowsExpensiveNetworkAccess)
+            try container.encode(allowsConstrainedNetworkAccess, forKey: .allowsConstrainedNetworkAccess)
+        }
+    }
+}
+
+extension DownloadNetworkPolicy: RawRepresentable {
+    public var rawValue: String {
+        if self == .anyNetwork { return "anyNetwork" }
+        if self == .wifiOnly { return "wifiOnly" }
+        if self == .wifiAllowExpensive { return "wifiAllowExpensive" }
+        if self == .unrestricted { return "unrestricted" }
+        return "custom(\(allowsCellularAccess),\(allowsExpensiveNetworkAccess),\(allowsConstrainedNetworkAccess))"
+    }
+
+    public init?(rawValue: String) {
+        switch rawValue {
+        case "anyNetwork": self = .anyNetwork
+        case "wifiOnly": self = .wifiOnly
+        case "wifiAllowExpensive": self = .wifiAllowExpensive
+        case "unrestricted": self = .unrestricted
+        default: return nil
+        }
     }
 }
 
@@ -97,7 +186,7 @@ public struct DownloadRequest: Sendable, Equatable, Codable {
         expectedSHA256: String? = nil,
         maxConcurrentRequests: Int? = nil,
         speedLimitBytesPerSecond: Int64? = nil,
-        resumePolicy: ResumeIntegrityPolicy = .compatibility,
+        resumePolicy: ResumeIntegrityPolicy = .conservative,
         transportPolicy: HTTPTransportPolicy = .foreground,
         networkPolicy: DownloadNetworkPolicy = .anyNetwork,
         requestedByteRange: DownloadByteRange? = nil,
@@ -142,7 +231,7 @@ public struct DownloadRequest: Sendable, Equatable, Codable {
         expectedSHA256 = try container.decodeIfPresent(String.self, forKey: .expectedSHA256)
         maxConcurrentRequests = try container.decodeIfPresent(Int.self, forKey: .maxConcurrentRequests)
         speedLimitBytesPerSecond = try container.decodeIfPresent(Int64.self, forKey: .speedLimitBytesPerSecond)
-        resumePolicy = try container.decodeIfPresent(ResumeIntegrityPolicy.self, forKey: .resumePolicy) ?? .compatibility
+        resumePolicy = try container.decodeIfPresent(ResumeIntegrityPolicy.self, forKey: .resumePolicy) ?? .conservative
         transportPolicy = try container.decodeIfPresent(HTTPTransportPolicy.self, forKey: .transportPolicy) ?? .foreground
         networkPolicy = try container.decodeIfPresent(DownloadNetworkPolicy.self, forKey: .networkPolicy) ?? .anyNetwork
         requestedByteRange = try container.decodeIfPresent(DownloadByteRange.self, forKey: .requestedByteRange)
@@ -349,6 +438,66 @@ public actor DownloadCoordinator {
     public typealias BasicAuthChallengeHandler = @Sendable (_ host: String, _ realm: String) async -> (username: String, password: String)?
     public nonisolated(unsafe) static var basicAuthChallengeHandler: BasicAuthChallengeHandler?
 
+    public typealias CredentialRefreshHandler = @Sendable (_ url: URL) async -> [String: String]?
+    public nonisolated(unsafe) static var credentialRefreshHandler: CredentialRefreshHandler?
+
+    private var dynamicAuthHeaders: [String: [String: String]] = [:]
+
+    public func getDynamicHeaders(for downloadID: String, baseHeaders: [String: String]) -> [String: String] {
+        guard let custom = dynamicAuthHeaders[downloadID] else { return baseHeaders }
+        var result = baseHeaders
+        for (k, v) in custom {
+            result[k] = v
+        }
+        return result
+    }
+
+    public func updateDynamicHeaders(for downloadID: String, freshHeaders: [String: String]) {
+        var current = dynamicAuthHeaders[downloadID] ?? [:]
+        for (k, v) in freshHeaders {
+            current[k] = v
+        }
+        dynamicAuthHeaders[downloadID] = current
+    }
+
+    /// Attempts to obtain refreshed authentication credentials (bearer tokens, session cookies, auth headers)
+    /// when a transfer experiences HTTP 401 Unauthorized or 403 Forbidden.
+    /// Priority order:
+    /// 1. `DownloadCoordinator.credentialRefreshHandler` callback if registered.
+    /// 2. Active browser snapshot from `DownloadRequestEnricher.sharedSessionSnapshot`.
+    /// 3. Matching cookies from `HTTPCookieStorage.shared`.
+    public func attemptCredentialRefresh(for url: URL, downloadID: String? = nil) async -> [String: String]? {
+        var refreshed: [String: String]? = nil
+        if let handler = Self.credentialRefreshHandler,
+           let headers = await handler(url),
+           !headers.isEmpty {
+            PipelineLogger.shared.log("[DownloadCoordinator] Successfully refreshed credentials via credentialRefreshHandler for \(BrowserURLResolver.sanitizeURLForLogging(url))")
+            refreshed = headers
+        } else if let snapshot = DownloadRequestEnricher.sharedSessionSnapshot {
+            var headers: [String: String] = [:]
+            if !snapshot.cookies.isEmpty {
+                let cookieHeader = snapshot.cookies.map { "\($0.key)=\($0.value)" }.joined(separator: "; ")
+                headers["Cookie"] = cookieHeader
+            }
+            if let ua = snapshot.userAgent, !ua.isEmpty {
+                headers["User-Agent"] = ua
+            }
+            if !headers.isEmpty {
+                PipelineLogger.shared.log("[DownloadCoordinator] Refreshed credentials from active sharedSessionSnapshot for \(BrowserURLResolver.sanitizeURLForLogging(url))")
+                refreshed = headers
+            }
+        } else if let cookies = HTTPCookieStorage.shared.cookies(for: url), !cookies.isEmpty {
+            let cookieHeader = cookies.map { "\($0.name)=\($0.value)" }.joined(separator: "; ")
+            PipelineLogger.shared.log("[DownloadCoordinator] Refreshed credentials from HTTPCookieStorage for \(BrowserURLResolver.sanitizeURLForLogging(url))")
+            refreshed = ["Cookie": cookieHeader]
+        }
+
+        if let refreshed, let downloadID {
+            updateDynamicHeaders(for: downloadID, freshHeaders: refreshed)
+        }
+        return refreshed
+    }
+
     public static let sharedSession: URLSession = ForegroundURLSession.make()
 
     private let session: URLSession
@@ -499,11 +648,14 @@ public actor DownloadCoordinator {
         do {
             try await task.value
             activeTasks.removeValue(forKey: request.id)
+            dynamicAuthHeaders.removeValue(forKey: request.id)
         } catch is CancellationError {
             activeTasks.removeValue(forKey: request.id)
+            dynamicAuthHeaders.removeValue(forKey: request.id)
             throw CancellationError()
         } catch {
             activeTasks.removeValue(forKey: request.id)
+            dynamicAuthHeaders.removeValue(forKey: request.id)
             throw error
         }
     }
@@ -879,7 +1031,7 @@ public actor DownloadCoordinator {
                     }
                     // Remote server does not support byte ranges for resumption.
                     // Resiliency rule: automatically restart download from byte 0 instead of failing.
-                    print("[DownloadCoordinator] Server does not support byte ranges on resume for \(request.id); restarting download from byte 0.")
+                    PipelineLogger.shared.log("[DownloadCoordinator] Server does not support byte ranges on resume for \(request.id); restarting download from byte 0.")
                     isResume = false
                     if FileManager.default.fileExists(atPath: request.destinationURL.path) {
                         do {
@@ -939,7 +1091,7 @@ public actor DownloadCoordinator {
                             )
                         }
                         // Resiliency rule: restart from 0 instead of failing with cannotResume
-                        print("[DownloadCoordinator] Server non-resumable on resume for \(request.id); restarting download cleanly from byte 0.")
+                        PipelineLogger.shared.log("[DownloadCoordinator] Server non-resumable on resume for \(request.id); restarting download cleanly from byte 0.")
                         isResume = false
                         if FileManager.default.fileExists(atPath: request.destinationURL.path) {
                             do {
@@ -997,7 +1149,7 @@ public actor DownloadCoordinator {
                     // Ranged background download unsupported (server ignores range or indeterminate length)
                     // Fall back cleanly to foreground single-stream transport as per Milestone 6B Requirement 4.
                     // The foreground fallback must still honor a queued schedule.
-                    print("[DownloadCoordinator] Server does not support byte ranges for \(BrowserURLResolver.sanitizeURLForLogging(request.url)); falling back to foreground single-stream transport.")
+                    PipelineLogger.shared.log("[DownloadCoordinator] Server does not support byte ranges for \(BrowserURLResolver.sanitizeURLForLogging(request.url)); falling back to foreground single-stream transport.")
                     try await runSingleStreamDownload(
                         request: executionRequest,
                         probeResult: probeResult,
@@ -1023,7 +1175,7 @@ public actor DownloadCoordinator {
                                 )
                             }
                             if isResume {
-                                print("[DownloadCoordinator] Server ignored byte range on resume for \(request.id); restarting download cleanly from byte 0.")
+                                PipelineLogger.shared.log("[DownloadCoordinator] Server ignored byte range on resume for \(request.id); restarting download cleanly from byte 0.")
                                 if FileManager.default.fileExists(atPath: executionRequest.destinationURL.path) {
                                     do {
                                         try FileManager.default.removeItem(at: executionRequest.destinationURL)
@@ -1649,6 +1801,7 @@ public actor DownloadCoordinator {
                                         networkPolicy: request.networkPolicy
                                     )
                                 }
+                                let effectiveHeaders = await self.getDynamicHeaders(for: request.id, baseHeaders: request.headers)
                                 do {
                                     try await downloader.download(
                                         url: probeResult.finalURL,
@@ -1656,7 +1809,7 @@ public actor DownloadCoordinator {
                                         completedBytes: 0,
                                         expectedTotalSize: totalSize,
                                         headers: self.mergeValidatorHeaders(
-                                            original: request.headers,
+                                            original: effectiveHeaders,
                                             eTag: probeResult.eTag,
                                             lastModified: probeResult.lastModified
                                         ),
@@ -1712,9 +1865,21 @@ public actor DownloadCoordinator {
                                         throw CancellationError()
                                     }
                                     if case SegmentDownloaderError.tokenExpired = error {
+                                        if attempt < request.retryCount,
+                                           let _ = await self.attemptCredentialRefresh(for: probeResult.finalURL, downloadID: request.id) {
+                                            attempt += 1
+                                            PipelineLogger.shared.log("[DownloadCoordinator] Retrying segment after token refresh for \(request.id)")
+                                            continue
+                                        }
                                         throw DownloadCoordinatorError.tokenExpired(url: request.url)
                                     }
                                     if case SegmentDownloaderError.accessDenied = error {
+                                        if attempt < request.retryCount,
+                                           let _ = await self.attemptCredentialRefresh(for: probeResult.finalURL, downloadID: request.id) {
+                                            attempt += 1
+                                            PipelineLogger.shared.log("[DownloadCoordinator] Retrying segment after credential refresh for \(request.id)")
+                                            continue
+                                        }
                                         let cooldown = Date().addingTimeInterval(300)
                                         throw DownloadCoordinatorError.accessDenied(url: request.url, cooldownUntil: cooldown)
                                     }
@@ -2090,7 +2255,8 @@ public actor DownloadCoordinator {
         }
         #endif
         urlRequest.setValue("identity", forHTTPHeaderField: "Accept-Encoding")
-        for (name, value) in request.headers {
+        let effectiveHeaders = getDynamicHeaders(for: request.id, baseHeaders: request.headers)
+        for (name, value) in effectiveHeaders {
             if name.caseInsensitiveCompare("Accept-Encoding") == .orderedSame ||
                name.caseInsensitiveCompare("Range") == .orderedSame {
                 continue
@@ -2148,20 +2314,70 @@ public actor DownloadCoordinator {
         acquiredPermit = true
 
         do {
-            let (bytes, response) = try await session.bytes(for: urlRequest)
-            guard let httpResponse = response as? HTTPURLResponse else {
+            var (bytes, response) = try await session.bytes(for: urlRequest)
+            guard var httpResponse = response as? HTTPURLResponse else {
                 throw DownloadCoordinatorError.unexpectedSingleStreamError(
                     reason: "Unexpected HTTP response: not HTTPURLResponse"
                 )
             }
+            if (httpResponse.statusCode == 401 || httpResponse.statusCode == 403) {
+                if let fresh = await attemptCredentialRefresh(for: probeResult.finalURL, downloadID: request.id) {
+                    for (k, v) in fresh {
+                        urlRequest.setValue(v, forHTTPHeaderField: k)
+                    }
+                    PipelineLogger.shared.log("[DownloadCoordinator] Retrying single stream download after credential refresh for \(request.id)")
+                    let (retryBytes, retryResponse) = try await session.bytes(for: urlRequest)
+                    if let retryHTTP = retryResponse as? HTTPURLResponse {
+                        bytes = retryBytes
+                        httpResponse = retryHTTP
+                    }
+                }
+            }
+
             if httpResponse.statusCode == 429 {
                 let retryAfter = HTTPRangeProbe.parseRetryAfter(httpResponse.value(forHTTPHeaderField: "Retry-After"))
                 throw SegmentDownloaderError.rateLimited(retryAfterSeconds: retryAfter)
+            }
+            if httpResponse.statusCode == 401 {
+                throw DownloadCoordinatorError.tokenExpired(url: request.url)
+            }
+            if httpResponse.statusCode == 403 {
+                let cooldown = Date().addingTimeInterval(300)
+                throw DownloadCoordinatorError.accessDenied(url: request.url, cooldownUntil: cooldown)
             }
             guard httpResponse.statusCode == 200 || httpResponse.statusCode == 206 else {
                 throw DownloadCoordinatorError.unexpectedSingleStreamError(
                     reason: "Unexpected HTTP status: \(httpResponse.statusCode)"
                 )
+            }
+
+            // Validator and content length parity checks against probeResult
+            if let probeETag = probeResult.eTag,
+               let currentETag = httpResponse.value(forHTTPHeaderField: "ETag") {
+                let normProbe = DownloadRecord.normalizeValidator(probeETag)
+                let normCurrent = DownloadRecord.normalizeValidator(currentETag)
+                if normProbe != normCurrent {
+                    throw DownloadCoordinatorError.unexpectedSingleStreamError(
+                        reason: "Resource mutated between probe and single-stream download: ETag changed from \(probeETag) to \(currentETag)"
+                    )
+                }
+            }
+            if probeResult.eTag == nil,
+               let probeLM = probeResult.lastModified,
+               let currentLM = httpResponse.value(forHTTPHeaderField: "Last-Modified") {
+                if probeLM != currentLM {
+                    throw DownloadCoordinatorError.unexpectedSingleStreamError(
+                        reason: "Resource mutated between probe and single-stream download: Last-Modified changed from \(probeLM) to \(currentLM)"
+                    )
+                }
+            }
+            if let expectedTotal = probeResult.totalSize, expectedTotal > 0 {
+                let currentLength = httpResponse.expectedContentLength
+                if currentLength > 0 && currentLength != expectedTotal {
+                    throw DownloadCoordinatorError.unexpectedSingleStreamError(
+                        reason: "Resource mutated between probe and single-stream download: Content-Length changed from \(expectedTotal) to \(currentLength)"
+                    )
+                }
             }
 
             var buffer = Data()
@@ -2592,7 +2808,7 @@ public actor DownloadCoordinator {
         }
 
         guard let bgManager = self.backgroundSessionManager else {
-            print("[DownloadCoordinator] Notice: BackgroundDownloadSessionManager unavailable, falling back to foreground transport.")
+            PipelineLogger.shared.log("[DownloadCoordinator] Notice: BackgroundDownloadSessionManager unavailable, falling back to foreground transport.")
             try await waitUntilScheduledStart(earliestBeginDate)
             try await runMultiSegmentDownload(
                 request: request,

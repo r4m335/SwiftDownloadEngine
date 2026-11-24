@@ -416,7 +416,7 @@ final class SegmentDownloaderTests: XCTestCase {
         MockURLProtocol.setHandler(for: targetURL) { request in
             let range = request.value(forHTTPHeaderField: "Range") ?? ""
             
-            if range == "bytes=0-" {
+            if range == "bytes=0-" || range == "bytes=0-0" {
                 let headers = [
                     "Content-Range": "bytes 0-0/\(fileSize)",
                     "Content-Type": "application/x-iso9660-image",

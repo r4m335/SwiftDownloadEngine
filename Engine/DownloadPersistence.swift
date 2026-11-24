@@ -350,7 +350,7 @@ public struct DownloadRecord: Codable, Equatable, Identifiable, Sendable, Schema
         remoteETag: String?,
         remoteLastModified: String?,
         remoteTotalSize: Int64?,
-        policy: ResumeIntegrityPolicy = .compatibility
+        policy: ResumeIntegrityPolicy = .conservative
     ) -> ResumeValidationResult {
         // 1. File size consistency
         if let remoteTotalSize, remoteTotalSize != totalSize {

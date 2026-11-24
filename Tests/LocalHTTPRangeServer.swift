@@ -413,7 +413,7 @@ public final class LocalHTTPRangeServer: @unchecked Sendable {
 
         // Check if server ignores Range
         let rangeHeader = req.headers["range"]
-        let isProbe = (rangeHeader == "bytes=0-")
+        let isProbe = (rangeHeader == "bytes=0-" || rangeHeader == "bytes=0-0")
         if resource.ignoresRange || rangeHeader == nil {
             let headers = buildCommonHeaders(length: totalSize)
             return Response(

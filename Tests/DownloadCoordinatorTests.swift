@@ -55,7 +55,7 @@ final class DownloadCoordinatorTests: XCTestCase {
     private func installRangeHandler(for url: URL, payload: Data) {
         MockURLProtocol.setHandler(for: url) { request in
             let rangeHeader = request.value(forHTTPHeaderField: "Range")
-            if rangeHeader == "bytes=0-" {
+            if rangeHeader == "bytes=0-" || rangeHeader == "bytes=0-0" {
                 let response = HTTPURLResponse(
                     url: url,
                     statusCode: 206,
@@ -130,7 +130,7 @@ final class DownloadCoordinatorTests: XCTestCase {
         // - Segments: Range bytes=X-Y -> 206
         MockURLProtocol.setHandler(for: testURL) { request in
             let range = request.value(forHTTPHeaderField: "Range") ?? ""
-            if range == "bytes=0-" {
+            if range == "bytes=0-" || range == "bytes=0-0" {
                 let headers = [
                     "Content-Range": "bytes 0-0/\(totalSize)",
                     "Content-Length": "1",
@@ -211,7 +211,7 @@ final class DownloadCoordinatorTests: XCTestCase {
         MockURLProtocol.setHandler(for: testURL) { request in
             let range = request.value(forHTTPHeaderField: "Range")
 
-            if range == "bytes=0-" {
+            if range == "bytes=0-" || range == "bytes=0-0" {
                 // Probe succeeds claiming Range support
                 let headers = [
                     "Content-Range": "bytes 0-0/\(totalSize)",
@@ -421,7 +421,7 @@ final class DownloadCoordinatorTests: XCTestCase {
         MockURLProtocol.setHandler(for: testURL) { request in
             let range = request.value(forHTTPHeaderField: "Range") ?? ""
 
-            if range == "bytes=0-" {
+            if range == "bytes=0-" || range == "bytes=0-0" {
                 let headers = [
                     "Content-Range": "bytes 0-0/400",
                     "ETag": "\"resume-v1\""
@@ -505,7 +505,7 @@ final class DownloadCoordinatorTests: XCTestCase {
         // Server reports NEW ETag ("etag-v2")
         MockURLProtocol.setHandler(for: testURL) { request in
             let range = request.value(forHTTPHeaderField: "Range") ?? ""
-            if range == "bytes=0-" {
+            if range == "bytes=0-" || range == "bytes=0-0" {
                 let headers = [
                     "Content-Range": "bytes 0-0/200",
                     "ETag": "\"etag-v2\""
@@ -563,7 +563,7 @@ final class DownloadCoordinatorTests: XCTestCase {
             // assertion to observe the coordinator's active-task guard.
             Thread.sleep(forTimeInterval: 0.2)
             let range = request.value(forHTTPHeaderField: "Range") ?? ""
-            if range == "bytes=0-" {
+            if range == "bytes=0-" || range == "bytes=0-0" {
                 let headers = ["Content-Range": "bytes 0-0/1000", "Content-Length": "1"]
                 let resp = HTTPURLResponse(url: testURL, statusCode: 206, httpVersion: "HTTP/1.1", headerFields: headers)!
                 return (resp, Data([0x01]))
@@ -650,7 +650,7 @@ final class DownloadCoordinatorTests: XCTestCase {
         let seg1Attempts = AttemptCounter()
         MockURLProtocol.setHandler(for: testURL) { request in
             let range = request.value(forHTTPHeaderField: "Range") ?? ""
-            if range == "bytes=0-" {
+            if range == "bytes=0-" || range == "bytes=0-0" {
                 let headers = [
                     "Content-Range": "bytes 0-0/\(totalSize)",
                     "Content-Length": "1",
@@ -719,7 +719,7 @@ final class DownloadCoordinatorTests: XCTestCase {
 
         MockURLProtocol.setHandler(for: testURL) { request in
             let range = request.value(forHTTPHeaderField: "Range") ?? ""
-            if range == "bytes=0-" {
+            if range == "bytes=0-" || range == "bytes=0-0" {
                 let headers = [
                     "Content-Range": "bytes 0-0/1000",
                     "Content-Length": "1",
@@ -781,7 +781,7 @@ final class DownloadCoordinatorTests: XCTestCase {
 
         MockURLProtocol.setHandler(for: testURL) { request in
             let range = request.value(forHTTPHeaderField: "Range") ?? ""
-            if range == "bytes=0-" {
+            if range == "bytes=0-" || range == "bytes=0-0" {
                 let headers = [
                     "Content-Range": "bytes 0-0/500",
                     "Content-Length": "1",

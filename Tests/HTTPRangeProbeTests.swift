@@ -99,7 +99,8 @@ final class HTTPRangeProbeTests: XCTestCase {
         let testURL = URL(string: "https://example.com/video.mp4")!
         
         MockURLProtocol.setHandler(for: testURL) { request in
-            XCTAssertEqual(request.value(forHTTPHeaderField: "Range"), "bytes=0-")
+            let range = request.value(forHTTPHeaderField: "Range")
+            XCTAssertTrue(range == "bytes=0-0" || range == "bytes=0-", "Probe Range header must be bytes=0-0 or bytes=0-")
             XCTAssertEqual(request.value(forHTTPHeaderField: "Accept-Encoding"), "gzip, deflate")
             
             let headers = [

@@ -2,8 +2,8 @@ import Foundation
 
 /// Defines how the probe request is sent to the remote server.
 enum ProbeMethod: String, Sendable {
-    /// Issues a GET request with a `Range: bytes=0-` header.
-    /// Primary probe method using byte range 0-0 because many media servers
+    /// Issues a GET request with a bounded `Range: bytes=0-0` header.
+    /// Primary probe method using single-byte range 0-0 because many media servers
     /// and CDNs disallow HEAD requests or report inaccurate lengths.
     case rangeGet = "GET"
 
@@ -166,6 +166,12 @@ enum HTTPRangeProbeError: Error, LocalizedError, Equatable {
 /// Asynchronous probe implementation resolving range support, content lengths, and filenames.
 final class HTTPRangeProbe: Sendable {
     private let urlSession: URLSession
+    /// Tracks whether the last probe task was cancelled to avoid lingering connection/data overhead.
+    private let lastCancelledBox = ManagedTaskCancelledBox()
+
+    var lastProbeTaskCancelled: Bool {
+        lastCancelledBox.wasCancelled
+    }
 
     init(session: URLSession = ForegroundURLSession.make(maximumConnectionsPerHost: 1)) {
         self.urlSession = session
@@ -203,7 +209,7 @@ final class HTTPRangeProbe: Sendable {
         request.setValue("*/*", forHTTPHeaderField: "Accept")
 
         if configuration.probeMethod == .rangeGet {
-            request.setValue("bytes=0-", forHTTPHeaderField: "Range")
+            request.setValue("bytes=0-0", forHTTPHeaderField: "Range")
         }
 
         for (key, value) in BrowserHeaderFilter.sanitizeHeaders(configuration.customHeaders) {
@@ -216,17 +222,29 @@ final class HTTPRangeProbe: Sendable {
 
         let response: URLResponse
         do {
-            // URLSession.bytes connects and returns headers immediately without consuming the body
-            let (_, streamResponse) = try await urlSession.bytes(for: request, delegate: redirectCaptureDelegate)
+            // URLSession.bytes connects and returns headers immediately.
+            // Bounded probe: consume at most 1 byte if available and explicitly cancel the underlying task
+            // so no connection, socket, or background stream is leaked.
+            let (bytes, streamResponse) = try await urlSession.bytes(for: request, delegate: redirectCaptureDelegate)
             response = streamResponse
+            var iterator = bytes.makeAsyncIterator()
+            _ = try? await iterator.next()
+            redirectCaptureDelegate.cancelActiveTask()
+            lastCancelledBox.wasCancelled = redirectCaptureDelegate.wasCancelled
         } catch let error as HTTPRangeProbeError {
+            redirectCaptureDelegate.cancelActiveTask()
+            lastCancelledBox.wasCancelled = redirectCaptureDelegate.wasCancelled
             throw error
         } catch let urlError as URLError {
+            redirectCaptureDelegate.cancelActiveTask()
+            lastCancelledBox.wasCancelled = redirectCaptureDelegate.wasCancelled
             throw HTTPRangeProbeError.networkError(
                 urlError.localizedDescription,
                 code: urlError.code.rawValue
             )
         } catch {
+            redirectCaptureDelegate.cancelActiveTask()
+            lastCancelledBox.wasCancelled = redirectCaptureDelegate.wasCancelled
             throw HTTPRangeProbeError.networkError(error.localizedDescription, code: nil)
         }
 
@@ -253,14 +271,10 @@ final class HTTPRangeProbe: Sendable {
         case 404:
             throw HTTPRangeProbeError.resourceNotFound(finalURL)
         case 401:
-            #if DEBUG
-            print("[HTTPRangeProbe] 401 Unauthorized: status=\(statusCode), cf-mitigated=\(headers["cf-mitigated"] ?? "none"), headers=\(headers)")
-            #endif
+            PipelineLogger.shared.log("[HTTPRangeProbe] 401 Unauthorized: status=\(statusCode), cf-mitigated=\(headers["cf-mitigated"] ?? "none"), headers=\(headers)")
             throw HTTPRangeProbeError.unauthorized(finalURL)
         case 403:
-            #if DEBUG
-            print("[HTTPRangeProbe] 403 Forbidden: status=\(statusCode), cf-mitigated=\(headers["cf-mitigated"] ?? "none"), headers=\(headers)")
-            #endif
+            PipelineLogger.shared.log("[HTTPRangeProbe] 403 Forbidden: status=\(statusCode), cf-mitigated=\(headers["cf-mitigated"] ?? "none"), headers=\(headers)")
             throw HTTPRangeProbeError.forbidden(finalURL)
         case 429:
             let retryAfter = Self.parseRetryAfter(headers["retry-after"])
@@ -503,11 +517,31 @@ final class HTTPRangeProbe: Sendable {
     }
 }
 
-// MARK: - Redirect Tracking Delegate
+// MARK: - Redirect Tracking Delegate & Task Management
+
+final class ManagedTaskCancelledBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _wasCancelled = false
+
+    var wasCancelled: Bool {
+        get {
+            lock.lock()
+            defer { lock.unlock() }
+            return _wasCancelled
+        }
+        set {
+            lock.lock()
+            defer { lock.unlock() }
+            _wasCancelled = newValue
+        }
+    }
+}
 
 private final class RedirectCaptureDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
     private let lock = NSLock()
     private var _resolvedFinalURL: URL?
+    private weak var _activeTask: URLSessionTask?
+    private var _taskWasCancelled = false
     private let allowedOrigins: Set<String>
 
     init(allowedOrigins: Set<String> = []) {
@@ -520,6 +554,29 @@ private final class RedirectCaptureDelegate: NSObject, URLSessionTaskDelegate, @
         return _resolvedFinalURL
     }
 
+    var wasCancelled: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return _taskWasCancelled
+    }
+
+    func cancelActiveTask() {
+        lock.lock()
+        _taskWasCancelled = true
+        let task = _activeTask
+        lock.unlock()
+        task?.cancel()
+    }
+
+    #if canImport(Darwin)
+    @available(iOS 16.0, macOS 13.0, tvOS 16.0, watchOS 9.0, *)
+    func urlSession(_ session: URLSession, didCreateTask task: URLSessionTask) {
+        lock.lock()
+        _activeTask = task
+        lock.unlock()
+    }
+    #endif
+
     func urlSession(
         _ session: URLSession,
         task: URLSessionTask,
@@ -528,6 +585,7 @@ private final class RedirectCaptureDelegate: NSObject, URLSessionTaskDelegate, @
         completionHandler: @escaping (URLRequest?) -> Void
     ) {
         lock.lock()
+        _activeTask = task
         _resolvedFinalURL = request.url
         lock.unlock()
 
@@ -546,6 +604,9 @@ private final class RedirectCaptureDelegate: NSObject, URLSessionTaskDelegate, @
         didReceive challenge: URLAuthenticationChallenge,
         completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
     ) {
+        lock.lock()
+        _activeTask = task
+        lock.unlock()
         let space = challenge.protectionSpace
         let host = space.host
 

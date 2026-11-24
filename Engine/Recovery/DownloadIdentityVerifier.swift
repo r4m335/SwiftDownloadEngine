@@ -81,7 +81,7 @@ public struct DownloadIdentityVerifier: Sendable {
     public func verify(
         record: DownloadRecord,
         probe: ProbeMetadata,
-        policy: ResumeIntegrityPolicy = .compatibility
+        policy: ResumeIntegrityPolicy = .conservative
     ) -> ResourceIdentityOutcome {
         var reasons: [String] = []
 
@@ -166,7 +166,7 @@ public struct DownloadIdentityVerifier: Sendable {
     func verify(
         record: DownloadRecord,
         probe: HTTPRangeProbeResult,
-        policy: ResumeIntegrityPolicy = .compatibility
+        policy: ResumeIntegrityPolicy = .conservative
     ) -> ResourceIdentityOutcome {
         let meta = ProbeMetadata(
             finalURL: probe.finalURL,
