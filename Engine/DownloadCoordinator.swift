@@ -30,7 +30,7 @@ public struct DownloadByteRange: Sendable, Equatable, Codable, Hashable {
 }
 
 /// Defines network usage policy for downloads (e.g. Wi-Fi Only vs Any Network, expensive networks, constrained networks).
-public struct DownloadNetworkPolicy: Codable, Sendable, Equatable, Hashable, CaseIterable {
+public struct DownloadNetworkPolicy: Codable, Sendable, Equatable, Hashable {
     public var allowsCellularAccess: Bool
     public var allowsExpensiveNetworkAccess: Bool
     public var allowsConstrainedNetworkAccess: Bool
@@ -69,10 +69,6 @@ public struct DownloadNetworkPolicy: Codable, Sendable, Equatable, Hashable, Cas
         allowsConstrainedNetworkAccess: true
     )
 
-    public static var allCases: [DownloadNetworkPolicy] {
-        [.anyNetwork, .wifiOnly, .wifiAllowExpensive, .unrestricted]
-    }
-
     enum CodingKeys: String, CodingKey {
         case allowsCellularAccess
         case allowsExpensiveNetworkAccess
@@ -89,8 +85,6 @@ public struct DownloadNetworkPolicy: Codable, Sendable, Equatable, Hashable, Cas
                 self = .wifiAllowExpensive
             case "unrestricted":
                 self = .unrestricted
-            case "anyNetwork":
-                fallthrough
             default:
                 self = .anyNetwork
             }
@@ -104,44 +98,10 @@ public struct DownloadNetworkPolicy: Codable, Sendable, Equatable, Hashable, Cas
     }
 
     public func encode(to encoder: Encoder) throws {
-        if self == .anyNetwork {
-            var container = encoder.singleValueContainer()
-            try container.encode("anyNetwork")
-        } else if self == .wifiOnly {
-            var container = encoder.singleValueContainer()
-            try container.encode("wifiOnly")
-        } else if self == .wifiAllowExpensive {
-            var container = encoder.singleValueContainer()
-            try container.encode("wifiAllowExpensive")
-        } else if self == .unrestricted {
-            var container = encoder.singleValueContainer()
-            try container.encode("unrestricted")
-        } else {
-            var container = encoder.container(keyedBy: CodingKeys.self)
-            try container.encode(allowsCellularAccess, forKey: .allowsCellularAccess)
-            try container.encode(allowsExpensiveNetworkAccess, forKey: .allowsExpensiveNetworkAccess)
-            try container.encode(allowsConstrainedNetworkAccess, forKey: .allowsConstrainedNetworkAccess)
-        }
-    }
-}
-
-extension DownloadNetworkPolicy: RawRepresentable {
-    public var rawValue: String {
-        if self == .anyNetwork { return "anyNetwork" }
-        if self == .wifiOnly { return "wifiOnly" }
-        if self == .wifiAllowExpensive { return "wifiAllowExpensive" }
-        if self == .unrestricted { return "unrestricted" }
-        return "custom(\(allowsCellularAccess),\(allowsExpensiveNetworkAccess),\(allowsConstrainedNetworkAccess))"
-    }
-
-    public init?(rawValue: String) {
-        switch rawValue {
-        case "anyNetwork": self = .anyNetwork
-        case "wifiOnly": self = .wifiOnly
-        case "wifiAllowExpensive": self = .wifiAllowExpensive
-        case "unrestricted": self = .unrestricted
-        default: return nil
-        }
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(allowsCellularAccess, forKey: .allowsCellularAccess)
+        try container.encode(allowsExpensiveNetworkAccess, forKey: .allowsExpensiveNetworkAccess)
+        try container.encode(allowsConstrainedNetworkAccess, forKey: .allowsConstrainedNetworkAccess)
     }
 }
 
