@@ -1781,10 +1781,8 @@ extension BackgroundDownloadSessionManager: URLSessionDownloadDelegate {
                     let newTask: URLSessionDownloadTask
                     if let resumeData, self.isValidResumeData(resumeData) {
                         newTask = self.session.downloadTask(withResumeData: resumeData)
-                        try? FileManager.default.removeItem(at: resumeURL)
                         PipelineLogger.shared.log(stage: .transport, message: "[BackgroundDownloadSessionManager] Apple task interruption recovery: restarting task with resumeData for download \(rec.downloadID), segment \(rec.segmentID) (attempt \(nextRetry)/3, backoff: \(backoffSeconds)s)")
                     } else {
-                        try? FileManager.default.removeItem(at: resumeURL)
                         var request = URLRequest(url: rec.originalURL)
                         request.setValue("identity", forHTTPHeaderField: "Accept-Encoding")
                         if rec.endOffset > 0 || nextStartOffset > 0 {

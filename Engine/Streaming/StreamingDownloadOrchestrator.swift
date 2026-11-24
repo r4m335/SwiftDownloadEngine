@@ -1401,6 +1401,16 @@ public actor StreamingDownloadOrchestrator {
     private func reconcileCompletedSegmentsWithDisk(transferID: String, directory: URL) async {
         guard let persistence = hlsPersistenceStore else { return }
         guard let record = try? await persistence.load(id: transferID) else { return }
+        let proposal = proposals[transferID]
+        if let resources = proposal?.resources {
+            for res in resources {
+                let dest = directory.appendingPathComponent("\(res.identity.value).part")
+                let size = FileManager.default.fileSize(atPath: dest.path) ?? 0
+                if size > 0 && !record.completedSegmentOrders.contains(res.identity.order) {
+                    _ = try? await persistence.markSegmentCompleted(id: transferID, order: res.identity.order)
+                }
+            }
+        }
         guard let files = try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: [.fileSizeKey]) else { return }
         let partFiles = files.filter { $0.pathExtension.lowercased() == "part" }
         for file in partFiles {
@@ -1419,16 +1429,27 @@ public actor StreamingDownloadOrchestrator {
     private func reconcileDASHCompletedSegmentsWithDisk(transferID: String, directory: URL) async {
         guard let persistence = dashPersistenceStore else { return }
         guard let record = try? await persistence.load(id: transferID) else { return }
-        guard let files = try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: [.fileSizeKey]) else { return }
-        let partFiles = files.filter { $0.pathExtension.lowercased() == "part" }
         var newlyCompleted: Set<Int> = []
-        for file in partFiles {
-            let baseName = file.deletingPathExtension().lastPathComponent
-            let components = baseName.split(separator: "_")
-            if let first = components.first, let order = Int(first) {
-                let size = FileManager.default.fileSize(atPath: file.path) ?? 0
-                if size > 0 && !record.completedSegmentOrders.contains(order) {
-                    newlyCompleted.insert(order)
+        let proposal = proposals[transferID]
+        if let resources = proposal?.resources {
+            for res in resources {
+                let dest = directory.appendingPathComponent("\(res.identity.value).part")
+                let size = FileManager.default.fileSize(atPath: dest.path) ?? 0
+                if size > 0 && !record.completedSegmentOrders.contains(res.identity.order) {
+                    newlyCompleted.insert(res.identity.order)
+                }
+            }
+        }
+        if let files = try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: [.fileSizeKey]) {
+            let partFiles = files.filter { $0.pathExtension.lowercased() == "part" }
+            for file in partFiles {
+                let baseName = file.deletingPathExtension().lastPathComponent
+                let components = baseName.split(separator: "_")
+                if let first = components.first, let order = Int(first) {
+                    let size = FileManager.default.fileSize(atPath: file.path) ?? 0
+                    if size > 0 && !record.completedSegmentOrders.contains(order) {
+                        newlyCompleted.insert(order)
+                    }
                 }
             }
         }

@@ -56,6 +56,7 @@ final class BackgroundDownloads10OutOf10Tests: XCTestCase {
         let candidate = try StreamingManifestCandidate(url: manifestURL)
         var proposal = try await orchestrator.prepare(candidate: candidate)
         proposal.transportPolicy = .foreground
+        let transferID = proposal.transferID
 
         // Pre-create segment 0 on disk to simulate it finishing right before handoff
         let segDir = tempDirectory.appendingPathComponent("handoff-segs", isDirectory: true)
@@ -64,9 +65,8 @@ final class BackgroundDownloads10OutOf10Tests: XCTestCase {
         try Data(repeating: 0x47, count: 500).write(to: seg0File)
 
         // Save initial parent HLS record
-        let parentID = "stream-run-handoff-test"
         let parentRecord = HLSTransferRecord(
-            id: parentID,
+            id: transferID,
             manifestURL: manifestURL,
             outputFilename: "output.mp4",
             outputDestinationURL: tempDirectory.appendingPathComponent("output.mp4"),
@@ -78,8 +78,8 @@ final class BackgroundDownloads10OutOf10Tests: XCTestCase {
         try await hlsStore.save(parentRecord)
 
         // Register running transfer
-        try await orchestrator.resume(transferID: parentID)
-        let isManaging = await orchestrator.isManaging(id: parentID)
+        try await orchestrator.resume(transferID: transferID)
+        let isManaging = await orchestrator.isManaging(id: transferID)
         XCTAssertTrue(isManaging)
 
         // Execute handoff to background
@@ -87,26 +87,26 @@ final class BackgroundDownloads10OutOf10Tests: XCTestCase {
 
         // 1. Verify foreground cancellation was sent to executor
         let cancelledIDs = await executor.cancelledTransferIDs
-        XCTAssertTrue(cancelledIDs.contains(parentID) || cancelledIDs.contains(proposal.transferID))
+        XCTAssertTrue(cancelledIDs.contains(transferID))
 
         // 2. Verify completed segment 0 was reconciled into checkpoints
-        let updatedRecord = try await hlsStore.load(id: parentID)
+        let updatedRecord = try await hlsStore.load(id: transferID)
         XCTAssertEqual(updatedRecord?.completedSegmentOrders.contains(0), true)
 
         // 3. Verify background session manager received remaining segment (seg 1) but NOT seg 0
-        let bgRecords = await bgManager.mappingStore.records(forDownloadID: proposal.transferID)
+        let bgRecords = await bgManager.mappingStore.records(forDownloadID: transferID)
         XCTAssertEqual(bgRecords.count, 1)
         XCTAssertEqual(bgRecords.first?.segmentID, 1)
 
         // 4. Verify proposal transport policy is now .background
-        let activeProposal = await orchestrator.activeProposal(for: parentID)
+        let activeProposal = await orchestrator.activeProposal(for: transferID)
         XCTAssertEqual(activeProposal?.transportPolicy, .background)
 
         // 5. Verify handoffInProgress transitioned back to false
-        let inProgress = await orchestrator.isHandoffInProgress(transferID: parentID)
+        let inProgress = await orchestrator.isHandoffInProgress(transferID: transferID)
         XCTAssertFalse(inProgress)
 
-        await bgManager.cancelTasks(for: proposal.transferID)
+        await bgManager.cancelTasks(for: transferID)
     }
 
     // MARK: - 2. Pause & PauseAll Cancels Active Segment Tasks and Checkpoints
