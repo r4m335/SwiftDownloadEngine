@@ -2,27 +2,31 @@ import Foundation
 
 /// Encapsulates persistent browser tab state saved across app lifecycles.
 public struct BrowserSavedSession: Codable, Sendable, Equatable, SchemaVersioned {
-    public static let currentSchemaVersion: Int = 2
+    public static let currentSchemaVersion: Int = 3
     public var schemaVersion: Int
     public var activeTabID: UUID?
     public var tabs: [BrowserTabState]
+    public var groups: [BrowserTabGroup]
     public var savedAt: Date
 
     public init(
         schemaVersion: Int = Self.currentSchemaVersion,
         activeTabID: UUID? = nil,
         tabs: [BrowserTabState] = [],
+        groups: [BrowserTabGroup] = [],
         savedAt: Date = Date()
     ) {
         self.schemaVersion = schemaVersion
         self.activeTabID = activeTabID
         // Invariant: Incognito tabs are strictly never persisted in saved sessions.
         self.tabs = Self.sanitizeTabs(tabs.filter { !$0.isIncognito })
+        let validGroupIDs = Set(self.tabs.compactMap(\.groupID))
+        self.groups = groups.filter { validGroupIDs.contains($0.id) }
         self.savedAt = savedAt
     }
 
     private enum CodingKeys: String, CodingKey {
-        case schemaVersion, activeTabID, tabs, savedAt
+        case schemaVersion, activeTabID, tabs, groups, savedAt
     }
 
     public init(from decoder: Decoder) throws {
@@ -31,6 +35,7 @@ public struct BrowserSavedSession: Codable, Sendable, Equatable, SchemaVersioned
         self.activeTabID = try container.decodeIfPresent(UUID.self, forKey: .activeTabID)
         let rawTabs = try container.decode([BrowserTabState].self, forKey: .tabs)
         self.tabs = Self.sanitizeTabs(rawTabs.filter { !$0.isIncognito })
+        self.groups = try container.decodeIfPresent([BrowserTabGroup].self, forKey: .groups) ?? []
         self.savedAt = try container.decodeIfPresent(Date.self, forKey: .savedAt) ?? Date()
     }
 
@@ -73,7 +78,7 @@ public final class BrowserSessionStore {
 
     /// Persists the active tabs to disk, strictly filtering out any incognito/ephemeral tabs.
     /// Rotates the previous valid session to a backup file to guarantee zero data loss.
-    public func saveSession(tabs: [BrowserTabState], activeTabID: UUID?) {
+    public func saveSession(tabs: [BrowserTabState], groups: [BrowserTabGroup] = [], activeTabID: UUID?) {
         // Enforce privacy invariant: private tabs must never be written to persistent storage.
         let nonIncognito = tabs.filter { !$0.isIncognito }
         let effectiveActiveID = (activeTabID != nil && nonIncognito.contains(where: { $0.id == activeTabID }))
@@ -84,6 +89,7 @@ public final class BrowserSessionStore {
             schemaVersion: BrowserSavedSession.currentSchemaVersion,
             activeTabID: effectiveActiveID,
             tabs: nonIncognito,
+            groups: groups,
             savedAt: Date()
         )
 

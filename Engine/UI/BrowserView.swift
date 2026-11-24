@@ -57,6 +57,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
     public let diagnosticLogger: BrowserDiagnosticLogger
     public let streamManifestExpander: StreamManifestResourceExpander
     @Published public private(set) var tabs: [BrowserTabState] = []
+    @Published public private(set) var groups: [BrowserTabGroup] = []
     @Published public private(set) var activeTabID: UUID?
     @Published public var isShowingTabSwitcher: Bool = false
     @Published public var isShowingBookmarksAndHistory: Bool = false
@@ -680,7 +681,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
            let sessionStore,
            let saved = sessionStore.loadSession(),
            !saved.tabs.isEmpty {
-            self.tabManager = BrowserTabManager(tabs: saved.tabs, activeTabID: saved.activeTabID)
+            self.tabManager = BrowserTabManager(tabs: saved.tabs, groups: saved.groups, activeTabID: saved.activeTabID)
         }
 
         super.init()
@@ -750,9 +751,10 @@ public final class BrowserViewModel: NSObject, ObservableObject {
 
     private func publishTabState() {
         tabs = tabManager.tabs
+        groups = tabManager.groups
         activeTabID = tabManager.activeTabID
         if restoreTabsOnLaunch, let sessionStore {
-            sessionStore.saveSession(tabs: tabManager.tabs, activeTabID: tabManager.activeTabID)
+            sessionStore.saveSession(tabs: tabManager.tabs, groups: tabManager.groups, activeTabID: tabManager.activeTabID)
         }
     }
 
@@ -773,7 +775,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
 
         currentURL = activeTab.url
         urlInputText = activeTab.url?.absoluteString ?? ""
-        pageTitle = activeTab.title == "New Tab" ? "" : activeTab.title
+        pageTitle = activeTab.displayName == "New Tab" ? "" : activeTab.displayName
         isLoading = activeTab.isLoading
         estimatedProgress = activeTab.estimatedProgress
         canGoBack = activeTab.canGoBack
@@ -1034,6 +1036,84 @@ public final class BrowserViewModel: NSObject, ObservableObject {
             isShowingTabSwitcher = false
         }
         return replacement
+    }
+
+    // MARK: - Tab Renaming & Grouping
+
+    @discardableResult
+    public func renameTab(_ id: UUID, newTitle: String?) -> Bool {
+        let changed = tabManager.renameTab(id, newTitle: newTitle)
+        if changed {
+            publishTabState()
+            syncActiveTabState()
+        }
+        return changed
+    }
+
+    @discardableResult
+    public func createGroup(
+        title: String,
+        colorName: String = "blue",
+        tabIDs: [UUID] = []
+    ) -> BrowserTabGroup {
+        let group = tabManager.createGroup(title: title, colorName: colorName, tabIDs: tabIDs)
+        publishTabState()
+        return group
+    }
+
+    @discardableResult
+    public func renameGroup(_ id: UUID, newTitle: String) -> Bool {
+        let changed = tabManager.renameGroup(id, newTitle: newTitle)
+        if changed {
+            publishTabState()
+        }
+        return changed
+    }
+
+    public func deleteGroup(_ id: UUID, closeContainedTabs: Bool = false) {
+        tabManager.deleteGroup(id, closeContainedTabs: closeContainedTabs)
+        publishTabState()
+        syncActiveTabState()
+    }
+
+    @discardableResult
+    public func addTabToGroup(tabID: UUID, groupID: UUID) -> Bool {
+        let changed = tabManager.addTabToGroup(tabID: tabID, groupID: groupID)
+        if changed {
+            publishTabState()
+        }
+        return changed
+    }
+
+    @discardableResult
+    public func removeTabFromGroup(tabID: UUID) -> Bool {
+        let changed = tabManager.removeTabFromGroup(tabID: tabID)
+        if changed {
+            publishTabState()
+        }
+        return changed
+    }
+
+    @discardableResult
+    public func groupTabs(sourceTabID: UUID, targetTabID: UUID) -> UUID? {
+        let groupID = tabManager.groupTabs(sourceTabID: sourceTabID, targetTabID: targetTabID)
+        if groupID != nil {
+            publishTabState()
+        }
+        return groupID
+    }
+
+    public func toggleGroupCollapse(_ groupID: UUID) {
+        tabManager.toggleGroupCollapse(groupID)
+        publishTabState()
+    }
+
+    public func tabsInGroup(_ groupID: UUID) -> [BrowserTabState] {
+        tabManager.tabsInGroup(groupID)
+    }
+
+    public func ungroupedTabs() -> [BrowserTabState] {
+        tabManager.ungroupedTabs()
     }
 
     // MARK: - Redirect & Popup Confirmation Handling
@@ -5336,11 +5416,37 @@ public struct BrowserHomeView: View {
     }
 }
 
-// MARK: - Browser Tab Switcher (Visual 2-Column Grid)
+// MARK: - Browser Tab Switcher (Visual 2-Column Grid with Tab Groups & Renaming)
+
+extension BrowserTabGroup {
+    public var swiftUIColor: Color {
+        switch colorName.lowercased() {
+        case "red": return .red
+        case "orange": return .orange
+        case "yellow": return .yellow
+        case "green": return .green
+        case "purple": return .purple
+        case "pink": return .pink
+        case "teal": return .teal
+        case "indigo": return .indigo
+        default: return .blue
+        }
+    }
+}
 
 public struct BrowserTabSwitcherView: View {
     @ObservedObject public var viewModel: BrowserViewModel
     @Environment(\.dismiss) private var dismiss
+
+    @State private var tabToRename: BrowserTabState? = nil
+    @State private var renameText: String = ""
+    @State private var isShowingRenameAlert: Bool = false
+
+    @State private var groupToRename: BrowserTabGroup? = nil
+    @State private var renameGroupText: String = ""
+    @State private var isShowingRenameGroupAlert: Bool = false
+
+    @State private var dropTargetGroupID: UUID? = nil
 
     private let columns = [
         GridItem(.flexible(), spacing: 14),
@@ -5354,7 +5460,7 @@ public struct BrowserTabSwitcherView: View {
     public var body: some View {
         NavigationView {
             ScrollView {
-                VStack(spacing: 16) {
+                VStack(spacing: 20) {
                     if viewModel.tabs.isEmpty {
                         VStack(spacing: 12) {
                             Spacer(minLength: 40)
@@ -5369,60 +5475,34 @@ public struct BrowserTabSwitcherView: View {
                             Spacer(minLength: 40)
                         }
                     } else {
-                        LazyVGrid(columns: columns, spacing: 14) {
-                            ForEach(viewModel.tabs) { tab in
-                                BrowserTabCardView(
-                                    tab: tab,
-                                    isActive: tab.id == viewModel.activeTabID,
-                                    previewData: viewModel.tabPreviewCache.preview(for: tab.id),
-                                    onSelect: {
-                                        _ = viewModel.selectTab(tab.id)
-                                        dismiss()
-                                    },
-                                    onClose: {
-                                        close(tab.id)
-                                    }
-                                )
+                        // Render Groups (if any)
+                        ForEach(viewModel.groups) { group in
+                            groupSection(group)
+                        }
+
+                        // Render Ungrouped Tabs
+                        let ungrouped = viewModel.ungroupedTabs()
+                        if !ungrouped.isEmpty {
+                            if !viewModel.groups.isEmpty {
+                                HStack {
+                                    Text("Tabs (\(ungrouped.count))")
+                                        .font(.subheadline.weight(.semibold))
+                                        .foregroundColor(.secondary)
+                                    Spacer()
+                                }
+                                .padding(.horizontal, 4)
+                            }
+
+                            LazyVGrid(columns: columns, spacing: 14) {
+                                ForEach(ungrouped) { tab in
+                                    tabCard(for: tab)
+                                }
                             }
                         }
                     }
 
-                    VStack(spacing: 10) {
-                        HStack(spacing: 12) {
-                            Button {
-                                viewModel.createNewTab(isIncognito: false)
-                                dismiss()
-                            } label: {
-                                Label("New Tab", systemImage: "plus")
-                                    .frame(maxWidth: .infinity)
-                                    .padding(.vertical, 12)
-                            }
-                            .buttonStyle(.borderedProminent)
-
-                            Button {
-                                viewModel.createNewTab(isIncognito: true)
-                                dismiss()
-                            } label: {
-                                Label("Private Tab", systemImage: "eyeglasses")
-                                    .frame(maxWidth: .infinity)
-                                    .padding(.vertical, 12)
-                            }
-                            .buttonStyle(.bordered)
-                            .tint(.purple)
-                        }
-
-                        if viewModel.tabs.contains(where: \.isIncognito) {
-                            Button {
-                                viewModel.closeAllIncognitoTabs()
-                            } label: {
-                                Label("Close All Private Tabs", systemImage: "trash")
-                                    .font(.caption.weight(.semibold))
-                                    .foregroundColor(.purple)
-                            }
-                            .padding(.top, 4)
-                        }
-                    }
-                    .padding(.top, 8)
+                    // Action buttons (New Tab, Private Tab, Close All Private)
+                    actionButtons
                 }
                 .padding(16)
             }
@@ -5438,7 +5518,211 @@ public struct BrowserTabSwitcherView: View {
                     }
                 }
             }
+            .alert("Rename Tab", isPresented: $isShowingRenameAlert) {
+                TextField("Tab Title", text: $renameText)
+                Button("Save") {
+                    if let tab = tabToRename {
+                        viewModel.renameTab(tab.id, newTitle: renameText)
+                    }
+                    tabToRename = nil
+                }
+                Button("Reset to Default") {
+                    if let tab = tabToRename {
+                        viewModel.renameTab(tab.id, newTitle: nil)
+                    }
+                    tabToRename = nil
+                }
+                Button("Cancel", role: .cancel) {
+                    tabToRename = nil
+                }
+            }
+            .alert("Rename Group", isPresented: $isShowingRenameGroupAlert) {
+                TextField("Group Name", text: $renameGroupText)
+                Button("Save") {
+                    if let group = groupToRename {
+                        viewModel.renameGroup(group.id, newTitle: renameGroupText)
+                    }
+                    groupToRename = nil
+                }
+                Button("Cancel", role: .cancel) {
+                    groupToRename = nil
+                }
+            }
         }
+    }
+
+    private func groupSection(_ group: BrowserTabGroup) -> some View {
+        let groupTabs = viewModel.tabsInGroup(group.id)
+        let isDropTarget = dropTargetGroupID == group.id
+
+        return VStack(alignment: .leading, spacing: 10) {
+            // Group Header (Drop Target for adding tabs to group)
+            HStack(spacing: 8) {
+                Circle()
+                    .fill(group.swiftUIColor)
+                    .frame(width: 12, height: 12)
+
+                Text(group.title)
+                    .font(.headline)
+                    .foregroundColor(.primary)
+
+                Text("(\(groupTabs.count))")
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+
+                Spacer()
+
+                // Collapse/Expand Button
+                Button {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        viewModel.toggleGroupCollapse(group.id)
+                    }
+                } label: {
+                    Image(systemName: group.isCollapsed ? "chevron.right" : "chevron.down")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundColor(.secondary)
+                        .padding(4)
+                }
+                .buttonStyle(.plain)
+
+                // Group Menu
+                Menu {
+                    Button {
+                        groupToRename = group
+                        renameGroupText = group.title
+                        isShowingRenameGroupAlert = true
+                    } label: {
+                        Label("Rename Group", systemImage: "pencil")
+                    }
+
+                    Button {
+                        withAnimation {
+                            viewModel.deleteGroup(group.id, closeContainedTabs: false)
+                        }
+                    } label: {
+                        Label("Ungroup Tabs", systemImage: "folder.badge.minus")
+                    }
+
+                    Divider()
+
+                    Button(role: .destructive) {
+                        withAnimation {
+                            viewModel.deleteGroup(group.id, closeContainedTabs: true)
+                        }
+                    } label: {
+                        Label("Close Group", systemImage: "trash")
+                    }
+                } label: {
+                    Image(systemName: "ellipsis.circle")
+                        .font(.system(size: 16))
+                        .foregroundColor(.secondary)
+                        .padding(4)
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.vertical, 6)
+            .padding(.horizontal, 10)
+            .background(
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(isDropTarget ? group.swiftUIColor.opacity(0.2) : Color.clear)
+            )
+            .onDrop(of: ["public.plain-text", "public.text"], isTargeted: Binding(
+                get: { dropTargetGroupID == group.id },
+                set: { targeted in dropTargetGroupID = targeted ? group.id : nil }
+            )) { providers in
+                guard let provider = providers.first else { return false }
+                _ = provider.loadObject(ofClass: NSString.self) { string, _ in
+                    if let str = string as? String, let sourceUUID = UUID(uuidString: str) {
+                        DispatchQueue.main.async {
+                            viewModel.addTabToGroup(tabID: sourceUUID, groupID: group.id)
+                        }
+                    }
+                }
+                return true
+            }
+
+            // Group Contained Tabs
+            if !group.isCollapsed {
+                LazyVGrid(columns: columns, spacing: 14) {
+                    ForEach(groupTabs) { tab in
+                        tabCard(for: tab)
+                    }
+                }
+            }
+        }
+        .padding(.vertical, 4)
+    }
+
+    private func tabCard(for tab: BrowserTabState) -> some View {
+        BrowserTabCardView(
+            tab: tab,
+            isActive: tab.id == viewModel.activeTabID,
+            previewData: viewModel.tabPreviewCache.preview(for: tab.id),
+            onSelect: {
+                _ = viewModel.selectTab(tab.id)
+                dismiss()
+            },
+            onClose: {
+                close(tab.id)
+            },
+            onRename: {
+                tabToRename = tab
+                renameText = tab.customTitle ?? tab.title
+                isShowingRenameAlert = true
+            },
+            onResetName: {
+                viewModel.renameTab(tab.id, newTitle: nil)
+            },
+            onRemoveFromGroup: {
+                withAnimation {
+                    _ = viewModel.removeTabFromGroup(tabID: tab.id)
+                }
+            },
+            onGroup: { sourceTabID in
+                withAnimation {
+                    _ = viewModel.groupTabs(sourceTabID: sourceTabID, targetTabID: tab.id)
+                }
+            }
+        )
+    }
+
+    private var actionButtons: some View {
+        VStack(spacing: 10) {
+            HStack(spacing: 12) {
+                Button {
+                    viewModel.createNewTab(isIncognito: false)
+                    dismiss()
+                } label: {
+                    Label("New Tab", systemImage: "plus")
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 12)
+                }
+                .buttonStyle(.borderedProminent)
+
+                Button {
+                    viewModel.createNewTab(isIncognito: true)
+                    dismiss()
+                } label: {
+                    Label("Private Tab", systemImage: "eyeglasses")
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 12)
+                }
+                .buttonStyle(.bordered)
+                .tint(.purple)
+            }
+
+            if viewModel.tabs.contains(where: \.isIncognito) {
+                Button {
+                    viewModel.closeAllIncognitoTabs()
+                } label: {
+                    Label("Close All Private Tabs", systemImage: "trash")
+                        .font(.caption.weight(.semibold))
+                        .foregroundColor(.purple)
+                }
+                .padding(.top, 4)
+            }
+        }
+        .padding(.top, 8)
     }
 
     private func close(_ tabID: UUID) {
@@ -5448,7 +5732,7 @@ public struct BrowserTabSwitcherView: View {
     }
 }
 
-// MARK: - Browser Tab Card View with Interactive Swipe-to-Close
+// MARK: - Browser Tab Card View with Drag & Drop Grouping, Renaming & Left/Right Swipe-to-Close
 
 public struct BrowserTabCardView: View {
     public let tab: BrowserTabState
@@ -5456,31 +5740,110 @@ public struct BrowserTabCardView: View {
     public let previewData: Data?
     public let onSelect: () -> Void
     public let onClose: () -> Void
+    public let onRename: (() -> Void)?
+    public let onResetName: (() -> Void)?
+    public let onRemoveFromGroup: (() -> Void)?
+    public let onGroup: ((UUID) -> Void)?
 
     @State private var dragOffset: CGSize = .zero
     @State private var isDismissing: Bool = false
+    @State private var isDropTarget: Bool = false
 
     public init(
         tab: BrowserTabState,
         isActive: Bool,
         previewData: Data?,
         onSelect: @escaping () -> Void,
-        onClose: @escaping () -> Void
+        onClose: @escaping () -> Void,
+        onRename: (() -> Void)? = nil,
+        onResetName: (() -> Void)? = nil,
+        onRemoveFromGroup: (() -> Void)? = nil,
+        onGroup: ((UUID) -> Void)? = nil
     ) {
         self.tab = tab
         self.isActive = isActive
         self.previewData = previewData
         self.onSelect = onSelect
         self.onClose = onClose
+        self.onRename = onRename
+        self.onResetName = onResetName
+        self.onRemoveFromGroup = onRemoveFromGroup
+        self.onGroup = onGroup
     }
 
     public var body: some View {
         ZStack {
+            // Swipe action background indicator (Left or Right)
+            if dragOffset.width != 0 {
+                swipeActionBackground
+            }
+
             cardContent
+                .offset(dragOffset)
+                .opacity(isDismissing ? 0 : max(0.2, 1.0 - Double(abs(dragOffset.width) / 160.0)))
+                .scaleEffect(isDismissing ? 0.8 : max(0.92, 1.0 - (abs(dragOffset.width) / 800.0)))
         }
-        .offset(dragOffset)
-        .opacity(isDismissing ? 0 : max(0.2, 1.0 - Double(abs(dragOffset.width) / 160.0)))
-        .scaleEffect(isDismissing ? 0.8 : max(0.92, 1.0 - (abs(dragOffset.width) / 800.0)))
+        .contentShape(Rectangle())
+        .onDrag {
+            NSItemProvider(object: tab.id.uuidString as NSString)
+        }
+        .onDrop(of: ["public.plain-text", "public.text"], isTargeted: $isDropTarget) { providers in
+            guard let provider = providers.first else { return false }
+            _ = provider.loadObject(ofClass: NSString.self) { string, _ in
+                if let str = string as? String, let sourceUUID = UUID(uuidString: str), sourceUUID != tab.id {
+                    DispatchQueue.main.async {
+                        onGroup?(sourceUUID)
+                    }
+                }
+            }
+            return true
+        }
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(isDropTarget ? Color.accentColor : Color.clear, lineWidth: 3)
+                .padding(-2)
+        )
+        .overlay(
+            Group {
+                if isDropTarget {
+                    VStack {
+                        Spacer()
+                        HStack(spacing: 4) {
+                            Image(systemName: "folder.badge.plus")
+                            Text("Group Tabs")
+                                .font(.caption.weight(.bold))
+                        }
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 5)
+                        .background(.ultraThinMaterial)
+                        .clipShape(Capsule())
+                        .foregroundColor(.primary)
+                        .padding(.bottom, 8)
+                    }
+                }
+            }
+        )
+        .contextMenu {
+            if let onRename = onRename {
+                Button(action: onRename) {
+                    Label("Rename Tab", systemImage: "pencil")
+                }
+            }
+            if tab.customTitle != nil, let onResetName = onResetName {
+                Button(action: onResetName) {
+                    Label("Reset Tab Name", systemImage: "arrow.counterclockwise")
+                }
+            }
+            if tab.groupID != nil, let onRemoveFromGroup = onRemoveFromGroup {
+                Button(action: onRemoveFromGroup) {
+                    Label("Remove from Group", systemImage: "folder.badge.minus")
+                }
+            }
+            Divider()
+            Button(role: .destructive, action: onClose) {
+                Label("Close Tab", systemImage: "trash")
+            }
+        }
         .gesture(
             DragGesture(minimumDistance: 15)
                 .onChanged { value in
@@ -5514,9 +5877,42 @@ public struct BrowserTabCardView: View {
         )
     }
 
+    private var swipeActionBackground: some View {
+        RoundedRectangle(cornerRadius: 12)
+            .fill(Color.red)
+            .overlay(
+                HStack {
+                    if dragOffset.width > 0 {
+                        // Swiping right: show close indicator on the left
+                        HStack(spacing: 6) {
+                            Image(systemName: "xmark.circle.fill")
+                                .font(.system(size: 20, weight: .bold))
+                            Text("Close")
+                                .font(.system(size: 14, weight: .bold))
+                        }
+                        .foregroundColor(.white)
+                        .padding(.leading, 16)
+                        Spacer()
+                    } else {
+                        // Swiping left: show close indicator on the right
+                        Spacer()
+                        HStack(spacing: 6) {
+                            Text("Close")
+                                .font(.system(size: 14, weight: .bold))
+                            Image(systemName: "xmark.circle.fill")
+                                .font(.system(size: 20, weight: .bold))
+                        }
+                        .foregroundColor(.white)
+                        .padding(.trailing, 16)
+                    }
+                }
+            )
+            .opacity(min(1.0, Double(abs(dragOffset.width) / 60.0)))
+    }
+
     private var cardContent: some View {
         VStack(alignment: .leading, spacing: 0) {
-            // Header: Title & Independent Close Button
+            // Header: Title & Dedicated Rename & Close Buttons
             HStack(spacing: 6) {
                 if tab.isIncognito {
                     Image(systemName: "eyeglasses")
@@ -5533,7 +5929,26 @@ public struct BrowserTabCardView: View {
                     .lineLimit(1)
                     .foregroundColor(.primary)
 
+                if tab.customTitle != nil {
+                    Image(systemName: "pencil")
+                        .font(.system(size: 9))
+                        .foregroundColor(.secondary)
+                }
+
                 Spacer(minLength: 4)
+
+                // Dedicated Rename Button
+                if let onRename = onRename {
+                    Button(action: onRename) {
+                        Image(systemName: "pencil")
+                            .font(.system(size: 13))
+                            .foregroundColor(.secondary)
+                            .padding(4)
+                    }
+                    .buttonStyle(.plain)
+                    .contentShape(Rectangle())
+                    .accessibilityLabel("Rename \(tab.displayName)")
+                }
 
                 // Dedicated Close Button with explicit hit target
                 Button {

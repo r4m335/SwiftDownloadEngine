@@ -19,6 +19,8 @@ public struct BrowserTabState: Identifiable, Equatable, Sendable, Codable {
     public var isIncognito: Bool
     public var createdAt: Date
     public var previewUpdatedAt: Date?
+    public var groupID: UUID?
+    public var customTitle: String?
 
     public init(
         id: UUID = UUID(),
@@ -31,7 +33,9 @@ public struct BrowserTabState: Identifiable, Equatable, Sendable, Codable {
         isDesktopMode: Bool = false,
         isIncognito: Bool = false,
         createdAt: Date = Date(),
-        previewUpdatedAt: Date? = nil
+        previewUpdatedAt: Date? = nil,
+        groupID: UUID? = nil,
+        customTitle: String? = nil
     ) {
         self.id = id
         self.url = url
@@ -44,9 +48,14 @@ public struct BrowserTabState: Identifiable, Equatable, Sendable, Codable {
         self.isIncognito = isIncognito
         self.createdAt = createdAt
         self.previewUpdatedAt = previewUpdatedAt
+        self.groupID = groupID
+        self.customTitle = customTitle
     }
 
     public var displayName: String {
+        if let custom = customTitle?.trimmingCharacters(in: .whitespacesAndNewlines), !custom.isEmpty {
+            return custom
+        }
         if !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
            title != "New Tab", title != "Private Tab" {
             return title
@@ -55,6 +64,29 @@ public struct BrowserTabState: Identifiable, Equatable, Sendable, Codable {
             return host
         }
         return isIncognito ? "Private Tab" : "New Tab"
+    }
+}
+
+/// A logical group of browser tabs created by dragging tabs together or via the group menu.
+public struct BrowserTabGroup: Identifiable, Equatable, Sendable, Codable {
+    public let id: UUID
+    public var title: String
+    public var colorName: String
+    public var isCollapsed: Bool
+    public var createdAt: Date
+
+    public init(
+        id: UUID = UUID(),
+        title: String,
+        colorName: String = "blue",
+        isCollapsed: Bool = false,
+        createdAt: Date = Date()
+    ) {
+        self.id = id
+        self.title = title
+        self.colorName = colorName
+        self.isCollapsed = isCollapsed
+        self.createdAt = createdAt
     }
 }
 
@@ -86,15 +118,18 @@ public struct BrowserTabResourceState: Sendable, Equatable {
 /// responsibilities, so closing a tab cannot cancel managed downloads.
 public struct BrowserTabManager: Sendable, Equatable {
     public private(set) var tabs: [BrowserTabState]
+    public private(set) var groups: [BrowserTabGroup]
     public private(set) var activeTabID: UUID?
 
     public init(initialTab: BrowserTabState = BrowserTabState()) {
         self.tabs = [initialTab]
+        self.groups = []
         self.activeTabID = initialTab.id
     }
 
-    public init(tabs: [BrowserTabState], activeTabID: UUID? = nil) {
+    public init(tabs: [BrowserTabState], groups: [BrowserTabGroup] = [], activeTabID: UUID? = nil) {
         self.tabs = tabs.isEmpty ? [BrowserTabState()] : tabs
+        self.groups = groups
         if let activeTabID, self.tabs.contains(where: { $0.id == activeTabID }) {
             self.activeTabID = activeTabID
         } else {
@@ -111,11 +146,13 @@ public struct BrowserTabManager: Sendable, Equatable {
     public mutating func createTab(
         select: Bool = true,
         isIncognito: Bool = false,
-        isDesktopMode: Bool = false
+        isDesktopMode: Bool = false,
+        groupID: UUID? = nil
     ) -> UUID {
         let tab = BrowserTabState(
             isDesktopMode: isDesktopMode,
-            isIncognito: isIncognito
+            isIncognito: isIncognito,
+            groupID: groupID
         )
         tabs.append(tab)
         if select || activeTabID == nil {
@@ -142,13 +179,133 @@ public struct BrowserTabManager: Sendable, Equatable {
         return true
     }
 
+    // MARK: - Tab Renaming
+
+    @discardableResult
+    public mutating func renameTab(_ id: UUID, newTitle: String?) -> Bool {
+        guard let index = tabs.firstIndex(where: { $0.id == id }) else { return false }
+        let trimmed = newTitle?.trimmingCharacters(in: .whitespacesAndNewlines)
+        tabs[index].customTitle = (trimmed?.isEmpty == false) ? trimmed : nil
+        return true
+    }
+
+    // MARK: - Tab Grouping
+
+    @discardableResult
+    public mutating func createGroup(
+        title: String,
+        colorName: String = "blue",
+        tabIDs: [UUID] = []
+    ) -> BrowserTabGroup {
+        let group = BrowserTabGroup(title: title, colorName: colorName)
+        groups.append(group)
+        for tabID in tabIDs {
+            if let idx = tabs.firstIndex(where: { $0.id == tabID }) {
+                tabs[idx].groupID = group.id
+            }
+        }
+        return group
+    }
+
+    @discardableResult
+    public mutating func renameGroup(_ id: UUID, newTitle: String) -> Bool {
+        guard let index = groups.firstIndex(where: { $0.id == id }) else { return false }
+        let trimmed = newTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty {
+            groups[index].title = trimmed
+        }
+        return true
+    }
+
+    public mutating func deleteGroup(_ id: UUID, closeContainedTabs: Bool = false) {
+        if closeContainedTabs {
+            let tabIDsToClose = tabs.filter { $0.groupID == id }.map(\.id)
+            for tabID in tabIDsToClose {
+                _ = closeTab(tabID)
+            }
+        } else {
+            for i in tabs.indices where tabs[i].groupID == id {
+                tabs[i].groupID = nil
+            }
+        }
+        groups.removeAll { $0.id == id }
+    }
+
+    @discardableResult
+    public mutating func addTabToGroup(tabID: UUID, groupID: UUID) -> Bool {
+        guard groups.contains(where: { $0.id == groupID }),
+              let tabIndex = tabs.firstIndex(where: { $0.id == tabID }) else { return false }
+        tabs[tabIndex].groupID = groupID
+        return true
+    }
+
+    @discardableResult
+    public mutating func removeTabFromGroup(tabID: UUID) -> Bool {
+        guard let tabIndex = tabs.firstIndex(where: { $0.id == tabID }) else { return false }
+        let oldGroupID = tabs[tabIndex].groupID
+        tabs[tabIndex].groupID = nil
+        if let oldGroupID {
+            cleanEmptyGroupIfNecessary(oldGroupID)
+        }
+        return true
+    }
+
+    /// Drag and drop tab to group tabs:
+    /// - If targetTab is already in a group, adds sourceTab to that group.
+    /// - If targetTab is not grouped but sourceTab is, adds targetTab to source's group.
+    /// - If neither is grouped, creates a new group containing both tabs.
+    @discardableResult
+    public mutating func groupTabs(sourceTabID: UUID, targetTabID: UUID) -> UUID? {
+        guard sourceTabID != targetTabID,
+              let sourceIndex = tabs.firstIndex(where: { $0.id == sourceTabID }),
+              let targetIndex = tabs.firstIndex(where: { $0.id == targetTabID }) else { return nil }
+
+        let targetTab = tabs[targetIndex]
+        let sourceTab = tabs[sourceIndex]
+
+        if let targetGroupID = targetTab.groupID {
+            tabs[sourceIndex].groupID = targetGroupID
+            return targetGroupID
+        } else if let sourceGroupID = sourceTab.groupID {
+            tabs[targetIndex].groupID = sourceGroupID
+            return sourceGroupID
+        } else {
+            let groupTitle = "\(targetTab.displayName) & \(sourceTab.displayName)"
+            let group = createGroup(title: groupTitle, tabIDs: [targetTabID, sourceTabID])
+            return group.id
+        }
+    }
+
+    public mutating func toggleGroupCollapse(_ groupID: UUID) {
+        guard let index = groups.firstIndex(where: { $0.id == groupID }) else { return }
+        groups[index].isCollapsed.toggle()
+    }
+
+    public func tabsInGroup(_ groupID: UUID) -> [BrowserTabState] {
+        tabs.filter { $0.groupID == groupID }
+    }
+
+    public func ungroupedTabs() -> [BrowserTabState] {
+        tabs.filter { $0.groupID == nil }
+    }
+
+    private mutating func cleanEmptyGroupIfNecessary(_ groupID: UUID) {
+        if !tabs.contains(where: { $0.groupID == groupID }) {
+            groups.removeAll { $0.id == groupID }
+        }
+    }
+
     /// Closes a tab and returns the tab that should become active. The manager
     /// permits zero tabs so the browser can present its home screen naturally.
     @discardableResult
     public mutating func closeTab(_ id: UUID) -> UUID? {
         guard let index = tabs.firstIndex(where: { $0.id == id }) else { return activeTabID }
         let wasActive = activeTabID == id
+        let groupID = tabs[index].groupID
         tabs.remove(at: index)
+        if let groupID {
+            cleanEmptyGroupIfNecessary(groupID)
+        }
         guard wasActive else { return activeTabID }
 
         if tabs.isEmpty {
