@@ -39,12 +39,13 @@ public enum StreamDRMDetector {
         // 2. Advisory fallback only if manifest text is completely unavailable
         if let url = url {
             let lowerURL = url.absoluteString.lowercased()
-            if lowerURL.contains("/fairplay/") || lowerURL.contains("/widevine/") || lowerURL.contains("/playready/") ||
+            if lowerURL.contains("/hls_drm/") || lowerURL.contains("_drm/") || lowerURL.contains("/drm/") || lowerURL.contains("drm.m3u8") || lowerURL.contains("_drm.") ||
+               lowerURL.contains("/fairplay/") || lowerURL.contains("/widevine/") || lowerURL.contains("/playready/") ||
                lowerURL.contains("/drm_fairplay/") || lowerURL.contains("/drm_widevine/") {
                 return DRMResult(
                     isProtected: true,
                     protectionType: "DRM",
-                    reason: "Media URL path specifies DRM system (\(url.lastPathComponent))"
+                    reason: "Media URL path explicitly indicates DRM protection (\(url.lastPathComponent))"
                 )
             }
         }
@@ -88,14 +89,6 @@ public enum StreamDRMDetector {
                         isProtected: true,
                         protectionType: "PlayReady",
                         reason: "Microsoft PlayReady DRM key format detected"
-                    )
-                }
-
-                if upper.contains("METHOD=SAMPLE-AES") || upper.contains("METHOD=SAMPLE-AES-CTR") || upper.contains("METHOD=SAMPLE-AES-CENC") {
-                    return DRMResult(
-                        isProtected: true,
-                        protectionType: "Sample-AES",
-                        reason: "HLS Sample-AES DRM encryption detected"
                     )
                 }
 
