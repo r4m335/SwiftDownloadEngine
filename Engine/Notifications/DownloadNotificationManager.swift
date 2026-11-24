@@ -344,6 +344,19 @@ public enum DownloadNotificationManager: @unchecked Sendable {
 
     public static weak var actionDelegate: DownloadNotificationActionDelegate? = nil
 
+    public static var isUserNotificationsAvailable: Bool {
+        #if canImport(UserNotifications)
+        if transport is MockNotificationCenterTransport {
+            return true
+        }
+        return Bundle.main.bundleIdentifier != nil &&
+               NSClassFromString("XCTest") == nil &&
+               !Bundle.main.bundlePath.contains("Developer/usr/bin")
+        #else
+        return false
+        #endif
+    }
+
     private static var persistenceFileURL: URL? {
         if let custom = customPersistenceFileURL {
             return custom
@@ -428,6 +441,7 @@ public enum DownloadNotificationManager: @unchecked Sendable {
             return false
         }
         #if canImport(UserNotifications)
+        guard isUserNotificationsAvailable else { return true }
         do {
             let granted = try await transport.requestAuthorization(options: [.alert, .sound, .badge])
             if granted {
@@ -447,6 +461,7 @@ public enum DownloadNotificationManager: @unchecked Sendable {
 
     public static func registerNotificationCategories() async {
         #if canImport(UserNotifications)
+        guard isUserNotificationsAvailable else { return }
         let openAction = UNNotificationAction(
             identifier: DownloadNotificationAction.open,
             title: "Open",
@@ -599,6 +614,7 @@ public enum DownloadNotificationManager: @unchecked Sendable {
         lock.unlock()
 
         #if canImport(UserNotifications)
+        guard isUserNotificationsAvailable else { return }
         let content = UNMutableNotificationContent()
         content.title = filename
         let percent = Int(progress * 100)
@@ -785,6 +801,7 @@ public enum DownloadNotificationManager: @unchecked Sendable {
         )
 
         #if canImport(UserNotifications)
+        guard isUserNotificationsAvailable else { return }
         let content = UNMutableNotificationContent()
         content.title = "Download Failed"
         content.body = "\(filename): \(error)"
@@ -847,6 +864,7 @@ public enum DownloadNotificationManager: @unchecked Sendable {
         )
 
         #if canImport(UserNotifications)
+        guard isUserNotificationsAvailable else { return }
         let content = UNMutableNotificationContent()
         content.title = "Download Complete"
         content.body = filename
@@ -926,6 +944,7 @@ public enum DownloadNotificationManager: @unchecked Sendable {
         )
 
         #if canImport(UserNotifications)
+        guard isUserNotificationsAvailable else { return }
         let content = UNMutableNotificationContent()
         content.title = "Torrent Complete"
         content.body = name
@@ -965,6 +984,7 @@ public enum DownloadNotificationManager: @unchecked Sendable {
         )
 
         #if canImport(UserNotifications)
+        guard isUserNotificationsAvailable else { return }
         let content = UNMutableNotificationContent()
         content.title = "Seeding Finished"
         content.body = "\(name): \(reason)"
@@ -1005,6 +1025,7 @@ public enum DownloadNotificationManager: @unchecked Sendable {
         )
 
         #if canImport(UserNotifications)
+        guard isUserNotificationsAvailable else { return }
         let content = UNMutableNotificationContent()
         content.title = "Torrent Error"
         content.body = "\(name): \(error)"
@@ -1034,6 +1055,7 @@ public enum DownloadNotificationManager: @unchecked Sendable {
         )
 
         #if canImport(UserNotifications)
+        guard isUserNotificationsAvailable else { return }
         let content = UNMutableNotificationContent()
         content.title = "Disk Space Critical"
         let availStr = ByteCountFormatter.string(fromByteCount: availableBytes, countStyle: .file)
@@ -1074,6 +1096,7 @@ public enum DownloadNotificationManager: @unchecked Sendable {
         )
 
         #if canImport(UserNotifications)
+        guard isUserNotificationsAvailable else { return }
         let content = UNMutableNotificationContent()
         content.title = "Live Recording Started"
         content.body = title
@@ -1099,6 +1122,7 @@ public enum DownloadNotificationManager: @unchecked Sendable {
         )
 
         #if canImport(UserNotifications)
+        guard isUserNotificationsAvailable else { return }
         let content = UNMutableNotificationContent()
         content.title = "Live Recording Interrupted"
         content.body = "\(title): \(reason)"
@@ -1120,6 +1144,7 @@ public enum DownloadNotificationManager: @unchecked Sendable {
         )
 
         #if canImport(UserNotifications)
+        guard isUserNotificationsAvailable else { return }
         let content = UNMutableNotificationContent()
         content.title = "Live Recording Resumed"
         content.body = "Recovered recording for \(title)"
@@ -1158,6 +1183,7 @@ public enum DownloadNotificationManager: @unchecked Sendable {
         )
 
         #if canImport(UserNotifications)
+        guard isUserNotificationsAvailable else { return }
         let content = UNMutableNotificationContent()
         content.title = "Recording Complete"
         let durStr = formatETA(duration)
