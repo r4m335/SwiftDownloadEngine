@@ -79,7 +79,8 @@ final class BackgroundDownloads10OutOf10Tests: XCTestCase {
 
         // Register running transfer
         try await orchestrator.resume(transferID: parentID)
-        XCTAssertTrue(await orchestrator.isManaging(id: parentID))
+        let isManaging = await orchestrator.isManaging(id: parentID)
+        XCTAssertTrue(isManaging)
 
         // Execute handoff to background
         await orchestrator.handoffActiveStreamingToBackground()
@@ -167,7 +168,8 @@ final class BackgroundDownloads10OutOf10Tests: XCTestCase {
 
         // 2. Resume then test pauseAll()
         try await orchestrator.resume(transferID: parentID)
-        XCTAssertFalse(await orchestrator.isPaused(transferID: parentID))
+        let isPaused1AfterResume = await orchestrator.isPaused(transferID: parentID)
+        XCTAssertFalse(isPaused1AfterResume)
 
         await orchestrator.pauseAll()
         let isPaused2 = await orchestrator.isPaused(transferID: parentID)
@@ -455,8 +457,7 @@ private actor MockManifestLoader: StreamingManifestLoader {
         return StreamingManifestResponse(
             data: data,
             finalURL: finalURL,
-            mimeType: "application/vnd.apple.mpegurl",
-            headers: [:]
+            mimeType: "application/vnd.apple.mpegurl"
         )
     }
 }
