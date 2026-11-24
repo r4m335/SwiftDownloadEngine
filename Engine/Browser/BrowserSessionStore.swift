@@ -76,6 +76,10 @@ public final class BrowserSessionStore {
         }
     }
 
+    public convenience init(directory: URL) {
+        self.init(fileURL: directory.appendingPathComponent("lid_browser_session.json"))
+    }
+
     /// Persists the active tabs to disk, strictly filtering out any incognito/ephemeral tabs.
     /// Rotates the previous valid session to a backup file to guarantee zero data loss.
     public func saveSession(tabs: [BrowserTabState], groups: [BrowserTabGroup] = [], activeTabID: UUID?) {

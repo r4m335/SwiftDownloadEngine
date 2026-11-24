@@ -196,7 +196,8 @@ final class BrowserTabGroupingAndRenameTests: XCTestCase {
         try? FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
-        let store = BrowserSessionStore(directory: tempDir)
+        let sessionFile = tempDir.appendingPathComponent("session.json")
+        let store = BrowserSessionStore(fileURL: sessionFile)
 
         var tab1 = BrowserTabState(url: URL(string: "https://apple.com"), title: "Apple", customTitle: "Cupertino")
         let group = BrowserTabGroup(title: "Tech Giants", colorName: "blue")
