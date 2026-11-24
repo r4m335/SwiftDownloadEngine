@@ -62,11 +62,11 @@ public enum DownloadFilter: String, CaseIterable, Sendable, Identifiable {
 
 /// Real-time aggregate count summary for download statuses across all unified transfers (HTTP & BitTorrent).
 public struct DownloadStatusCounts: Equatable, Sendable {
-    public let all: Int
-    public let active: Int
-    public let paused: Int
-    public let completed: Int
-    public let failed: Int
+    public var all: Int
+    public var active: Int
+    public var paused: Int
+    public var completed: Int
+    public var failed: Int
     public var liveRecordings: Int
     public var torrents: Int
     public var http: Int
