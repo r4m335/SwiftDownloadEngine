@@ -508,7 +508,7 @@ public final class LiveStreamRecorder: ObservableObject {
                     let bytes = try await downloadAndProcessSegment(
                         url: seg.uri,
                         byteRange: seg.byteRange,
-                        encryption: seg.encryption ?? manifest.encryption,
+                        encryption: seg.encryption,
                         sequenceNumber: seg.sequenceNumber,
                         destination: localURL,
                         requestContext: request.requestContext
@@ -865,9 +865,9 @@ public final class LiveStreamRecorder: ObservableObject {
 
         var detectedContainer: DetectedFileType? = nil
         if let firstInit = initializationSegments.first(where: { FileManager.default.fileExists(atPath: $0.path) }) {
-            detectedContainer = FileTypeDetector.detect(fileAt: firstInit)
+            detectedContainer = FileTypeDetector.detect(at: firstInit)
         } else if let firstSeg = segments.first(where: { FileManager.default.fileExists(atPath: $0.localFileURL.path) }) {
-            detectedContainer = FileTypeDetector.detect(fileAt: firstSeg.localFileURL)
+            detectedContainer = FileTypeDetector.detect(at: firstSeg.localFileURL)
         }
 
         let isMPEGTS = (detectedContainer == .mpegTS)

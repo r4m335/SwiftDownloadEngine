@@ -114,7 +114,7 @@ final class LiveStreamsAndDRM10OutOf10Tests: XCTestCase {
         let result = StreamDRMDetector.evaluate(manifestText: manifestText, url: clearWithDRMPath)
 
         XCTAssertFalse(result.isProtected, "Clear manifest must not be flagged as DRM just because URL contains '/drm/'")
-        XCTAssertEqual(result.scheme, .none)
+        XCTAssertNil(result.protectionType)
         XCTAssertFalse(result.isAES128Encrypted)
 
         let fairPlayURL = URL(string: "https://cdn.example.com/fairplay/preview/master.m3u8")!
@@ -127,7 +127,7 @@ final class LiveStreamsAndDRM10OutOf10Tests: XCTestCase {
         let drmURL = URL(string: "https://example.com/drm/secure.m3u8")!
         let result = StreamDRMDetector.evaluate(manifestText: emptyText, url: drmURL)
         XCTAssertTrue(result.isProtected, "Empty manifest text falls back to advisory URL heuristic")
-        XCTAssertEqual(result.scheme, .genericDRM)
+        XCTAssertEqual(result.protectionType, "DRM")
 
         let clearURL = URL(string: "https://example.com/video/stream.m3u8")!
         let resultClear = StreamDRMDetector.evaluate(manifestText: emptyText, url: clearURL)
@@ -146,7 +146,7 @@ final class LiveStreamsAndDRM10OutOf10Tests: XCTestCase {
         """
         let fpResult = StreamDRMDetector.evaluate(manifestText: fairplayHLS, url: URL(string: "https://example.com/live.m3u8")!)
         XCTAssertTrue(fpResult.isProtected)
-        XCTAssertEqual(fpResult.scheme, .fairplay)
+        XCTAssertEqual(fpResult.protectionType, "FairPlay")
         XCTAssertFalse(fpResult.isAES128Encrypted)
 
         let widevineDASH = """
@@ -161,7 +161,7 @@ final class LiveStreamsAndDRM10OutOf10Tests: XCTestCase {
         """
         let wvResult = StreamDRMDetector.evaluate(manifestText: widevineDASH, url: URL(string: "https://example.com/manifest.mpd")!)
         XCTAssertTrue(wvResult.isProtected)
-        XCTAssertEqual(wvResult.scheme, .widevine)
+        XCTAssertEqual(wvResult.protectionType, "Widevine")
 
         let playReadyDASH = """
         <MPD xmlns="urn:mpeg:dash:schema:mpd:2011">
@@ -175,7 +175,7 @@ final class LiveStreamsAndDRM10OutOf10Tests: XCTestCase {
         """
         let prResult = StreamDRMDetector.evaluate(manifestText: playReadyDASH, url: URL(string: "https://example.com/manifest.mpd")!)
         XCTAssertTrue(prResult.isProtected)
-        XCTAssertEqual(prResult.scheme, .playready)
+        XCTAssertEqual(prResult.protectionType, "PlayReady")
 
         let aes128HLS = """
         #EXTM3U
@@ -186,6 +186,7 @@ final class LiveStreamsAndDRM10OutOf10Tests: XCTestCase {
         let aesResult = StreamDRMDetector.evaluate(manifestText: aes128HLS, url: URL(string: "https://example.com/live.m3u8")!)
         XCTAssertFalse(aesResult.isProtected, "Standard clear AES-128 identity encryption is not proprietary DRM")
         XCTAssertTrue(aesResult.isAES128Encrypted)
+        XCTAssertEqual(aesResult.protectionType, "AES-128")
     }
 
     // MARK: - Gap 1: Failed Segment Retry Without Skipping
