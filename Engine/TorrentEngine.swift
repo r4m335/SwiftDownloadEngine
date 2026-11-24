@@ -776,7 +776,12 @@ public actor TorrentEngine {
                     let totalDownloaded = max(1, bridgeStatus.allTimeDownload > 0 ? bridgeStatus.allTimeDownload : bridgeStatus.totalDone)
                     let elapsed = rec.seedingStartedAt.map { max(0, Date().timeIntervalSince($0)) } ?? 0
 
-                    if rec.isSeedingComplete || await sched.shouldStopSeeding(infoHash: key, totalUploaded: totalUploaded, totalDownloaded: totalDownloaded, elapsedSeedingSeconds: elapsed) {
+                    var shouldStop = rec.isSeedingComplete
+                    if !shouldStop {
+                        shouldStop = await sched.shouldStopSeeding(infoHash: key, totalUploaded: totalUploaded, totalDownloaded: totalDownloaded, elapsedSeedingSeconds: elapsed)
+                    }
+
+                    if shouldStop {
                         try? bridge.pauseTorrent(withHash: key)
                         try? await sched.markSeedingComplete(infoHash: key)
                         t.state = .finished
@@ -821,7 +826,12 @@ public actor TorrentEngine {
                         let totalDownloaded = max(1, task.progress.totalBytes)
                         let elapsed = rec.seedingStartedAt.map { max(0, Date().timeIntervalSince($0)) } ?? 0
 
-                        if rec.isSeedingComplete || await sched.shouldStopSeeding(infoHash: key, totalUploaded: totalUploaded, totalDownloaded: totalDownloaded, elapsedSeedingSeconds: elapsed) {
+                        var shouldStop = rec.isSeedingComplete
+                        if !shouldStop {
+                            shouldStop = await sched.shouldStopSeeding(infoHash: key, totalUploaded: totalUploaded, totalDownloaded: totalDownloaded, elapsedSeedingSeconds: elapsed)
+                        }
+
+                        if shouldStop {
                             try? bridge.pauseTorrent(withHash: key)
                             try? await sched.markSeedingComplete(infoHash: key)
                             task.state = .finished
@@ -1212,13 +1222,13 @@ public actor TorrentEngine {
                 state: state,
                 createdAt: record.createdAt,
                 infoHash: record.infoHash,
+                infoHashV1: record.infoHashV1,
+                infoHashV2: record.infoHashV2,
                 priority: record.priority,
                 isExplicitlyPaused: record.isExplicitlyPaused,
                 isSequentialDownload: record.isSequentialDownload,
                 filePriorities: record.filePriorities,
                 seedingPreference: record.seedingPreference,
-                infoHashV1: record.infoHashV1,
-                infoHashV2: record.infoHashV2,
                 downloadLimit: _torrentDownloadLimits[record.infoHash.lowercased()] ?? 0,
                 uploadLimit: _torrentUploadLimits[record.infoHash.lowercased()] ?? 0,
                 isSeedingComplete: record.isSeedingComplete
@@ -1296,11 +1306,11 @@ public actor TorrentEngine {
             state: record.state,
             createdAt: record.createdAt,
             infoHash: record.infoHash,
+            infoHashV1: hashes.v1,
+            infoHashV2: hashes.v2,
             priority: record.priority,
             isExplicitlyPaused: record.isExplicitlyPaused,
-            isSequentialDownload: isSequential,
-            infoHashV1: hashes.v1,
-            infoHashV2: hashes.v2
+            isSequentialDownload: isSequential
         )
         tasks[infoHash.lowercased()] = task
         return task
@@ -1491,7 +1501,12 @@ public actor TorrentEngine {
                 let totalDownloaded = max(1, task.progress.totalBytes)
                 let elapsed = rec.seedingStartedAt.map { max(0, Date().timeIntervalSince($0)) } ?? 0
 
-                if rec.isSeedingComplete || await scheduler?.shouldStopSeeding(infoHash: hash, totalUploaded: totalUploaded, totalDownloaded: totalDownloaded, elapsedSeedingSeconds: elapsed) == true {
+                var shouldStop = rec.isSeedingComplete
+                if !shouldStop, let sched = scheduler {
+                    shouldStop = await sched.shouldStopSeeding(infoHash: hash, totalUploaded: totalUploaded, totalDownloaded: totalDownloaded, elapsedSeedingSeconds: elapsed)
+                }
+
+                if shouldStop {
                     try? await scheduler?.markSeedingComplete(infoHash: hash)
                     task.state = .finished
                     task.isSeedingComplete = true
@@ -1704,7 +1719,12 @@ public actor TorrentEngine {
                     let totalDownloaded = max(1, t.progress.totalBytes)
                     let elapsed = rec.seedingStartedAt.map { max(0, Date().timeIntervalSince($0)) } ?? 0
 
-                    if rec.isSeedingComplete || await scheduler?.shouldStopSeeding(infoHash: hash, totalUploaded: totalUploaded, totalDownloaded: totalDownloaded, elapsedSeedingSeconds: elapsed) == true {
+                    var shouldStop = rec.isSeedingComplete
+                    if !shouldStop, let sched = scheduler {
+                        shouldStop = await sched.shouldStopSeeding(infoHash: hash, totalUploaded: totalUploaded, totalDownloaded: totalDownloaded, elapsedSeedingSeconds: elapsed)
+                    }
+
+                    if shouldStop {
                         try? await scheduler?.markSeedingComplete(infoHash: hash)
                         t.state = .finished
                         t.isSeedingComplete = true
