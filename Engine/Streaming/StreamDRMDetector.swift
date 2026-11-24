@@ -148,4 +148,3 @@ public enum StreamDRMDetector {
         return .clear
     }
 }
-}
