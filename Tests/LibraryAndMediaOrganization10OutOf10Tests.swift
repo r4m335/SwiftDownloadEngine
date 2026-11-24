@@ -136,7 +136,7 @@ final class LibraryAndMediaOrganization10OutOf10Tests: XCTestCase {
         }
 
         XCTAssertEqual(counts.count(for: .paused), 1)
-        XCTAssertEqual(counts.count(for: .completed), 3) // completedTransfer, torrentTransfer (seeding), archivedTransfer
+        XCTAssertEqual(counts.count(for: .completed), 2) // completedTransfer, archivedTransfer
         XCTAssertEqual(counts.count(for: .torrents), 1)
         XCTAssertEqual(counts.count(for: .hls), 1)
         XCTAssertEqual(counts.count(for: .dash), 1)
