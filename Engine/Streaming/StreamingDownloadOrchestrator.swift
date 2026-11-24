@@ -770,28 +770,37 @@ public actor URLSessionStreamingSegmentExecutor: StreamingSegmentExecutor {
     public static let sharedSession: URLSession = ForegroundURLSession.make()
 
     private let session: URLSession
+    private let taskLock = NSLock()
     private var activeTasks: [String: Set<URLSessionDownloadTask>] = [:]
 
     public init(session: URLSession? = nil) {
         self.session = session ?? Self.sharedSession
     }
 
-    private func registerActiveTask(transferID: String, task: URLSessionDownloadTask) {
+    private nonisolated func registerActiveTask(transferID: String, task: URLSessionDownloadTask) {
+        taskLock.lock()
+        defer { taskLock.unlock() }
         activeTasks[transferID, default: []].insert(task)
     }
 
-    private func unregisterActiveTask(transferID: String, task: URLSessionDownloadTask) {
+    private nonisolated func unregisterActiveTask(transferID: String, task: URLSessionDownloadTask) {
+        taskLock.lock()
+        defer { taskLock.unlock() }
         activeTasks[transferID]?.remove(task)
         if activeTasks[transferID]?.isEmpty == true {
             activeTasks.removeValue(forKey: transferID)
         }
     }
 
-    private func takeActiveTasks(for transferID: String) -> Set<URLSessionDownloadTask> {
+    private nonisolated func takeActiveTasks(for transferID: String) -> Set<URLSessionDownloadTask> {
+        taskLock.lock()
+        defer { taskLock.unlock() }
         return activeTasks.removeValue(forKey: transferID) ?? []
     }
 
-    public func hasActiveTasks(for transferID: String) -> Bool {
+    public nonisolated func hasActiveTasks(for transferID: String) -> Bool {
+        taskLock.lock()
+        defer { taskLock.unlock() }
         return !(activeTasks[transferID]?.isEmpty ?? true)
     }
 
@@ -818,10 +827,8 @@ public actor URLSessionStreamingSegmentExecutor: StreamingSegmentExecutor {
                     let transferID = request.identity.transferID
                     var taskRef: URLSessionDownloadTask?
                     let task = self.session.downloadTask(with: urlRequest) { [weak self] tempURL, response, error in
-                        if let self, let taskRef {
-                            Task { [weak self] in
-                                await self?.unregisterActiveTask(transferID: transferID, task: taskRef)
-                            }
+                        if let taskRef {
+                            self?.unregisterActiveTask(transferID: transferID, task: taskRef)
                         }
                         if let error = error {
                             continuation.resume(throwing: error)
@@ -1418,7 +1425,7 @@ public actor StreamingDownloadOrchestrator {
             }
         }
         if !newlyCompleted.isEmpty {
-            _ = try? await persistence.updateCompletedSegmentOrders(id: transferID, completedOrders: newlyCompleted)
+            _ = try? await persistence.updateCompletedSegmentOrders(id: transferID, completedOrders: Array(newlyCompleted))
         }
     }
 
