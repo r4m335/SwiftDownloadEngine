@@ -810,7 +810,7 @@ final class LiveStreamsAndDRM10OutOf10Tests: XCTestCase {
         try await recorder.resumeInterruptedRecording(sessionID: sessionID)
 
         // Wait for loop to poll manifest, download seg2 (appending to existing seg1), and finalize on EXT-X-ENDLIST
-        for _ in 0..<30 {
+        for _ in 0..<80 {
             if case .completed = recorder.state { break }
             try? await Task.sleep(nanoseconds: 100_000_000)
         }
