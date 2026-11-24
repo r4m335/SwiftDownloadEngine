@@ -1259,7 +1259,7 @@ public struct ResourceRowView: View {
                         // Line 2: Size & Quality Specifications
                         HStack(spacing: 6) {
                             Text(displayFileSize)
-                                .font(.caption.weight(.medium))
+                                .font(.caption.monospacedDigit().weight(.medium))
                                 .foregroundColor(.secondary)
 
                             if let variant = variantItem {
@@ -1464,6 +1464,9 @@ public struct ResourceRowView: View {
             HStack(spacing: 10) {
                 if isPlayable && !resource.isDRMProtected && candidate?.kind != .protectedMedia {
                     Button {
+                        #if canImport(UIKit)
+                        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                        #endif
                         onPreview?()
                     } label: {
                         Image(systemName: "play.circle.fill")
@@ -1484,7 +1487,12 @@ public struct ResourceRowView: View {
                     .buttonStyle(BorderlessButtonStyle())
                 }
 
-                Button(action: onSelect) {
+                Button {
+                    #if canImport(UIKit)
+                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                    #endif
+                    onSelect()
+                } label: {
                     Image(systemName: "chevron.right")
                         .font(.caption2.weight(.semibold))
                         .foregroundColor(.secondary.opacity(0.6))

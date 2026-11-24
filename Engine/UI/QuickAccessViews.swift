@@ -20,17 +20,14 @@ public struct QuickAccessShortcutIconView: View {
 
     public var body: some View {
         ZStack {
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                #if canImport(UIKit)
-                .fill(Color(UIColor.secondarySystemBackground))
-                #else
-                .fill(Color.secondary.opacity(0.15))
-                #endif
+            RoundedRectangle(cornerRadius: 15, style: .continuous)
+                .fill(.regularMaterial)
                 .frame(width: size, height: size)
                 .overlay(
-                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    RoundedRectangle(cornerRadius: 15, style: .continuous)
                         .stroke(Color.primary.opacity(0.08), lineWidth: 1)
                 )
+                .shadow(color: .black.opacity(0.06), radius: 5, x: 0, y: 2)
 
             if let data = iconData,
                let platformImage = makeImage(from: data) {
@@ -197,16 +194,12 @@ public struct QuickAccessAddButtonCell: View {
         Button(action: action) {
             VStack(spacing: 6) {
                 ZStack {
-                    RoundedRectangle(cornerRadius: 14, style: .continuous)
-                        #if canImport(UIKit)
-                        .fill(Color(UIColor.tertiarySystemFill))
-                        #else
-                        .fill(Color.secondary.opacity(0.1))
-                        #endif
+                    RoundedRectangle(cornerRadius: 15, style: .continuous)
+                        .fill(.ultraThinMaterial)
                         .frame(width: 56, height: 56)
                         .overlay(
-                            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                                .stroke(Color.primary.opacity(0.12), style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
+                            RoundedRectangle(cornerRadius: 15, style: .continuous)
+                                .stroke(Color.blue.opacity(0.28), style: StrokeStyle(lineWidth: 1.2, dash: [4, 3]))
                         )
 
                     Image(systemName: "plus")

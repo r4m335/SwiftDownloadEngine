@@ -5318,21 +5318,32 @@ public struct BrowserHomeView: View {
         ScrollView {
             VStack(spacing: 24) {
                 // Hero Branding Card
-                VStack(spacing: 8) {
+                VStack(spacing: 10) {
                     ZStack {
                         Circle()
-                            .fill(Color.blue.opacity(0.15))
-                            .frame(width: 72, height: 72)
+                            .fill(
+                                LinearGradient(
+                                    colors: [Color.blue.opacity(0.22), Color.indigo.opacity(0.14)],
+                                    startPoint: .topLeading,
+                                    endPoint: .bottomTrailing
+                                )
+                            )
+                            .frame(width: 78, height: 78)
+                            .overlay(
+                                Circle()
+                                    .stroke(Color.blue.opacity(0.2), lineWidth: 1)
+                            )
+                            .shadow(color: .blue.opacity(0.15), radius: 10, x: 0, y: 4)
                         Image(systemName: "globe")
                             .font(.system(size: 36, weight: .semibold))
                             .foregroundColor(.blue)
                     }
-                    .padding(.top, 16)
+                    .padding(.top, 18)
 
                     Text("LID In-App Browser")
                         .font(.title2.weight(.bold))
 
-                    Text("Browse the web, inspect links, and send downloads directly to the high-performance multi-threaded download engine.")
+                    Text("Browse privately, auto-detect media streams, and route transfers directly to the multi-threaded engine.")
                         .font(.subheadline)
                         .foregroundColor(.secondary)
                         .multilineTextAlignment(.center)
@@ -5358,13 +5369,9 @@ public struct BrowserHomeView: View {
                             .font(.caption.weight(.semibold))
                             .foregroundColor(.blue)
                             .padding(.horizontal, 10)
-                            .padding(.vertical, 4)
-                            #if canImport(UIKit)
-                            .background(Color(UIColor.secondarySystemBackground))
-                            #else
-                            .background(Color.secondary.opacity(0.12))
-                            #endif
-                            .cornerRadius(12)
+                            .padding(.vertical, 5)
+                            .background(.ultraThinMaterial, in: Capsule())
+                            .overlay(Capsule().stroke(Color.blue.opacity(0.2), lineWidth: 1))
                         }
                         .buttonStyle(.plain)
                     }
@@ -5403,26 +5410,42 @@ public struct BrowserHomeView: View {
                     .padding(.horizontal, 16)
                 }
 
-                // Architectural Invariant Card
+                // Integrated Engine & Privacy Shield Card
                 HStack(alignment: .top, spacing: 12) {
-                    Image(systemName: "bolt.shield.fill")
-                        .font(.system(size: 24))
-                        .foregroundColor(.green)
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .fill(viewModel.isAdBlockerEnabled ? Color.green.opacity(0.15) : Color.secondary.opacity(0.15))
+                            .frame(width: 38, height: 38)
+                        Image(systemName: viewModel.isAdBlockerEnabled ? "bolt.shield.fill" : "shield.slash")
+                            .font(.system(size: 19, weight: .semibold))
+                            .foregroundColor(viewModel.isAdBlockerEnabled ? .green : .secondary)
+                    }
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("Integrated Transfer Engine")
-                            .font(.subheadline.weight(.bold))
-                        Text("Downloads initiated from this browser automatically reuse the established priority queue, segmented range writer, and persistent checkpoint storage.")
+                        HStack(spacing: 6) {
+                            Text("Integrated Transfer Engine")
+                                .font(.subheadline.weight(.bold))
+                            if viewModel.isAdBlockerEnabled {
+                                Text("Shields On")
+                                    .font(.system(size: 9, weight: .bold))
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 2)
+                                    .background(Color.green.opacity(0.16))
+                                    .foregroundColor(.green)
+                                    .clipShape(Capsule())
+                            }
+                        }
+                        Text("Downloads initiated from this browser automatically inherit cookies, referer headers, segmented range writing, and background recovery.")
                             .font(.caption)
                             .foregroundColor(.secondary)
                     }
                 }
                 .padding(14)
-                #if canImport(UIKit)
-                .background(Color(UIColor.secondarySystemBackground))
-                #else
-                .background(Color.secondary.opacity(0.15))
-                #endif
-                .cornerRadius(12)
+                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .stroke(Color.primary.opacity(0.06), lineWidth: 1)
+                )
+                .shadow(color: .black.opacity(0.04), radius: 5, x: 0, y: 2)
                 .padding(.horizontal, 16)
                 .padding(.bottom, 24)
             }
