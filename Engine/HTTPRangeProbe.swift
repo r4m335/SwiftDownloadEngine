@@ -185,6 +185,10 @@ final class HTTPRangeProbe: Sendable {
 
     /// Executes the server capability probe.
     func probe(configuration: HTTPRangeProbeConfiguration) async throws -> HTTPRangeProbeResult {
+        if Task.isCancelled {
+            throw CancellationError()
+        }
+
         switch DownloadURLPolicy.classify(configuration.url) {
         case .directHTTP:
             break
@@ -222,6 +226,9 @@ final class HTTPRangeProbe: Sendable {
 
         let response: URLResponse
         do {
+            if Task.isCancelled {
+                throw CancellationError()
+            }
             // URLSession.bytes connects and returns headers immediately.
             // Bounded probe: consume at most 1 byte if available and explicitly cancel the underlying task
             // so no connection, socket, or background stream is leaked.

@@ -41,6 +41,7 @@ final class PauseResumeAndRecoveryTests: XCTestCase {
     }
 
     override func tearDown() async throws {
+        await coordinator?.cancelAll()
         server?.stop()
         server = nil
         coordinator = nil

@@ -601,6 +601,28 @@ public final class LIDPlaybackEngine: NSObject, ObservableObject, LIDMediaEngine
     }
 
     @MainActor
+    public func selectQualityOption(_ option: StreamQualityOption?) {
+        trackManager.selectQualityOption(option)
+        #if canImport(AVFoundation)
+        if let option = option {
+            if let item = avBackend.playerItem {
+                if option.bandwidth > 0 {
+                    item.preferredPeakBitRate = Double(option.bandwidth)
+                }
+                if let res = option.resolution {
+                    item.preferredMaximumResolution = CGSize(width: res.width, height: res.height)
+                }
+            }
+        } else {
+            if let item = avBackend.playerItem {
+                item.preferredPeakBitRate = 0
+                item.preferredMaximumResolution = .zero
+            }
+        }
+        #endif
+    }
+
+    @MainActor
     public func addExternalSubtitle(url: URL, displayName: String? = nil, autoSelect: Bool = true) {
         trackManager.addExternalSubtitle(url: url, displayName: displayName, autoSelect: autoSelect)
         activeBackend.addExternalSubtitle(url: url)

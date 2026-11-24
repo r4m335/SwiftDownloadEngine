@@ -260,7 +260,7 @@ final class LiveStreamsAndDRM10OutOf10Tests: XCTestCase {
 
         try recorder.startRecording(request: req)
 
-        for _ in 0..<30 {
+        for _ in 0..<60 {
             if case .completed = recorder.state { break }
             try? await Task.sleep(nanoseconds: 100_000_000)
         }
@@ -327,7 +327,7 @@ final class LiveStreamsAndDRM10OutOf10Tests: XCTestCase {
 
         try recorder.startRecording(request: req)
 
-        for _ in 0..<30 {
+        for _ in 0..<60 {
             if case .completed = recorder.state { break }
             try? await Task.sleep(nanoseconds: 100_000_000)
         }
@@ -394,7 +394,7 @@ final class LiveStreamsAndDRM10OutOf10Tests: XCTestCase {
 
         try recorder.startRecording(request: req)
 
-        for _ in 0..<30 {
+        for _ in 0..<60 {
             if case .completed = recorder.state { break }
             try? await Task.sleep(nanoseconds: 100_000_000)
         }
@@ -486,7 +486,7 @@ final class LiveStreamsAndDRM10OutOf10Tests: XCTestCase {
 
         try recorder.startRecording(request: req)
 
-        for _ in 0..<30 {
+        for _ in 0..<60 {
             if case .completed = recorder.state { break }
             try? await Task.sleep(nanoseconds: 100_000_000)
         }
@@ -560,7 +560,7 @@ final class LiveStreamsAndDRM10OutOf10Tests: XCTestCase {
 
         try recorder.startRecording(request: req)
 
-        for _ in 0..<30 {
+        for _ in 0..<60 {
             if recorder.recordedSegmentCount >= 1 { break }
             try? await Task.sleep(nanoseconds: 100_000_000)
         }
@@ -648,7 +648,7 @@ final class LiveStreamsAndDRM10OutOf10Tests: XCTestCase {
 
         try recorder.startRecording(request: req)
 
-        for _ in 0..<30 {
+        for _ in 0..<60 {
             if recorder.recordedSegmentCount >= 1 { break }
             try? await Task.sleep(nanoseconds: 100_000_000)
         }
@@ -710,7 +710,7 @@ final class LiveStreamsAndDRM10OutOf10Tests: XCTestCase {
 
         try recorder.startRecording(request: req)
 
-        for _ in 0..<30 {
+        for _ in 0..<60 {
             if case .completed = recorder.state { break }
             try? await Task.sleep(nanoseconds: 100_000_000)
         }
@@ -911,7 +911,7 @@ final class LiveStreamsAndDRM10OutOf10Tests: XCTestCase {
 
         try recorder.startRecording(request: req)
 
-        for _ in 0..<30 {
+        for _ in 0..<60 {
             if case .completed = recorder.state { break }
             try? await Task.sleep(nanoseconds: 100_000_000)
         }

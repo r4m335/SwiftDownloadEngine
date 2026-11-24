@@ -1242,6 +1242,47 @@ public struct LIDPlayerView: View {
         NavigationView {
             List {
                 // Audio Tracks Section
+                // Video Quality Section
+                if !engine.trackManager.availableQualityOptions.isEmpty {
+                    Section(header: Text("Video Quality")) {
+                        Button {
+                            engine.selectQualityOption(nil)
+                        } label: {
+                            HStack {
+                                Text("Auto")
+                                    .foregroundColor(.primary)
+                                Spacer()
+                                if engine.trackManager.selectedQualityOption == nil {
+                                    Image(systemName: "checkmark")
+                                        .foregroundColor(.blue)
+                                }
+                            }
+                        }
+                        ForEach(engine.trackManager.availableQualityOptions) { option in
+                            Button {
+                                engine.selectQualityOption(option)
+                            } label: {
+                                HStack {
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(option.label)
+                                            .foregroundColor(.primary)
+                                        if !option.bitrateText.isEmpty {
+                                            Text(option.bitrateText)
+                                                .font(.caption)
+                                                .foregroundColor(.secondary)
+                                        }
+                                    }
+                                    Spacer()
+                                    if engine.trackManager.selectedQualityOption?.id == option.id {
+                                        Image(systemName: "checkmark")
+                                            .foregroundColor(.blue)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
                 Section(header: Text("Audio Tracks")) {
                     if engine.trackManager.availableAudioTracks.isEmpty {
                         Text("Default Audio Track")
@@ -1319,7 +1360,7 @@ public struct LIDPlayerView: View {
                     }
                 }
             }
-            .navigationTitle("Audio & Subtitles")
+            .navigationTitle(engine.trackManager.availableQualityOptions.isEmpty ? "Audio & Subtitles" : "Quality, Audio & Subtitles")
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
             #endif

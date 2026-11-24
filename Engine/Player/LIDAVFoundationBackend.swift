@@ -153,6 +153,7 @@ public final class LIDAVFoundationBackend: NSObject, LIDMediaEngineProtocol {
             if let headers = requestContext?.effectiveHeaders(for: targetURL), !headers.isEmpty {
                 options["AVURLAssetHTTPHeaderFieldsKey"] = headers
             }
+            LIDPreviewPreflight.propagateRequestContext(requestContext, targetURL: targetURL)
             asset = AVURLAsset(url: targetURL, options: options)
 
         case .networkStream(let url, let headers, _):
@@ -160,9 +161,16 @@ public final class LIDAVFoundationBackend: NSObject, LIDMediaEngineProtocol {
             if !headers.isEmpty {
                 options["AVURLAssetHTTPHeaderFieldsKey"] = headers
             }
+            if let cookieHeader = headers["Cookie"] ?? headers["cookie"], !cookieHeader.isEmpty {
+                let cookies = HTTPCookie.cookies(withResponseHeaderFields: ["Set-Cookie": cookieHeader], for: url)
+                for cookie in cookies {
+                    HTTPCookieStorage.shared.setCookie(cookie)
+                }
+            }
             asset = AVURLAsset(url: url, options: options)
 
         case .dashStream(let manifestURL, let repID, _, let requestContext):
+            LIDPreviewPreflight.propagateRequestContext(requestContext, targetURL: manifestURL)
             let adapter = LIDDASHStreamAdapter(manifestURL: manifestURL, selectedRepresentationID: repID, requestContext: requestContext)
             self.dashStreamAdapter = adapter
             let customURL = adapter.customSchemeURL

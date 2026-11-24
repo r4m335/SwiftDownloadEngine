@@ -321,6 +321,17 @@ public struct BrowserTabManager: Sendable, Equatable {
     }
 }
 
+/// Evaluates tab card swipe gestures for dismiss / close actions.
+public struct BrowserTabSwipePolicy: Sendable {
+    public static let defaultThreshold: Double = 65.0
+
+    public static func shouldClose(translationX: Double, translationY: Double, threshold: Double = defaultThreshold) -> Bool {
+        let horizontal = abs(translationX) > threshold
+        let verticalUp = translationY < -threshold && abs(translationY) > abs(translationX)
+        return horizontal || verticalUp
+    }
+}
+
 public enum BrowserEdgeGestureAction: Equatable, Sendable {
     case goBack
     case showTabSwitcher

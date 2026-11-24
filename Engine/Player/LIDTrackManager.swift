@@ -59,6 +59,9 @@ public final class LIDTrackManager: ObservableObject {
     @Published public private(set) var availableSubtitleTracks: [LIDSubtitleTrack] = [LIDSubtitleTrack.off]
     @Published public private(set) var selectedSubtitleTrack: LIDSubtitleTrack = .off
 
+    @Published public private(set) var availableQualityOptions: [StreamQualityOption] = []
+    @Published public private(set) var selectedQualityOption: StreamQualityOption?
+
     /// Subtitle synchronization delay in seconds (e.g. +1.5s or -0.5s).
     @Published public var subtitleDelay: Double = 0.0
 
@@ -85,11 +88,23 @@ public final class LIDTrackManager: ObservableObject {
         subtitleDelay = 0.0
         activeCueText = nil
         parsedCues = []
+        availableQualityOptions = []
+        selectedQualityOption = nil
         #if canImport(AVFoundation)
         currentItem = nil
         audibleGroup = nil
         legibleGroup = nil
         #endif
+    }
+
+    /// Sets the available video qualities discovered from the stream manifest.
+    public func setAvailableQualityOptions(_ options: [StreamQualityOption]) {
+        self.availableQualityOptions = options
+    }
+
+    /// Selects a specific video quality rendition or nil for auto bitrate selection.
+    public func selectQualityOption(_ option: StreamQualityOption?) {
+        self.selectedQualityOption = option
     }
 
     /// Normalizes and updates available audio and subtitle tracks from any active backend (VLCKit or AVFoundation).

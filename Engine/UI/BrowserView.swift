@@ -5858,11 +5858,10 @@ public struct BrowserTabCardView: View {
                     }
                 }
                 .onEnded { value in
-                    let horizontalSwipe = abs(value.translation.width) > 65
-                    let verticalSwipeUp = value.translation.height < -65 && abs(value.translation.height) > abs(value.translation.width)
-                    if horizontalSwipe || verticalSwipeUp {
+                    let shouldClose = BrowserTabSwipePolicy.shouldClose(translationX: Double(value.translation.width), translationY: Double(value.translation.height))
+                    if shouldClose {
                         withAnimation(.easeOut(duration: 0.2)) {
-                            if horizontalSwipe {
+                            if abs(value.translation.width) > abs(value.translation.height) {
                                 dragOffset.width = value.translation.width > 0 ? 350 : -350
                             } else {
                                 dragOffset.height = -350

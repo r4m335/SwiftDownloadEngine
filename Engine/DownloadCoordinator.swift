@@ -778,6 +778,20 @@ public actor DownloadCoordinator {
         }
     }
 
+    /// Cancels all active download tasks and awaits their termination barrier.
+    public func cancelAll() async {
+        for (id, task) in activeTasks {
+            task.cancel()
+            await requestBudget.cancelWaiters(for: id)
+            await backgroundSessionManager?.cancelTasks(for: id)
+        }
+        for task in activeTasks.values {
+            _ = try? await task.value
+        }
+        activeTasks.removeAll()
+        pauseRequested.removeAll()
+    }
+
     /// Resumes an interrupted or paused download.
     /// If no valid checkpoint exists, seamlessly performs a standard start.
     public func resume(

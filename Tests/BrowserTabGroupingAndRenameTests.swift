@@ -276,4 +276,50 @@ final class BrowserTabGroupingAndRenameTests: XCTestCase {
         XCTAssertEqual(viewModel.tabsInGroup(groupID!).count, 1)
         XCTAssertEqual(viewModel.ungroupedTabs().contains(where: { $0.id == tab1 }), true)
     }
+
+    // MARK: - 5. Swipe to Close Tab (Left & Right) Policy Tests
+
+    func testSwipeLeftOrRightToCloseTabPolicy() {
+        // Swiping right past threshold triggers close
+        XCTAssertTrue(BrowserTabSwipePolicy.shouldClose(translationX: 70.0, translationY: 0.0))
+        XCTAssertTrue(BrowserTabSwipePolicy.shouldClose(translationX: 120.0, translationY: 10.0))
+
+        // Swiping left past threshold triggers close
+        XCTAssertTrue(BrowserTabSwipePolicy.shouldClose(translationX: -70.0, translationY: 0.0))
+        XCTAssertTrue(BrowserTabSwipePolicy.shouldClose(translationX: -150.0, translationY: -5.0))
+
+        // Swiping upward (flick up) triggers close
+        XCTAssertTrue(BrowserTabSwipePolicy.shouldClose(translationX: 5.0, translationY: -80.0))
+
+        // Subtle drags below threshold do not close
+        XCTAssertFalse(BrowserTabSwipePolicy.shouldClose(translationX: 30.0, translationY: 0.0))
+        XCTAssertFalse(BrowserTabSwipePolicy.shouldClose(translationX: -40.0, translationY: 5.0))
+        XCTAssertFalse(BrowserTabSwipePolicy.shouldClose(translationX: 0.0, translationY: 0.0))
+
+        // Downward drag does not close
+        XCTAssertFalse(BrowserTabSwipePolicy.shouldClose(translationX: 10.0, translationY: 80.0))
+    }
+
+    func testCloseTabAfterSwipeUpdatesActiveTabAndPrunesEmptyGroup() {
+        var manager = BrowserTabManager()
+        let tab1 = manager.createTab(select: true)
+        let tab2 = manager.createTab(select: false)
+
+        let groupID = manager.groupTabs(sourceTabID: tab1, targetTabID: tab2)!
+        XCTAssertEqual(manager.groups.count, 1)
+        XCTAssertEqual(manager.activeTabID, tab1)
+
+        // Simulate swipe-to-close on tab1
+        let replacementID = manager.closeTab(tab1)
+        XCTAssertEqual(replacementID, tab2)
+        XCTAssertEqual(manager.activeTabID, tab2)
+        XCTAssertEqual(manager.tabsInGroup(groupID).count, 1)
+        XCTAssertEqual(manager.groups.count, 1)
+
+        // Close last remaining tab in group -> group is automatically cleaned up
+        let finalActiveID = manager.closeTab(tab2)
+        XCTAssertNil(finalActiveID)
+        XCTAssertEqual(manager.tabs.count, 0)
+        XCTAssertEqual(manager.groups.count, 0)
+    }
 }

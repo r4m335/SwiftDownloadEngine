@@ -26,6 +26,7 @@ final class DownloadCoordinatorTests: XCTestCase {
     }
 
     override func tearDown() async throws {
+        await coordinator?.cancelAll()
         session?.invalidateAndCancel()
         MockURLProtocol.reset()
         if let tempDirectory {
