@@ -11,6 +11,7 @@ import UIKit
 public enum LIDLibrarySection: String, CaseIterable, Identifiable {
     case all = "All Media"
     case continueWatching = "Continue Watching"
+    case folders = "Folders"
     case playlists = "Playlists"
     case favorites = "Favorites"
     case history = "History"
@@ -21,6 +22,7 @@ public enum LIDLibrarySection: String, CaseIterable, Identifiable {
         switch self {
         case .all: return "film.stack"
         case .continueWatching: return "play.circle"
+        case .folders: return "folder.fill"
         case .playlists: return "music.note.list"
         case .favorites: return "star.fill"
         case .history: return "clock.arrow.circlepath"
@@ -49,11 +51,18 @@ public struct LIDPlayerLibraryView: View {
     // Modals
     @State private var inspectingMediaURL: URL? = nil
     @State private var itemToAddToPlaylist: LIDMediaItem? = nil
+    @State private var itemToAddToFolder: LIDMediaItem? = nil
     @State private var showCreatePlaylistAlert: Bool = false
     @State private var newPlaylistName: String = ""
+    @State private var showCreateFolderAlert: Bool = false
+    @State private var newFolderName: String = ""
     @State private var itemToRename: LIDMediaItem? = nil
     @State private var renameText: String = ""
     @State private var itemToDelete: LIDMediaItem? = nil
+    @State private var itemForMetadataEdit: LIDMediaItem? = nil
+    @State private var editTitle: String = ""
+    @State private var editTags: String = ""
+    @State private var editNotes: String = ""
     @State private var showClearHistoryAlert: Bool = false
 
     // History state
@@ -99,6 +108,8 @@ public struct LIDPlayerLibraryView: View {
                         allMediaListView
                     case .continueWatching:
                         continueWatchingListView
+                    case .folders:
+                        foldersListView
                     case .playlists:
                         playlistsListView
                     case .favorites:
@@ -148,6 +159,28 @@ public struct LIDPlayerLibraryView: View {
             )) { wrapper in
                 addToPlaylistSheet(item: wrapper.item)
             }
+            .sheet(item: Binding<IdentifiableItemWrapper?>(
+                get: { itemToAddToFolder.map { IdentifiableItemWrapper(item: $0) } },
+                set: { itemToAddToFolder = $0?.item }
+            )) { wrapper in
+                addToFolderSheet(item: wrapper.item)
+            }
+            .sheet(item: Binding<IdentifiableItemWrapper?>(
+                get: { itemForMetadataEdit.map { IdentifiableItemWrapper(item: $0) } },
+                set: { itemForMetadataEdit = $0?.item }
+            )) { wrapper in
+                metadataEditSheet(item: wrapper.item)
+            }
+            .alert("Create Folder", isPresented: $showCreateFolderAlert) {
+                TextField("Folder Name", text: $newFolderName)
+                Button("Cancel", role: .cancel) { newFolderName = "" }
+                Button("Create") {
+                    if !newFolderName.trimmingCharacters(in: .whitespaces).isEmpty {
+                        _ = libraryStore.createFolder(name: newFolderName)
+                        newFolderName = ""
+                    }
+                }
+            }
             .alert("Create Playlist", isPresented: $showCreatePlaylistAlert) {
                 TextField("Playlist Name", text: $newPlaylistName)
                 Button("Cancel", role: .cancel) { newPlaylistName = "" }
@@ -176,18 +209,20 @@ public struct LIDPlayerLibraryView: View {
                 set: { if !$0 { itemToDelete = nil } }
             )) {
                 Button("Cancel", role: .cancel) { itemToDelete = nil }
-                Button("Delete", role: .destructive) {
+                Button("Move to Trash", role: .destructive) {
                     if let item = itemToDelete {
-                        do {
-                            try libraryStore.deleteMediaFile(url: item.url)
-                        } catch {
-                            PipelineLogger.shared.log(stage: .ui, message: "Failed to delete media file \(item.url.path): \(error)")
-                        }
+                        try? libraryStore.deleteMediaFile(url: item.url, moveToTrash: true)
+                        itemToDelete = nil
+                    }
+                }
+                Button("Delete Permanently", role: .destructive) {
+                    if let item = itemToDelete {
+                        try? libraryStore.deleteMediaFile(url: item.url, moveToTrash: false)
                         itemToDelete = nil
                     }
                 }
             } message: {
-                Text("Are you sure you want to delete '\(itemToDelete?.title ?? "")'? This cannot be undone.")
+                Text("Choose whether to move '\(itemToDelete?.title ?? "")' to Trash for safe recovery or delete permanently.")
             }
             .alert("Clear Playback History", isPresented: $showClearHistoryAlert) {
                 Button("Cancel", role: .cancel) {}
@@ -462,6 +497,21 @@ public struct LIDPlayerLibraryView: View {
                 }
 
                 Button {
+                    itemToAddToFolder = item
+                } label: {
+                    Label("Add to Folder", systemImage: "folder.badge.plus")
+                }
+
+                Button {
+                    itemForMetadataEdit = item
+                    editTitle = item.title
+                    editTags = item.tags.joined(separator: ", ")
+                    editNotes = item.notes ?? ""
+                } label: {
+                    Label("Edit Metadata", systemImage: "tag")
+                }
+
+                Button {
                     inspectingMediaURL = item.url
                 } label: {
                     Label("Media Info", systemImage: "info.circle")
@@ -608,6 +658,182 @@ public struct LIDPlayerLibraryView: View {
         }
     }
 
+    // MARK: - Folders View Components
+
+    private var foldersListView: some View {
+        List {
+            Section("Smart Folders") {
+                ForEach(libraryStore.folders.filter(\.isSmartFolder)) { folder in
+                    NavigationLink(destination: folderDetailView(folder: folder)) {
+                        HStack(spacing: 12) {
+                            Image(systemName: smartFolderIcon(for: folder.smartCriteria))
+                                .foregroundColor(.purple)
+                                .font(.title3)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(folder.name)
+                                    .font(.headline)
+                                Text("\(libraryStore.items(in: folder).count) items")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+                        .padding(.vertical, 2)
+                    }
+                }
+            }
+
+            Section {
+                Button {
+                    showCreateFolderAlert = true
+                } label: {
+                    Label("Create New Folder", systemImage: "folder.badge.plus")
+                        .foregroundColor(.blue)
+                }
+            } header: {
+                Text("Custom Folders")
+            }
+
+            let userFolders = libraryStore.folders.filter { !$0.isSmartFolder }
+            if userFolders.isEmpty {
+                Text("No custom folders yet.")
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+                    .padding(.vertical, 4)
+            } else {
+                ForEach(userFolders) { folder in
+                    NavigationLink(destination: folderDetailView(folder: folder)) {
+                        HStack(spacing: 12) {
+                            Image(systemName: "folder.fill")
+                                .foregroundColor(.blue)
+                                .font(.title3)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(folder.name)
+                                    .font(.headline)
+                                Text("\(libraryStore.items(in: folder).count) items")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+                        .padding(.vertical, 2)
+                    }
+                }
+                .onDelete { indexSet in
+                    for idx in indexSet {
+                        let id = userFolders[idx].id
+                        libraryStore.deleteFolder(id: id)
+                    }
+                }
+            }
+        }
+        .libraryListStyle()
+    }
+
+    private func smartFolderIcon(for criteria: LIDSmartFolderCriteria?) -> String {
+        switch criteria {
+        case .videosOver1GB: return "film.stack.fill"
+        case .torrents: return "arrow.down.circle.fill"
+        case .liveRecordings: return "record.circle.fill"
+        case .recentDownloads: return "clock.fill"
+        case .none: return "folder.fill"
+        }
+    }
+
+    private func folderDetailView(folder: LIDFolder) -> some View {
+        let items = libraryStore.items(in: folder)
+        return Group {
+            if items.isEmpty {
+                emptyStateView(icon: "folder", title: "Folder Empty", message: "Items added to this folder will appear here.")
+            } else {
+                List {
+                    ForEach(items) { item in
+                        mediaRow(for: item)
+                    }
+                }
+                .listStyle(PlainListStyle())
+            }
+        }
+        .navigationTitle(folder.name)
+    }
+
+    // MARK: - Add To Folder Modal Sheet
+
+    private func addToFolderSheet(item: LIDMediaItem) -> some View {
+        NavigationView {
+            List {
+                let userFolders = libraryStore.folders.filter { !$0.isSmartFolder }
+                if userFolders.isEmpty {
+                    Text("No custom folders yet. Create one in the Folders tab.")
+                        .foregroundColor(.secondary)
+                } else {
+                    ForEach(userFolders) { f in
+                        Button {
+                            libraryStore.addItemToFolder(folderID: f.id, itemPath: item.url.path)
+                            itemToAddToFolder = nil
+                        } label: {
+                            HStack {
+                                Text(f.name)
+                                Spacer()
+                                if f.itemPaths.contains(item.url.path) {
+                                    Image(systemName: "checkmark")
+                                        .foregroundColor(.blue)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Add to Folder")
+            #if os(iOS)
+            .navigationBarTitleDisplayMode(.inline)
+            #endif
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { itemToAddToFolder = nil }
+                }
+            }
+        }
+    }
+
+    // MARK: - Metadata Edit Modal Sheet
+
+    private func metadataEditSheet(item: LIDMediaItem) -> some View {
+        NavigationView {
+            Form {
+                Section("Title") {
+                    TextField("Title", text: $editTitle)
+                }
+                Section("Tags") {
+                    TextField("Tags (comma separated)", text: $editTags)
+                }
+                Section("Notes") {
+                    TextEditor(text: $editNotes)
+                        .frame(minHeight: 80)
+                }
+            }
+            .navigationTitle("Edit Metadata")
+            #if os(iOS)
+            .navigationBarTitleDisplayMode(.inline)
+            #endif
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { itemForMetadataEdit = nil }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") {
+                        let parsedTags = editTags.components(separatedBy: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+                        libraryStore.updateItemMetadata(
+                            url: item.url,
+                            tags: parsedTags,
+                            notes: editNotes.trimmingCharacters(in: .whitespaces).isEmpty ? nil : editNotes,
+                            customTitle: editTitle.trimmingCharacters(in: .whitespaces).isEmpty ? nil : editTitle
+                        )
+                        itemForMetadataEdit = nil
+                    }
+                }
+            }
+        }
+    }
+
     // MARK: - Empty State View
 
     private func emptyStateView(icon: String, title: String, message: String) -> some View {
@@ -658,7 +884,8 @@ public struct LIDPlayerLibraryView: View {
         }
     }
 
-    #if canImport(UIKit)
+    #if canImport(UIKit) && !os(watchOS)
+    @MainActor
     private func shareMediaFile(url: URL) {
         guard let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
               let rootVC = windowScene.windows.first?.rootViewController else { return }

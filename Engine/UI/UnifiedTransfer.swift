@@ -100,6 +100,9 @@ public struct UnifiedTransfer: Identifiable, Sendable, Equatable {
     public let isSequentialDownload: Bool
     public let seedingPreference: SeedingPreference?
     public let filePriorities: [Int: TorrentFilePriority]?
+    public let tags: [String]
+    public let notes: String?
+    public let isArchived: Bool
 
     // MARK: - Initializer for HTTP DownloadSnapshot
     public init(from snapshot: DownloadSnapshot) {
@@ -149,6 +152,9 @@ public struct UnifiedTransfer: Identifiable, Sendable, Equatable {
         self.isSequentialDownload = false
         self.seedingPreference = nil
         self.filePriorities = nil
+        self.tags = []
+        self.notes = nil
+        self.isArchived = false
     }
 
     // MARK: - Initializer for TorrentTask
@@ -195,6 +201,9 @@ public struct UnifiedTransfer: Identifiable, Sendable, Equatable {
         self.isSequentialDownload = task.isSequentialDownload
         self.seedingPreference = task.seedingPreference
         self.filePriorities = task.filePriorities
+        self.tags = []
+        self.notes = nil
+        self.isArchived = false
     }
 
     // MARK: - Explicit Initializer (for testing and previews)
@@ -222,7 +231,10 @@ public struct UnifiedTransfer: Identifiable, Sendable, Equatable {
         isExplicitlyPaused: Bool = false,
         isSequentialDownload: Bool = false,
         seedingPreference: SeedingPreference? = nil,
-        filePriorities: [Int: TorrentFilePriority]? = nil
+        filePriorities: [Int: TorrentFilePriority]? = nil,
+        tags: [String] = [],
+        notes: String? = nil,
+        isArchived: Bool = false
     ) {
         self.id = id
         self.name = name
@@ -248,6 +260,9 @@ public struct UnifiedTransfer: Identifiable, Sendable, Equatable {
         self.isSequentialDownload = isSequentialDownload
         self.seedingPreference = seedingPreference
         self.filePriorities = filePriorities
+        self.tags = tags
+        self.notes = notes
+        self.isArchived = isArchived
     }
 
     // MARK: - Helper Predicates
@@ -328,6 +343,18 @@ public struct UnifiedTransfer: Identifiable, Sendable, Equatable {
         case .failed:
             if case .failed = state { return true }
             return false
+        case .liveRecordings:
+            return type == .streaming || destinationURL.pathExtension.lowercased() == "ts" || name.lowercased().contains("live")
+        case .torrents:
+            return type == .torrent
+        case .http:
+            return type == .http
+        case .hls:
+            return type == .hls
+        case .dash:
+            return type == .dash
+        case .archived:
+            return isArchived
         }
     }
 }

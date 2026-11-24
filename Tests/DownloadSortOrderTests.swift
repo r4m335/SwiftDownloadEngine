@@ -47,7 +47,7 @@ final class DownloadSortOrderTests: XCTestCase {
     // MARK: - Enum & Display Name Tests
 
     func testDownloadSortOrder_EnumProperties() {
-        XCTAssertEqual(DownloadSortOrder.allCases.count, 5)
+        XCTAssertEqual(DownloadSortOrder.allCases.count, 7)
 
         XCTAssertEqual(DownloadSortOrder.dateAddedDesc.rawValue, "dateAddedDesc")
         XCTAssertEqual(DownloadSortOrder.dateAddedDesc.id, "dateAddedDesc")
@@ -68,6 +68,14 @@ final class DownloadSortOrderTests: XCTestCase {
         XCTAssertEqual(DownloadSortOrder.progressDesc.rawValue, "progressDesc")
         XCTAssertEqual(DownloadSortOrder.progressDesc.id, "progressDesc")
         XCTAssertEqual(DownloadSortOrder.progressDesc.displayName, "Progress — Highest First")
+
+        XCTAssertEqual(DownloadSortOrder.speedDesc.rawValue, "speedDesc")
+        XCTAssertEqual(DownloadSortOrder.speedDesc.id, "speedDesc")
+        XCTAssertEqual(DownloadSortOrder.speedDesc.displayName, "Speed — Fastest First")
+
+        XCTAssertEqual(DownloadSortOrder.durationDesc.rawValue, "durationDesc")
+        XCTAssertEqual(DownloadSortOrder.durationDesc.id, "durationDesc")
+        XCTAssertEqual(DownloadSortOrder.durationDesc.displayName, "Duration / ETA — Longest First")
     }
 
     func testDownloadSortOrder_CodableRoundTrip() throws {

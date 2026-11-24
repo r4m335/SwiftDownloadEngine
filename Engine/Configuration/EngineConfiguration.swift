@@ -5,7 +5,12 @@ public enum DuplicateNamingRule: String, Codable, Sendable, CaseIterable {
     case autoRename = "Auto-rename with index"
     case overwrite = "Overwrite existing file"
     case skip = "Skip if file exists"
+
+    public static let renameWithNumber = DuplicateNamingRule.autoRename
+    public static let overwritePrompt = DuplicateNamingRule.overwrite
 }
+
+public typealias DuplicateConflictPolicy = DuplicateNamingRule
 
 /// Plain immutable configuration model used strictly within the core engine layer.
 /// In accordance with clean iOS architecture, the engine NEVER reads directly from UI preferences (UserDefaults / AppSettings).

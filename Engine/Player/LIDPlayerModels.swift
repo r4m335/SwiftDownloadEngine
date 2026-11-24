@@ -453,6 +453,9 @@ public struct LIDMediaItem: Identifiable, Equatable, Hashable, Sendable {
     public var lastPositionSeconds: Double
     public var progressFraction: Double
     public var isCompleted: Bool
+    public var tags: [String]
+    public var notes: String?
+    public var folderID: UUID?
 
     public init(
         url: URL,
@@ -467,7 +470,10 @@ public struct LIDMediaItem: Identifiable, Equatable, Hashable, Sendable {
         isFavorite: Bool = false,
         lastPositionSeconds: Double = 0.0,
         progressFraction: Double = 0.0,
-        isCompleted: Bool = false
+        isCompleted: Bool = false,
+        tags: [String] = [],
+        notes: String? = nil,
+        folderID: UUID? = nil
     ) {
         self.url = url
         self.title = title ?? url.deletingPathExtension().lastPathComponent
@@ -482,6 +488,99 @@ public struct LIDMediaItem: Identifiable, Equatable, Hashable, Sendable {
         self.lastPositionSeconds = lastPositionSeconds
         self.progressFraction = progressFraction
         self.isCompleted = isCompleted
+        self.tags = tags
+        self.notes = notes
+        self.folderID = folderID
+    }
+}
+
+/// User-created or smart folder for media organization.
+public struct LIDFolder: Identifiable, Codable, Equatable, Sendable {
+    public let id: UUID
+    public var name: String
+    public var parentID: UUID?
+    public var itemPaths: [String]
+    public let isSmartFolder: Bool
+    public var smartCriteria: LIDSmartFolderCriteria?
+    public let createdAt: Date
+    public var updatedAt: Date
+
+    public init(
+        id: UUID = UUID(),
+        name: String,
+        parentID: UUID? = nil,
+        itemPaths: [String] = [],
+        isSmartFolder: Bool = false,
+        smartCriteria: LIDSmartFolderCriteria? = nil,
+        createdAt: Date = Date(),
+        updatedAt: Date = Date()
+    ) {
+        self.id = id
+        self.name = name
+        self.parentID = parentID
+        self.itemPaths = itemPaths
+        self.isSmartFolder = isSmartFolder
+        self.smartCriteria = smartCriteria
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+    }
+}
+
+/// Built-in criteria for dynamic smart folders.
+public enum LIDSmartFolderCriteria: String, Codable, Sendable, CaseIterable {
+    case videosOver1GB = "Videos > 1GB"
+    case torrents = "Torrents"
+    case liveRecordings = "Live Recordings"
+    case recentDownloads = "Recent Downloads"
+}
+
+/// Record of an item safely moved to the application trash with metadata for recovery.
+public struct LIDTrashItem: Identifiable, Codable, Equatable, Sendable {
+    public let id: UUID
+    public let originalURL: URL
+    public let trashURL: URL
+    public let dateDeleted: Date
+    public let fileSize: Int64
+
+    public init(
+        id: UUID = UUID(),
+        originalURL: URL,
+        trashURL: URL,
+        dateDeleted: Date = Date(),
+        fileSize: Int64 = 0
+    ) {
+        self.id = id
+        self.originalURL = originalURL
+        self.trashURL = trashURL
+        self.dateDeleted = dateDeleted
+        self.fileSize = fileSize
+    }
+}
+
+/// Storage breakdown across media and transfer categories.
+public struct StorageBreakdown: Equatable, Sendable, Codable {
+    public let videoBytes: Int64
+    public let audioBytes: Int64
+    public let torrentBytes: Int64
+    public let scratchBytes: Int64
+    public let otherBytes: Int64
+
+    public init(
+        videoBytes: Int64 = 0,
+        audioBytes: Int64 = 0,
+        torrentBytes: Int64 = 0,
+        scratchBytes: Int64 = 0,
+        otherBytes: Int64 = 0
+    ) {
+        self.videoBytes = videoBytes
+        self.audioBytes = audioBytes
+        self.torrentBytes = torrentBytes
+        self.scratchBytes = scratchBytes
+        self.otherBytes = otherBytes
+    }
+
+    public var totalBytes: Int64 {
+        videoBytes + audioBytes + torrentBytes + scratchBytes + otherBytes
     }
 }
 

@@ -13,9 +13,14 @@ public final class LIDLibraryStore: ObservableObject {
     @Published public private(set) var mediaItems: [LIDMediaItem] = []
     @Published public private(set) var playlists: [LIDPlaylist] = []
     @Published public private(set) var favorites: Set<String> = []
+    @Published public private(set) var folders: [LIDFolder] = []
+    @Published public private(set) var trashItems: [LIDTrashItem] = []
 
     private let favoritesStorageURL: URL
     private let playlistsStorageURL: URL
+    private let foldersStorageURL: URL
+    private let trashStorageURL: URL
+    private let trashDirectoryURL: URL
     private let historyStore: LIDPlaybackHistoryStore
     private var isLoaded: Bool = false
 
@@ -37,6 +42,10 @@ public final class LIDLibraryStore: ObservableObject {
         try? FileManager.default.createDirectory(at: baseDir, withIntermediateDirectories: true)
         self.favoritesStorageURL = baseDir.appendingPathComponent("library_favorites.json")
         self.playlistsStorageURL = baseDir.appendingPathComponent("library_playlists.json")
+        self.foldersStorageURL = baseDir.appendingPathComponent("library_folders.json")
+        self.trashStorageURL = baseDir.appendingPathComponent("library_trash.json")
+        self.trashDirectoryURL = baseDir.appendingPathComponent(".Trash", isDirectory: true)
+        try? FileManager.default.createDirectory(at: self.trashDirectoryURL, withIntermediateDirectories: true)
 
         loadState()
     }
@@ -198,6 +207,98 @@ public final class LIDLibraryStore: ObservableObject {
         return false
     }
 
+    // MARK: - Folders & Smart Folders Management
+
+    public func createFolder(name: String, parentID: UUID? = nil) -> LIDFolder {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let folder = LIDFolder(
+            name: trimmed.isEmpty ? "New Folder" : trimmed,
+            parentID: parentID
+        )
+        folders.append(folder)
+        persistFolders()
+        return folder
+    }
+
+    public func renameFolder(id: UUID, newName: String) {
+        guard let idx = folders.firstIndex(where: { $0.id == id }) else { return }
+        folders[idx].name = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+        folders[idx].updatedAt = Date()
+        persistFolders()
+    }
+
+    public func deleteFolder(id: UUID) {
+        folders.removeAll { $0.id == id }
+        // Orphan children become root folders
+        for i in 0..<folders.count {
+            if folders[i].parentID == id {
+                folders[i].parentID = nil
+                folders[i].updatedAt = Date()
+            }
+        }
+        persistFolders()
+    }
+
+    public func moveFolder(id: UUID, toParentID: UUID?) {
+        guard let idx = folders.firstIndex(where: { $0.id == id }), id != toParentID else { return }
+        folders[idx].parentID = toParentID
+        folders[idx].updatedAt = Date()
+        persistFolders()
+    }
+
+    public func addItemToFolder(folderID: UUID, itemPath: String) {
+        guard let idx = folders.firstIndex(where: { $0.id == folderID }) else { return }
+        if !folders[idx].itemPaths.contains(itemPath) {
+            folders[idx].itemPaths.append(itemPath)
+            folders[idx].updatedAt = Date()
+            persistFolders()
+        }
+        if let mIdx = mediaItems.firstIndex(where: { $0.url.path == itemPath }) {
+            mediaItems[mIdx].folderID = folderID
+        }
+    }
+
+    public func removeItemFromFolder(folderID: UUID, itemPath: String) {
+        guard let idx = folders.firstIndex(where: { $0.id == folderID }) else { return }
+        folders[idx].itemPaths.removeAll { $0 == itemPath }
+        folders[idx].updatedAt = Date()
+        persistFolders()
+        if let mIdx = mediaItems.firstIndex(where: { $0.url.path == itemPath && $0.folderID == folderID }) {
+            mediaItems[mIdx].folderID = nil
+        }
+    }
+
+    public func moveItem(itemPath: String, fromFolderID: UUID?, toFolderID: UUID?) {
+        if let from = fromFolderID {
+            removeItemFromFolder(folderID: from, itemPath: itemPath)
+        }
+        if let to = toFolderID {
+            addItemToFolder(folderID: to, itemPath: itemPath)
+        }
+    }
+
+    public func items(in folder: LIDFolder) -> [LIDMediaItem] {
+        if folder.isSmartFolder, let criteria = folder.smartCriteria {
+            return smartFolderItems(for: criteria)
+        }
+        let set = Set(folder.itemPaths)
+        return mediaItems.filter { set.contains($0.url.path) || set.contains($0.url.resolvingSymlinksInPath().path) }
+    }
+
+    public func smartFolderItems(for criteria: LIDSmartFolderCriteria) -> [LIDMediaItem] {
+        switch criteria {
+        case .videosOver1GB:
+            return mediaItems.filter { $0.mediaType == .video && $0.fileSize >= 1_000_000_000 }
+        case .torrents:
+            return mediaItems.filter { $0.url.pathExtension.lowercased() == "torrent" || $0.url.path.contains("Torrent") }
+        case .liveRecordings:
+            return mediaItems.filter { $0.url.pathExtension.lowercased() == "ts" || $0.title.lowercased().contains("live") }
+        case .recentDownloads:
+            let weekAgo = Calendar.current.date(byAdding: .day, value: -7, to: Date()) ?? Date.distantPast
+            return mediaItems.filter { $0.dateAdded >= weekAgo }
+        }
+    }
+
     // MARK: - Playlists Management
 
     public func createPlaylist(name: String) -> LIDPlaylist {
@@ -321,13 +422,24 @@ public final class LIDLibraryStore: ObservableObject {
         return newURL
     }
 
-    /// Deletes a media file from disk and prunes it from library, playlists, favorites, and history.
-    public func deleteMediaFile(url: URL) throws {
+    /// Deletes a media file from disk or moves it safely to the trash, pruning from library, playlists, favorites, and history.
+    public func deleteMediaFile(url: URL, moveToTrash: Bool = true) throws {
         let path = url.path
         let abs = url.absoluteString
+        let fm = FileManager.default
 
-        if FileManager.default.fileExists(atPath: path) {
-            try FileManager.default.removeItem(at: url)
+        if fm.fileExists(atPath: path) {
+            if moveToTrash {
+                try? fm.createDirectory(at: trashDirectoryURL, withIntermediateDirectories: true)
+                let trashDest = FileConflictResolver.uniqueDestinationURL(desiredFilename: url.lastPathComponent, directory: trashDirectoryURL)
+                let size = (try? fm.attributesOfItem(atPath: path)[.size] as? NSNumber)?.int64Value ?? 0
+                try fm.moveItem(at: url, to: trashDest)
+                let trashRecord = LIDTrashItem(originalURL: url, trashURL: trashDest, dateDeleted: Date(), fileSize: size)
+                trashItems.append(trashRecord)
+                persistTrash()
+            } else {
+                try fm.removeItem(at: url)
+            }
         }
 
         // Prune Favorites
@@ -341,6 +453,12 @@ public final class LIDLibraryStore: ObservableObject {
         }
         persistPlaylists()
 
+        // Prune Folders
+        for i in 0..<folders.count {
+            folders[i].itemPaths.removeAll { $0 == path }
+        }
+        persistFolders()
+
         // Prune History
         Task {
             await historyStore.deleteRecord(mediaIdentifier: abs)
@@ -349,6 +467,191 @@ public final class LIDLibraryStore: ObservableObject {
 
         // Prune in-memory items
         mediaItems.removeAll { $0.url.path == path || $0.url.absoluteString == abs }
+    }
+
+    /// Restores a deleted item from trash back to its original location (or safe sibling if occupied).
+    public func restoreFromTrash(item: LIDTrashItem) throws {
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: item.trashURL.path) else {
+            trashItems.removeAll { $0.id == item.id }
+            persistTrash()
+            return
+        }
+
+        let originalDir = item.originalURL.deletingLastPathComponent()
+        try? fm.createDirectory(at: originalDir, withIntermediateDirectories: true)
+        let restoreURL = FileConflictResolver.uniqueDestinationURL(desiredFilename: item.originalURL.lastPathComponent, directory: originalDir)
+        try fm.moveItem(at: item.trashURL, to: restoreURL)
+
+        trashItems.removeAll { $0.id == item.id }
+        persistTrash()
+    }
+
+    /// Empties all items permanently from the application trash.
+    public func emptyTrash() throws {
+        let fm = FileManager.default
+        for item in trashItems {
+            try? fm.removeItem(at: item.trashURL)
+        }
+        if fm.fileExists(atPath: trashDirectoryURL.path) {
+            try? fm.removeItem(at: trashDirectoryURL)
+            try? fm.createDirectory(at: trashDirectoryURL, withIntermediateDirectories: true)
+        }
+        trashItems.removeAll()
+        persistTrash()
+    }
+
+    // MARK: - Metadata Enrichment & Editing
+
+    /// Updates custom metadata (title, tags, notes) for a media item.
+    public func updateItemMetadata(
+        url: URL,
+        tags: [String]? = nil,
+        notes: String? = nil,
+        customTitle: String? = nil
+    ) {
+        if let idx = mediaItems.firstIndex(where: { $0.url.path == url.path || $0.url.absoluteString == url.absoluteString }) {
+            if let customTitle = customTitle {
+                mediaItems[idx].title = customTitle
+            }
+            if let tags = tags {
+                mediaItems[idx].tags = tags
+            }
+            if let notes = notes {
+                mediaItems[idx].notes = notes
+            }
+        }
+    }
+
+    // MARK: - Storage Breakdown & Diagnostics
+
+    /// Computes the precise storage breakdown (video, audio, torrent, scratch, other) across the directory.
+    public func calculateStorageBreakdown(in baseDirectory: URL) async -> StorageBreakdown {
+        var videoBytes: Int64 = 0
+        var audioBytes: Int64 = 0
+        var torrentBytes: Int64 = 0
+        var scratchBytes: Int64 = 0
+        var otherBytes: Int64 = 0
+
+        let fm = FileManager.default
+        guard let enumerator = fm.enumerator(
+            at: baseDirectory,
+            includingPropertiesForKeys: [.fileSizeKey, .isDirectoryKey],
+            options: []
+        ) else {
+            return StorageBreakdown()
+        }
+
+        for case let fileURL as URL in enumerator {
+            guard let attrs = try? fileURL.resourceValues(forKeys: [.isDirectoryKey, .fileSizeKey]),
+                  !(attrs.isDirectory ?? false),
+                  let size = attrs.fileSize.map(Int64.init) else { continue }
+
+            let ext = fileURL.pathExtension.lowercased()
+            let path = fileURL.path.lowercased()
+
+            if path.contains(".trash") || path.contains(".tmp") || ext == "part" || ext == "tmp" {
+                scratchBytes += size
+            } else if ext == "torrent" || path.contains("torrent") {
+                torrentBytes += size
+            } else if fileURL.isVideoMedia || ["mp4", "m4v", "mov", "mkv", "avi", "webm", "ts"].contains(ext) {
+                videoBytes += size
+            } else if fileURL.isAudioMedia || ["mp3", "m4a", "aac", "flac", "wav", "ogg", "opus"].contains(ext) {
+                audioBytes += size
+            } else {
+                otherBytes += size
+            }
+        }
+
+        return StorageBreakdown(
+            videoBytes: videoBytes,
+            audioBytes: audioBytes,
+            torrentBytes: torrentBytes,
+            scratchBytes: scratchBytes,
+            otherBytes: otherBytes
+        )
+    }
+
+    // MARK: - Orphan File Detection & Cleanup
+
+    /// Identifies files present in the base directory that do not belong to active/known transfers, media library, or trash.
+    public func detectOrphanFiles(
+        in baseDirectory: URL,
+        knownTransfers: [UnifiedTransfer] = []
+    ) async -> [URL] {
+        var knownPaths: Set<String> = []
+        for transfer in knownTransfers {
+            knownPaths.insert(transfer.destinationURL.resolvingSymlinksInPath().path)
+        }
+        for item in mediaItems {
+            knownPaths.insert(item.url.resolvingSymlinksInPath().path)
+        }
+        for trash in trashItems {
+            knownPaths.insert(trash.trashURL.resolvingSymlinksInPath().path)
+        }
+
+        var orphans: [URL] = []
+        let fm = FileManager.default
+        guard let enumerator = fm.enumerator(
+            at: baseDirectory,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        ) else { return [] }
+
+        for case let fileURL as URL in enumerator {
+            guard let isRegular = (try? fileURL.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile, isRegular else {
+                continue
+            }
+            let canonical = fileURL.resolvingSymlinksInPath().path
+            if !knownPaths.contains(canonical) && !canonical.contains(".Trash") {
+                orphans.append(fileURL)
+            }
+        }
+
+        return orphans
+    }
+
+    /// Deletes the specified orphan files and returns total bytes recovered.
+    public func cleanupOrphanFiles(urls: [URL]) throws -> Int64 {
+        let fm = FileManager.default
+        var totalFreed: Int64 = 0
+        for url in urls {
+            if let attrs = try? fm.attributesOfItem(atPath: url.path),
+               let size = (attrs[.size] as? NSNumber)?.int64Value {
+                totalFreed += size
+            }
+            try? fm.removeItem(at: url)
+        }
+        return totalFreed
+    }
+
+    // MARK: - Bulk Operations
+
+    /// Bulk moves multiple media items to a destination folder.
+    public func bulkMoveToFolder(itemPaths: [String], toFolderID: UUID) {
+        for path in itemPaths {
+            addItemToFolder(folderID: toFolderID, itemPath: path)
+        }
+    }
+
+    /// Bulk assigns a tag to multiple media items.
+    public func bulkAddTag(itemPaths: [String], tag: String) {
+        let trimmed = tag.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        for path in itemPaths {
+            if let idx = mediaItems.firstIndex(where: { $0.url.path == path }) {
+                if !mediaItems[idx].tags.contains(trimmed) {
+                    mediaItems[idx].tags.append(trimmed)
+                }
+            }
+        }
+    }
+
+    /// Bulk deletes multiple media items.
+    public func bulkDelete(itemPaths: [String], moveToTrash: Bool = true) throws {
+        for path in itemPaths {
+            try deleteMediaFile(url: URL(fileURLWithPath: path), moveToTrash: moveToTrash)
+        }
     }
 
     // MARK: - Persistence Internals
@@ -395,6 +698,48 @@ public final class LIDLibraryStore: ObservableObject {
         }
     }
 
+    public struct LIDFoldersPayload: Codable, SchemaVersioned {
+        public static let currentSchemaVersion: Int = 1
+        public var schemaVersion: Int
+        public var folders: [LIDFolder]
+
+        public init(schemaVersion: Int = Self.currentSchemaVersion, folders: [LIDFolder]) {
+            self.schemaVersion = schemaVersion
+            self.folders = folders
+        }
+
+        private enum CodingKeys: String, CodingKey {
+            case schemaVersion, folders
+        }
+
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            self.schemaVersion = try container.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 0
+            self.folders = try container.decode([LIDFolder].self, forKey: .folders)
+        }
+    }
+
+    public struct LIDTrashPayload: Codable, SchemaVersioned {
+        public static let currentSchemaVersion: Int = 1
+        public var schemaVersion: Int
+        public var items: [LIDTrashItem]
+
+        public init(schemaVersion: Int = Self.currentSchemaVersion, items: [LIDTrashItem]) {
+            self.schemaVersion = schemaVersion
+            self.items = items
+        }
+
+        private enum CodingKeys: String, CodingKey {
+            case schemaVersion, items
+        }
+
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            self.schemaVersion = try container.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 0
+            self.items = try container.decode([LIDTrashItem].self, forKey: .items)
+        }
+    }
+
     private func loadState() {
         guard !isLoaded else { return }
         isLoaded = true
@@ -432,6 +777,52 @@ public final class LIDLibraryStore: ObservableObject {
                 PipelineLogger.shared.log(stage: .persistence, message: "[LIDLibraryStore] Corrupt playlists file at \(playlistsStorageURL.path) was quarantined: \(error)")
             }
         }
+
+        // Load Folders
+        if FileManager.default.fileExists(atPath: foldersStorageURL.path) {
+            do {
+                if let payload = try DurableStorage.load(
+                    from: foldersStorageURL,
+                    legacyFallback: { data in
+                        let list = try JSONDecoder().decode([LIDFolder].self, from: data)
+                        return LIDFoldersPayload(schemaVersion: 0, folders: list)
+                    }
+                ) as LIDFoldersPayload? {
+                    self.folders = payload.folders
+                }
+            } catch {
+                PipelineLogger.shared.log(stage: .persistence, message: "[LIDLibraryStore] Corrupt folders file at \(foldersStorageURL.path) was quarantined: \(error)")
+            }
+        }
+
+        // Initialize default Smart Folders if not present
+        if !self.folders.contains(where: { $0.isSmartFolder }) {
+            let smartFolders: [LIDFolder] = [
+                LIDFolder(name: "Videos > 1GB", isSmartFolder: true, smartCriteria: .videosOver1GB),
+                LIDFolder(name: "Torrents", isSmartFolder: true, smartCriteria: .torrents),
+                LIDFolder(name: "Live Recordings", isSmartFolder: true, smartCriteria: .liveRecordings),
+                LIDFolder(name: "Recent Downloads", isSmartFolder: true, smartCriteria: .recentDownloads)
+            ]
+            self.folders.append(contentsOf: smartFolders)
+            persistFolders()
+        }
+
+        // Load Trash
+        if FileManager.default.fileExists(atPath: trashStorageURL.path) {
+            do {
+                if let payload = try DurableStorage.load(
+                    from: trashStorageURL,
+                    legacyFallback: { data in
+                        let list = try JSONDecoder().decode([LIDTrashItem].self, from: data)
+                        return LIDTrashPayload(schemaVersion: 0, items: list)
+                    }
+                ) as LIDTrashPayload? {
+                    self.trashItems = payload.items
+                }
+            } catch {
+                PipelineLogger.shared.log(stage: .persistence, message: "[LIDLibraryStore] Corrupt trash file at \(trashStorageURL.path) was quarantined: \(error)")
+            }
+        }
     }
 
     private func persistFavorites() {
@@ -451,6 +842,26 @@ public final class LIDLibraryStore: ObservableObject {
             try DurableStorage.writeAtomically(data, to: playlistsStorageURL)
         } catch {
             PipelineLogger.shared.log(stage: .persistence, message: "Failed to persist playlists: \(error)")
+        }
+    }
+
+    private func persistFolders() {
+        let payload = LIDFoldersPayload(folders: folders)
+        do {
+            let data = try JSONEncoder().encode(payload)
+            try DurableStorage.writeAtomically(data, to: foldersStorageURL)
+        } catch {
+            PipelineLogger.shared.log(stage: .persistence, message: "Failed to persist folders: \(error)")
+        }
+    }
+
+    private func persistTrash() {
+        let payload = LIDTrashPayload(items: trashItems)
+        do {
+            let data = try JSONEncoder().encode(payload)
+            try DurableStorage.writeAtomically(data, to: trashStorageURL)
+        } catch {
+            PipelineLogger.shared.log(stage: .persistence, message: "Failed to persist trash: \(error)")
         }
     }
 

@@ -2,6 +2,11 @@ import Foundation
 
 #if canImport(AVFoundation)
 import AVFoundation
+#if canImport(UIKit)
+import UIKit
+#elseif canImport(AppKit)
+import AppKit
+#endif
 #endif
 
 /// Comprehensive technical metadata extracted from a media asset.
@@ -196,6 +201,41 @@ public final class LIDMediaInspector: Sendable {
     }
 
     #if canImport(AVFoundation)
+    /// Generates a thumbnail image (JPEG data) from a video at the specified timestamp.
+    public func generateThumbnail(for url: URL, at timeSeconds: Double = 1.0, maximumSize: CGSize = CGSize(width: 512, height: 512)) async -> Data? {
+        let asset = AVURLAsset(url: url)
+        let generator = AVAssetImageGenerator(asset: asset)
+        generator.appliesPreferredTrackTransform = true
+        generator.maximumSize = maximumSize
+        let time = CMTime(seconds: max(0.0, timeSeconds), preferredTimescale: 600)
+
+        #if canImport(UIKit)
+        var actualTime = CMTime.zero
+        if let cgImage = try? generator.copyCGImage(at: time, actualTime: &actualTime) {
+            let image = UIImage(cgImage: cgImage)
+            return image.jpegData(compressionQuality: 0.8)
+        }
+        #elseif canImport(AppKit)
+        var actualTime = CMTime.zero
+        if let cgImage = try? generator.copyCGImage(at: time, actualTime: &actualTime) {
+            let rep = NSBitmapImageRep(cgImage: cgImage)
+            return rep.representation(using: .jpeg, properties: [:])
+        }
+        #endif
+        return nil
+    }
+
+    /// Extracts embedded artwork from an audio or video file.
+    public func extractAudioArtwork(for url: URL) async -> Data? {
+        let asset = AVURLAsset(url: url)
+        for item in asset.commonMetadata {
+            if item.commonKey == .commonKeyArtwork, let data = item.dataValue {
+                return data
+            }
+        }
+        return nil
+    }
+
     private func fourCCToString(_ code: FourCharCode) -> String {
         switch code {
         case 0x61766331: return "H.264 / AVC (avc1)"

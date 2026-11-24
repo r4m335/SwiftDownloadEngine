@@ -7,6 +7,8 @@ public enum DownloadSortOrder: String, CaseIterable, Identifiable, Codable, Send
     case nameAsc = "nameAsc"
     case sizeDesc = "sizeDesc"
     case progressDesc = "progressDesc"
+    case speedDesc = "speedDesc"
+    case durationDesc = "durationDesc"
 
     public var id: String { rawValue }
 
@@ -22,6 +24,35 @@ public enum DownloadSortOrder: String, CaseIterable, Identifiable, Codable, Send
             return "Size — Largest First"
         case .progressDesc:
             return "Progress — Highest First"
+        case .speedDesc:
+            return "Speed — Fastest First"
+        case .durationDesc:
+            return "Duration / ETA — Longest First"
+        }
+    }
+}
+
+/// User-selectable grouping option for download listings.
+public enum DownloadGroupingOption: String, CaseIterable, Identifiable, Codable, Sendable {
+    case none = "none"
+    case type = "type"
+    case status = "status"
+    case dateAdded = "dateAdded"
+    case fileSize = "fileSize"
+    case domain = "domain"
+    case format = "format"
+
+    public var id: String { rawValue }
+
+    public var displayName: String {
+        switch self {
+        case .none: return "No Grouping"
+        case .type: return "Type"
+        case .status: return "Status"
+        case .dateAdded: return "Date Added"
+        case .fileSize: return "File Size"
+        case .domain: return "Domain"
+        case .format: return "Format"
         }
     }
 }
@@ -118,8 +149,9 @@ public struct AppSettings: Codable, Sendable, Equatable {
     public var customCategoryFolders: [String: String]
     public var defaultDownloadDirectoryBookmark: Data?
 
-    // Interactive Download Sorting (Phase 4 Milestone 4.4)
+    // Interactive Download Sorting & Grouping (Phase 4 Milestone 4.4)
     public var downloadSortOrder: DownloadSortOrder
+    public var downloadGroupingOption: DownloadGroupingOption
 
     // Browser Search Engine & Navigation (Workstream B Milestone B.1 & Custom Search Engines)
     public var browserSearchEngine: BrowserSearchEngine
@@ -160,6 +192,7 @@ public struct AppSettings: Codable, Sendable, Equatable {
         customCategoryFolders: [:],
         defaultDownloadDirectoryBookmark: nil,
         downloadSortOrder: .dateAddedDesc,
+        downloadGroupingOption: .none,
         browserSearchEngine: .duckDuckGo,
         customSearchEngines: [],
         activeSearchEngineID: BrowserSearchEngine.duckDuckGo.rawValue,
@@ -197,6 +230,7 @@ public struct AppSettings: Codable, Sendable, Equatable {
         customCategoryFolders: [String: String] = [:],
         defaultDownloadDirectoryBookmark: Data? = nil,
         downloadSortOrder: DownloadSortOrder = .dateAddedDesc,
+        downloadGroupingOption: DownloadGroupingOption = .none,
         browserSearchEngine: BrowserSearchEngine = .duckDuckGo,
         customSearchEngines: [CustomSearchEngine] = [],
         activeSearchEngineID: String? = nil,
@@ -232,6 +266,7 @@ public struct AppSettings: Codable, Sendable, Equatable {
         self.customCategoryFolders = customCategoryFolders
         self.defaultDownloadDirectoryBookmark = defaultDownloadDirectoryBookmark
         self.downloadSortOrder = downloadSortOrder
+        self.downloadGroupingOption = downloadGroupingOption
         self.browserSearchEngine = browserSearchEngine
         self.customSearchEngines = customSearchEngines
         self.activeSearchEngineID = activeSearchEngineID ?? browserSearchEngine.rawValue
@@ -270,6 +305,7 @@ public struct AppSettings: Codable, Sendable, Equatable {
         self.customCategoryFolders = try container.decodeIfPresent([String: String].self, forKey: .customCategoryFolders) ?? [:]
         self.defaultDownloadDirectoryBookmark = try container.decodeIfPresent(Data.self, forKey: .defaultDownloadDirectoryBookmark)
         self.downloadSortOrder = try container.decodeIfPresent(DownloadSortOrder.self, forKey: .downloadSortOrder) ?? .dateAddedDesc
+        self.downloadGroupingOption = try container.decodeIfPresent(DownloadGroupingOption.self, forKey: .downloadGroupingOption) ?? .none
         self.customSearchEngines = try container.decodeIfPresent([CustomSearchEngine].self, forKey: .customSearchEngines) ?? []
         let legacySearchEngine = try container.decodeIfPresent(BrowserSearchEngine.self, forKey: .browserSearchEngine) ?? .duckDuckGo
         self.browserSearchEngine = legacySearchEngine

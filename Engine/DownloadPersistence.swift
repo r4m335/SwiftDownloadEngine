@@ -852,6 +852,33 @@ public enum FileConflictResolver {
         return sanitized
     }
 
+    /// Resolves file destination according to the configured duplicate naming/conflict policy.
+    /// - Returns: The destination URL to use, or `nil` if the `.skip` policy was triggered because the file exists.
+    public static func resolveDestinationURL(
+        desiredFilename: String,
+        directory: URL,
+        policy: DuplicateConflictPolicy,
+        fileManager: FileManager = .default,
+        excludingPaths: Set<String> = []
+    ) -> URL? {
+        let sanitized = sanitizeFilename(desiredFilename)
+        let destination = directory.appendingPathComponent(sanitized, isDirectory: false)
+        let exists = fileManager.fileExists(atPath: destination.path) || excludingPaths.contains(destination.path)
+
+        guard exists else {
+            return destination
+        }
+
+        switch policy {
+        case .autoRename:
+            return uniqueDestinationURL(desiredFilename: desiredFilename, directory: directory, fileManager: fileManager, excludingPaths: excludingPaths)
+        case .overwrite:
+            return destination
+        case .skip:
+            return nil
+        }
+    }
+
     /// Resolves file collisions: if `directory/filename` already exists on disk or in `excludingPaths`,
     /// automatically produces `directory/filename (1).ext`, `directory/filename (2).ext`, etc.
     public static func uniqueDestinationURL(

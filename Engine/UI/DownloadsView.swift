@@ -607,6 +607,7 @@ public struct DownloadsView: View {
     @ViewBuilder
     private var normalToolbarContent: some View {
         sortOrderMenu
+        groupingOptionMenu
 
         Menu {
             Button {
@@ -671,6 +672,27 @@ public struct DownloadsView: View {
         }
     }
 
+    private var groupingOptionMenu: some View {
+        Menu {
+            Section("Group By") {
+                ForEach(DownloadGroupingOption.allCases) { opt in
+                    Button {
+                        viewModel.updateGroupingOption(opt)
+                    } label: {
+                        if viewModel.selectedGroupingOption == opt {
+                            Label(opt.displayName, systemImage: "checkmark")
+                        } else {
+                            Text(opt.displayName)
+                        }
+                    }
+                }
+            }
+        } label: {
+            Image(systemName: "rectangle.3.group")
+                .accessibilityLabel("Group Transfers")
+        }
+    }
+
     // MARK: - Category Pager Transfer List
 
     @ViewBuilder
@@ -678,86 +700,34 @@ public struct DownloadsView: View {
         let transfers = viewModel.filteredTransfers(for: filter)
         if transfers.isEmpty {
             EmptyDownloadsState(filter: filter, category: viewModel.selectedCategory)
-        } else {
+        } else if viewModel.selectedGroupingOption == .none {
             List {
                 ForEach(transfers) { transfer in
-                    HStack(spacing: 12) {
-                        if isSelectingMultiple {
-                            Image(systemName: selectedIDs.contains(transfer.id)
-                                  ? "checkmark.circle.fill"
-                                  : "circle")
-                                .font(.title3)
-                                .foregroundColor(selectedIDs.contains(transfer.id) ? .blue : .secondary)
-                                .animation(.easeInOut(duration: 0.15), value: selectedIDs.contains(transfer.id))
-                                .transition(.scale.combined(with: .opacity))
-                                .onTapGesture {
-                                    toggleSelection(for: transfer.id)
-                                }
-                        }
-
-                        UnifiedTransferRowView(
-                            viewModel: viewModel,
-                            transfer: transfer,
-                            isSelectingMultiple: isSelectingMultiple,
-                            onTapContent: {
-                                if isSelectingMultiple {
-                                    toggleSelection(for: transfer.id)
-                                } else {
-                                    showTransferDetails(transfer)
-                                }
-                            },
-                            onOpen: { openTransferFile(transfer) },
-                            onSaveToFiles: { saveTransferToFiles(transfer) },
-                            onShare: { shareTransferFile(transfer) },
-                            onCopyLink: { copyTransferLink(transfer) },
-                            onShowDetails: { showTransferDetails(transfer) },
-                            onPause: { pauseTransfer(transfer) },
-                            onResume: { resumeTransfer(transfer) },
-                            onRetry: { Task { await viewModel.retryTransfer(transfer) } },
-                            onUpdateLink: { activeSheet = .updateDownloadLink(transfer) },
-                            onRefreshFromBrowser: { viewModel.startBrowserLinkRefresh(for: transfer) },
-                            onRemoveQueue: { removeTransferFromQueue(transfer) },
-                            onDeleteFile: { promptDeleteTransferFile(transfer) }
-                        )
-                    }
-                    .onLongPressGesture(minimumDuration: 0.45) {
-                        guard !isSelectingMultiple else { return }
-                        withAnimation(.easeInOut(duration: 0.2)) {
-                            isSelectingMultiple = true
-                            selectedIDs = [transfer.id]
-                        }
-                        #if canImport(UIKit)
-                        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-                        #endif
-                    }
-                    .listRowBackground(
-                        isSelectingMultiple && selectedIDs.contains(transfer.id)
-                            ? Color.blue.opacity(0.08)
-                            : Color.clear
-                    )
-                    .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                        if !isSelectingMultiple {
-                            Button(role: .destructive) {
-                                removeTransferFromQueue(transfer)
-                            } label: {
-                                Label("Remove", systemImage: "trash")
-                            }
-
-                            if transfer.canResume {
-                                Button {
-                                    resumeTransfer(transfer)
-                                } label: {
-                                    Label("Resume", systemImage: "play.fill")
-                                }
-                                .tint(.green)
-                            } else if transfer.canPause {
-                                Button {
-                                    pauseTransfer(transfer)
-                                } label: {
-                                    Label("Pause", systemImage: "pause.fill")
-                                }
-                                .tint(.orange)
-                            }
+                    transferRow(transfer)
+                }
+            }
+            .listStyle(.plain)
+            .refreshable {
+                await viewModel.refreshSnapshots()
+                await viewModel.refreshTorrentSnapshots()
+            }
+            .onChange(of: viewModel.unifiedTransfers.map(\.id)) { currentIDs in
+                guard isSelectingMultiple else { return }
+                let currentSet = Set(currentIDs)
+                let remaining = selectedIDs.intersection(currentSet)
+                if !selectedIDs.isEmpty && remaining.isEmpty {
+                    withAnimation { exitSelectionMode() }
+                } else {
+                    selectedIDs = remaining
+                }
+            }
+        } else {
+            let groups = DownloadManagerViewModel.groupTransfers(transfers, by: viewModel.selectedGroupingOption)
+            List {
+                ForEach(groups, id: \.key) { group in
+                    Section(header: Text(group.key).font(.subheadline).bold().foregroundColor(.secondary)) {
+                        ForEach(group.transfers) { transfer in
+                            transferRow(transfer)
                         }
                     }
                 }
@@ -775,6 +745,89 @@ public struct DownloadsView: View {
                     withAnimation { exitSelectionMode() }
                 } else {
                     selectedIDs = remaining
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func transferRow(_ transfer: UnifiedTransfer) -> some View {
+        HStack(spacing: 12) {
+            if isSelectingMultiple {
+                Image(systemName: selectedIDs.contains(transfer.id)
+                      ? "checkmark.circle.fill"
+                      : "circle")
+                    .font(.title3)
+                    .foregroundColor(selectedIDs.contains(transfer.id) ? .blue : .secondary)
+                    .animation(.easeInOut(duration: 0.15), value: selectedIDs.contains(transfer.id))
+                    .transition(.scale.combined(with: .opacity))
+                    .onTapGesture {
+                        toggleSelection(for: transfer.id)
+                    }
+            }
+
+            UnifiedTransferRowView(
+                viewModel: viewModel,
+                transfer: transfer,
+                isSelectingMultiple: isSelectingMultiple,
+                onTapContent: {
+                    if isSelectingMultiple {
+                        toggleSelection(for: transfer.id)
+                    } else {
+                        showTransferDetails(transfer)
+                    }
+                },
+                onOpen: { openTransferFile(transfer) },
+                onSaveToFiles: { saveTransferToFiles(transfer) },
+                onShare: { shareTransferFile(transfer) },
+                onCopyLink: { copyTransferLink(transfer) },
+                onShowDetails: { showTransferDetails(transfer) },
+                onPause: { pauseTransfer(transfer) },
+                onResume: { resumeTransfer(transfer) },
+                onRetry: { Task { await viewModel.retryTransfer(transfer) } },
+                onUpdateLink: { activeSheet = .updateDownloadLink(transfer) },
+                onRefreshFromBrowser: { viewModel.startBrowserLinkRefresh(for: transfer) },
+                onRemoveQueue: { removeTransferFromQueue(transfer) },
+                onDeleteFile: { promptDeleteTransferFile(transfer) }
+            )
+        }
+        .onLongPressGesture(minimumDuration: 0.45) {
+            guard !isSelectingMultiple else { return }
+            withAnimation(.easeInOut(duration: 0.2)) {
+                isSelectingMultiple = true
+                selectedIDs = [transfer.id]
+            }
+            #if canImport(UIKit)
+            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+            #endif
+        }
+        .listRowBackground(
+            isSelectingMultiple && selectedIDs.contains(transfer.id)
+                ? Color.blue.opacity(0.08)
+                : Color.clear
+        )
+        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+            if !isSelectingMultiple {
+                Button(role: .destructive) {
+                    removeTransferFromQueue(transfer)
+                } label: {
+                    Label("Remove", systemImage: "trash")
+                }
+
+                if transfer.canResume {
+                    Button {
+                        resumeTransfer(transfer)
+                    } label: {
+                        Label("Resume", systemImage: "play.fill")
+                    }
+                    .tint(.green)
+                } else if transfer.canPause {
+                    Button {
+                        pauseTransfer(transfer)
+                    } label: {
+                        Label("Pause", systemImage: "pause.fill")
+                    }
+                    .tint(.orange)
                 }
             }
         }

@@ -33,11 +33,18 @@ public struct Published<Value> {
 /// UI filter options for the download manager list.
 public enum DownloadFilter: String, CaseIterable, Sendable, Identifiable {
     case all = "All"
-    case active = "Active"
+    case active = "Downloading"
     case paused = "Paused"
     case completed = "Completed"
     case failed = "Failed"
+    case liveRecordings = "Live Recordings"
+    case torrents = "Torrents"
+    case http = "HTTP"
+    case hls = "HLS"
+    case dash = "DASH"
+    case archived = "Archived"
 
+    public static let downloading = DownloadFilter.active
     public var id: String { rawValue }
 
     public var next: DownloadFilter? {
@@ -60,13 +67,37 @@ public struct DownloadStatusCounts: Equatable, Sendable {
     public let paused: Int
     public let completed: Int
     public let failed: Int
+    public var liveRecordings: Int
+    public var torrents: Int
+    public var http: Int
+    public var hls: Int
+    public var dash: Int
+    public var archived: Int
 
-    public init(all: Int, active: Int, paused: Int, completed: Int, failed: Int) {
+    public init(
+        all: Int,
+        active: Int,
+        paused: Int,
+        completed: Int,
+        failed: Int,
+        liveRecordings: Int = 0,
+        torrents: Int = 0,
+        http: Int = 0,
+        hls: Int = 0,
+        dash: Int = 0,
+        archived: Int = 0
+    ) {
         self.all = all
         self.active = active
         self.paused = paused
         self.completed = completed
         self.failed = failed
+        self.liveRecordings = liveRecordings
+        self.torrents = torrents
+        self.http = http
+        self.hls = hls
+        self.dash = dash
+        self.archived = archived
     }
 
     public func count(for filter: DownloadFilter) -> Int {
@@ -76,6 +107,12 @@ public struct DownloadStatusCounts: Equatable, Sendable {
         case .paused: return paused
         case .completed: return completed
         case .failed: return failed
+        case .liveRecordings: return liveRecordings
+        case .torrents: return torrents
+        case .http: return http
+        case .hls: return hls
+        case .dash: return dash
+        case .archived: return archived
         }
     }
 }
@@ -373,6 +410,7 @@ public final class DownloadManagerViewModel: ObservableObject {
     @Published public var selectedFilter: DownloadFilter = .all
     @Published public var selectedCategory: DownloadCategory? = nil
     @Published public var selectedSortOrder: DownloadSortOrder
+    @Published public var selectedGroupingOption: DownloadGroupingOption
 
     // Codable UI Settings Model
     @Published public var appSettings: AppSettings
@@ -539,6 +577,7 @@ public final class DownloadManagerViewModel: ObservableObject {
         }
         self.appSettings = loadedSettings
         self.selectedSortOrder = loadedSettings.downloadSortOrder
+        self.selectedGroupingOption = loadedSettings.downloadGroupingOption
 
         self.maxConcurrentDownloads = loadedSettings.maxConcurrentDownloads
         self.maxGlobalRequests = loadedSettings.maxGlobalRequests
@@ -872,6 +911,32 @@ public final class DownloadManagerViewModel: ObservableObject {
                     return a.createdAt > b.createdAt
                 }
                 return a.id < b.id
+
+            case .speedDesc:
+                let speedA = a.downloadSpeedBytesPerSecond
+                let speedB = b.downloadSpeedBytesPerSecond
+                if speedA != speedB {
+                    return speedA > speedB
+                }
+                if a.createdAt != b.createdAt {
+                    return a.createdAt > b.createdAt
+                }
+                return a.id < b.id
+
+            case .durationDesc:
+                let remA = (a.totalBytes != nil && a.downloadSpeedBytesPerSecond > 0)
+                    ? Double(max(0, a.totalBytes! - a.completedBytes)) / a.downloadSpeedBytesPerSecond
+                    : (a.state == .completed ? 0.0 : Double.greatestFiniteMagnitude)
+                let remB = (b.totalBytes != nil && b.downloadSpeedBytesPerSecond > 0)
+                    ? Double(max(0, b.totalBytes! - b.completedBytes)) / b.downloadSpeedBytesPerSecond
+                    : (b.state == .completed ? 0.0 : Double.greatestFiniteMagnitude)
+                if remA != remB {
+                    return remA > remB
+                }
+                if a.createdAt != b.createdAt {
+                    return a.createdAt > b.createdAt
+                }
+                return a.id < b.id
             }
         }
     }
@@ -882,6 +947,70 @@ public final class DownloadManagerViewModel: ObservableObject {
         self.appSettings.downloadSortOrder = newOrder
         self.appSettings.save(to: userDefaults)
         self.rebuildUnifiedTransfers()
+    }
+
+    /// Updates the active download grouping option, persisting to AppSettings.
+    public func updateGroupingOption(_ newOption: DownloadGroupingOption) {
+        self.selectedGroupingOption = newOption
+        self.appSettings.downloadGroupingOption = newOption
+        self.appSettings.save(to: userDefaults)
+    }
+
+    /// Groups transfers deterministically according to the specified grouping option.
+    nonisolated public static func groupTransfers(
+        _ transfers: [UnifiedTransfer],
+        by option: DownloadGroupingOption
+    ) -> [(key: String, transfers: [UnifiedTransfer])] {
+        guard option != .none else {
+            return [("", transfers)]
+        }
+
+        var groups: [String: [UnifiedTransfer]] = [:]
+        for transfer in transfers {
+            let key: String
+            switch option {
+            case .none:
+                key = ""
+            case .type:
+                key = transfer.type.shortName
+            case .status:
+                key = transfer.state.badgeText
+            case .dateAdded:
+                let cal = Calendar.current
+                if cal.isDateInToday(transfer.createdAt) {
+                    key = "Today"
+                } else if cal.isDateInYesterday(transfer.createdAt) {
+                    key = "Yesterday"
+                } else if let weekAgo = cal.date(byAdding: .day, value: -7, to: Date()), transfer.createdAt >= weekAgo {
+                    key = "This Week"
+                } else {
+                    key = "Earlier"
+                }
+            case .fileSize:
+                let bytes = transfer.totalBytes ?? transfer.completedBytes
+                if bytes < 10 * 1024 * 1024 {
+                    key = "< 10 MB"
+                } else if bytes < 100 * 1024 * 1024 {
+                    key = "10 – 100 MB"
+                } else if bytes < 1024 * 1024 * 1024 {
+                    key = "100 MB – 1 GB"
+                } else {
+                    key = "> 1 GB"
+                }
+            case .domain:
+                if let host = URL(string: transfer.source)?.host, !host.isEmpty {
+                    key = host
+                } else {
+                    key = "Local / Swarm"
+                }
+            case .format:
+                let ext = transfer.destinationURL.pathExtension.uppercased()
+                key = ext.isEmpty ? "Unknown" : ext
+            }
+            groups[key, default: []].append(transfer)
+        }
+
+        return groups.keys.sorted().map { ($0, groups[$0]!) }
     }
 
     private func rebuildUnifiedTransfers() {
@@ -1068,6 +1197,18 @@ public final class DownloadManagerViewModel: ObservableObject {
                 guard snap.state == .completed else { return false }
             case .failed:
                 if case .failed = snap.state {} else { return false }
+            case .liveRecordings:
+                guard snap.destinationURL.pathExtension.lowercased() == "ts" || snap.url.lastPathComponent.lowercased().contains("live") else { return false }
+            case .torrents:
+                return false
+            case .http:
+                guard snap.url.pathExtension.lowercased() != "m3u8" && snap.url.pathExtension.lowercased() != "mpd" else { return false }
+            case .hls:
+                guard snap.url.pathExtension.lowercased() == "m3u8" || snap.url.absoluteString.contains(".m3u8") else { return false }
+            case .dash:
+                guard snap.url.pathExtension.lowercased() == "mpd" || snap.url.absoluteString.contains(".mpd") else { return false }
+            case .archived:
+                return false
             }
 
             if let category = selectedCategory {
@@ -1087,19 +1228,25 @@ public final class DownloadManagerViewModel: ObservableObject {
         var pausedCount = 0
         var completedCount = 0
         var failedCount = 0
+        var liveCount = 0
+        var torrentCount = 0
+        var httpCount = 0
+        var hlsCount = 0
+        var dashCount = 0
+        var archivedCount = 0
 
         for item in unifiedTransfers {
             allCount += 1
-            switch item.state {
-            case .downloading, .seeding, .queued:
-                activeCount += 1
-            case .paused:
-                pausedCount += 1
-            case .completed:
-                completedCount += 1
-            case .failed:
-                failedCount += 1
-            }
+            if item.matchesFilter(.active) { activeCount += 1 }
+            if item.matchesFilter(.paused) { pausedCount += 1 }
+            if item.matchesFilter(.completed) { completedCount += 1 }
+            if item.matchesFilter(.failed) { failedCount += 1 }
+            if item.matchesFilter(.liveRecordings) { liveCount += 1 }
+            if item.matchesFilter(.torrents) { torrentCount += 1 }
+            if item.matchesFilter(.http) { httpCount += 1 }
+            if item.matchesFilter(.hls) { hlsCount += 1 }
+            if item.matchesFilter(.dash) { dashCount += 1 }
+            if item.matchesFilter(.archived) { archivedCount += 1 }
         }
 
         return DownloadStatusCounts(
@@ -1107,7 +1254,13 @@ public final class DownloadManagerViewModel: ObservableObject {
             active: activeCount,
             paused: pausedCount,
             completed: completedCount,
-            failed: failedCount
+            failed: failedCount,
+            liveRecordings: liveCount,
+            torrents: torrentCount,
+            http: httpCount,
+            hls: hlsCount,
+            dash: dashCount,
+            archived: archivedCount
         )
     }
 
@@ -2420,7 +2573,7 @@ extension DownloadManagerViewModel: DownloadNotificationActionDelegate {
                 if let path = userInfo[DownloadNotificationManager.destinationURLUserInfoKey] as? String {
                     let fileURL = URL(fileURLWithPath: path)
                     #if canImport(UIKit) && !os(watchOS)
-                    UIApplication.shared.open(fileURL)
+                    _ = await UIApplication.shared.open(fileURL)
                     #endif
                 }
             default:
