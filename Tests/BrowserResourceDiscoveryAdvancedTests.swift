@@ -19,7 +19,7 @@ final class BrowserResourceDiscoveryAdvancedTests: XCTestCase {
         let obs1 = BrowserMediaDiscoveryObservation(
             url: URL(string: "https://example.com/video1.mp4")!,
             rawURL: "https://example.com/video1.mp4",
-            source: .domElement,
+            source: .mediaElement,
             tag: "video",
             declaredType: "video/mp4",
             documentID: "doc-1",
@@ -43,7 +43,7 @@ final class BrowserResourceDiscoveryAdvancedTests: XCTestCase {
         let lateObs = BrowserMediaDiscoveryObservation(
             url: URL(string: "https://example.com/old_stale_asset.mp4")!,
             rawURL: "https://example.com/old_stale_asset.mp4",
-            source: .xhr,
+            source: .xmlHttpRequest,
             declaredType: "video/mp4",
             documentID: "doc-1",
             pageOrigin: URL(string: "https://example.com")!,
@@ -63,7 +63,7 @@ final class BrowserResourceDiscoveryAdvancedTests: XCTestCase {
         let validObs = BrowserMediaDiscoveryObservation(
             url: URL(string: "https://example.com/video2.mp4")!,
             rawURL: "https://example.com/video2.mp4",
-            source: .domElement,
+            source: .mediaElement,
             tag: "video",
             declaredType: "video/mp4",
             documentID: "doc-2",
@@ -314,7 +314,7 @@ final class BrowserResourceDiscoveryAdvancedTests: XCTestCase {
             let currentObs = BrowserMediaDiscoveryObservation(
                 url: URL(string: "https://spa-app.io/video_\(step).mp4")!,
                 rawURL: "https://spa-app.io/video_\(step).mp4",
-                source: .domElement,
+                source: .mediaElement,
                 tag: "video",
                 declaredType: "video/mp4",
                 documentID: "route-\(step)",
@@ -332,7 +332,7 @@ final class BrowserResourceDiscoveryAdvancedTests: XCTestCase {
                 let staleObs = BrowserMediaDiscoveryObservation(
                     url: URL(string: "https://spa-app.io/video_stale_\(staleStep).mp4")!,
                     rawURL: "https://spa-app.io/video_stale_\(staleStep).mp4",
-                    source: .xhr,
+                    source: .xmlHttpRequest,
                     declaredType: "video/mp4",
                     documentID: "route-\(staleStep)",
                     pageOrigin: URL(string: "https://spa-app.io")!,
