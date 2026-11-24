@@ -476,7 +476,7 @@ public actor DownloadCoordinator {
         } else if let snapshot = DownloadRequestEnricher.sharedSessionSnapshot.snapshot {
             var headers: [String: String] = [:]
             if !snapshot.allCookies.isEmpty {
-                let matching = snapshot.allCookies.filter { DownloadRequestEnricher.cookieMatches(cookieDomain: $0.domain, isSecure: $0.isSecure, path: $0.path, url: url) }
+                let matching = snapshot.allCookies.filter { $0.matches(url: url) }
                 if !matching.isEmpty {
                     headers["Cookie"] = matching.map { "\($0.name)=\($0.value)" }.joined(separator: "; ")
                 }
