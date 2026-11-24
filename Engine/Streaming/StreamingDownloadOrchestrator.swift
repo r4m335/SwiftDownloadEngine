@@ -765,43 +765,51 @@ public actor BackgroundStreamingSegmentExecutor: StreamingSegmentExecutor {
     }
 }
 
+private final class StreamingTaskRegistry: @unchecked Sendable {
+    private let lock = NSLock()
+    private var tasks: [String: Set<URLSessionDownloadTask>] = [:]
+
+    func register(transferID: String, task: URLSessionDownloadTask) {
+        lock.lock()
+        defer { lock.unlock() }
+        tasks[transferID, default: []].insert(task)
+    }
+
+    func unregister(transferID: String, task: URLSessionDownloadTask) {
+        lock.lock()
+        defer { lock.unlock() }
+        tasks[transferID]?.remove(task)
+        if tasks[transferID]?.isEmpty == true {
+            tasks.removeValue(forKey: transferID)
+        }
+    }
+
+    func take(transferID: String) -> Set<URLSessionDownloadTask> {
+        lock.lock()
+        defer { lock.unlock() }
+        return tasks.removeValue(forKey: transferID) ?? []
+    }
+
+    func hasTasks(transferID: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return !(tasks[transferID]?.isEmpty ?? true)
+    }
+}
+
 /// Standalone segment executor using URLSession for environments where DownloadCoordinator is not yet injected.
 public actor URLSessionStreamingSegmentExecutor: StreamingSegmentExecutor {
     public static let sharedSession: URLSession = ForegroundURLSession.make()
 
     private let session: URLSession
-    private let taskLock = NSLock()
-    private var activeTasks: [String: Set<URLSessionDownloadTask>] = [:]
+    private let taskRegistry = StreamingTaskRegistry()
 
     public init(session: URLSession? = nil) {
         self.session = session ?? Self.sharedSession
     }
 
-    private nonisolated func registerActiveTask(transferID: String, task: URLSessionDownloadTask) {
-        taskLock.lock()
-        defer { taskLock.unlock() }
-        activeTasks[transferID, default: []].insert(task)
-    }
-
-    private nonisolated func unregisterActiveTask(transferID: String, task: URLSessionDownloadTask) {
-        taskLock.lock()
-        defer { taskLock.unlock() }
-        activeTasks[transferID]?.remove(task)
-        if activeTasks[transferID]?.isEmpty == true {
-            activeTasks.removeValue(forKey: transferID)
-        }
-    }
-
-    private nonisolated func takeActiveTasks(for transferID: String) -> Set<URLSessionDownloadTask> {
-        taskLock.lock()
-        defer { taskLock.unlock() }
-        return activeTasks.removeValue(forKey: transferID) ?? []
-    }
-
     public nonisolated func hasActiveTasks(for transferID: String) -> Bool {
-        taskLock.lock()
-        defer { taskLock.unlock() }
-        return !(activeTasks[transferID]?.isEmpty ?? true)
+        taskRegistry.hasTasks(transferID: transferID)
     }
 
     public func execute(
@@ -828,7 +836,7 @@ public actor URLSessionStreamingSegmentExecutor: StreamingSegmentExecutor {
                     var taskRef: URLSessionDownloadTask?
                     let task = self.session.downloadTask(with: urlRequest) { [weak self] tempURL, response, error in
                         if let taskRef {
-                            self?.unregisterActiveTask(transferID: transferID, task: taskRef)
+                            self?.taskRegistry.unregister(transferID: transferID, task: taskRef)
                         }
                         if let error = error {
                             continuation.resume(throwing: error)
@@ -839,7 +847,7 @@ public actor URLSessionStreamingSegmentExecutor: StreamingSegmentExecutor {
                         }
                     }
                     taskRef = task
-                    self.registerActiveTask(transferID: transferID, task: task)
+                    self.taskRegistry.register(transferID: transferID, task: task)
                     task.resume()
                 }
             } onCancel: {
@@ -932,11 +940,11 @@ public actor URLSessionStreamingSegmentExecutor: StreamingSegmentExecutor {
     }
 
     public func cancel(transferID: String) async {
-        let tasks = takeActiveTasks(for: transferID)
+        let tasks = taskRegistry.take(transferID: transferID)
         for task in tasks {
             task.cancel()
         }
-        while hasActiveTasks(for: transferID) {
+        while taskRegistry.hasTasks(transferID: transferID) {
             try? await Task.sleep(nanoseconds: 10_000_000)
         }
     }
