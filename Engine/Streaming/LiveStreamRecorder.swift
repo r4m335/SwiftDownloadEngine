@@ -1083,10 +1083,10 @@ public final class LiveStreamRecorder: ObservableObject {
 
             do {
                 let assemblyOutput = try await MediaAssembler.assemble(assemblyReq)
-                let finalBytes = (try? FileManager.default.attributesOfItem(atPath: assemblyOutput.publishedDestinationURL.path)[.size] as? Int64) ?? bytesWritten
+                let finalBytes = (try? FileManager.default.attributesOfItem(atPath: assemblyOutput.destinationURL.path)[.size] as? Int64) ?? bytesWritten
                 self.bytesWritten = finalBytes
                 _ = await (libraryStore ?? .shared).scanLibrary(in: destDir)
-                return assemblyOutput.publishedDestinationURL
+                return assemblyOutput.destinationURL
             } catch {
                 PipelineLogger.shared.log("[LiveStreamRecorder] MediaAssembler multi-track remux failed: \(error.localizedDescription). Falling back to direct concatenation.")
             }
