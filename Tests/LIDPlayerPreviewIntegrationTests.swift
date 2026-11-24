@@ -28,7 +28,7 @@ final class LIDPlayerPreviewIntegrationTests: XCTestCase {
         let nonExistentURL = URL(fileURLWithPath: "/tmp/non_existent_media_\(UUID().uuidString).mp4")
         let nonExistentResult = LIDPreviewPreflight.preflight(localFileURL: nonExistentURL)
         if case .failure(let error) = nonExistentResult {
-            XCTAssertEqual(error, .fileNotFound(nonExistentURL))
+            XCTAssertEqual(error, LIDPreviewPreflightError.fileNotFound(nonExistentURL))
         } else {
             XCTFail("Expected .fileNotFound error for missing file")
         }
@@ -37,7 +37,7 @@ final class LIDPlayerPreviewIntegrationTests: XCTestCase {
         let emptyURL = createTempFile(name: "empty.mp4", content: Data())
         let emptyResult = LIDPreviewPreflight.preflight(localFileURL: emptyURL)
         if case .failure(let error) = emptyResult {
-            XCTAssertEqual(error, .fileEmpty(emptyURL))
+            XCTAssertEqual(error, LIDPreviewPreflightError.fileEmpty(emptyURL))
         } else {
             XCTFail("Expected .fileEmpty error for 0-byte file")
         }
@@ -89,13 +89,13 @@ final class LIDPlayerPreviewIntegrationTests: XCTestCase {
             url: URL(string: "https://example.com/protected/master.m3u8")!,
             title: "Encrypted Stream",
             suggestedFilename: "master.m3u8",
-            resourceType: .streamManifest,
+            resourceType: .video,
             isDRMProtected: true,
             drmProtectionType: "FairPlay"
         )
         let drmResult = LIDPreviewPreflight.preflight(resource: drmResource)
         if case .failure(let error) = drmResult {
-            XCTAssertEqual(error, .drmProtected(type: "FairPlay"))
+            XCTAssertEqual(error, LIDPreviewPreflightError.drmProtected(type: "FairPlay"))
         } else {
             XCTFail("Expected DRM protection rejection")
         }
@@ -109,7 +109,7 @@ final class LIDPlayerPreviewIntegrationTests: XCTestCase {
         )
         let blobResult = LIDPreviewPreflight.preflight(resource: blobResource)
         if case .failure(let error) = blobResult {
-            XCTAssertEqual(error, .blobResourceUnsupported)
+            XCTAssertEqual(error, LIDPreviewPreflightError.blobResourceUnsupported)
         } else {
             XCTFail("Expected blob resource rejection")
         }
@@ -123,7 +123,7 @@ final class LIDPlayerPreviewIntegrationTests: XCTestCase {
         )
         let segmentResult = LIDPreviewPreflight.preflight(resource: segmentResource)
         if case .failure(let error) = segmentResult {
-            XCTAssertEqual(error, .segmentChunkUnsupported)
+            XCTAssertEqual(error, LIDPreviewPreflightError.segmentChunkUnsupported)
         } else {
             XCTFail("Expected segment chunk rejection")
         }
@@ -144,7 +144,7 @@ final class LIDPlayerPreviewIntegrationTests: XCTestCase {
         )
         let expiredResult = LIDPreviewPreflight.preflight(resource: expiredResource, now: referenceDate)
         if case .failure(let error) = expiredResult {
-            XCTAssertEqual(error, .tokenExpired(expiredURL))
+            XCTAssertEqual(error, LIDPreviewPreflightError.tokenExpired(expiredURL))
         } else {
             XCTFail("Expected token expired failure")
         }
@@ -185,7 +185,7 @@ final class LIDPlayerPreviewIntegrationTests: XCTestCase {
             url: cookieURL,
             title: "Auth Stream",
             suggestedFilename: "master.m3u8",
-            resourceType: .streamManifest,
+            resourceType: .video,
             requestContext: context
         )
 
