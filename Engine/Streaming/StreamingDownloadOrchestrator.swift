@@ -2425,7 +2425,7 @@ public actor StreamingDownloadOrchestrator {
         let variantKey = proposal.manifest.manifestURL.absoluteString
         registeredTransferIDs[masterKey] = proposal.transferID
         registeredTransferIDs[variantKey] = proposal.transferID
-        registeredTransferIDs[proposal.transferID] = masterKey
+        registeredTransferIDs[proposal.transferID] = proposal.transferID
         return proposal
     }
 
@@ -4273,7 +4273,7 @@ public actor StreamingDownloadOrchestrator {
         let manifestKey = originalSourceURL.absoluteString
         registeredTransferIDs[manifestKey] = parentID
         registeredTransferIDs[transferPlan.manifestURL.absoluteString] = parentID
-        registeredTransferIDs[parentID] = manifestKey
+        registeredTransferIDs[parentID] = parentID
         proposals[parentID] = runProposal
         proposals[proposal.transferID] = runProposal
 
