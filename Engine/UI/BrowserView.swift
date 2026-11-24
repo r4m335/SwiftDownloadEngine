@@ -481,7 +481,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
     public var onOpenDownloads: (() -> Void)? = nil
     @Published public var preferredStreamingTransportPolicy: HTTPTransportPolicy? = .background
 
-    private var tabManager = BrowserTabManager()
+    var tabManager = BrowserTabManager()
     public var mediaCandidateCatalogs: [UUID: BrowserMediaCandidateCatalog] {
         get { discoveryCoordinator.mediaCandidateCatalogs }
         set { discoveryCoordinator.mediaCandidateCatalogs = newValue }
@@ -1382,7 +1382,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         return session
     }
 
-    fileprivate func updateWebViewState(
+    func updateWebViewState(
         for tabID: UUID,
         webView: WKWebView,
         url: URL?,

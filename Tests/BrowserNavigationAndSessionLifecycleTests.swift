@@ -172,7 +172,7 @@ final class BrowserNavigationAndSessionLifecycleTests: XCTestCase {
             url: URL(string: "https://example.com/playlist.m3u8")!,
             title: "Tab 1 Stream",
             suggestedFilename: "playlist.m3u8",
-            resourceType: .manifest
+            resourceType: .video
         )
         vm.discoveredResources = [res1]
         vm.tabDiscoveredResources[tab1ID] = [res1]
