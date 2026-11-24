@@ -306,7 +306,7 @@ public final class BrowserResourceDiscoveryCoordinator: ObservableObject {
         syncMediaCandidatesToDiscoveredResources(for: activeTabID, activeTabID: activeTabID)
     }
 
-    public static func isPreservedCandidateOnRescan(_ candidate: BrowserMediaCandidate) -> Bool {
+    public nonisolated static func isPreservedCandidateOnRescan(_ candidate: BrowserMediaCandidate) -> Bool {
         candidate.blobKind == .mediaSource ||
         candidate.kind == .mediaSource ||
         candidate.blobKind == .blob ||
