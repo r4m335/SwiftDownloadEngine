@@ -83,6 +83,7 @@ public final class BrowserResourceDiscoveryCoordinator: ObservableObject {
     public func saveTabState(
         for tabID: UUID,
         sortOption: ResourceSortOption = .newest,
+        sortDirection: SortDirection = .descending,
         groupingOption: ResourceGroupingOption = .none
     ) {
         tabDiscoveredResources[tabID] = discoveredResources
@@ -93,24 +94,26 @@ public final class BrowserResourceDiscoveryCoordinator: ObservableObject {
             variantStreamItems: variantStreamItems,
             selectedResourceIDs: selectedResourceIDs,
             sortOption: sortOption,
+            sortDirection: sortDirection,
             groupingOption: groupingOption
         )
     }
 
     public func restoreTabState(
         for tabID: UUID?
-    ) -> (resources: [WebpageResource], variants: [String: HLSVariantStreamItem], selections: Set<String>, sort: ResourceSortOption, group: ResourceGroupingOption) {
+    ) -> (resources: [WebpageResource], variants: [String: HLSVariantStreamItem], selections: Set<String>, sort: ResourceSortOption, sortDirection: SortDirection, group: ResourceGroupingOption) {
         guard let targetID = tabID else {
             discoveredResources = []
             variantStreamItems = [:]
             selectedResourceIDs = []
-            return ([], [:], [], .newest, .none)
+            return ([], [:], [], .newest, .descending, .none)
         }
 
         let restoredResources = tabDiscoveredResources[targetID] ?? tabResourceStates[targetID]?.discoveredResources ?? []
         let restoredVariants = tabVariantStreamItems[targetID] ?? tabResourceStates[targetID]?.variantStreamItems ?? [:]
         let restoredSelections = tabSelectedResourceIDs[targetID] ?? tabResourceStates[targetID]?.selectedResourceIDs ?? []
         let sortOpt = tabResourceStates[targetID]?.sortOption ?? .newest
+        let sortDir = tabResourceStates[targetID]?.sortDirection ?? .descending
         let groupOpt = tabResourceStates[targetID]?.groupingOption ?? .none
 
         discoveredResources = restoredResources
@@ -125,17 +128,19 @@ public final class BrowserResourceDiscoveryCoordinator: ObservableObject {
             variantStreamItems: restoredVariants,
             selectedResourceIDs: restoredSelections,
             sortOption: sortOpt,
+            sortDirection: sortDir,
             groupingOption: groupOpt
         )
 
         publishMediaCandidates(activeTabID: targetID)
-        return (restoredResources, restoredVariants, restoredSelections, sortOpt, groupOpt)
+        return (restoredResources, restoredVariants, restoredSelections, sortOpt, sortDir, groupOpt)
     }
 
     public func resourceState(
         for tabID: UUID?,
         activeTabID: UUID?,
         sortOption: ResourceSortOption = .newest,
+        sortDirection: SortDirection = .descending,
         groupingOption: ResourceGroupingOption = .none
     ) -> BrowserTabResourceState {
         let targetID = tabID ?? activeTabID
@@ -145,6 +150,7 @@ public final class BrowserResourceDiscoveryCoordinator: ObservableObject {
                 variantStreamItems: variantStreamItems,
                 selectedResourceIDs: selectedResourceIDs,
                 sortOption: sortOption,
+                sortDirection: sortDirection,
                 groupingOption: groupingOption
             )
         } else if let targetID {
@@ -153,6 +159,7 @@ public final class BrowserResourceDiscoveryCoordinator: ObservableObject {
                 variantStreamItems: tabVariantStreamItems[targetID] ?? [:],
                 selectedResourceIDs: tabSelectedResourceIDs[targetID] ?? [],
                 sortOption: sortOption,
+                sortDirection: sortDirection,
                 groupingOption: groupingOption
             )
         }
@@ -161,6 +168,7 @@ public final class BrowserResourceDiscoveryCoordinator: ObservableObject {
             variantStreamItems: variantStreamItems,
             selectedResourceIDs: selectedResourceIDs,
             sortOption: sortOption,
+            sortDirection: sortDirection,
             groupingOption: groupingOption
         )
     }

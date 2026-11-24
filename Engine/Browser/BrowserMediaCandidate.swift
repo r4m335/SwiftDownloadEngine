@@ -1271,6 +1271,38 @@ extension BrowserMediaCandidate {
                 let fn1 = rhs.suggestedFilename ?? ""
                 return fn0.localizedCaseInsensitiveCompare(fn1) == .orderedAscending
             }
+        case .resolution:
+            return candidates.sorted { (lhs: BrowserMediaCandidate, rhs: BrowserMediaCandidate) -> Bool in
+                let h0 = variantMetadataMap[lhs.id]?.resolution?.height ?? lhs.height ?? 0
+                let h1 = variantMetadataMap[rhs.id]?.resolution?.height ?? rhs.height ?? 0
+                if h0 != h1 { return h0 > h1 }
+                let w0 = variantMetadataMap[lhs.id]?.resolution?.width ?? lhs.width ?? 0
+                let w1 = variantMetadataMap[rhs.id]?.resolution?.width ?? rhs.width ?? 0
+                if w0 != w1 { return w0 > w1 }
+                return lhs.lastObserved > rhs.lastObserved
+            }
+        case .bitrate:
+            return candidates.sorted { (lhs: BrowserMediaCandidate, rhs: BrowserMediaCandidate) -> Bool in
+                let bw0 = variantMetadataMap[lhs.id]?.bandwidth ?? 0
+                let bw1 = variantMetadataMap[rhs.id]?.bandwidth ?? 0
+                if bw0 != bw1 { return bw0 > bw1 }
+                return lhs.lastObserved > rhs.lastObserved
+            }
+        case .duration:
+            return candidates.sorted { (lhs: BrowserMediaCandidate, rhs: BrowserMediaCandidate) -> Bool in
+                let d0 = lhs.duration ?? 0
+                let d1 = rhs.duration ?? 0
+                if d0 != d1 { return d0 > d1 }
+                return lhs.lastObserved > rhs.lastObserved
+            }
+        case .domain:
+            return candidates.sorted { (lhs: BrowserMediaCandidate, rhs: BrowserMediaCandidate) -> Bool in
+                let dom0 = lhs.url?.host ?? ""
+                let dom1 = rhs.url?.host ?? ""
+                let cmp = dom0.localizedCaseInsensitiveCompare(dom1)
+                if cmp != .orderedSame { return cmp == .orderedAscending }
+                return lhs.lastObserved > rhs.lastObserved
+            }
         case .type:
             return candidates.sorted { (lhs: BrowserMediaCandidate, rhs: BrowserMediaCandidate) -> Bool in
                 if lhs.kind.rawValue != rhs.kind.rawValue {

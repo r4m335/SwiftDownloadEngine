@@ -1,5 +1,9 @@
 import Foundation
 
+#if canImport(UIKit)
+import UIKit
+#endif
+
 #if canImport(FoundationNetworking)
 import FoundationNetworking
 #endif

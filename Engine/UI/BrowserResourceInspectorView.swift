@@ -19,16 +19,23 @@ public struct BrowserResourceInspectorSheet: View {
     @Environment(\.presentationMode) private var presentationMode
 
     @State private var selectedCategory: WebpageResourceType? = nil
+    @State private var selectedTrackType: ResourceTrackType? = nil
     @State private var showsAllResources = false
     @State private var searchText: String = ""
     @State private var activePlaybackSource: LIDPlayerSource? = nil
     @State private var drmWarningAlert: String? = nil
     @State private var sortOption: ResourceSortOption = .newest
+    @State private var sortDirection: SortDirection = .descending
     @State private var groupingOption: ResourceGroupingOption = .none
+    @State private var isSelectionMode: Bool = false
+    @State private var selectedResourceIDs: Set<String> = []
+    @State private var collapsedSections: Set<String> = []
+    @State private var lastScanTimestamp: Date = .distantPast
 
     public init(viewModel: BrowserViewModel) {
         self.viewModel = viewModel
         _sortOption = State(initialValue: viewModel.resourceSortOption)
+        _sortDirection = State(initialValue: viewModel.resourceSortDirection)
         _groupingOption = State(initialValue: viewModel.resourceGroupingOption)
     }
 
@@ -153,9 +160,11 @@ public struct BrowserResourceInspectorSheet: View {
         in discoveredResources: [WebpageResource],
         variantURLs: Set<String>? = nil,
         selectedCategory: WebpageResourceType? = nil,
+        selectedTrackType: ResourceTrackType? = nil,
         showsAllResources: Bool = false,
         searchText: String = "",
         sortOption: ResourceSortOption = .newest,
+        sortDirection: SortDirection = .descending,
         variantMetadataMap: [String: HLSVariantStreamItem] = [:]
     ) -> [WebpageResource] {
         let base = eligibleResources(in: discoveredResources, variantURLs: variantURLs, showsAllResources: showsAllResources)
@@ -163,17 +172,46 @@ public struct BrowserResourceInspectorSheet: View {
         let cleanSearch = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         let resources = base.filter { res in
             let matchesCategory = selectedCategory == nil || res.resourceType == selectedCategory
+            let matchesTrackType = selectedTrackType == nil || res.trackType == selectedTrackType
             let matchesDefaultMedia = showsAllResources ||
                 selectedCategory != nil ||
+                selectedTrackType != nil ||
                 (res.resourceType == .video && (!res.isMediaSourceBlob || !hasStreamingManifest)) ||
                 res.resourceType == .audio
             let matchesSearch = cleanSearch.isEmpty ||
                 res.title.localizedCaseInsensitiveContains(cleanSearch) ||
                 res.suggestedFilename.localizedCaseInsensitiveContains(cleanSearch) ||
-                res.url.absoluteString.localizedCaseInsensitiveContains(cleanSearch)
-            return matchesCategory && matchesDefaultMedia && matchesSearch
+                res.url.absoluteString.localizedCaseInsensitiveContains(cleanSearch) ||
+                (res.url.host?.localizedCaseInsensitiveContains(cleanSearch) == true) ||
+                (res.codecs?.localizedCaseInsensitiveContains(cleanSearch) == true) ||
+                (res.resolutionText?.localizedCaseInsensitiveContains(cleanSearch) == true) ||
+                (res.audioLanguage?.localizedCaseInsensitiveContains(cleanSearch) == true) ||
+                (res.container?.localizedCaseInsensitiveContains(cleanSearch) == true)
+            return matchesCategory && matchesTrackType && matchesDefaultMedia && matchesSearch
         }
-        return sortedResources(resources, sortOption: sortOption, variantMetadataMap: variantMetadataMap)
+        return sortedResources(resources, sortOption: sortOption, direction: sortDirection, variantMetadataMap: variantMetadataMap)
+    }
+
+    public static func filteredResources(
+        in discoveredResources: [WebpageResource],
+        variantURLs: Set<String>? = nil,
+        selectedCategory: WebpageResourceType? = nil,
+        showsAllResources: Bool = false,
+        searchText: String = "",
+        sortOption: ResourceSortOption = .newest,
+        variantMetadataMap: [String: HLSVariantStreamItem] = [:]
+    ) -> [WebpageResource] {
+        filteredResources(
+            in: discoveredResources,
+            variantURLs: variantURLs,
+            selectedCategory: selectedCategory,
+            selectedTrackType: nil,
+            showsAllResources: showsAllResources,
+            searchText: searchText,
+            sortOption: sortOption,
+            sortDirection: .descending,
+            variantMetadataMap: variantMetadataMap
+        )
     }
 
     public var filteredResources: [WebpageResource] {
@@ -181,9 +219,11 @@ public struct BrowserResourceInspectorSheet: View {
             in: viewModel.discoveredResources,
             variantURLs: knownHLSVariantURLs,
             selectedCategory: selectedCategory,
+            selectedTrackType: selectedTrackType,
             showsAllResources: showsAllResources,
             searchText: searchText,
             sortOption: sortOption,
+            sortDirection: sortDirection,
             variantMetadataMap: variantMetadataMap
         )
     }
@@ -221,11 +261,13 @@ public struct BrowserResourceInspectorSheet: View {
     public static func sortedResources(
         _ resources: [WebpageResource],
         sortOption: ResourceSortOption,
+        direction: SortDirection = .descending,
         variantMetadataMap: [String: HLSVariantStreamItem] = [:]
     ) -> [WebpageResource] {
+        let sorted: [WebpageResource]
         switch sortOption {
         case .newest:
-            return resources.sorted { (lhs: WebpageResource, rhs: WebpageResource) -> Bool in
+            sorted = resources.sorted { (lhs: WebpageResource, rhs: WebpageResource) -> Bool in
                 if lhs.discoveredAt != rhs.discoveredAt {
                     return lhs.discoveredAt > rhs.discoveredAt
                 }
@@ -235,7 +277,7 @@ public struct BrowserResourceInspectorSheet: View {
                 return lhs.suggestedFilename.localizedCaseInsensitiveCompare(rhs.suggestedFilename) == .orderedAscending
             }
         case .size:
-            return resources.sorted { (lhs: WebpageResource, rhs: WebpageResource) -> Bool in
+            sorted = resources.sorted { (lhs: WebpageResource, rhs: WebpageResource) -> Bool in
                 let size0 = variantMetadataMap[lhs.id]?.estimatedSizeBytes ?? lhs.estimatedSize ?? 0
                 let size1 = variantMetadataMap[rhs.id]?.estimatedSizeBytes ?? rhs.estimatedSize ?? 0
                 if size0 != size1 {
@@ -247,7 +289,7 @@ public struct BrowserResourceInspectorSheet: View {
                 return lhs.suggestedFilename.localizedCaseInsensitiveCompare(rhs.suggestedFilename) == .orderedAscending
             }
         case .name:
-            return resources.sorted { (lhs: WebpageResource, rhs: WebpageResource) -> Bool in
+            sorted = resources.sorted { (lhs: WebpageResource, rhs: WebpageResource) -> Bool in
                 let cmp = lhs.suggestedFilename.localizedCaseInsensitiveCompare(rhs.suggestedFilename)
                 if cmp != .orderedSame {
                     return cmp == .orderedAscending
@@ -255,7 +297,7 @@ public struct BrowserResourceInspectorSheet: View {
                 return lhs.discoveredAt > rhs.discoveredAt
             }
         case .quality:
-            return resources.sorted { (lhs: WebpageResource, rhs: WebpageResource) -> Bool in
+            sorted = resources.sorted { (lhs: WebpageResource, rhs: WebpageResource) -> Bool in
                 let h0 = extractHeight(from: lhs, variantMetadataMap: variantMetadataMap)
                 let h1 = extractHeight(from: rhs, variantMetadataMap: variantMetadataMap)
                 if h0 != h1 {
@@ -271,40 +313,97 @@ public struct BrowserResourceInspectorSheet: View {
                 }
                 return lhs.suggestedFilename.localizedCaseInsensitiveCompare(rhs.suggestedFilename) == .orderedAscending
             }
+        case .resolution:
+            sorted = resources.sorted { (lhs: WebpageResource, rhs: WebpageResource) -> Bool in
+                let h0 = extractHeight(from: lhs, variantMetadataMap: variantMetadataMap)
+                let h1 = extractHeight(from: rhs, variantMetadataMap: variantMetadataMap)
+                if h0 != h1 { return h0 > h1 }
+                let w0 = variantMetadataMap[lhs.id]?.resolution?.width ?? 0
+                let w1 = variantMetadataMap[rhs.id]?.resolution?.width ?? 0
+                if w0 != w1 { return w0 > w1 }
+                return lhs.discoveredAt > rhs.discoveredAt
+            }
+        case .bitrate:
+            sorted = resources.sorted { (lhs: WebpageResource, rhs: WebpageResource) -> Bool in
+                let bw0 = variantMetadataMap[lhs.id]?.bandwidth ?? lhs.bitrate ?? lhs.hlsVariantPreferences?.maximumBandwidth ?? 0
+                let bw1 = variantMetadataMap[rhs.id]?.bandwidth ?? rhs.bitrate ?? rhs.hlsVariantPreferences?.maximumBandwidth ?? 0
+                if bw0 != bw1 { return bw0 > bw1 }
+                return lhs.discoveredAt > rhs.discoveredAt
+            }
+        case .duration:
+            sorted = resources.sorted { (lhs: WebpageResource, rhs: WebpageResource) -> Bool in
+                let d0 = lhs.duration ?? 0
+                let d1 = rhs.duration ?? 0
+                if d0 != d1 { return d0 > d1 }
+                return lhs.discoveredAt > rhs.discoveredAt
+            }
+        case .domain:
+            sorted = resources.sorted { (lhs: WebpageResource, rhs: WebpageResource) -> Bool in
+                let dom0 = lhs.url.host ?? ""
+                let dom1 = rhs.url.host ?? ""
+                let cmp = dom0.localizedCaseInsensitiveCompare(dom1)
+                if cmp != .orderedSame { return cmp == .orderedAscending }
+                return lhs.discoveredAt > rhs.discoveredAt
+            }
         case .type:
-            return resources.sorted { (lhs: WebpageResource, rhs: WebpageResource) -> Bool in
+            sorted = resources.sorted { (lhs: WebpageResource, rhs: WebpageResource) -> Bool in
                 if lhs.resourceType.rawValue != rhs.resourceType.rawValue {
                     return lhs.resourceType.rawValue < rhs.resourceType.rawValue
                 }
                 return lhs.discoveredAt > rhs.discoveredAt
             }
         }
+
+        if direction == .ascending {
+            return sorted.reversed()
+        }
+        return sorted
     }
 
-    private struct DomainSection: Identifiable {
-        let domain: String
+    public static func sortedResources(
+        _ resources: [WebpageResource],
+        sortOption: ResourceSortOption,
+        variantMetadataMap: [String: HLSVariantStreamItem] = [:]
+    ) -> [WebpageResource] {
+        sortedResources(resources, sortOption: sortOption, direction: .descending, variantMetadataMap: variantMetadataMap)
+    }
+
+    private struct InspectorSection: Identifiable {
+        let id: String
+        let title: String
+        let iconName: String
         let resources: [WebpageResource]
-        var id: String { domain }
     }
 
-    private var groupedByDomain: [DomainSection] {
-        let grouped = WebpageResource.groupedByDomain(displayedSortedResources)
-        return grouped.map { DomainSection(domain: $0.domain, resources: $0.resources) }
-    }
-
-    private struct CategorySection: Identifiable {
-        let category: WebpageResourceType
-        let resources: [WebpageResource]
-        var id: String { category.rawValue }
-    }
-
-    private var groupedByCategory: [CategorySection] {
-        let grouped = WebpageResource.groupedByCategory(displayedSortedResources)
-        return grouped.map { CategorySection(category: $0.category, resources: $0.resources) }
-    }
-
-    private var groupedByType: [CategorySection] {
-        groupedByCategory
+    private var groupedSections: [InspectorSection] {
+        switch groupingOption {
+        case .none:
+            return []
+        case .domain:
+            return WebpageResource.groupedByDomain(displayedSortedResources).map {
+                InspectorSection(id: "dom-\($0.domain)", title: $0.domain, iconName: "globe", resources: $0.resources)
+            }
+        case .category:
+            return WebpageResource.groupedByCategory(displayedSortedResources).map {
+                InspectorSection(id: "cat-\($0.category.rawValue)", title: $0.category.rawValue, iconName: $0.category.systemImage, resources: $0.resources)
+            }
+        case .manifest:
+            return WebpageResource.groupedByManifest(displayedSortedResources).map {
+                InspectorSection(id: "man-\($0.manifest)", title: $0.manifest, iconName: "doc.on.doc", resources: $0.resources)
+            }
+        case .streamType:
+            return WebpageResource.groupedByStreamType(displayedSortedResources).map {
+                InspectorSection(id: "str-\($0.streamType)", title: $0.streamType, iconName: "play.tv", resources: $0.resources)
+            }
+        case .trackType:
+            return WebpageResource.groupedByTrackType(displayedSortedResources).map {
+                InspectorSection(id: "trk-\($0.trackType.rawValue)", title: $0.trackType.rawValue, iconName: $0.trackType.iconName, resources: $0.resources)
+            }
+        case .quality:
+            return WebpageResource.groupedByQuality(displayedSortedResources, variantMetadataMap: variantMetadataMap).map {
+                InspectorSection(id: "q-\($0.quality)", title: $0.quality, iconName: "sparkles", resources: $0.resources)
+            }
+        }
     }
 
     public var body: some View {
@@ -313,13 +412,13 @@ public struct BrowserResourceInspectorSheet: View {
                 // Category Filter Pills
                 categoryFilterBar
 
-                // Search & Quick Selection Bar
+                // Search Bar
                 searchAndSelectionHeader
 
-                // Explicit Sort Controls (Newest, Size, Quality, Name)
+                // Explicit Sort Controls
                 sortControlBar
 
-                // Explicit Grouping Controls (None, Domain, Category)
+                // Explicit Grouping Controls
                 groupingControlBar
 
                 // Main Content: List, Loading, Empty, or Error
@@ -331,6 +430,10 @@ public struct BrowserResourceInspectorSheet: View {
                                 .padding(.horizontal)
                         }
                         resourceList
+
+                        if isSelectionMode {
+                            bulkActionBar
+                        }
                     }
                 } else if viewModel.isScanningResources {
                     loadingView
@@ -346,46 +449,33 @@ public struct BrowserResourceInspectorSheet: View {
             #endif
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Done") {
-                        viewModel.isScanningResources = false
-                        viewModel.isShowingResourceInspector = false
-                        presentationMode.wrappedValue.dismiss()
+                    Button(isSelectionMode ? "Cancel" : "Done") {
+                        if isSelectionMode {
+                            isSelectionMode = false
+                            selectedResourceIDs.removeAll()
+                        } else {
+                            viewModel.isScanningResources = false
+                            viewModel.isShowingResourceInspector = false
+                            presentationMode.wrappedValue.dismiss()
+                        }
                     }
                 }
                 ToolbarItem(placement: .primaryAction) {
                     HStack(spacing: 12) {
-                        Menu {
-                            Section(header: Text("Sort By")) {
-                                ForEach(ResourceSortOption.allCases) { opt in
-                                    Button {
-                                        sortOption = opt
-                                    } label: {
-                                        if sortOption == opt {
-                                            Label(opt.rawValue, systemImage: "checkmark")
-                                        } else {
-                                            Label(opt.rawValue, systemImage: opt.iconName)
-                                        }
-                                    }
+                        if !filteredResources.isEmpty {
+                            Button(isSelectionMode ? "Done" : "Select") {
+                                isSelectionMode.toggle()
+                                if !isSelectionMode {
+                                    selectedResourceIDs.removeAll()
                                 }
                             }
-                            Section(header: Text("Group By")) {
-                                ForEach(ResourceGroupingOption.allCases) { grp in
-                                    Button {
-                                        groupingOption = grp
-                                    } label: {
-                                        if groupingOption == grp {
-                                            Label(grp.displayName, systemImage: "checkmark")
-                                        } else {
-                                            Label(grp.displayName, systemImage: grp.iconName)
-                                        }
-                                    }
-                                }
-                            }
-                        } label: {
-                            Image(systemName: "arrow.up.arrow.down.circle")
+                            .font(.subheadline.weight(.semibold))
                         }
 
                         Button {
+                            let now = Date()
+                            guard now.timeIntervalSince(lastScanTimestamp) > 1.0 else { return }
+                            lastScanTimestamp = now
                             viewModel.inspectCurrentPageResources(includeNonVideo: showsAllResources || (selectedCategory != nil && selectedCategory != .video && selectedCategory != .audio))
                         } label: {
                             Image(systemName: "arrow.clockwise")
@@ -411,12 +501,20 @@ public struct BrowserResourceInspectorSheet: View {
             .onChange(of: sortOption) { newOption in
                 viewModel.resourceSortOption = newOption
             }
+            .onChange(of: sortDirection) { newDir in
+                viewModel.resourceSortDirection = newDir
+            }
             .onChange(of: groupingOption) { newOption in
                 viewModel.resourceGroupingOption = newOption
             }
             .onChange(of: viewModel.resourceSortOption) { newOption in
                 if sortOption != newOption {
                     sortOption = newOption
+                }
+            }
+            .onChange(of: viewModel.resourceSortDirection) { newDir in
+                if sortDirection != newDir {
+                    sortDirection = newDir
                 }
             }
             .onChange(of: viewModel.resourceGroupingOption) { newOption in
@@ -436,14 +534,48 @@ public struct BrowserResourceInspectorSheet: View {
                 .fontWeight(.medium)
                 .foregroundColor(.secondary)
 
-            Picker("Sort Order", selection: $sortOption) {
-                Text(ResourceSortOption.newest.rawValue).tag(ResourceSortOption.newest)
-                Text(ResourceSortOption.size.rawValue).tag(ResourceSortOption.size)
-                Text(ResourceSortOption.quality.rawValue).tag(ResourceSortOption.quality)
-                Text(ResourceSortOption.name.rawValue).tag(ResourceSortOption.name)
+            Menu {
+                ForEach(ResourceSortOption.allCases) { opt in
+                    Button {
+                        sortOption = opt
+                    } label: {
+                        if sortOption == opt {
+                            Label(opt.displayName, systemImage: "checkmark")
+                        } else {
+                            Label(opt.displayName, systemImage: opt.iconName)
+                        }
+                    }
+                }
+            } label: {
+                HStack(spacing: 4) {
+                    Label(sortOption.displayName, systemImage: sortOption.iconName)
+                        .font(.subheadline.weight(.medium))
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.caption2)
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background(Color.secondary.opacity(0.12))
+                .cornerRadius(8)
             }
-            .pickerStyle(.segmented)
-            .accessibilityLabel("Resource Sort Order")
+
+            Spacer()
+
+            Button {
+                sortDirection.toggle()
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: sortDirection.iconName)
+                        .font(.system(size: 13, weight: .semibold))
+                    Text(sortDirection == .ascending ? "Asc" : "Desc")
+                        .font(.caption.weight(.medium))
+                }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 5)
+                .background(Color.secondary.opacity(0.12))
+                .cornerRadius(8)
+            }
+            .accessibilityLabel("Toggle Sort Direction (\(sortDirection.rawValue))")
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 4)
@@ -461,13 +593,43 @@ public struct BrowserResourceInspectorSheet: View {
                 .fontWeight(.medium)
                 .foregroundColor(.secondary)
 
-            Picker("Group By", selection: $groupingOption) {
-                Text(ResourceGroupingOption.none.rawValue).tag(ResourceGroupingOption.none)
-                Text(ResourceGroupingOption.domain.rawValue).tag(ResourceGroupingOption.domain)
-                Text(ResourceGroupingOption.category.rawValue).tag(ResourceGroupingOption.category)
+            Menu {
+                ForEach(ResourceGroupingOption.allCases) { grp in
+                    Button {
+                        groupingOption = grp
+                    } label: {
+                        if groupingOption == grp {
+                            Label(grp.displayName, systemImage: "checkmark")
+                        } else {
+                            Label(grp.displayName, systemImage: grp.iconName)
+                        }
+                    }
+                }
+            } label: {
+                HStack(spacing: 4) {
+                    Label(groupingOption.displayName, systemImage: groupingOption.iconName)
+                        .font(.subheadline.weight(.medium))
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.caption2)
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background(Color.secondary.opacity(0.12))
+                .cornerRadius(8)
             }
-            .pickerStyle(.segmented)
-            .accessibilityLabel("Resource Grouping Option")
+
+            Spacer()
+
+            if isSelectionMode {
+                Button(selectedResourceIDs.count == filteredResources.count ? "Deselect All" : "Select All") {
+                    if selectedResourceIDs.count == filteredResources.count {
+                        selectedResourceIDs.removeAll()
+                    } else {
+                        selectedResourceIDs = Set(filteredResources.map(\.id))
+                    }
+                }
+                .font(.caption.weight(.semibold))
+            }
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 4)
@@ -478,7 +640,7 @@ public struct BrowserResourceInspectorSheet: View {
         #endif
     }
 
-    // MARK: - Category Filter Bar
+    // MARK: - Category & Track Filter Bar
 
     private var categoryCounts: (media: Int, total: Int, byType: [WebpageResourceType: Int]) {
         let items = eligibleResources
@@ -501,18 +663,20 @@ public struct BrowserResourceInspectorSheet: View {
                 FilterPill(
                     title: "Media",
                     count: counts.media,
-                    isSelected: selectedCategory == nil && !showsAllResources
+                    isSelected: selectedCategory == nil && selectedTrackType == nil && !showsAllResources
                 ) {
                     selectedCategory = nil
+                    selectedTrackType = nil
                     showsAllResources = false
                 }
 
                 FilterPill(
                     title: "All",
                     count: counts.total,
-                    isSelected: selectedCategory == nil && showsAllResources
+                    isSelected: selectedCategory == nil && selectedTrackType == nil && showsAllResources
                 ) {
                     selectedCategory = nil
+                    selectedTrackType = nil
                     showsAllResources = true
                     viewModel.inspectCurrentPageResources(includeNonVideo: true)
                 }
@@ -524,12 +688,32 @@ public struct BrowserResourceInspectorSheet: View {
                         FilterPill(
                             title: cat.rawValue,
                             count: count,
-                            isSelected: selectedCategory == cat
+                            isSelected: selectedCategory == cat && selectedTrackType == nil
                         ) {
                             selectedCategory = cat
+                            selectedTrackType = nil
                             showsAllResources = true
                             if cat != .video && cat != .audio {
                                 viewModel.inspectCurrentPageResources(includeNonVideo: true)
+                            }
+                        }
+                    }
+                }
+
+                // Track Type Pills: Muxed, Video, Audio, Subtitles
+                ForEach(ResourceTrackType.allCases) { track in
+                    let trackCount = eligibleResources.filter { $0.trackType == track }.count
+                    if trackCount > 0 {
+                        FilterPill(
+                            title: track.shortLabel,
+                            count: trackCount,
+                            isSelected: selectedTrackType == track
+                        ) {
+                            if selectedTrackType == track {
+                                selectedTrackType = nil
+                            } else {
+                                selectedTrackType = track
+                                showsAllResources = true
                             }
                         }
                     }
@@ -545,7 +729,7 @@ public struct BrowserResourceInspectorSheet: View {
         #endif
     }
 
-    // MARK: - Search & Selection Header
+    // MARK: - Search Bar
 
     private var searchAndSelectionHeader: some View {
         HStack(spacing: 8) {
@@ -554,7 +738,7 @@ public struct BrowserResourceInspectorSheet: View {
                     .foregroundColor(.secondary)
                     .font(.system(size: 14))
 
-                TextField("Filter by name or extension", text: $searchText)
+                TextField("Search name, domain, codec, 1080p...", text: $searchText)
                     #if canImport(UIKit)
                     .autocapitalization(.none)
                     #endif
@@ -577,66 +761,44 @@ public struct BrowserResourceInspectorSheet: View {
             .background(Color.primary.opacity(0.05))
             #endif
             .cornerRadius(8)
-
-            Menu {
-                Section(header: Text("Sort By")) {
-                    ForEach(ResourceSortOption.allCases) { opt in
-                        Button {
-                            sortOption = opt
-                        } label: {
-                            if sortOption == opt {
-                                Label(opt.rawValue, systemImage: "checkmark")
-                            } else {
-                                Label(opt.rawValue, systemImage: opt.iconName)
-                            }
-                        }
-                    }
-                }
-                Section(header: Text("Group By")) {
-                    ForEach(ResourceGroupingOption.allCases) { grp in
-                        Button {
-                            groupingOption = grp
-                        } label: {
-                            if groupingOption == grp {
-                                Label(grp.displayName, systemImage: "checkmark")
-                            } else {
-                                Label(grp.displayName, systemImage: grp.iconName)
-                            }
-                        }
-                    }
-                }
-            } label: {
-                Image(systemName: "line.3.horizontal.decrease.circle")
-                    .font(.system(size: 20))
-                    .foregroundColor(.blue)
-            }
         }
         .padding(.horizontal, 16)
-        .padding(.vertical, 8)
+        .padding(.vertical, 6)
     }
 
     // MARK: - Resource List
 
     private var resourceList: some View {
         List {
-            switch groupingOption {
-            case .none:
+            if groupingOption == .none {
                 ForEach(displayedSortedResources) { resource in
                     rowView(for: resource)
                 }
-            case .domain:
-                ForEach(groupedByDomain) { section in
-                    Section(header: Text("\(section.domain) (\(section.resources.count))")) {
-                        ForEach(section.resources) { resource in
-                            rowView(for: resource)
+            } else {
+                ForEach(groupedSections) { section in
+                    Section(header: Button(action: {
+                        if collapsedSections.contains(section.id) {
+                            collapsedSections.remove(section.id)
+                        } else {
+                            collapsedSections.insert(section.id)
                         }
+                    }) {
+                        HStack {
+                            Label("\(section.title) (\(section.resources.count))", systemImage: section.iconName)
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundColor(.primary)
+                            Spacer()
+                            Image(systemName: collapsedSections.contains(section.id) ? "chevron.right" : "chevron.down")
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                        }
+                        .contentShape(Rectangle())
                     }
-                }
-            case .category:
-                ForEach(groupedByCategory) { section in
-                    Section(header: Label("\(section.category.rawValue) (\(section.resources.count))", systemImage: section.category.systemImage)) {
-                        ForEach(section.resources) { resource in
-                            rowView(for: resource)
+                    .buttonStyle(PlainButtonStyle())) {
+                        if !collapsedSections.contains(section.id) {
+                            ForEach(section.resources) { resource in
+                                rowView(for: resource)
+                            }
                         }
                     }
                 }
@@ -662,7 +824,24 @@ public struct BrowserResourceInspectorSheet: View {
             qualitySummary: quality,
             variantItem: variant,
             statusDot: statusDot,
+            isSelectionMode: isSelectionMode,
+            isSelected: selectedResourceIDs.contains(resource.id),
+            onToggleSelect: {
+                if selectedResourceIDs.contains(resource.id) {
+                    selectedResourceIDs.remove(resource.id)
+                } else {
+                    selectedResourceIDs.insert(resource.id)
+                }
+            },
             onSelect: {
+                if isSelectionMode {
+                    if selectedResourceIDs.contains(resource.id) {
+                        selectedResourceIDs.remove(resource.id)
+                    } else {
+                        selectedResourceIDs.insert(resource.id)
+                    }
+                    return
+                }
                 if resource.isDRMProtected || cand?.kind == .protectedMedia {
                     drmWarningAlert = "This media stream is encrypted with Digital Rights Management (\(resource.drmProtectionType ?? "DRM")) and cannot be downloaded or captured."
                     return
@@ -707,6 +886,94 @@ public struct BrowserResourceInspectorSheet: View {
                 viewModel.shareURL(resource.url)
             }
         )
+    }
+
+    // MARK: - Bulk Action Bar
+
+    private var bulkActionBar: some View {
+        VStack(spacing: 0) {
+            Divider()
+            HStack(spacing: 12) {
+                Text("\(selectedResourceIDs.count) selected")
+                    .font(.caption.weight(.bold))
+                    .foregroundColor(.secondary)
+
+                Spacer()
+
+                // Preview button (active if exactly 1 playable selected)
+                if selectedResourceIDs.count == 1,
+                   let singleID = selectedResourceIDs.first,
+                   let targetRes = filteredResources.first(where: { $0.id == singleID }) {
+                    Button {
+                        let title = targetRes.suggestedFilename.isEmpty ? targetRes.title : targetRes.suggestedFilename
+                        let preflight = LIDPreviewPreflight.preflight(resource: targetRes, title: title)
+                        switch preflight {
+                        case .success(let source):
+                            activePlaybackSource = source
+                        case .failure(let error):
+                            drmWarningAlert = error.localizedDescription
+                        }
+                    } label: {
+                        Label("Preview", systemImage: "play.circle")
+                            .font(.subheadline.weight(.medium))
+                    }
+                }
+
+                // Copy URLs button
+                Button {
+                    let selectedURLs = filteredResources
+                        .filter { selectedResourceIDs.contains($0.id) }
+                        .map { $0.url.absoluteString }
+                        .joined(separator: "\n")
+                    #if canImport(UIKit)
+                    UIPasteboard.general.string = selectedURLs
+                    #endif
+                    isSelectionMode = false
+                    selectedResourceIDs.removeAll()
+                } label: {
+                    Label("Copy URLs", systemImage: "doc.on.doc")
+                        .font(.subheadline.weight(.medium))
+                }
+                .disabled(selectedResourceIDs.isEmpty)
+
+                // Remove from list button
+                Button(role: .destructive) {
+                    viewModel.discoveredResources.removeAll { selectedResourceIDs.contains($0.id) }
+                    selectedResourceIDs.removeAll()
+                    isSelectionMode = false
+                } label: {
+                    Image(systemName: "trash")
+                        .foregroundColor(.red)
+                }
+                .disabled(selectedResourceIDs.isEmpty)
+
+                // Bulk Download button
+                Button {
+                    let targets = filteredResources.filter { selectedResourceIDs.contains($0.id) }
+                    for target in targets {
+                        guard !target.isDRMProtected && !target.isSegmentChunk else { continue }
+                        if let variant = variantMetadataMap[target.id] {
+                            viewModel.variantStreamItems[target.id] = variant
+                        }
+                        viewModel.promptDownloadFromInspector(for: target)
+                    }
+                    isSelectionMode = false
+                    selectedResourceIDs.removeAll()
+                } label: {
+                    Label("Download (\(selectedResourceIDs.count))", systemImage: "arrow.down.circle.fill")
+                        .font(.subheadline.weight(.semibold))
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(selectedResourceIDs.isEmpty)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            #if canImport(UIKit)
+            .background(Color(UIColor.secondarySystemBackground))
+            #else
+            .background(Color.secondary.opacity(0.1))
+            #endif
+        }
     }
 
     // MARK: - Empty & Loading States
@@ -791,6 +1058,9 @@ public struct ResourceRowView: View {
     public let qualitySummary: String?
     public let variantItem: HLSVariantStreamItem?
     public let statusDot: DownloadStatusDot?
+    public let isSelectionMode: Bool
+    public let isSelected: Bool
+    public let onToggleSelect: (() -> Void)?
     public let onSelect: () -> Void
     public let onPreview: (() -> Void)?
     public let onOpenBrowser: (() -> Void)?
@@ -803,6 +1073,9 @@ public struct ResourceRowView: View {
         qualitySummary: String? = nil,
         variantItem: HLSVariantStreamItem? = nil,
         statusDot: DownloadStatusDot? = nil,
+        isSelectionMode: Bool = false,
+        isSelected: Bool = false,
+        onToggleSelect: (() -> Void)? = nil,
         onSelect: @escaping () -> Void,
         onPreview: (() -> Void)? = nil,
         onOpenBrowser: (() -> Void)? = nil,
@@ -814,11 +1087,44 @@ public struct ResourceRowView: View {
         self.qualitySummary = qualitySummary
         self.variantItem = variantItem
         self.statusDot = statusDot
+        self.isSelectionMode = isSelectionMode
+        self.isSelected = isSelected
+        self.onToggleSelect = onToggleSelect
         self.onSelect = onSelect
         self.onPreview = onPreview
         self.onOpenBrowser = onOpenBrowser
         self.onOpenAddDownload = onOpenAddDownload
         self.onShare = onShare
+    }
+
+    /// Backward-compatible initializer for existing callers
+    public init(
+        resource: WebpageResource,
+        candidate: BrowserMediaCandidate? = nil,
+        qualitySummary: String? = nil,
+        variantItem: HLSVariantStreamItem? = nil,
+        statusDot: DownloadStatusDot? = nil,
+        onSelect: @escaping () -> Void,
+        onPreview: (() -> Void)? = nil,
+        onOpenBrowser: (() -> Void)? = nil,
+        onOpenAddDownload: (() -> Void)? = nil,
+        onShare: (() -> Void)? = nil
+    ) {
+        self.init(
+            resource: resource,
+            candidate: candidate,
+            qualitySummary: qualitySummary,
+            variantItem: variantItem,
+            statusDot: statusDot,
+            isSelectionMode: false,
+            isSelected: false,
+            onToggleSelect: nil,
+            onSelect: onSelect,
+            onPreview: onPreview,
+            onOpenBrowser: onOpenBrowser,
+            onOpenAddDownload: onOpenAddDownload,
+            onShare: onShare
+        )
     }
 
     /// Backward-compatible initializer for existing callers
@@ -836,6 +1142,9 @@ public struct ResourceRowView: View {
         self.candidate = candidate
         self.qualitySummary = qualitySummary
         self.variantItem = variantItem
+        self.isSelectionMode = false
+        self.isSelected = isSelected
+        self.onToggleSelect = onToggleSelect
         self.onSelect = onDownload
         self.onPreview = onPreview
         self.onOpenBrowser = nil
@@ -906,6 +1215,18 @@ public struct ResourceRowView: View {
 
     public var body: some View {
         HStack(alignment: .center, spacing: 12) {
+            // Optional checkbox for Selection Mode
+            if isSelectionMode {
+                Button {
+                    onToggleSelect?()
+                } label: {
+                    Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                        .font(.system(size: 22))
+                        .foregroundColor(isSelected ? .blue : .secondary)
+                }
+                .buttonStyle(BorderlessButtonStyle())
+            }
+
             // Primary row button: Icon + Filename + Specs + Spacer (opens download config sheet)
             Button(action: onSelect) {
                 HStack(alignment: .center, spacing: 12) {
@@ -1000,6 +1321,15 @@ public struct ResourceRowView: View {
                                 .foregroundColor(.secondary)
                             }
 
+                            // Track type indicator badge (Muxed, Video, Audio, Subtitles, etc.)
+                            Text(resource.trackType.shortLabel)
+                                .font(.system(size: 9, weight: .bold))
+                                .padding(.horizontal, 4)
+                                .padding(.vertical, 1)
+                                .background(Color.blue.opacity(0.12))
+                                .cornerRadius(3)
+                                .foregroundColor(.blue)
+
                             // Audio indicator: Small speaker icon when audio is present
                             if let variant = variantItem, variant.hasAudio {
                                 Image(systemName: "speaker.wave.2.fill")
@@ -1012,10 +1342,32 @@ public struct ResourceRowView: View {
                             }
 
                             // Subtitle indicator
-                            if let variant = variantItem, variant.hasSubtitles {
+                            if (variantItem?.hasSubtitles == true) || resource.trackType == .subtitles {
                                 Image(systemName: "captions.bubble.fill")
                                     .font(.system(size: 10))
                                     .foregroundColor(.purple)
+                            }
+
+                            // Container badge if known
+                            if let container = resource.container, !container.isEmpty {
+                                Text(container)
+                                    .font(.system(size: 9, weight: .bold))
+                                    .padding(.horizontal, 4)
+                                    .padding(.vertical, 1)
+                                    .background(Color.purple.opacity(0.12))
+                                    .cornerRadius(3)
+                                    .foregroundColor(.purple)
+                            }
+
+                            // Language badge if known
+                            if let lang = resource.audioLanguage, !lang.isEmpty {
+                                Text(lang.uppercased())
+                                    .font(.system(size: 9, weight: .medium))
+                                    .padding(.horizontal, 4)
+                                    .padding(.vertical, 1)
+                                    .background(Color.secondary.opacity(0.12))
+                                    .cornerRadius(3)
+                                    .foregroundColor(.secondary)
                             }
 
                             // Codec badge if known

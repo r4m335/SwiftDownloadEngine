@@ -23,22 +23,103 @@ public enum WebpageResourceType: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
-/// Explicit sorting options for discovered media and downloadable resources.
-public enum ResourceSortOption: String, CaseIterable, Identifiable, Sendable {
-    case newest = "Newest"
-    case size = "Size"
-    case quality = "Quality"
-    case name = "Name"
-    case type = "Type"
+/// Track type classification for media assets (muxed, video-only, audio-only, subtitles, etc.).
+public enum ResourceTrackType: String, CaseIterable, Identifiable, Sendable, Codable {
+    case muxed = "Muxed"
+    case videoOnly = "Video Only"
+    case audioOnly = "Audio Only"
+    case subtitles = "Subtitles"
+    case document = "Document"
+    case archive = "Archive"
+    case image = "Image"
+    case other = "Other"
+
+    public var id: String { rawValue }
+
+    public var shortLabel: String {
+        switch self {
+        case .muxed: return "Muxed"
+        case .videoOnly: return "Video"
+        case .audioOnly: return "Audio"
+        case .subtitles: return "Sub"
+        case .document: return "Doc"
+        case .archive: return "Archive"
+        case .image: return "Image"
+        case .other: return "Other"
+        }
+    }
+
+    public var iconName: String {
+        switch self {
+        case .muxed: return "film.fill"
+        case .videoOnly: return "video.fill"
+        case .audioOnly: return "music.note"
+        case .subtitles: return "captions.bubble.fill"
+        case .document: return "doc.text.fill"
+        case .archive: return "doc.zipper"
+        case .image: return "photo.fill"
+        case .other: return "doc.fill"
+        }
+    }
+}
+
+/// Direction for sorting candidate lists.
+public enum SortDirection: String, CaseIterable, Identifiable, Sendable, Codable {
+    case ascending = "Ascending"
+    case descending = "Descending"
 
     public var id: String { rawValue }
 
     public var iconName: String {
         switch self {
+        case .ascending: return "arrow.up"
+        case .descending: return "arrow.down"
+        }
+    }
+
+    public mutating func toggle() {
+        self = (self == .ascending ? .descending : .ascending)
+    }
+}
+
+/// Explicit sorting options for discovered media and downloadable resources.
+public enum ResourceSortOption: String, CaseIterable, Identifiable, Sendable {
+    case newest = "Newest"
+    case quality = "Quality"
+    case resolution = "Resolution"
+    case bitrate = "Bitrate"
+    case duration = "Duration"
+    case size = "Size"
+    case name = "Name"
+    case domain = "Domain"
+    case type = "Type"
+
+    public var id: String { rawValue }
+
+    public var displayName: String {
+        switch self {
+        case .newest: return "Discovered Time"
+        case .quality: return "Quality"
+        case .resolution: return "Resolution"
+        case .bitrate: return "Bitrate"
+        case .duration: return "Duration"
+        case .size: return "Size"
+        case .name: return "Name"
+        case .domain: return "Domain"
+        case .type: return "Type"
+        }
+    }
+
+    public var iconName: String {
+        switch self {
         case .newest: return "clock"
-        case .size: return "arrow.down.circle"
         case .quality: return "sparkles"
+        case .resolution: return "aspectratio"
+        case .bitrate: return "speedometer"
+        case .duration: return "timer"
+        case .size: return "arrow.down.circle"
         case .name: return "textformat"
+        case .domain: return "globe"
         case .type: return "folder"
         }
     }
@@ -49,6 +130,10 @@ public enum ResourceGroupingOption: String, CaseIterable, Identifiable, Sendable
     case none = "None"
     case domain = "Domain"
     case category = "Category"
+    case manifest = "Manifest"
+    case streamType = "Stream Type"
+    case trackType = "Track Type"
+    case quality = "Quality"
 
     public static let type: ResourceGroupingOption = .category
 
@@ -59,6 +144,10 @@ public enum ResourceGroupingOption: String, CaseIterable, Identifiable, Sendable
         case .none: return "None (Flat List)"
         case .domain: return "By Domain"
         case .category: return "By Category"
+        case .manifest: return "By Manifest"
+        case .streamType: return "By Stream Type"
+        case .trackType: return "By Track Type"
+        case .quality: return "By Quality"
         }
     }
 
@@ -67,6 +156,10 @@ public enum ResourceGroupingOption: String, CaseIterable, Identifiable, Sendable
         case .none: return "list.bullet"
         case .domain: return "globe"
         case .category: return "square.grid.2x2"
+        case .manifest: return "doc.on.doc"
+        case .streamType: return "play.tv"
+        case .trackType: return "waveform.badge.magnifyingglass"
+        case .quality: return "sparkles"
         }
     }
 }
@@ -117,6 +210,12 @@ public struct WebpageResource: Identifiable, Hashable, Sendable {
     public let documentGeneration: UInt64?
     /// Navigation generation index associated with the WebKit tab lifecycle.
     public let navigationGeneration: UInt64?
+    /// Media bitrate in bits-per-second if known.
+    public let bitrate: Int?
+    /// Uppercase container format if known (e.g. "MP4", "MKV", "TS", "M4A", "PDF").
+    public let container: String?
+    /// Classified track type (muxed, video-only, audio-only, subtitles, document, etc.).
+    public let trackType: ResourceTrackType
 
     /// Formatted duration string for display (e.g. "03:45", "1:15:20").
     public var formattedDuration: String? {
@@ -245,7 +344,10 @@ public struct WebpageResource: Identifiable, Hashable, Sendable {
         audioLanguage: String? = nil,
         isAudioVideoSplit: Bool = false,
         documentGeneration: UInt64? = nil,
-        navigationGeneration: UInt64? = nil
+        navigationGeneration: UInt64? = nil,
+        bitrate: Int? = nil,
+        container: String? = nil,
+        trackType: ResourceTrackType? = nil
     ) {
         self.id = id
         self.url = url
@@ -273,6 +375,44 @@ public struct WebpageResource: Identifiable, Hashable, Sendable {
         self.isAudioVideoSplit = isAudioVideoSplit
         self.documentGeneration = documentGeneration
         self.navigationGeneration = navigationGeneration
+        self.bitrate = bitrate
+
+        if let explicitContainer = container, !explicitContainer.isEmpty {
+            self.container = explicitContainer.uppercased()
+        } else {
+            let ext = FilenameExtensionHelper.split(filename: suggestedFilename).ext
+            if !ext.isEmpty {
+                self.container = ext.uppercased()
+            } else {
+                let detected = FilenameExtensionHelper.detectExtension(from: url, mimeType: mimeType)
+                self.container = detected.isEmpty ? nil : detected.uppercased()
+            }
+        }
+
+        if let explicitTrackType = trackType {
+            self.trackType = explicitTrackType
+        } else {
+            let ext = url.pathExtension.lowercased()
+            if ext == "vtt" || ext == "srt" || ext == "ttml" {
+                self.trackType = .subtitles
+            } else if resourceType == .audio {
+                self.trackType = .audioOnly
+            } else if resourceType == .video {
+                if isAudioVideoSplit {
+                    self.trackType = .videoOnly
+                } else {
+                    self.trackType = .muxed
+                }
+            } else if resourceType == .document {
+                self.trackType = .document
+            } else if resourceType == .archive {
+                self.trackType = .archive
+            } else if resourceType == .image {
+                self.trackType = .image
+            } else {
+                self.trackType = .other
+            }
+        }
     }
 
     /// Evaluates whether this resource URL or its signed variant URL has already passed its signed expiration timestamp.
@@ -883,6 +1023,106 @@ extension WebpageResource {
         return WebpageResourceType.allCases.compactMap { cat in
             guard let list = dict[cat], !list.isEmpty else { return nil }
             return (category: cat, resources: list)
+        }
+    }
+
+    /// Groups resources by their parent streaming manifest filename or domain.
+    public static func groupedByManifest(_ resources: [WebpageResource]) -> [(manifest: String, resources: [WebpageResource])] {
+        let dict = Dictionary(grouping: resources) { res -> String in
+            if res.isStreamingManifest {
+                return res.suggestedFilename
+            }
+            if let pref = res.hlsVariantPreferences, let exact = pref.exactURI {
+                return exact.lastPathComponent
+            }
+            if let host = res.url.host {
+                return host
+            }
+            return "Standalone Resources"
+        }
+        return dict.map { (manifest: $0.key, resources: $0.value) }
+            .sorted { $0.manifest.localizedCaseInsensitiveCompare($1.manifest) == .orderedAscending }
+    }
+
+    /// Groups resources by stream type: HLS, DASH, Direct Video, Direct Audio, Documents, Archives, Other.
+    public static func groupedByStreamType(_ resources: [WebpageResource]) -> [(streamType: String, resources: [WebpageResource])] {
+        let dict = Dictionary(grouping: resources) { res -> String in
+            let ext = res.url.pathExtension.lowercased()
+            let mime = res.mimeType?.lowercased() ?? ""
+            if ext == "m3u8" || mime.contains("mpegurl") {
+                return "HLS Stream (.m3u8)"
+            }
+            if ext == "mpd" || mime.contains("dash+xml") {
+                return "DASH Stream (.mpd)"
+            }
+            if res.resourceType == .video {
+                return "Direct Video"
+            }
+            if res.resourceType == .audio {
+                return "Direct Audio"
+            }
+            if res.resourceType == .document {
+                return "Documents"
+            }
+            if res.resourceType == .archive {
+                return "Archives"
+            }
+            return "Other Resources"
+        }
+        let order = ["HLS Stream (.m3u8)", "DASH Stream (.mpd)", "Direct Video", "Direct Audio", "Documents", "Archives", "Other Resources"]
+        return order.compactMap { key in
+            guard let list = dict[key], !list.isEmpty else { return nil }
+            return (streamType: key, resources: list)
+        }
+    }
+
+    /// Groups resources by classified track type (muxed, video-only, audio-only, subtitles, document, etc.).
+    public static func groupedByTrackType(_ resources: [WebpageResource]) -> [(trackType: ResourceTrackType, resources: [WebpageResource])] {
+        let dict = Dictionary(grouping: resources) { $0.trackType }
+        return ResourceTrackType.allCases.compactMap { t in
+            guard let list = dict[t], !list.isEmpty else { return nil }
+            return (trackType: t, resources: list)
+        }
+    }
+
+    /// Groups resources by quality tier (Live Broadcast, 4K, 2K, 1080p, 720p, SD, Low Quality, Audio, Other).
+    public static func groupedByQuality(_ resources: [WebpageResource], variantMetadataMap: [String: HLSVariantStreamItem] = [:]) -> [(quality: String, resources: [WebpageResource])] {
+        let dict = Dictionary(grouping: resources) { res -> String in
+            let height: Int = {
+                if let h = variantMetadataMap[res.id]?.resolution?.height, h > 0 { return h }
+                if let h = res.hlsVariantPreferences?.maximumHeight, h > 0 { return h }
+                if let text = res.resolutionText {
+                    let digits = text.components(separatedBy: CharacterSet.decimalDigits.inverted).filter { !$0.isEmpty }
+                    if let last = digits.last, let p = Int(last), p > 0 { return p }
+                }
+                return 0
+            }()
+            if res.isLive || variantMetadataMap[res.id]?.isLive == true {
+                return "Live Broadcast"
+            }
+            if height >= 2160 { return "4K UHD (2160p)" }
+            if height >= 1440 { return "2K QHD (1440p)" }
+            if height >= 1080 { return "Full HD (1080p)" }
+            if height >= 720 { return "HD (720p)" }
+            if height >= 480 { return "SD (480p)" }
+            if height > 0 { return "Low Quality (<480p)" }
+            if res.resourceType == .audio { return "Audio Tracks" }
+            return "Non-Video / Other"
+        }
+        let qualityOrder = [
+            "Live Broadcast",
+            "4K UHD (2160p)",
+            "2K QHD (1440p)",
+            "Full HD (1080p)",
+            "HD (720p)",
+            "SD (480p)",
+            "Low Quality (<480p)",
+            "Audio Tracks",
+            "Non-Video / Other"
+        ]
+        return qualityOrder.compactMap { key in
+            guard let list = dict[key], !list.isEmpty else { return nil }
+            return (quality: key, resources: list)
         }
     }
 }

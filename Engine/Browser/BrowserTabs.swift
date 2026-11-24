@@ -97,6 +97,7 @@ public struct BrowserTabResourceState: Sendable, Equatable {
     public var variantStreamItems: [String: HLSVariantStreamItem]
     public var selectedResourceIDs: Set<String>
     public var sortOption: ResourceSortOption
+    public var sortDirection: SortDirection
     public var groupingOption: ResourceGroupingOption
 
     public init(
@@ -104,12 +105,14 @@ public struct BrowserTabResourceState: Sendable, Equatable {
         variantStreamItems: [String: HLSVariantStreamItem] = [:],
         selectedResourceIDs: Set<String> = [],
         sortOption: ResourceSortOption = .newest,
+        sortDirection: SortDirection = .descending,
         groupingOption: ResourceGroupingOption = .none
     ) {
         self.discoveredResources = discoveredResources
         self.variantStreamItems = variantStreamItems
         self.selectedResourceIDs = selectedResourceIDs
         self.sortOption = sortOption
+        self.sortDirection = sortDirection
         self.groupingOption = groupingOption
     }
 }

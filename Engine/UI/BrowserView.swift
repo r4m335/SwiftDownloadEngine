@@ -113,6 +113,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
     @Published public var isShowingResourceInspector: Bool = false
     @Published public var isScanningResources: Bool = false
     @Published public var resourceSortOption: ResourceSortOption = .newest
+    @Published public var resourceSortDirection: SortDirection = .descending
     @Published public var resourceGroupingOption: ResourceGroupingOption = .none
     @Published public var discoveredResources: [WebpageResource] = [] {
         didSet {
@@ -289,6 +290,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         discoveryCoordinator.saveTabState(
             for: current,
             sortOption: resourceSortOption,
+            sortDirection: resourceSortDirection,
             groupingOption: resourceGroupingOption
         )
     }
@@ -301,6 +303,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         selectedResourceIDs = restored.selections
         if tabID != nil {
             resourceSortOption = restored.sort
+            resourceSortDirection = restored.sortDirection
             resourceGroupingOption = restored.group
         }
     }
@@ -311,6 +314,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
             for: tabID,
             activeTabID: activeTabID,
             sortOption: resourceSortOption,
+            sortDirection: resourceSortDirection,
             groupingOption: resourceGroupingOption
         )
     }

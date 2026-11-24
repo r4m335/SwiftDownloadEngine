@@ -995,17 +995,29 @@ final class BrowserMediaCandidateTests: XCTestCase {
         XCTAssertEqual(ResourceGroupingOption.none.rawValue, "None")
         XCTAssertEqual(ResourceGroupingOption.domain.rawValue, "Domain")
         XCTAssertEqual(ResourceGroupingOption.category.rawValue, "Category")
+        XCTAssertEqual(ResourceGroupingOption.manifest.rawValue, "Manifest")
+        XCTAssertEqual(ResourceGroupingOption.streamType.rawValue, "Stream Type")
+        XCTAssertEqual(ResourceGroupingOption.trackType.rawValue, "Track Type")
+        XCTAssertEqual(ResourceGroupingOption.quality.rawValue, "Quality")
         XCTAssertEqual(ResourceGroupingOption.type, .category)
 
         XCTAssertEqual(ResourceGroupingOption.none.displayName, "None (Flat List)")
         XCTAssertEqual(ResourceGroupingOption.domain.displayName, "By Domain")
         XCTAssertEqual(ResourceGroupingOption.category.displayName, "By Category")
+        XCTAssertEqual(ResourceGroupingOption.manifest.displayName, "By Manifest")
+        XCTAssertEqual(ResourceGroupingOption.streamType.displayName, "By Stream Type")
+        XCTAssertEqual(ResourceGroupingOption.trackType.displayName, "By Track Type")
+        XCTAssertEqual(ResourceGroupingOption.quality.displayName, "By Quality")
 
         XCTAssertFalse(ResourceGroupingOption.none.iconName.isEmpty)
         XCTAssertFalse(ResourceGroupingOption.domain.iconName.isEmpty)
         XCTAssertFalse(ResourceGroupingOption.category.iconName.isEmpty)
+        XCTAssertFalse(ResourceGroupingOption.manifest.iconName.isEmpty)
+        XCTAssertFalse(ResourceGroupingOption.streamType.iconName.isEmpty)
+        XCTAssertFalse(ResourceGroupingOption.trackType.iconName.isEmpty)
+        XCTAssertFalse(ResourceGroupingOption.quality.iconName.isEmpty)
 
-        XCTAssertEqual(ResourceGroupingOption.allCases.count, 3)
+        XCTAssertEqual(ResourceGroupingOption.allCases.count, 7)
     }
 
     func testResourceGroupingByDomainAndCategory() {
@@ -1182,6 +1194,164 @@ final class BrowserMediaCandidateTests: XCTestCase {
         vm.restoreTabResourceState(for: tab1)
         XCTAssertEqual(vm.resourceGroupingOption, .domain)
         XCTAssertEqual(vm.resourceSortOption, .size)
+    }
+
+    func testResourceInspectorTenOutOfTenActions() {
+        let r1 = WebpageResource(
+            id: "r1",
+            url: URL(string: "https://stream.media.org/video_1080p.m3u8")!,
+            title: "Movie HD",
+            suggestedFilename: "movie_1080p.mp4",
+            resourceType: .video,
+            mimeType: "video/mp4",
+            estimatedSize: 800_000_000,
+            discoveredAt: Date(timeIntervalSince1970: 300),
+            resolutionText: "1920x1080",
+            duration: 7200,
+            codecs: "avc1.640028",
+            audioLanguage: "en",
+            isAudioVideoSplit: false,
+            bitrate: 4_500_000,
+            container: "MP4",
+            trackType: .muxed
+        )
+
+        let r2 = WebpageResource(
+            id: "r2",
+            url: URL(string: "https://audio.media.org/soundtrack.m4a")!,
+            title: "OST Audio",
+            suggestedFilename: "soundtrack.m4a",
+            resourceType: .audio,
+            mimeType: "audio/mp4",
+            estimatedSize: 80_000_000,
+            discoveredAt: Date(timeIntervalSince1970: 200),
+            duration: 3600,
+            codecs: "mp4a.40.2",
+            audioLanguage: "fr",
+            bitrate: 320_000,
+            container: "M4A",
+            trackType: .audioOnly
+        )
+
+        let r3 = WebpageResource(
+            id: "r3",
+            url: URL(string: "https://subs.media.org/captions.vtt")!,
+            title: "Subtitles EN",
+            suggestedFilename: "captions.vtt",
+            resourceType: .other,
+            mimeType: "text/vtt",
+            estimatedSize: 50_000,
+            discoveredAt: Date(timeIntervalSince1970: 100),
+            duration: 7200,
+            audioLanguage: "en",
+            container: "VTT",
+            trackType: .subtitles
+        )
+
+        let r4 = WebpageResource(
+            id: "r4",
+            url: URL(string: "https://stream.media.org/video_4k.mpd")!,
+            title: "Movie 4K UHD",
+            suggestedFilename: "movie_4k.mpd",
+            resourceType: .video,
+            mimeType: "application/dash+xml",
+            estimatedSize: 2_500_000_000,
+            discoveredAt: Date(timeIntervalSince1970: 400),
+            resolutionText: "3840x2160",
+            duration: 7200,
+            codecs: "hev1.1.6.L150.90",
+            bitrate: 15_000_000,
+            container: "MPD",
+            trackType: .videoOnly
+        )
+
+        let all = [r1, r2, r3, r4]
+
+        // 1. Metadata Verification
+        XCTAssertEqual(r1.trackType, .muxed)
+        XCTAssertEqual(r2.trackType, .audioOnly)
+        XCTAssertEqual(r3.trackType, .subtitles)
+        XCTAssertEqual(r4.trackType, .videoOnly)
+        XCTAssertEqual(r1.container, "MP4")
+        XCTAssertEqual(r2.container, "M4A")
+        XCTAssertEqual(r3.container, "VTT")
+        XCTAssertEqual(r4.container, "MPD")
+        XCTAssertEqual(r1.bitrate, 4_500_000)
+        XCTAssertEqual(r4.bitrate, 15_000_000)
+
+        // 2. Sorting by Resolution (Descending & Ascending)
+        let byResDesc = BrowserResourceInspectorSheet.sortedResources(all, sortOption: .resolution, direction: .descending)
+        XCTAssertEqual(byResDesc.first?.id, "r4") // 2160p
+        XCTAssertEqual(byResDesc[1].id, "r1")    // 1080p
+
+        let byResAsc = BrowserResourceInspectorSheet.sortedResources(all, sortOption: .resolution, direction: .ascending)
+        XCTAssertEqual(byResAsc.last?.id, "r4")
+
+        // 3. Sorting by Bitrate
+        let byBitrate = BrowserResourceInspectorSheet.sortedResources(all, sortOption: .bitrate, direction: .descending)
+        XCTAssertEqual(byBitrate.first?.id, "r4") // 15 Mbps
+        XCTAssertEqual(byBitrate[1].id, "r1")    // 4.5 Mbps
+        XCTAssertEqual(byBitrate[2].id, "r2")    // 320 kbps
+
+        // 4. Sorting by Duration
+        let byDur = BrowserResourceInspectorSheet.sortedResources(all, sortOption: .duration, direction: .descending)
+        XCTAssertTrue(byDur[0].duration == 7200)
+
+        // 5. Grouping by Manifest, Stream Type, Track Type, Quality
+        let manifestGroups = WebpageResource.groupedByManifest(all)
+        XCTAssertFalse(manifestGroups.isEmpty)
+
+        let streamTypeGroups = WebpageResource.groupedByStreamType(all)
+        let streamTypes = streamTypeGroups.map(\.streamType)
+        XCTAssertTrue(streamTypes.contains("HLS Stream (.m3u8)"))
+        XCTAssertTrue(streamTypes.contains("DASH Stream (.mpd)"))
+        XCTAssertTrue(streamTypes.contains("Direct Audio"))
+
+        let trackTypeGroups = WebpageResource.groupedByTrackType(all)
+        let trackTypes = trackTypeGroups.map(\.trackType)
+        XCTAssertTrue(trackTypes.contains(.muxed))
+        XCTAssertTrue(trackTypes.contains(.audioOnly))
+        XCTAssertTrue(trackTypes.contains(.subtitles))
+        XCTAssertTrue(trackTypes.contains(.videoOnly))
+
+        let qualityGroups = WebpageResource.groupedByQuality(all)
+        let qualityLabels = qualityGroups.map(\.quality)
+        XCTAssertTrue(qualityLabels.contains("4K UHD (2160p)"))
+        XCTAssertTrue(qualityLabels.contains("Full HD (1080p)"))
+        XCTAssertTrue(qualityLabels.contains("Audio Tracks"))
+
+        // 6. Multi-Filtering
+        // Search by codec: "hev1"
+        let filteredCodec = BrowserResourceInspectorSheet.filteredResources(
+            in: all,
+            showsAllResources: true,
+            searchText: "hev1"
+        )
+        XCTAssertEqual(filteredCodec.map(\.id), ["r4"])
+
+        // Search by domain: "audio.media.org"
+        let filteredDomain = BrowserResourceInspectorSheet.filteredResources(
+            in: all,
+            showsAllResources: true,
+            searchText: "audio.media.org"
+        )
+        XCTAssertEqual(filteredDomain.map(\.id), ["r2"])
+
+        // Search by container: "VTT"
+        let filteredContainer = BrowserResourceInspectorSheet.filteredResources(
+            in: all,
+            showsAllResources: true,
+            searchText: "VTT"
+        )
+        XCTAssertEqual(filteredContainer.map(\.id), ["r3"])
+
+        // Filter by track type: .audioOnly
+        let filteredAudioOnly = BrowserResourceInspectorSheet.filteredResources(
+            in: all,
+            selectedTrackType: .audioOnly,
+            showsAllResources: true
+        )
+        XCTAssertEqual(filteredAudioOnly.map(\.id), ["r2"])
     }
 }
 
