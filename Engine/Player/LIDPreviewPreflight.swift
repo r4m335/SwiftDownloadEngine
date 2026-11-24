@@ -232,6 +232,7 @@ public enum LIDPreviewPreflight {
     ) -> Result<LIDPlayerSource, LIDPreviewPreflightError> {
         propagateRequestContext(requestContext, targetURL: manifestURL)
 
+        var resolvedRepresentationID = selectedRepresentationID
         if let data = manifestData {
             do {
                 let inspection = try LIDDASHStreamAdapter.inspect(
@@ -242,6 +243,9 @@ public enum LIDPreviewPreflight {
                 if inspection.hasDRM {
                     return .failure(.drmProtected(type: inspection.drmDetails ?? "Widevine/PlayReady"))
                 }
+                if resolvedRepresentationID == nil {
+                    resolvedRepresentationID = inspection.selectedRepresentation?.id
+                }
             } catch {
                 return .failure(.invalidManifest(error.localizedDescription))
             }
@@ -250,7 +254,7 @@ public enum LIDPreviewPreflight {
         let displayTitle = title ?? manifestURL.lastPathComponent
         return .success(.dashStream(
             manifestURL: manifestURL,
-            selectedRepresentationID: selectedRepresentationID,
+            selectedRepresentationID: resolvedRepresentationID,
             title: displayTitle,
             requestContext: requestContext
         ))

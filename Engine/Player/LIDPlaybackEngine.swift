@@ -254,12 +254,9 @@ public final class LIDPlaybackEngine: NSObject, ObservableObject, LIDMediaEngine
         let sid = sessionId ?? String(UUID().uuidString.prefix(8).uppercased())
         self.currentSessionId = sid
         Self.activeSessionIdForLogging = sid
-        self.sessionGeneration &+= 1
         let currentGen = self.sessionGeneration
         vlcBackend.activeSessionId = sid
         avBackend.activeSessionId = sid
-        vlcBackend.activeSessionGeneration = currentGen
-        avBackend.activeSessionGeneration = currentGen
 
         PipelineLogger.shared.logPlayer(
             session: sid,
@@ -330,9 +327,11 @@ public final class LIDPlaybackEngine: NSObject, ObservableObject, LIDMediaEngine
             self.player = nil
             #endif
             vlcBackend.load(source: source, autoPlay: autoPlay)
+            vlcBackend.activeSessionGeneration = currentGen
 
         case .avFoundation:
             avBackend.load(source: source, autoPlay: autoPlay)
+            avBackend.activeSessionGeneration = currentGen
             #if canImport(AVFoundation)
             self.player = avBackend.player
             #endif
@@ -740,8 +739,8 @@ public final class LIDPlaybackEngine: NSObject, ObservableObject, LIDMediaEngine
         #endif
         self.playbackState = .loading
         self.startLoadingWatchdog()
-        self.vlcBackend.activeSessionGeneration = self.sessionGeneration
         self.vlcBackend.load(source: source, autoPlay: true)
+        self.vlcBackend.activeSessionGeneration = self.sessionGeneration
     }
 
     // MARK: - Internal Helpers
