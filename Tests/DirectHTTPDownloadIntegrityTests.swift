@@ -167,7 +167,7 @@ final class DirectHTTPDownloadIntegrityTests: XCTestCase {
             }
         }
 
-        let store = InMemoryDownloadPersistenceStore()
+        let store = DownloadPersistenceStore(inMemory: true)
         let coordinator = DownloadCoordinator(session: session, persistenceStore: store)
         let request = DownloadRequest(
             url: testURL,
@@ -209,7 +209,7 @@ final class DirectHTTPDownloadIntegrityTests: XCTestCase {
             }
         }
 
-        let store = InMemoryDownloadPersistenceStore()
+        let store = DownloadPersistenceStore(inMemory: true)
         let coordinator = DownloadCoordinator(session: session, persistenceStore: store)
         let request = DownloadRequest(
             url: testURL,
@@ -282,7 +282,7 @@ final class DirectHTTPDownloadIntegrityTests: XCTestCase {
             return (resp, slice)
         }
 
-        let store = InMemoryDownloadPersistenceStore()
+        let store = DownloadPersistenceStore(inMemory: true)
         let coordinator = DownloadCoordinator(session: session, persistenceStore: store)
         let request = DownloadRequest(
             url: testURL,
@@ -344,7 +344,7 @@ final class DirectHTTPDownloadIntegrityTests: XCTestCase {
             return (resp, payload)
         }
 
-        let store = InMemoryDownloadPersistenceStore()
+        let store = DownloadPersistenceStore(inMemory: true)
         let coordinator = DownloadCoordinator(session: session, persistenceStore: store)
         let request = DownloadRequest(
             url: testURL,
