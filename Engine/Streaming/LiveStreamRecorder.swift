@@ -1074,7 +1074,7 @@ public final class LiveStreamRecorder: ObservableObject {
 
             let assemblyReq = MediaAssemblyRequest(
                 sourceLifecycle: .vod,
-                container: isMPEGTS ? .mpegTS : .isoBaseMediaFile,
+                container: isMPEGTS ? .mpegTS : .fragmentedMP4,
                 encryption: .clear,
                 tracks: [videoTrack, audioTrack],
                 destinationURL: targetURL,
