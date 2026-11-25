@@ -5228,58 +5228,82 @@ public struct BrowserView: View {
 
     @ViewBuilder
     private var overflowMenu: some View {
+        BrowserOverflowMenu(
+            isDesktopMode: viewModel.isCurrentTabDesktopMode,
+            isWhitelisted: viewModel.isCurrentSiteWhitelisted,
+            hasURL: viewModel.currentURL != nil,
+            activeDownloadCount: viewModel.activeDownloadCount,
+            onToggleDesktopMode: { viewModel.toggleDesktopMode() },
+            onShowBookmarksAndHistory: { viewModel.showBookmarksAndHistory() },
+            onShowShieldSheet: { viewModel.isShowingShieldSheet = true },
+            onToggleReaderMode: { viewModel.toggleReaderMode() },
+            onOpenFindInPage: { viewModel.openFindInPage() },
+            onShareCurrentPage: { viewModel.shareCurrentPage() }
+        )
+        .equatable()
+    }
+}
+
+private struct BrowserOverflowMenu: View, Equatable {
+    let isDesktopMode: Bool
+    let isWhitelisted: Bool
+    let hasURL: Bool
+    let activeDownloadCount: Int
+    let onToggleDesktopMode: () -> Void
+    let onShowBookmarksAndHistory: () -> Void
+    let onShowShieldSheet: () -> Void
+    let onToggleReaderMode: () -> Void
+    let onOpenFindInPage: () -> Void
+    let onShareCurrentPage: () -> Void
+
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.isDesktopMode == rhs.isDesktopMode &&
+        lhs.isWhitelisted == rhs.isWhitelisted &&
+        lhs.hasURL == rhs.hasURL &&
+        lhs.activeDownloadCount == rhs.activeDownloadCount
+    }
+
+    var body: some View {
         Menu {
             // Desktop / Mobile Mode Toggle
-            Button {
-                viewModel.toggleDesktopMode()
-            } label: {
+            Button(action: onToggleDesktopMode) {
                 Label(
-                    viewModel.isCurrentTabDesktopMode ? "Request Mobile Site" : "Request Desktop Site",
-                    systemImage: viewModel.isCurrentTabDesktopMode ? "iphone" : "desktopcomputer"
+                    isDesktopMode ? "Request Mobile Site" : "Request Desktop Site",
+                    systemImage: isDesktopMode ? "iphone" : "desktopcomputer"
                 )
             }
-            .disabled(viewModel.currentURL == nil)
+            .disabled(!hasURL)
 
             // Bookmarks & History
-            Button {
-                viewModel.showBookmarksAndHistory()
-            } label: {
+            Button(action: onShowBookmarksAndHistory) {
                 Label("Bookmarks & History", systemImage: "book")
             }
 
             // Content Shields (Milestone B.2)
-            Button {
-                viewModel.isShowingShieldSheet = true
-            } label: {
+            Button(action: onShowShieldSheet) {
                 Label(
                     "Content Shields",
-                    systemImage: viewModel.isCurrentSiteWhitelisted ? "shield.slash" : "shield.checkered"
+                    systemImage: isWhitelisted ? "shield.slash" : "shield.checkered"
                 )
             }
 
             // Safari-Style Reader Mode (Milestone B.3)
-            Button {
-                viewModel.toggleReaderMode()
-            } label: {
+            Button(action: onToggleReaderMode) {
                 Label("Reader Mode", systemImage: "doc.plaintext")
             }
-            .disabled(viewModel.currentURL == nil)
+            .disabled(!hasURL)
 
             // Find in Page (Milestone B.3)
-            Button {
-                viewModel.openFindInPage()
-            } label: {
+            Button(action: onOpenFindInPage) {
                 Label("Find in Page", systemImage: "magnifyingglass")
             }
-            .disabled(viewModel.currentURL == nil)
+            .disabled(!hasURL)
 
             // Webpage Sharing (Milestone B.3)
-            Button {
-                viewModel.shareCurrentPage()
-            } label: {
+            Button(action: onShareCurrentPage) {
                 Label("Share Webpage...", systemImage: "square.and.arrow.up")
             }
-            .disabled(viewModel.currentURL == nil)
+            .disabled(!hasURL)
         } label: {
             ZStack(alignment: .topTrailing) {
                 Image(systemName: "ellipsis")
@@ -5287,8 +5311,8 @@ public struct BrowserView: View {
                     .font(.system(size: 18, weight: .semibold))
 
                 // Priority Badge Indicator: Blue for active downloads
-                if viewModel.activeDownloadCount > 0 {
-                    Text("\(viewModel.activeDownloadCount)")
+                if activeDownloadCount > 0 {
+                    Text("\(activeDownloadCount)")
                         .font(.system(size: 9, weight: .bold))
                         .foregroundColor(.white)
                         .padding(.horizontal, 4)

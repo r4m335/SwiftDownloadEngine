@@ -775,6 +775,14 @@ public final class DownloadManagerViewModel: ObservableObject {
         let (down, up) = Self.computeAggregateThroughput(downloads: downloads, torrents: torrentTasks)
         bandwidthTracker.record(downloadSpeed: down, uploadSpeed: up, timestamp: timestamp)
 
+        if down == 0 && up == 0 &&
+            self.currentTotalDownloadSpeed == 0 &&
+            self.currentTotalUploadSpeed == 0 &&
+            !self.bandwidthHistory.isEmpty &&
+            self.bandwidthHistory.allSatisfy({ $0.downloadBytesPerSecond == 0 && $0.uploadBytesPerSecond == 0 }) {
+            return
+        }
+
         self.currentTotalDownloadSpeed = down
         self.currentTotalUploadSpeed = up
         self.peakDownloadSpeed = bandwidthTracker.peakDownloadSpeed(asOf: timestamp)

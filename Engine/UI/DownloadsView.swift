@@ -624,54 +624,31 @@ public struct DownloadsView: View {
         sortOrderMenu
         groupingOptionMenu
 
-        Menu {
-            Button {
+        DownloadsToolbarOverflowMenu(
+            isCompactMode: isCompactMode,
+            onToggleCompact: {
                 withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
                     isCompactMode.toggle()
                 }
                 triggerHaptic(.light)
-            } label: {
-                Label(
-                    isCompactMode ? "Switch to Card View" : "Switch to Compact Rows",
-                    systemImage: isCompactMode ? "rectangle.grid.1x2" : "list.bullet"
-                )
-            }
-
-            Divider()
-
-            Button {
+            },
+            onPauseAll: {
                 triggerHaptic(.medium)
                 Task { @MainActor in await viewModel.pauseAll() }
-            } label: {
-                Label("Pause All", systemImage: "pause.circle")
-            }
-
-            Button {
+            },
+            onResumeAll: {
                 triggerHaptic(.medium)
                 Task { @MainActor in await viewModel.resumeAll() }
-            } label: {
-                Label("Resume All", systemImage: "play.circle")
-            }
-
-            Divider()
-
-            Button {
+            },
+            onShowDiagnostics: {
                 activeSheet = .diagnostics
-            } label: {
-                Label("Pipeline Diagnostics", systemImage: "doc.text.magnifyingglass")
-            }
-
-            Divider()
-
-            Button(role: .destructive) {
+            },
+            onCancelAll: {
                 triggerHaptic(.heavy)
                 Task { @MainActor in await viewModel.cancelAll(deleteFiles: false) }
-            } label: {
-                Label("Cancel All", systemImage: "stop.circle")
             }
-        } label: {
-            Image(systemName: "ellipsis.circle")
-        }
+        )
+        .equatable()
 
         Button {
             triggerHaptic(.light)
@@ -681,6 +658,54 @@ public struct DownloadsView: View {
         } label: {
             Image(systemName: "plus.circle.fill")
                 .font(.title3)
+        }
+    }
+
+    private struct DownloadsToolbarOverflowMenu: View, Equatable {
+        let isCompactMode: Bool
+        let onToggleCompact: () -> Void
+        let onPauseAll: () -> Void
+        let onResumeAll: () -> Void
+        let onShowDiagnostics: () -> Void
+        let onCancelAll: () -> Void
+
+        static func == (lhs: Self, rhs: Self) -> Bool {
+            lhs.isCompactMode == rhs.isCompactMode
+        }
+
+        var body: some View {
+            Menu {
+                Button(action: onToggleCompact) {
+                    Label(
+                        isCompactMode ? "Switch to Card View" : "Switch to Compact Rows",
+                        systemImage: isCompactMode ? "rectangle.grid.1x2" : "list.bullet"
+                    )
+                }
+
+                Divider()
+
+                Button(action: onPauseAll) {
+                    Label("Pause All", systemImage: "pause.circle")
+                }
+
+                Button(action: onResumeAll) {
+                    Label("Resume All", systemImage: "play.circle")
+                }
+
+                Divider()
+
+                Button(action: onShowDiagnostics) {
+                    Label("Pipeline Diagnostics", systemImage: "doc.text.magnifyingglass")
+                }
+
+                Divider()
+
+                Button(role: .destructive, action: onCancelAll) {
+                    Label("Cancel All", systemImage: "stop.circle")
+                }
+            } label: {
+                Image(systemName: "ellipsis.circle")
+            }
         }
     }
 
@@ -1548,29 +1573,24 @@ public struct UnifiedTransferRowView: View {
                 if !isSelectingMultiple {
                     quickActionCircleButton
 
-                    Menu {
-                        UnifiedTransferMenuContent(
-                            transfer: transfer,
-                            isScheduled: viewModel.isScheduled(transferID: transfer.id),
-                            onOpen: onOpen,
-                            onSaveToFiles: onSaveToFiles,
-                            onShare: onShare,
-                            onCopyLink: onCopyLink,
-                            onShowDetails: onShowDetails,
-                            onPause: onPause,
-                            onResume: onResume,
-                            onRetry: onRetry,
-                            onUpdateLink: onUpdateLink,
-                            onRefreshFromBrowser: onRefreshFromBrowser,
-                            onToggleSchedule: { viewModel.toggleScheduled(transferID: transfer.id) },
-                            onRemoveQueue: onRemoveQueue,
-                            onDeleteFile: onDeleteFile
-                        )
-                    } label: {
-                        VerticalThreeDotsButtonLabel()
-                    }
-                    .buttonStyle(BorderlessButtonStyle())
-                    .accessibilityLabel("Transfer actions for \(transfer.name)")
+                    StableTransferRowMenu(
+                        transfer: transfer,
+                        isScheduled: viewModel.isScheduled(transferID: transfer.id),
+                        onOpen: onOpen,
+                        onSaveToFiles: onSaveToFiles,
+                        onShare: onShare,
+                        onCopyLink: onCopyLink,
+                        onShowDetails: onShowDetails,
+                        onPause: onPause,
+                        onResume: onResume,
+                        onRetry: onRetry,
+                        onUpdateLink: onUpdateLink,
+                        onRefreshFromBrowser: onRefreshFromBrowser,
+                        onToggleSchedule: { viewModel.toggleScheduled(transferID: transfer.id) },
+                        onRemoveQueue: onRemoveQueue,
+                        onDeleteFile: onDeleteFile
+                    )
+                    .equatable()
                 }
             }
 
@@ -1767,6 +1787,58 @@ public struct UnifiedTransferRowView: View {
 }
 
 // MARK: - Unified Transfer Menu Content
+
+private struct StableTransferRowMenu: View, Equatable {
+    let transfer: UnifiedTransfer
+    let isScheduled: Bool
+    let onOpen: () -> Void
+    let onSaveToFiles: () -> Void
+    let onShare: () -> Void
+    let onCopyLink: () -> Void
+    let onShowDetails: () -> Void
+    let onPause: () -> Void
+    let onResume: () -> Void
+    let onRetry: () -> Void
+    let onUpdateLink: () -> Void
+    let onRefreshFromBrowser: () -> Void
+    let onToggleSchedule: () -> Void
+    let onRemoveQueue: () -> Void
+    let onDeleteFile: () -> Void
+
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.transfer.id == rhs.transfer.id &&
+        lhs.transfer.name == rhs.transfer.name &&
+        lhs.transfer.state == rhs.transfer.state &&
+        lhs.transfer.isTorrent == rhs.transfer.isTorrent &&
+        lhs.isScheduled == rhs.isScheduled
+    }
+
+    var body: some View {
+        Menu {
+            UnifiedTransferMenuContent(
+                transfer: transfer,
+                isScheduled: isScheduled,
+                onOpen: onOpen,
+                onSaveToFiles: onSaveToFiles,
+                onShare: onShare,
+                onCopyLink: onCopyLink,
+                onShowDetails: onShowDetails,
+                onPause: onPause,
+                onResume: onResume,
+                onRetry: onRetry,
+                onUpdateLink: onUpdateLink,
+                onRefreshFromBrowser: onRefreshFromBrowser,
+                onToggleSchedule: onToggleSchedule,
+                onRemoveQueue: onRemoveQueue,
+                onDeleteFile: onDeleteFile
+            )
+        } label: {
+            VerticalThreeDotsButtonLabel()
+        }
+        .buttonStyle(BorderlessButtonStyle())
+        .accessibilityLabel("Transfer actions for \(transfer.name)")
+    }
+}
 
 public struct UnifiedTransferMenuContent: View {
     public let transfer: UnifiedTransfer
