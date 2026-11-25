@@ -7112,56 +7112,12 @@ final class BrowserWebViewSession {
 
 // MARK: - WKNavigationDelegate & WKUIDelegate Coordinator
 
-#if os(iOS)
-public final class BrowserWebViewCoordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKDownloadDelegate, UIScrollViewDelegate {
-    public weak var viewModel: BrowserViewModel?
-    private let tabID: UUID?
-    private var progressObserver: NSKeyValueObservation?
-    private let redirectLoopDetector = BrowserRedirectLoopDetector()
-    private var lastScrollOffsetY: CGFloat = 0
-
-    // Navigation generation to drop late/stale callbacks from superseded navigations
-    public private(set) var navigationGeneration: UInt64 = 0
-    public private(set) var activeNavigationTarget: URL?
-
-    public init(viewModel: BrowserViewModel, tabID: UUID? = nil) {
-        self.viewModel = viewModel
-        self.tabID = tabID
-        super.init()
-    }
-
-    public func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
-        lastScrollOffsetY = scrollView.contentOffset.y
-    }
-
-    public func scrollViewDidScroll(_ scrollView: UIScrollView) {
-        guard scrollView.isDragging || scrollView.isTracking || scrollView.isDecelerating else { return }
-        let y = scrollView.contentOffset.y
-        if y <= 10 {
-            lastScrollOffsetY = y
-            viewModel?.setToolbarCollapsed(false)
-            return
-        }
-        let maxY = max(0, scrollView.contentSize.height - scrollView.bounds.height)
-        if maxY > 40 && y >= maxY - 10 {
-            lastScrollOffsetY = y
-            return
-        }
-        let delta = y - lastScrollOffsetY
-        if delta > 14 {
-            lastScrollOffsetY = y
-            viewModel?.setToolbarCollapsed(true)
-        } else if delta < -14 {
-            lastScrollOffsetY = y
-            viewModel?.setToolbarCollapsed(false)
-        }
-    }
-#else
 public final class BrowserWebViewCoordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKDownloadDelegate {
     public weak var viewModel: BrowserViewModel?
     private let tabID: UUID?
     private var progressObserver: NSKeyValueObservation?
     private let redirectLoopDetector = BrowserRedirectLoopDetector()
+    fileprivate var lastScrollOffsetY: CGFloat = 0
 
     // Navigation generation to drop late/stale callbacks from superseded navigations
     public private(set) var navigationGeneration: UInt64 = 0
@@ -7172,7 +7128,6 @@ public final class BrowserWebViewCoordinator: NSObject, WKNavigationDelegate, WK
         self.tabID = tabID
         super.init()
     }
-#endif
 
     deinit {
         progressObserver?.invalidate()
@@ -8113,6 +8068,37 @@ public final class BrowserWebViewCoordinator: NSObject, WKNavigationDelegate, WK
         // WebKit download finished
     }
 }
+
+#if os(iOS)
+extension BrowserWebViewCoordinator: UIScrollViewDelegate {
+    public func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
+        lastScrollOffsetY = scrollView.contentOffset.y
+    }
+
+    public func scrollViewDidScroll(_ scrollView: UIScrollView) {
+        guard scrollView.isDragging || scrollView.isTracking || scrollView.isDecelerating else { return }
+        let y = scrollView.contentOffset.y
+        if y <= 10 {
+            lastScrollOffsetY = y
+            viewModel?.setToolbarCollapsed(false)
+            return
+        }
+        let maxY = max(0, scrollView.contentSize.height - scrollView.bounds.height)
+        if maxY > 40 && y >= maxY - 10 {
+            lastScrollOffsetY = y
+            return
+        }
+        let delta = y - lastScrollOffsetY
+        if delta > 14 {
+            lastScrollOffsetY = y
+            viewModel?.setToolbarCollapsed(true)
+        } else if delta < -14 {
+            lastScrollOffsetY = y
+            viewModel?.setToolbarCollapsed(false)
+        }
+    }
+}
+#endif
 
 #endif // canImport(WebKit)
 
