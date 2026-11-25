@@ -659,9 +659,9 @@ public struct BrowserResourceInspectorSheet: View {
         let counts = categoryCounts
         return ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
-                // "Media" Pill
+                // Default: Video & Audio only
                 FilterPill(
-                    title: "Media",
+                    title: "Video & Audio",
                     count: counts.media,
                     isSelected: selectedCategory == nil && selectedTrackType == nil && !showsAllResources
                 ) {
@@ -670,19 +670,8 @@ public struct BrowserResourceInspectorSheet: View {
                     showsAllResources = false
                 }
 
-                FilterPill(
-                    title: "All",
-                    count: counts.total,
-                    isSelected: selectedCategory == nil && selectedTrackType == nil && showsAllResources
-                ) {
-                    selectedCategory = nil
-                    selectedTrackType = nil
-                    showsAllResources = true
-                    viewModel.inspectCurrentPageResources(includeNonVideo: true)
-                }
-
-                // Per-type Pills
-                ForEach(WebpageResourceType.allCases) { cat in
+                // Always show Video and Audio quick-filter pills
+                ForEach([WebpageResourceType.video, .audio], id: \.self) { cat in
                     let count = counts.byType[cat, default: 0]
                     if count > 0 {
                         FilterPill(
@@ -692,28 +681,62 @@ public struct BrowserResourceInspectorSheet: View {
                         ) {
                             selectedCategory = cat
                             selectedTrackType = nil
-                            showsAllResources = true
-                            if cat != .video && cat != .audio {
-                                viewModel.inspectCurrentPageResources(includeNonVideo: true)
-                            }
+                            showsAllResources = false
                         }
                     }
                 }
 
-                // Track Type Pills: Muxed, Video, Audio, Subtitles
-                ForEach(ResourceTrackType.allCases) { track in
-                    let trackCount = eligibleResources.filter { $0.trackType == track }.count
-                    if trackCount > 0 {
-                        FilterPill(
-                            title: track.shortLabel,
-                            count: trackCount,
-                            isSelected: selectedTrackType == track
-                        ) {
-                            if selectedTrackType == track {
+                // Toggle to turn on Others (Documents, Archives, Images, Other)
+                FilterPill(
+                    title: showsAllResources ? "Hide Others" : "Show Others",
+                    count: max(0, counts.total - counts.media),
+                    isSelected: showsAllResources && selectedCategory == nil && selectedTrackType == nil
+                ) {
+                    withAnimation(.spring(response: 0.25, dampingFraction: 0.8)) {
+                        showsAllResources.toggle()
+                        if showsAllResources {
+                            selectedCategory = nil
+                            selectedTrackType = nil
+                            viewModel.inspectCurrentPageResources(includeNonVideo: true)
+                        } else {
+                            if let cat = selectedCategory, cat != .video && cat != .audio {
+                                selectedCategory = nil
+                            }
+                            selectedTrackType = nil
+                        }
+                    }
+                }
+
+                if showsAllResources {
+                    // Other ResourceType Pills (Images, Documents, Archives, Other)
+                    ForEach([WebpageResourceType.image, .document, .archive, .other], id: \.self) { cat in
+                        let count = counts.byType[cat, default: 0]
+                        if count > 0 {
+                            FilterPill(
+                                title: cat.rawValue,
+                                count: count,
+                                isSelected: selectedCategory == cat && selectedTrackType == nil
+                            ) {
+                                selectedCategory = cat
                                 selectedTrackType = nil
-                            } else {
-                                selectedTrackType = track
-                                showsAllResources = true
+                            }
+                        }
+                    }
+
+                    // Track Type Pills: Muxed, Video, Audio, Subtitles
+                    ForEach(ResourceTrackType.allCases) { track in
+                        let trackCount = eligibleResources.filter { $0.trackType == track }.count
+                        if trackCount > 0 {
+                            FilterPill(
+                                title: track.shortLabel,
+                                count: trackCount,
+                                isSelected: selectedTrackType == track
+                            ) {
+                                if selectedTrackType == track {
+                                    selectedTrackType = nil
+                                } else {
+                                    selectedTrackType = track
+                                }
                             }
                         }
                     }
@@ -1198,6 +1221,42 @@ public struct ResourceRowView: View {
         return "Size unknown"
     }
 
+    private var metadataSummaryLine: String {
+        var parts: [String] = []
+        if let variant = variantItem {
+            if let resStr = variant.resolutionText ?? variant.resolution.map({ "\($0.width)×\($0.height)" }) {
+                parts.append(resStr)
+            }
+            if !variant.bitrateText.isEmpty {
+                parts.append(variant.bitrateText)
+            }
+        } else if let resText = resource.resolutionText, !resText.isEmpty {
+            parts.append(resText)
+        } else if resource.isStreamingManifest {
+            parts.append("HLS Stream")
+        }
+
+        if let container = resource.container, !container.isEmpty {
+            parts.append(container)
+        } else {
+            let detectedExt = FilenameExtensionHelper.split(filename: displayFilename).ext
+            if !detectedExt.isEmpty {
+                parts.append(detectedExt.uppercased())
+            }
+        }
+
+        if let formattedDur = resource.formattedDuration {
+            parts.append(formattedDur)
+        }
+
+        if let lang = resource.audioLanguage, !lang.isEmpty {
+            parts.append(lang.uppercased())
+        }
+
+        parts.append(displayFileSize)
+        return parts.joined(separator: " • ")
+    }
+
     public var isPlayable: Bool {
         let isHLS = resource.isStreamingManifest && (resource.url.pathExtension.lowercased() == "m3u8" || resource.mimeType?.lowercased().contains("mpegurl") == true)
         let isPlayableDirect = (resource.resourceType == .video || resource.resourceType == .audio) &&
@@ -1256,133 +1315,14 @@ public struct ResourceRowView: View {
                                 .multilineTextAlignment(.leading)
                         }
 
-                        // Line 2: Size & Quality Specifications
-                        HStack(spacing: 6) {
-                            Text(displayFileSize)
-                                .font(.caption.monospacedDigit().weight(.medium))
-                                .foregroundColor(.secondary)
+                        // Line 2: Clean single-line specs summary (never wraps vertically)
+                        Text(metadataSummaryLine)
+                            .font(.caption.monospacedDigit())
+                            .foregroundColor(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
 
-                            if let variant = variantItem {
-                                Text("•")
-                                    .font(.caption2)
-                                    .foregroundColor(.secondary)
-
-                                if let resStr = variant.resolutionText ?? variant.resolution.map({ "\($0.width) × \($0.height)" }) {
-                                    Text(resStr)
-                                        .font(.caption.weight(.semibold))
-                                        .foregroundColor(.secondary)
-                                }
-
-                                if !variant.bitrateText.isEmpty {
-                                    Text("•")
-                                        .font(.caption2)
-                                        .foregroundColor(.secondary)
-                                    Text(variant.bitrateText)
-                                        .font(.caption)
-                                        .foregroundColor(.secondary)
-                                }
-                            } else if let resText = resource.resolutionText {
-                                Text("•")
-                                    .font(.caption2)
-                                    .foregroundColor(.secondary)
-                                Text(resText)
-                                    .font(.caption.weight(.semibold))
-                                    .foregroundColor(.primary)
-                            } else if resource.isStreamingManifest {
-                                Text("•")
-                                    .font(.caption2)
-                                    .foregroundColor(.secondary)
-                                Text("HLS Stream")
-                                    .font(.caption)
-                                    .foregroundColor(.blue)
-                            } else {
-                                let detectedExt = FilenameExtensionHelper.split(filename: displayFilename).ext
-                                if !detectedExt.isEmpty {
-                                    Text("•")
-                                        .font(.caption2)
-                                        .foregroundColor(.secondary)
-                                    Text(detectedExt.uppercased())
-                                        .font(.caption)
-                                        .foregroundColor(.secondary)
-                                }
-                            }
-
-                            // Formatted Duration badge if duration is known
-                            if let formattedDur = resource.formattedDuration {
-                                Text("•")
-                                    .font(.caption2)
-                                    .foregroundColor(.secondary)
-                                HStack(spacing: 2) {
-                                    Image(systemName: "clock")
-                                        .font(.system(size: 9))
-                                    Text(formattedDur)
-                                        .font(.caption)
-                                }
-                                .foregroundColor(.secondary)
-                            }
-
-                            // Track type indicator badge (Muxed, Video, Audio, Subtitles, etc.)
-                            Text(resource.trackType.shortLabel)
-                                .font(.system(size: 9, weight: .bold))
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 2)
-                                .background(Color.blue.opacity(0.12))
-                                .clipShape(Capsule())
-                                .foregroundColor(.blue)
-
-                            // Audio indicator: Small speaker icon when audio is present
-                            if let variant = variantItem, variant.hasAudio {
-                                Image(systemName: "speaker.wave.2.fill")
-                                    .font(.system(size: 10))
-                                    .foregroundColor(.secondary)
-                            } else if resource.resourceType == .video && !resource.isAudioVideoSplit {
-                                Image(systemName: "speaker.wave.2.fill")
-                                    .font(.system(size: 10))
-                                    .foregroundColor(.secondary)
-                            }
-
-                            // Subtitle indicator
-                            if (variantItem?.hasSubtitles == true) || resource.trackType == .subtitles {
-                                Image(systemName: "captions.bubble.fill")
-                                    .font(.system(size: 10))
-                                    .foregroundColor(.purple)
-                            }
-
-                            // Container badge if known
-                            if let container = resource.container, !container.isEmpty {
-                                Text(container)
-                                    .font(.system(size: 9, weight: .bold))
-                                    .padding(.horizontal, 4)
-                                    .padding(.vertical, 1)
-                                    .background(Color.purple.opacity(0.12))
-                                    .cornerRadius(3)
-                                    .foregroundColor(.purple)
-                            }
-
-                            // Language badge if known
-                            if let lang = resource.audioLanguage, !lang.isEmpty {
-                                Text(lang.uppercased())
-                                    .font(.system(size: 9, weight: .medium))
-                                    .padding(.horizontal, 4)
-                                    .padding(.vertical, 1)
-                                    .background(Color.secondary.opacity(0.12))
-                                    .cornerRadius(3)
-                                    .foregroundColor(.secondary)
-                            }
-
-                            // Codec badge if known
-                            if let codec = resource.codecs ?? variantItem?.videoCodec, !codec.isEmpty {
-                                Text(codec)
-                                    .font(.system(size: 9, weight: .bold))
-                                    .padding(.horizontal, 4)
-                                    .padding(.vertical, 1)
-                                    .background(Color.secondary.opacity(0.12))
-                                    .cornerRadius(3)
-                                    .foregroundColor(.secondary)
-                            }
-                        }
-
-                        // Line 3: Format Badge, DRM, Expiration, & Host
+                        // Line 3: Compact Non-Wrapping Badges & Host
                         HStack(spacing: 6) {
                             if resource.isDRMProtected || candidate?.kind == .protectedMedia {
                                 HStack(spacing: 3) {
@@ -1392,10 +1332,11 @@ public struct ResourceRowView: View {
                                         .font(.system(size: 9, weight: .bold))
                                 }
                                 .foregroundColor(.white)
-                                .padding(.horizontal, 5)
+                                .padding(.horizontal, 6)
                                 .padding(.vertical, 2)
                                 .background(Color.red.opacity(0.85))
-                                .cornerRadius(4)
+                                .clipShape(Capsule())
+                                .fixedSize(horizontal: true, vertical: false)
                             } else if resource.isLive || variantItem?.isLive == true {
                                 HStack(spacing: 3) {
                                     Circle()
@@ -1405,10 +1346,11 @@ public struct ResourceRowView: View {
                                         .font(.system(size: 9, weight: .bold))
                                 }
                                 .foregroundColor(.white)
-                                .padding(.horizontal, 5)
+                                .padding(.horizontal, 6)
                                 .padding(.vertical, 2)
                                 .background(Color.red)
-                                .cornerRadius(4)
+                                .clipShape(Capsule())
+                                .fixedSize(horizontal: true, vertical: false)
                             } else if resource.isExpired() {
                                 HStack(spacing: 3) {
                                     Image(systemName: "exclamationmark.clock.fill")
@@ -1417,10 +1359,11 @@ public struct ResourceRowView: View {
                                         .font(.system(size: 9, weight: .bold))
                                 }
                                 .foregroundColor(.white)
-                                .padding(.horizontal, 5)
+                                .padding(.horizontal, 6)
                                 .padding(.vertical, 2)
                                 .background(Color.orange)
-                                .cornerRadius(4)
+                                .clipShape(Capsule())
+                                .fixedSize(horizontal: true, vertical: false)
                             } else if resource.isExpiringSoon() {
                                 HStack(spacing: 3) {
                                     Image(systemName: "clock.badge.exclamationmark")
@@ -1429,6 +1372,7 @@ public struct ResourceRowView: View {
                                         .font(.system(size: 9, weight: .medium))
                                 }
                                 .foregroundColor(.orange)
+                                .fixedSize(horizontal: true, vertical: false)
                             }
 
                             if let variant = variantItem {
@@ -1439,10 +1383,23 @@ public struct ResourceRowView: View {
                                     .padding(.vertical, 2)
                                     .background((variant.isLive || resource.isLive) ? Color.red : Color.blue)
                                     .clipShape(Capsule())
-                            } else if let qualitySummary {
-                                Text(qualitySummary)
-                                    .font(.system(size: 10, weight: .medium))
-                                    .foregroundColor(.secondary)
+                                    .fixedSize(horizontal: true, vertical: false)
+                            }
+
+                            Text(resource.trackType.shortLabel)
+                                .font(.system(size: 9, weight: .bold))
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(Color.blue.opacity(0.12))
+                                .foregroundColor(.blue)
+                                .clipShape(Capsule())
+                                .fixedSize(horizontal: true, vertical: false)
+
+                            if (variantItem?.hasSubtitles == true) || resource.trackType == .subtitles {
+                                Image(systemName: "captions.bubble.fill")
+                                    .font(.system(size: 10))
+                                    .foregroundColor(.purple)
+                                    .fixedSize(horizontal: true, vertical: false)
                             }
 
                             if let host = resource.url.host {
@@ -1450,6 +1407,7 @@ public struct ResourceRowView: View {
                                     .font(.system(size: 10))
                                     .foregroundColor(.secondary)
                                     .lineLimit(1)
+                                    .truncationMode(.middle)
                             }
                         }
                     }

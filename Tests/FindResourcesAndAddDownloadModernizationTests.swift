@@ -382,6 +382,38 @@ final class FindResourcesAndAddDownloadModernizationTests: XCTestCase {
         XCTAssertTrue(hlsHTML.contains("HLS Stream"))
         XCTAssertTrue(hlsHTML.contains("application/vnd.apple.mpegurl"))
     }
+
+    func testGrabberFiltersOutScriptsImagesAndTinyBlobStubs() {
+        // 1. JS script observed inside a <video> / player context must be rejected
+        let jsObs = BrowserResourceObservation(
+            rawURL: "https://ssl.p.jwpcdn.com/player/v/8.30.0/provider.airplay.js",
+            declaredType: "application/javascript",
+            tag: "video"
+        )
+        XCTAssertNil(BrowserMediaCandidate.fromNetworkObservation(jsObs))
+
+        // 2. JPG image inside a <video> / <source> tag must classify as .image (directFile), never .video
+        let jpgObs = BrowserResourceObservation(
+            rawURL: "https://image.tmdb.org/t/p/original/poster.jpg",
+            declaredType: "image/jpeg",
+            tag: "source"
+        )
+        let jpgCandidate = BrowserMediaCandidate.fromNetworkObservation(jpgObs)
+        XCTAssertEqual(jpgCandidate?.kind, .directFile)
+        XCTAssertEqual(jpgCandidate?.toWebpageResource()?.resourceType, .image)
+
+        // 3. Tiny < 4 KB completeBlob stub (e.g. 1 KB browser_blob.mp4) must be filtered out
+        let tinyBlob = BrowserMediaCandidate(
+            id: "tiny-blob",
+            url: URL(string: "blob:https://example.com/123"),
+            rawURL: "blob:https://example.com/123",
+            kind: .completeBlob,
+            mimeType: "video/mp4",
+            suggestedFilename: "browser_blob.mp4",
+            estimatedSize: 1024
+        )
+        XCTAssertNil(tinyBlob.toWebpageResource())
+    }
 }
 
 // MARK: - Mock URLProtocol for HEAD Rejection

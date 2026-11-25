@@ -124,6 +124,12 @@ public struct BrowserMediaCandidate: Identifiable, Codable, Sendable, Equatable,
         kind == .hlsManifest || kind == .dashManifest
     }
 
+    private static let nonMediaAssetExtensions: Set<String> = [
+        "js", "mjs", "cjs", "css", "scss", "html", "htm", "xhtml",
+        "php", "asp", "aspx", "jsp", "json", "xml", "map",
+        "woff", "woff2", "ttf", "otf", "eot", "wasm", "ico", "cur"
+    ]
+
     /// Converts this candidate into a `WebpageResource` preserving media specifications.
     public func toWebpageResource() -> WebpageResource? {
         guard kind != .unknown, availability != .unsupported,
@@ -131,25 +137,45 @@ public struct BrowserMediaCandidate: Identifiable, Codable, Sendable, Equatable,
             return nil
         }
         let ext = targetURL.pathExtension.lowercased()
+        let lowerMime = mimeType?.lowercased()
         if ext == "ts" || ext == "m4s" { return nil }
-        if let mime = mimeType?.lowercased(), mime.contains("mp2t") || mime.contains("iso.segment") {
+        if let mime = lowerMime, mime.contains("mp2t") || mime.contains("iso.segment") {
+            return nil
+        }
+        let hasExplicitMediaMime = lowerMime?.hasPrefix("video/") == true || lowerMime?.hasPrefix("audio/") == true
+        if Self.nonMediaAssetExtensions.contains(ext) && !hasExplicitMediaMime && kind != .hlsManifest && kind != .dashManifest {
+            return nil
+        }
+        if kind == .completeBlob, let size = estimatedSize, size > 0 && size < 4096 {
             return nil
         }
 
+        let categorized = WebpageResourceExtractor.categorize(extension: ext, mimeType: mimeType)
         let resourceType: WebpageResourceType
         switch kind {
-        case .directMedia, .hlsManifest, .dashManifest, .mediaSource, .protectedMedia:
+        case .hlsManifest, .dashManifest, .mediaSource, .protectedMedia:
             resourceType = .video
+        case .directMedia:
+            switch categorized {
+            case .audio, .image, .document, .archive:
+                resourceType = categorized
+            default:
+                resourceType = .video
+            }
         case .completeBlob:
-            if let mime = mimeType?.lowercased(), mime.contains("audio") {
+            if let mime = lowerMime, mime.contains("audio") {
                 resourceType = .audio
             } else {
                 resourceType = .video
             }
         case .directFile:
-            let isAudio = (mimeType?.lowercased().contains("audio") == true) ||
-                ["mp3", "m4a", "aac", "wav", "flac", "ogg"].contains(ext)
-            resourceType = isAudio ? .audio : .other
+            if categorized != .other {
+                resourceType = categorized
+            } else {
+                let isAudio = (lowerMime?.contains("audio") == true) ||
+                    ["mp3", "m4a", "aac", "wav", "flac", "ogg"].contains(ext)
+                resourceType = isAudio ? .audio : .other
+            }
         case .unknown:
             return nil
         }
@@ -445,14 +471,21 @@ public enum BrowserMediaCandidateClassifier {
             )
         }
 
+        let ext = BrowserDownloadClassifier.extractURLExtension(from: finalURL ?? url)?.lowercased() ?? ""
+        let hasExplicitMediaMime = mime?.hasPrefix("video/") == true || mime?.hasPrefix("audio/") == true
+        if Self.nonMediaAssetExtensions.contains(ext) && !hasExplicitMediaMime {
+            return nil
+        }
+
         let type = WebpageResourceExtractor.categorize(
-            extension: BrowserDownloadClassifier.extractURLExtension(from: finalURL ?? url),
+            extension: ext.isEmpty ? nil : ext,
             mimeType: mime
         )
         let isMediaTag = observation.tag?.lowercased() == "video" ||
             observation.tag?.lowercased() == "audio" ||
             observation.tag?.lowercased() == "source"
-        let isMedia = type == .video || type == .audio || isMediaTag
+        let isMedia = (type == .video || type == .audio) ||
+            (isMediaTag && type != .image && type != .document && type != .archive)
         let isKnownFile = isMedia || type == .image || type == .document || type == .archive
         guard isKnownFile else { return nil }
 
