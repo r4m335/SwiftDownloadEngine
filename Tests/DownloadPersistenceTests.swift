@@ -509,4 +509,47 @@ final class DownloadPersistenceTests: XCTestCase {
         XCTAssertNil(KeychainManager.shared.getGenericSecret(key: "authorization", account: hostUnique),
                      "Host credentials must be deleted when the last download for that host is deleted")
     }
+
+    func testFetchAllAndDeleteAllIgnoreSharedNonRecordAndQuarantinedFiles() async throws {
+        let validRecord = DownloadRecord(
+            id: "valid-record",
+            originalURL: URL(string: "https://example.com/valid.bin")!,
+            destinationURL: URL(fileURLWithPath: "/tmp/valid.bin"),
+            totalSize: 512
+        )
+        try await store.save(validRecord)
+
+        let sharedFiles = [
+            "queue_manifest.json",
+            "playback_history.json",
+            "active_transfer_notifications.json",
+            "some_record.corrupt.123456.json"
+        ]
+        for filename in sharedFiles {
+            let fileURL = tempStorageURL.appendingPathComponent(filename)
+            try Data("{\"unrelated\":true}".utf8).write(to: fileURL)
+        }
+
+        let fetched = try await store.fetchAll()
+        XCTAssertEqual(fetched.map(\.id), ["valid-record"])
+
+        // None of the shared/quarantined files should have been quarantined or renamed
+        for filename in sharedFiles {
+            let fileURL = tempStorageURL.appendingPathComponent(filename)
+            XCTAssertTrue(FileManager.default.fileExists(atPath: fileURL.path), "\(filename) must not be quarantined by fetchAll()")
+        }
+
+        // DurableStorage.quarantineCorruptFile must not double-quarantine a .corrupt. file
+        let alreadyCorruptURL = tempStorageURL.appendingPathComponent("some_record.corrupt.123456.json")
+        let resultURL = DurableStorage.quarantineCorruptFile(at: alreadyCorruptURL)
+        XCTAssertEqual(resultURL, alreadyCorruptURL)
+
+        // deleteAll() must delete download records without deleting shared store files
+        try await store.deleteAll()
+        XCTAssertTrue(try await store.fetchAll().isEmpty)
+        for filename in sharedFiles {
+            let fileURL = tempStorageURL.appendingPathComponent(filename)
+            XCTAssertTrue(FileManager.default.fileExists(atPath: fileURL.path), "\(filename) must not be deleted by deleteAll()")
+        }
+    }
 }

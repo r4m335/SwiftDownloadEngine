@@ -1080,7 +1080,12 @@ public final class BackgroundDownloadSessionManager: NSObject, @unchecked Sendab
     ) async throws -> BackgroundDownloadTaskRecord {
         if let existing = await mappingStore.record(forDownloadID: transferID, segmentID: order),
            !existing.isCompleted {
-            return existing
+            let activeTask = await findTask(withIdentifier: existing.taskIdentifier)
+            if activeTask != nil && existing.destinationPartURL == destinationURL {
+                return existing
+            }
+            activeTask?.cancel()
+            try? await mappingStore.remove(sessionIdentifier: existing.sessionIdentifier, taskIdentifier: existing.taskIdentifier)
         }
 
         var request = URLRequest(url: url)

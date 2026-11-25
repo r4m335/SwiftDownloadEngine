@@ -623,7 +623,7 @@ public actor DownloadPersistenceStore {
             at: storageDirectoryURL,
             includingPropertiesForKeys: nil,
             options: .skipsHiddenFiles
-        ).filter { $0.pathExtension == "json" }
+        ).filter { Self.isDownloadRecordFile($0) }
 
         var results: [DownloadRecord] = []
         for fileURL in fileURLs {
@@ -692,12 +692,28 @@ public actor DownloadPersistenceStore {
         let fileURLs = try FileManager.default.contentsOfDirectory(
             at: storageDirectoryURL,
             includingPropertiesForKeys: nil
-        ).filter { $0.pathExtension == "json" }
+        ).filter { Self.isDownloadRecordFile($0) }
 
         for fileURL in fileURLs {
             try FileManager.default.removeItem(at: fileURL)
         }
         cache.removeAll()
+    }
+
+    private static let nonRecordFilenames: Set<String> = [
+        "queue_manifest.json",
+        "playback_history.json",
+        "active_transfer_notifications.json",
+        "background_tasks_v1.json",
+        "schedule_rules.json"
+    ]
+
+    private static func isDownloadRecordFile(_ url: URL) -> Bool {
+        guard url.pathExtension.lowercased() == "json" else { return false }
+        let name = url.lastPathComponent
+        if name.contains(".corrupt.") { return false }
+        if nonRecordFilenames.contains(name) { return false }
+        return true
     }
 
     /// Exports a record as raw JSON data.

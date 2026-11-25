@@ -1809,5 +1809,46 @@ final class BackgroundHTTPTransportTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: destURL.path))
         XCTAssertEqual(try Data(contentsOf: destURL), payload)
     }
+
+    func testScheduleStreamingSegmentReplacesStaleDestinationMapping() async throws {
+        let sessionID = "test.stale.dest.\(UUID().uuidString)"
+        let manager = try BackgroundDownloadSessionManager(
+            sessionIdentifier: sessionID,
+            storageDirectoryURL: storageDirectoryURL
+        )
+
+        let transferID = "stream-stale-\(UUID().uuidString)"
+        let oldDest = storageDirectoryURL.appendingPathComponent("old_temp/seg-5.part")
+        let newDest = storageDirectoryURL.appendingPathComponent("new_temp/seg-5.part")
+        let segURL = URL(string: "https://cdn.example.com/hls/seg-5.ts")!
+
+        let staleRecord = BackgroundDownloadTaskRecord(
+            sessionIdentifier: sessionID,
+            taskIdentifier: 999_999,
+            downloadID: transferID,
+            segmentID: 5,
+            originalURL: segURL,
+            startOffset: 0,
+            endOffset: 0,
+            expectedBytes: 0,
+            initialSegmentCompletedBytes: 0,
+            segmentLength: 0,
+            destinationPartURL: oldDest,
+            completedBytes: 0,
+            isCompleted: false
+        )
+        try await manager.mappingStore.save(record: staleRecord)
+
+        let scheduled = try await manager.scheduleStreamingSegment(
+            transferID: transferID,
+            order: 5,
+            url: segURL,
+            destinationURL: newDest
+        )
+
+        XCTAssertEqual(scheduled.destinationPartURL, newDest)
+        XCTAssertNotEqual(scheduled.taskIdentifier, 999_999)
+        await manager.cancelTasks(for: transferID)
+    }
 }
 

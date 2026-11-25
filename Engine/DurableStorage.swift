@@ -108,6 +108,10 @@ public enum DurableStorage {
         fileManager: FileManager = .default
     ) -> URL? {
         guard fileManager.fileExists(atPath: url.path) else { return nil }
+        // Never re-quarantine an already-quarantined file; doing so creates ever-longer filenames that exceed OS limits.
+        if url.lastPathComponent.contains(".corrupt.") {
+            return url
+        }
         let dir = url.deletingLastPathComponent()
         let baseName = url.deletingPathExtension().lastPathComponent
         let ext = url.pathExtension.isEmpty ? "json" : url.pathExtension
