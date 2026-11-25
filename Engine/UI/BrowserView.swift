@@ -4725,6 +4725,15 @@ public struct BrowserView: View {
             }
         }
         .animation(.spring(response: 0.28, dampingFraction: 0.86), value: viewModel.isToolbarCollapsed)
+        .onReceive(NotificationCenter.default.publisher(for: .sdeBrowserTabRetapped)) { _ in
+            withAnimation(.spring(response: 0.28, dampingFraction: 0.86)) {
+                if viewModel.isToolbarCollapsed {
+                    viewModel.setToolbarCollapsed(false)
+                } else {
+                    isAddressBarFocused = true
+                }
+            }
+        }
         .overlay(alignment: .top) {
             VStack(spacing: 8) {
                 if viewModel.isCapturingMSE {
