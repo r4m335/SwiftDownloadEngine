@@ -389,7 +389,7 @@ final class FindResourcesAndAddDownloadModernizationTests: XCTestCase {
         let jsObs = BrowserMediaDiscoveryObservation(
             url: URL(string: "https://ssl.p.jwpcdn.com/player/v/8.30.0/provider.airplay.js")!,
             rawURL: "https://ssl.p.jwpcdn.com/player/v/8.30.0/provider.airplay.js",
-            source: .domElement,
+            source: .mediaElement,
             tag: "video",
             declaredType: "application/javascript",
             pageOrigin: origin,
@@ -402,7 +402,7 @@ final class FindResourcesAndAddDownloadModernizationTests: XCTestCase {
         let jpgObs = BrowserMediaDiscoveryObservation(
             url: URL(string: "https://image.tmdb.org/t/p/original/poster.jpg")!,
             rawURL: "https://image.tmdb.org/t/p/original/poster.jpg",
-            source: .domElement,
+            source: .sourceElement,
             tag: "source",
             declaredType: "image/jpeg",
             pageOrigin: origin,
@@ -421,7 +421,8 @@ final class FindResourcesAndAddDownloadModernizationTests: XCTestCase {
             kind: .completeBlob,
             mimeType: "video/mp4",
             suggestedFilename: "browser_blob.mp4",
-            estimatedSize: 1024
+            estimatedSize: 1024,
+            availability: .downloadable
         )
         XCTAssertNil(tinyBlob.toWebpageResource())
     }
