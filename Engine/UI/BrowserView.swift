@@ -61,7 +61,14 @@ public final class BrowserViewModel: NSObject, ObservableObject {
     @Published public private(set) var activeTabID: UUID?
     @Published public var isShowingTabSwitcher: Bool = false
     @Published public var isShowingBookmarksAndHistory: Bool = false
+    @Published public var isToolbarCollapsed: Bool = false
     @Published public var externalAppLinkPrompt: BrowserExternalAppLink?
+
+    public func setToolbarCollapsed(_ collapsed: Bool) {
+        let target = collapsed && currentURL != nil && !isShowingFindInPage
+        guard isToolbarCollapsed != target else { return }
+        isToolbarCollapsed = target
+    }
 
     // Download modal state
     @Published public var isShowingDownloadSheet: Bool = false
@@ -4491,7 +4498,10 @@ public struct BrowserView: View {
     public var body: some View {
         VStack(spacing: 0) {
             // Keep one navigation menu at the top, like a compact browser toolbar.
-            topNavigationToolbar
+            if !viewModel.isToolbarCollapsed || isAddressBarFocused || viewModel.currentURL == nil {
+                topNavigationToolbar
+                    .transition(.move(edge: .top).combined(with: .opacity))
+            }
 
             if viewModel.isLoading {
                 ProgressView(value: max(0.05, viewModel.estimatedProgress), total: 1.0)
@@ -4706,8 +4716,15 @@ public struct BrowserView: View {
             )
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            addressBarHeader
+            if viewModel.isToolbarCollapsed && !isAddressBarFocused && viewModel.currentURL != nil {
+                collapsedAddressPill
+                    .transition(.scale(scale: 0.9).combined(with: .opacity))
+            } else {
+                addressBarHeader
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
         }
+        .animation(.spring(response: 0.28, dampingFraction: 0.86), value: viewModel.isToolbarCollapsed)
         .overlay(alignment: .top) {
             VStack(spacing: 8) {
                 if viewModel.isCapturingMSE {
@@ -4905,6 +4922,44 @@ public struct BrowserView: View {
     }
 
     // MARK: - Address Bar Header
+
+    private var collapsedWebsiteName: String {
+        guard let host = viewModel.currentURL?.host, !host.isEmpty else {
+            return viewModel.currentURL?.lastPathComponent ?? "Website"
+        }
+        return host.hasPrefix("www.") ? String(host.dropFirst(4)) : host
+    }
+
+    private var collapsedAddressPill: some View {
+        Button {
+            withAnimation(.spring(response: 0.28, dampingFraction: 0.86)) {
+                viewModel.setToolbarCollapsed(false)
+            }
+        } label: {
+            HStack(spacing: 6) {
+                if let url = viewModel.currentURL {
+                    Image(systemName: url.scheme?.lowercased() == "https" ? "lock.fill" : "lock.slash.fill")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundColor(url.scheme?.lowercased() == "https" ? .green : .orange)
+                }
+                Text(collapsedWebsiteName)
+                    .font(.caption.weight(.semibold))
+                    .foregroundColor(.primary)
+                    .lineLimit(1)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 7)
+            .background(.ultraThinMaterial, in: Capsule())
+            .overlay(
+                Capsule()
+                    .stroke(Color.primary.opacity(0.12), lineWidth: 0.8)
+            )
+            .shadow(color: .black.opacity(0.12), radius: 8, x: 0, y: 2)
+        }
+        .buttonStyle(.plain)
+        .padding(.bottom, 6)
+        .accessibilityLabel("Website: \(collapsedWebsiteName). Tap to expand browser bar.")
+    }
 
     private var addressBarHeader: some View {
         VStack(spacing: 4) {
@@ -7030,6 +7085,9 @@ final class BrowserWebViewSession {
         self.coordinator = coordinator
         webView.navigationDelegate = coordinator
         webView.uiDelegate = coordinator
+        #if os(iOS)
+        webView.scrollView.delegate = coordinator
+        #endif
         coordinator.setupProgressObserver(for: webView)
 
         // Automatically load restored URL exactly once
@@ -7044,6 +7102,9 @@ final class BrowserWebViewSession {
         webView.stopLoading()
         webView.navigationDelegate = nil
         webView.uiDelegate = nil
+        #if os(iOS)
+        webView.scrollView.delegate = nil
+        #endif
         webView.configuration.userContentController.removeAllUserScripts()
         mediaDiscoveryBridge.reset()
     }
@@ -7051,6 +7112,51 @@ final class BrowserWebViewSession {
 
 // MARK: - WKNavigationDelegate & WKUIDelegate Coordinator
 
+#if os(iOS)
+public final class BrowserWebViewCoordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKDownloadDelegate, UIScrollViewDelegate {
+    public weak var viewModel: BrowserViewModel?
+    private let tabID: UUID?
+    private var progressObserver: NSKeyValueObservation?
+    private let redirectLoopDetector = BrowserRedirectLoopDetector()
+    private var lastScrollOffsetY: CGFloat = 0
+
+    // Navigation generation to drop late/stale callbacks from superseded navigations
+    public private(set) var navigationGeneration: UInt64 = 0
+    public private(set) var activeNavigationTarget: URL?
+
+    public init(viewModel: BrowserViewModel, tabID: UUID? = nil) {
+        self.viewModel = viewModel
+        self.tabID = tabID
+        super.init()
+    }
+
+    public func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
+        lastScrollOffsetY = scrollView.contentOffset.y
+    }
+
+    public func scrollViewDidScroll(_ scrollView: UIScrollView) {
+        guard scrollView.isDragging || scrollView.isTracking || scrollView.isDecelerating else { return }
+        let y = scrollView.contentOffset.y
+        if y <= 10 {
+            lastScrollOffsetY = y
+            viewModel?.setToolbarCollapsed(false)
+            return
+        }
+        let maxY = max(0, scrollView.contentSize.height - scrollView.bounds.height)
+        if maxY > 40 && y >= maxY - 10 {
+            lastScrollOffsetY = y
+            return
+        }
+        let delta = y - lastScrollOffsetY
+        if delta > 14 {
+            lastScrollOffsetY = y
+            viewModel?.setToolbarCollapsed(true)
+        } else if delta < -14 {
+            lastScrollOffsetY = y
+            viewModel?.setToolbarCollapsed(false)
+        }
+    }
+#else
 public final class BrowserWebViewCoordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKDownloadDelegate {
     public weak var viewModel: BrowserViewModel?
     private let tabID: UUID?
@@ -7066,6 +7172,7 @@ public final class BrowserWebViewCoordinator: NSObject, WKNavigationDelegate, WK
         self.tabID = tabID
         super.init()
     }
+#endif
 
     deinit {
         progressObserver?.invalidate()
