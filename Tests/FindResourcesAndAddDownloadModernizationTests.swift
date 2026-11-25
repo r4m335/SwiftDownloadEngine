@@ -447,13 +447,14 @@ final class FindResourcesAndAddDownloadModernizationTests: XCTestCase {
             source: "https://cdn.example.com/old/master.m3u8"
         )
         dm.unifiedTransfers = [failedTransfer]
-        dm.recoveryManager.startBrowserLinkRefresh(for: failedTransfer)
+        dm.startBrowserLinkRefresh(for: failedTransfer)
 
         let newResource = WebpageResource(
             id: "res-1",
             url: URL(string: "https://cdn.example.com/new/master.m3u8")!,
-            resourceType: .video,
+            title: "episode-720p.mp4",
             suggestedFilename: "episode-720p.mp4",
+            resourceType: .video,
             trackType: .muxed
         )
 
