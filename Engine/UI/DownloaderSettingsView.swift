@@ -16,6 +16,8 @@ public struct DownloaderSettingsView: View {
     @State private var maxRetryAttempts: Int = 3
     @State private var duplicateNamingRule: DuplicateNamingRule = .autoRename
     @State private var allowCellular: Bool = true
+    @State private var allowExpensiveNetwork: Bool = true
+    @State private var allowConstrainedNetwork: Bool = false
 
     // Keychain Sensitive Authentication & Proxy
     @State private var authServer: String = ""
@@ -76,6 +78,8 @@ public struct DownloaderSettingsView: View {
                 footer: Text("Platform rules and execution timeouts for all downloads. Cellular downloads can be restricted to Wi-Fi only.")
             ) {
                 Toggle("Allow Cellular Data", isOn: $allowCellular)
+                Toggle("Allow Expensive Networks (Hotspot)", isOn: $allowExpensiveNetwork)
+                Toggle("Allow Low Data Mode", isOn: $allowConstrainedNetwork)
 
                 Stepper("Request Timeout: \(timeoutSeconds)s", value: $timeoutSeconds, in: 5...120, step: 5)
 
@@ -408,6 +412,8 @@ public struct DownloaderSettingsView: View {
         self.maxRetryAttempts = settings.maxRetryAttempts
         self.duplicateNamingRule = settings.duplicateNamingRule
         self.allowCellular = settings.allowCellular
+        self.allowExpensiveNetwork = settings.allowExpensiveNetwork
+        self.allowConstrainedNetwork = settings.allowConstrainedNetwork
 
         self.maxConcurrentTorrents = settings.maxConcurrentTorrents
         self.defaultTorrentPriority = settings.defaultTorrentPriority
@@ -444,6 +450,8 @@ public struct DownloaderSettingsView: View {
         updated.maxRetryAttempts = maxRetryAttempts
         updated.duplicateNamingRule = duplicateNamingRule
         updated.allowCellular = allowCellular
+        updated.allowExpensiveNetwork = allowExpensiveNetwork
+        updated.allowConstrainedNetwork = allowConstrainedNetwork
         updated.enableGlobalSpeedLimit = enableGlobalSpeedLimit
         updated.globalSpeedLimitKBps = speedKB
         updated.maxConcurrentTorrents = maxConcurrentTorrents

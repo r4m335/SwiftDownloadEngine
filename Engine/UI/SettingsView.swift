@@ -1,10 +1,17 @@
 #if canImport(SwiftUI)
 import SwiftUI
 
+#if canImport(UIKit)
+import UIKit
+#endif
+
 /// Root Settings Screen: Category-based navigation hub organizing preferences into
 /// Downloader, Browser, and Media Player sub-pages.
 public struct SettingsView: View {
     @ObservedObject public var viewModel: DownloadManagerViewModel
+    @AppStorage("downloadsCompactMode") private var downloadsCompactMode: Bool = false
+    @AppStorage("mediaLibraryGridView") private var mediaLibraryGridView: Bool = false
+    @State private var notificationStatus: NotificationPermissionStatus = .notDetermined
 
     public init(viewModel: DownloadManagerViewModel) {
         self.viewModel = viewModel
@@ -78,6 +85,49 @@ public struct SettingsView: View {
                     }
                 }
 
+                Section(header: Text("Interface & Notifications")) {
+                    Toggle(isOn: $downloadsCompactMode) {
+                        Label("Compact Download Cards", systemImage: "rectangle.grid.1x2")
+                    }
+
+                    Toggle(isOn: $mediaLibraryGridView) {
+                        Label("Media Library Grid Layout", systemImage: "square.grid.2x2")
+                    }
+
+                    HStack {
+                        Label("Transfer Notifications", systemImage: "bell.badge")
+                        Spacer()
+                        Text(notificationStatusLabel)
+                            .font(.caption.weight(.semibold))
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 3)
+                            .background(notificationStatusColor.opacity(0.15))
+                            .foregroundColor(notificationStatusColor)
+                            .clipShape(Capsule())
+                    }
+
+                    if notificationStatus == .notDetermined {
+                        Button {
+                            Task { @MainActor in
+                                _ = await DownloadNotificationManager.requestPermissionBeforeFirstDownload()
+                                notificationStatus = await DownloadNotificationManager.checkPermissionStatus()
+                            }
+                        } label: {
+                            Label("Enable Notifications", systemImage: "bell.fill")
+                        }
+                    } else {
+                        #if canImport(UIKit)
+                        Button {
+                            if let url = URL(string: UIApplication.openSettingsURLString) {
+                                UIApplication.shared.open(url)
+                            }
+                        } label: {
+                            Label("Open System Notification Settings", systemImage: "gear")
+                        }
+                        #endif
+                    }
+                }
+
                 Section(header: Text("About & System")) {
                     NavigationLink {
                         AboutView()
@@ -129,11 +179,14 @@ public struct SettingsView: View {
                     HStack {
                         Text("Settings Schema")
                         Spacer()
-                        Text("AppSettings v7 • LIDPlayer v1")
+                        Text("AppSettings v8 • LIDPlayer v1")
                             .font(.caption.monospaced())
                             .foregroundColor(.secondary)
                     }
                 }
+            }
+            .task {
+                notificationStatus = await DownloadNotificationManager.checkPermissionStatus()
             }
             #if os(iOS)
             .listStyle(InsetGroupedListStyle())
@@ -141,6 +194,22 @@ public struct SettingsView: View {
             .listStyle(PlainListStyle())
             #endif
             .navigationTitle("Settings")
+        }
+    }
+
+    private var notificationStatusLabel: String {
+        switch notificationStatus {
+        case .authorized, .provisional: return "Allowed"
+        case .denied: return "Denied"
+        case .notDetermined: return "Not Requested"
+        }
+    }
+
+    private var notificationStatusColor: Color {
+        switch notificationStatus {
+        case .authorized, .provisional: return .green
+        case .denied: return .red
+        case .notDetermined: return .orange
         }
     }
 

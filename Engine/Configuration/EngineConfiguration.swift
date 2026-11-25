@@ -24,6 +24,8 @@ public struct EngineConfiguration: Sendable, Equatable {
     public var globalBandwidthLimitBytesPerSecond: Int64?
     public var duplicateNamingRule: DuplicateNamingRule
     public var allowCellular: Bool
+    public var allowExpensiveNetwork: Bool
+    public var allowConstrainedNetwork: Bool
     public var maxConcurrentTorrents: Int
     public var defaultTorrentPriority: TorrentPriority
     public var defaultSeedingPreference: SeedingPreference
@@ -40,6 +42,8 @@ public struct EngineConfiguration: Sendable, Equatable {
         globalBandwidthLimitBytesPerSecond: nil,
         duplicateNamingRule: .autoRename,
         allowCellular: true,
+        allowExpensiveNetwork: true,
+        allowConstrainedNetwork: false,
         maxConcurrentTorrents: 3,
         defaultTorrentPriority: .normal,
         defaultSeedingPreference: SeedingPreference(mode: .ratio, targetRatio: 1.0, targetDurationSeconds: 3600),
@@ -57,6 +61,8 @@ public struct EngineConfiguration: Sendable, Equatable {
         globalBandwidthLimitBytesPerSecond: Int64? = nil,
         duplicateNamingRule: DuplicateNamingRule = .autoRename,
         allowCellular: Bool = true,
+        allowExpensiveNetwork: Bool = true,
+        allowConstrainedNetwork: Bool = false,
         maxConcurrentTorrents: Int = 3,
         defaultTorrentPriority: TorrentPriority = .normal,
         defaultSeedingPreference: SeedingPreference = SeedingPreference(mode: .ratio, targetRatio: 1.0, targetDurationSeconds: 3600),
@@ -72,10 +78,20 @@ public struct EngineConfiguration: Sendable, Equatable {
         self.globalBandwidthLimitBytesPerSecond = globalBandwidthLimitBytesPerSecond
         self.duplicateNamingRule = duplicateNamingRule
         self.allowCellular = allowCellular
+        self.allowExpensiveNetwork = allowExpensiveNetwork
+        self.allowConstrainedNetwork = allowConstrainedNetwork
         self.maxConcurrentTorrents = max(1, maxConcurrentTorrents)
         self.defaultTorrentPriority = defaultTorrentPriority
         self.defaultSeedingPreference = defaultSeedingPreference
         self.torrentDownloadRateLimit = torrentDownloadRateLimit
         self.torrentUploadRateLimit = torrentUploadRateLimit
+    }
+
+    public var defaultNetworkPolicy: DownloadNetworkPolicy {
+        DownloadNetworkPolicy(
+            allowsCellularAccess: allowCellular,
+            allowsExpensiveNetworkAccess: allowExpensiveNetwork,
+            allowsConstrainedNetworkAccess: allowConstrainedNetwork
+        )
     }
 }

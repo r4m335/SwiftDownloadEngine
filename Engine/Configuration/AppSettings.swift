@@ -127,6 +127,8 @@ public struct AppSettings: Codable, Sendable, Equatable {
     public var maxRetryAttempts: Int
     public var duplicateNamingRule: DuplicateNamingRule
     public var allowCellular: Bool
+    public var allowExpensiveNetwork: Bool
+    public var allowConstrainedNetwork: Bool
     public var enableGlobalSpeedLimit: Bool
     public var globalSpeedLimitKBps: Int
     public var globalBandwidthLimitBytes: Int64?
@@ -174,6 +176,8 @@ public struct AppSettings: Codable, Sendable, Equatable {
         maxRetryAttempts: 3,
         duplicateNamingRule: .autoRename,
         allowCellular: true,
+        allowExpensiveNetwork: true,
+        allowConstrainedNetwork: false,
         enableGlobalSpeedLimit: false,
         globalSpeedLimitKBps: 2048,
         globalBandwidthLimitBytes: nil,
@@ -212,6 +216,8 @@ public struct AppSettings: Codable, Sendable, Equatable {
         maxRetryAttempts: Int = 3,
         duplicateNamingRule: DuplicateNamingRule = .autoRename,
         allowCellular: Bool = true,
+        allowExpensiveNetwork: Bool = true,
+        allowConstrainedNetwork: Bool = false,
         enableGlobalSpeedLimit: Bool = false,
         globalSpeedLimitKBps: Int = 2048,
         globalBandwidthLimitBytes: Int64? = nil,
@@ -248,6 +254,8 @@ public struct AppSettings: Codable, Sendable, Equatable {
         self.maxRetryAttempts = max(0, maxRetryAttempts)
         self.duplicateNamingRule = duplicateNamingRule
         self.allowCellular = allowCellular
+        self.allowExpensiveNetwork = allowExpensiveNetwork
+        self.allowConstrainedNetwork = allowConstrainedNetwork
         self.enableGlobalSpeedLimit = enableGlobalSpeedLimit
         self.globalSpeedLimitKBps = max(64, globalSpeedLimitKBps)
         self.globalBandwidthLimitBytes = globalBandwidthLimitBytes
@@ -287,6 +295,8 @@ public struct AppSettings: Codable, Sendable, Equatable {
         self.maxRetryAttempts = try container.decodeIfPresent(Int.self, forKey: .maxRetryAttempts) ?? 3
         self.duplicateNamingRule = try container.decodeIfPresent(DuplicateNamingRule.self, forKey: .duplicateNamingRule) ?? .autoRename
         self.allowCellular = try container.decodeIfPresent(Bool.self, forKey: .allowCellular) ?? true
+        self.allowExpensiveNetwork = try container.decodeIfPresent(Bool.self, forKey: .allowExpensiveNetwork) ?? true
+        self.allowConstrainedNetwork = try container.decodeIfPresent(Bool.self, forKey: .allowConstrainedNetwork) ?? false
         self.enableGlobalSpeedLimit = try container.decodeIfPresent(Bool.self, forKey: .enableGlobalSpeedLimit) ?? false
         self.globalSpeedLimitKBps = try container.decodeIfPresent(Int.self, forKey: .globalSpeedLimitKBps) ?? 2048
         self.globalBandwidthLimitBytes = try container.decodeIfPresent(Int64.self, forKey: .globalBandwidthLimitBytes)
@@ -374,6 +384,8 @@ public struct AppSettings: Codable, Sendable, Equatable {
             globalBandwidthLimitBytesPerSecond: speedLimit,
             duplicateNamingRule: duplicateNamingRule,
             allowCellular: allowCellular,
+            allowExpensiveNetwork: allowExpensiveNetwork,
+            allowConstrainedNetwork: allowConstrainedNetwork,
             maxConcurrentTorrents: maxConcurrentTorrents,
             defaultTorrentPriority: defaultTorrentPriority,
             defaultSeedingPreference: seedingPref

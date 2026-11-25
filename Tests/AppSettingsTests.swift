@@ -111,6 +111,8 @@ final class AppSettingsTests: XCTestCase {
         settings.maxRetryAttempts = 2
         settings.duplicateNamingRule = .skip
         settings.allowCellular = false
+        settings.allowExpensiveNetwork = false
+        settings.allowConstrainedNetwork = true
         settings.enableGlobalSpeedLimit = true
         settings.globalSpeedLimitKBps = 1024
         settings.maxConcurrentTorrents = 2
@@ -127,6 +129,11 @@ final class AppSettingsTests: XCTestCase {
         XCTAssertEqual(engineConfig.maxRetryAttempts, 2)
         XCTAssertEqual(engineConfig.duplicateNamingRule, .skip)
         XCTAssertFalse(engineConfig.allowCellular)
+        XCTAssertFalse(engineConfig.allowExpensiveNetwork)
+        XCTAssertTrue(engineConfig.allowConstrainedNetwork)
+        XCTAssertEqual(engineConfig.defaultNetworkPolicy.allowsCellularAccess, false)
+        XCTAssertEqual(engineConfig.defaultNetworkPolicy.allowsExpensiveNetworkAccess, false)
+        XCTAssertEqual(engineConfig.defaultNetworkPolicy.allowsConstrainedNetworkAccess, true)
         XCTAssertEqual(engineConfig.globalBandwidthLimitBytesPerSecond, 1024 * 1024)
         XCTAssertEqual(engineConfig.maxConcurrentTorrents, 2)
         XCTAssertEqual(engineConfig.defaultTorrentPriority, .low)
