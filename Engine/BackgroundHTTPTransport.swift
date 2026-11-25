@@ -1481,12 +1481,11 @@ extension BackgroundDownloadSessionManager: URLSessionDownloadDelegate {
 
         let downloadID = parsed.downloadID
         let segmentID = parsed.segmentID
-        let destination = self.partFileURL(downloadID: downloadID, segmentID: segmentID)
 
         trackDelegateTaskStarted()
 
         // 1. Relocate to an intermediate staging file synchronously before iOS deletes `location`
-        let parentDir = destination.deletingLastPathComponent()
+        let parentDir = self.temporaryDirectoryURL
         do {
             try FileManager.default.createDirectory(at: parentDir, withIntermediateDirectories: true)
         } catch {
@@ -1522,6 +1521,8 @@ extension BackgroundDownloadSessionManager: URLSessionDownloadDelegate {
                 }
                 return
             }
+
+            let destination = record.destinationPartURL
 
             // Fetch download record to obtain known total size for response validation
             var knownTotalSize: Int64? = nil

@@ -1850,5 +1850,48 @@ final class BackgroundHTTPTransportTests: XCTestCase {
         XCTAssertNotEqual(scheduled.taskIdentifier, 999_999)
         await manager.cancelTasks(for: transferID)
     }
+
+    func testDidFinishDownloadingToRelocatesStreamingSegmentToRecordDestinationPartURL() async throws {
+        let sessionID = "test.dest.parturl.\(UUID().uuidString)"
+        let manager = try BackgroundDownloadSessionManager(
+            sessionIdentifier: sessionID,
+            storageDirectoryURL: storageDirectoryURL
+        )
+
+        let transferID = "stream-dest-\(UUID().uuidString)"
+        let assemblyDir = storageDirectoryURL.appendingPathComponent(".assembly_temp_test", isDirectory: true)
+        try FileManager.default.createDirectory(at: assemblyDir, withIntermediateDirectories: true)
+        let expectedDest = assemblyDir.appendingPathComponent("internal-stream-segment-abc123.part")
+        let segURL = URL(string: "https://cdn.example.com/hls/seg-3.ts")!
+
+        let record = try await manager.scheduleStreamingSegment(
+            transferID: transferID,
+            order: 3,
+            url: segURL,
+            destinationURL: expectedDest
+        )
+
+        let tasks = await manager.activeSessionTasks()
+        let downloadTask = try XCTUnwrap(tasks.first(where: { $0.taskIdentifier == record.taskIdentifier }) as? URLSessionDownloadTask)
+
+        var completedPartURL: URL? = nil
+        manager.addObserver(for: transferID, onCompleted: { segID, partURL in
+            if segID == 3 {
+                completedPartURL = partURL
+            }
+        })
+
+        let tmpLocation = storageDirectoryURL.appendingPathComponent("cfnetwork_\(UUID().uuidString).tmp")
+        let payload = Data(repeating: 0x47, count: 188 * 5)
+        try payload.write(to: tmpLocation)
+
+        manager.urlSession(URLSession.shared, downloadTask: downloadTask, didFinishDownloadingTo: tmpLocation)
+        await manager.waitForInFlightEvents()
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: expectedDest.path), "Streaming segment must be relocated to record.destinationPartURL")
+        XCTAssertEqual(try Data(contentsOf: expectedDest), payload)
+        XCTAssertEqual(completedPartURL?.standardizedFileURL, expectedDest.standardizedFileURL)
+        await manager.cancelTasks(for: transferID)
+    }
 }
 
