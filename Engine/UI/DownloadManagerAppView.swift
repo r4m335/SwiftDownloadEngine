@@ -226,7 +226,6 @@ public struct DownloadManagerAppView: View {
             switch index {
             case 0:
                 viewModel.selectedFilter = .all
-                viewModel.searchText = ""
             case 1:
                 NotificationCenter.default.post(name: .sdeBrowserTabRetapped, object: nil)
             default:
