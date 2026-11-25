@@ -185,8 +185,20 @@ public final class LIDVLCKitBackend: NSObject, LIDMediaEngineProtocol, VLCMediaP
             return
         }
 
-        // Permit hardware decoding when supported, with automatic software decoding fallback
-        media.addOptions([":avcodec-hw": "any"])
+        // Permit hardware decoding when supported, with fast seek recovery & low-latency frame sync
+        var mediaOptions: [String: Any] = [
+            ":avcodec-hw": "any",
+            ":avcodec-fast": true,
+            ":avcodec-hurry-up": true,
+            ":drop-late-frames": true,
+            ":skip-frames": true,
+            ":file-caching": 300,
+            ":network-caching": 1000
+        ]
+        if targetURL.pathExtension.lowercased() == "ts" {
+            mediaOptions[":ts-trust-pcr"] = true
+        }
+        media.addOptions(mediaOptions)
 
         // Inject request headers if present (from networkStream headers or source requestContext)
         var effectiveHeaders: [String: String] = [:]
@@ -286,10 +298,11 @@ public final class LIDVLCKitBackend: NSObject, LIDMediaEngineProtocol, VLCMediaP
             )
             return
         }
-        let normalizedPos = max(0.0, min(1.0, seconds / durationSeconds))
-        player.position = normalizedPos
-        self.currentPositionSeconds = seconds
-        delegate?.engineDidUpdateTime(self, currentSeconds: seconds, durationSeconds: durationSeconds)
+        let clampedSeconds = max(0.0, min(durationSeconds, seconds))
+        let targetMillis = Int64((clampedSeconds * 1000.0).rounded())
+        player.time = VLCTime(number: NSNumber(value: targetMillis))
+        self.currentPositionSeconds = clampedSeconds
+        delegate?.engineDidUpdateTime(self, currentSeconds: clampedSeconds, durationSeconds: durationSeconds)
     }
 
     // MARK: - Track Management
