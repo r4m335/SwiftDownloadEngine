@@ -426,6 +426,44 @@ final class FindResourcesAndAddDownloadModernizationTests: XCTestCase {
         )
         XCTAssertNil(tinyBlob.toWebpageResource())
     }
+
+    @MainActor
+    func testPromptDownloadFromInspectorOpensResumeDownloadSheetForFailedMatch() async throws {
+        let engine = try DownloadEngine(configuration: EngineConfiguration())
+        let dm = DownloadManagerViewModel(engine: engine)
+        let browser = BrowserViewModel(downloadDelegate: dm)
+
+        let failedTransfer = UnifiedTransfer(
+            id: "failed-hls-1",
+            name: "episode-720p.mp4",
+            type: .hls,
+            state: .failed(reason: "Expired"),
+            completedBytes: 1024,
+            totalBytes: 10240,
+            progressFraction: 0.1,
+            downloadSpeedBytesPerSecond: 0,
+            uploadSpeedBytesPerSecond: 0,
+            destinationURL: URL(fileURLWithPath: "/tmp/episode-720p.mp4"),
+            source: "https://cdn.example.com/old/master.m3u8"
+        )
+        dm.unifiedTransfers = [failedTransfer]
+        dm.recoveryManager.startBrowserLinkRefresh(for: failedTransfer)
+
+        let newResource = WebpageResource(
+            id: "res-1",
+            url: URL(string: "https://cdn.example.com/new/master.m3u8")!,
+            resourceType: .video,
+            suggestedFilename: "episode-720p.mp4",
+            trackType: .muxed
+        )
+
+        browser.promptDownloadFromInspector(for: newResource)
+        try await Task.sleep(nanoseconds: 400_000_000)
+
+        XCTAssertEqual(browser.resumeTargetTransferID, "failed-hls-1")
+        XCTAssertTrue(browser.isShowingDownloadSheet)
+        XCTAssertEqual(browser.downloadCandidateURL, newResource.url)
+    }
 }
 
 // MARK: - Mock URLProtocol for HEAD Rejection

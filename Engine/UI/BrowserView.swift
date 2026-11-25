@@ -75,6 +75,8 @@ public final class BrowserViewModel: NSObject, ObservableObject {
     @Published public var activeDownloadCandidate: BrowserMediaCandidate? = nil
     @Published public var activeDownloadResource: WebpageResource? = nil
     @Published public var activeStreamingFilename: String? = nil
+    @Published public var resumeTargetTransferID: String? = nil
+    @Published public var resumeTargetTransferName: String? = nil
     private var activeMSECaptureSuggestedFilename: String? = nil
 
     /// Count of distinct downloadable media assets detected on the active webpage.
@@ -2259,27 +2261,36 @@ public final class BrowserViewModel: NSObject, ObservableObject {
 
     public func promptDownloadFromInspector(for resource: WebpageResource) {
         activeDownloadResource = resource
+        resumeTargetTransferID = nil
+        resumeTargetTransferName = nil
         // Evaluate against existing transfers to avoid duplicates and handle link recovery
         if let match = matchingTransfer(for: resource) {
-            // Case 1: In active link-refresh session or matched transfer failed -> Reconnect & resume in-place!
+            // Case 1: In active link-refresh session or matched transfer failed -> Open download page in Resume mode
             if recoveryManager?.activeSession != nil || match.statusDot == .failed {
-                isShowingResourceInspector = false
                 let targetID = recoveryManager?.activeSession?.targetTransferID ?? match.transferID
-                Task { [weak self] in
+                let targetName = match.transferName
+                isShowingResourceInspector = false
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
                     guard let self = self else { return }
-                    do {
-                        try await self.recoveryManager?.reconnectBrowserResource(
-                            transferID: targetID,
-                            resource: resource
-                        )
-                        await MainActor.run {
-                            self.onOpenDownloads?()
-                        }
-                    } catch {
-                        await MainActor.run {
-                            self.resourceScanError = error.localizedDescription
-                        }
+                    self.resumeTargetTransferID = targetID
+                    self.resumeTargetTransferName = targetName
+                    self.activeDownloadResource = resource
+                    let matchedCandidate = self.mediaCandidates.first { cand in
+                        cand.id == resource.id ||
+                        cand.rawURL.caseInsensitiveCompare(resource.url.absoluteString) == .orderedSame ||
+                        (cand.url != nil && cand.url == resource.url)
                     }
+                    let candidate = matchedCandidate ?? BrowserMediaCandidateClassifier.classify(resource: resource)
+                    self.activeDownloadCandidate = candidate
+                    self.downloadCandidateURL = resource.url
+                    self.downloadCandidateFilename = targetName.isEmpty ? (resource.suggestedFilename.isEmpty ? "download" : resource.suggestedFilename) : targetName
+                    self.downloadCandidateRequestContext = resource.requestContext ?? candidate.requestContext
+                    self.useBrowserCredentials = (resource.requestContext != nil || candidate.requestContext != nil)
+                    self.downloadCandidateThreads = 6
+                    self.downloadCandidateSpeedLimitKBps = ""
+                    self.isShowingQualityPicker = false
+                    self.selectedQualityOption = nil
+                    self.isShowingDownloadSheet = true
                 }
                 return
             }
@@ -6559,7 +6570,8 @@ public struct BrowserDownloadSheet: View {
 
                 // MARK: - DOWNLOAD DETAILS
                 let info = downloadFileInfo
-                Section(header: Text(info.isAudio ? "AUDIO QUALITY" : (info.badge == "Video" || ["MKV", "MP4", "WEBM", "MOV"].contains(info.badge) || isPreSelectedVariant ? "VIDEO QUALITY" : "DOWNLOAD DETAILS"))) {
+                let detailRows = technicalDetailRows
+                Section(header: Text(info.isAudio ? "AUDIO DETAILS" : (info.badge == "Video" || ["MKV", "MP4", "WEBM", "MOV"].contains(info.badge) || isPreSelectedVariant ? "MEDIA DETAILS" : "DETAILS"))) {
                     HStack(spacing: 12) {
                         Text(info.badge)
                             .font(.system(size: 13, weight: .bold))
@@ -6584,6 +6596,19 @@ public struct BrowserDownloadSheet: View {
                         }
                     }
                     .padding(.vertical, 4)
+
+                    ForEach(detailRows, id: \.label) { row in
+                        HStack {
+                            Text(row.label)
+                                .font(.subheadline)
+                                .foregroundColor(.secondary)
+                            Spacer()
+                            Text(row.value)
+                                .font(.subheadline.weight(.medium))
+                                .foregroundColor(.primary)
+                                .multilineTextAlignment(.trailing)
+                        }
+                    }
                 }
 
                 // If unexpanded HLS or DASH manifest, provide the quality picker button
@@ -6670,7 +6695,7 @@ public struct BrowserDownloadSheet: View {
                                 ProgressView()
                                     .padding(.trailing, 8)
                             }
-                            Text(info.buttonTitle)
+                            Text(isResumeMode ? "Resume" : info.buttonTitle)
                                 .font(.system(size: 17, weight: .bold))
                                 .foregroundColor(.white)
                             Spacer()
@@ -6678,13 +6703,15 @@ public struct BrowserDownloadSheet: View {
                         .padding(.vertical, 6)
                     }
                     .disabled(isSubmitting || viewModel.downloadCandidateURL == nil)
-                    .listRowBackground(info.badgeColor)
+                    .listRowBackground(isResumeMode ? Color.green : info.badgeColor)
                 }
             }
-            .navigationTitle("Download File")
+            .navigationTitle(isResumeMode ? "Resume Download" : "Download File")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") {
+                        viewModel.resumeTargetTransferID = nil
+                        viewModel.resumeTargetTransferName = nil
                         presentationMode.wrappedValue.dismiss()
                     }
                 }
@@ -6712,16 +6739,130 @@ public struct BrowserDownloadSheet: View {
         }
     }
 
+    private var isResumeMode: Bool {
+        viewModel.resumeTargetTransferID != nil
+    }
+
+    private struct TechnicalDetailRow {
+        let label: String
+        let value: String
+    }
+
+    private var technicalDetailRows: [TechnicalDetailRow] {
+        let res = viewModel.activeDownloadResource
+        let cand = viewModel.activeDownloadCandidate
+        let variant = res.flatMap { viewModel.variantStreamItems[$0.id] }
+        let selected = viewModel.selectedQualityOption
+        var rows: [TechnicalDetailRow] = []
+
+        // Size / Predicted Size
+        if res?.isLive == true || variant?.isLive == true {
+            rows.append(TechnicalDetailRow(label: "Size", value: "Live Broadcast"))
+        } else if let bytes = selected?.estimatedSizeBytes ?? variant?.estimatedSizeBytes {
+            rows.append(TechnicalDetailRow(label: "Predicted Size", value: "~\(StreamQualityOption.formatByteSize(bytes))"))
+        } else if let sizeText = selected?.estimatedSizeText ?? variant?.estimatedSizeText,
+                  !sizeText.isEmpty && sizeText != "Size unavailable" {
+            rows.append(TechnicalDetailRow(label: "Predicted Size", value: sizeText))
+        } else if let size = res?.estimatedSize ?? cand?.estimatedSize, size > 0 {
+            rows.append(TechnicalDetailRow(label: "Size", value: StreamQualityOption.formatByteSize(size)))
+        } else {
+            rows.append(TechnicalDetailRow(label: "Size", value: "Unknown"))
+        }
+
+        // Resolution
+        if let resText = selected?.resolutionText ?? variant?.resolutionText ?? variant?.resolution.map({ "\($0.width) × \($0.height)" }) ?? res?.resolutionText,
+           !resText.isEmpty {
+            rows.append(TechnicalDetailRow(label: "Resolution", value: resText))
+        } else if let w = res?.hlsVariantPreferences?.maximumWidth, let h = res?.hlsVariantPreferences?.maximumHeight {
+            rows.append(TechnicalDetailRow(label: "Resolution", value: "\(w) × \(h)"))
+        }
+
+        // Audio
+        if let res {
+            switch res.trackType {
+            case .muxed:
+                rows.append(TechnicalDetailRow(label: "Audio", value: res.audioLanguage.map { "Yes (\($0.uppercased()))" } ?? "Yes"))
+            case .audioOnly:
+                rows.append(TechnicalDetailRow(label: "Audio", value: res.audioLanguage.map { "Audio Only (\($0.uppercased()))" } ?? "Audio Only"))
+            case .videoOnly:
+                rows.append(TechnicalDetailRow(label: "Audio", value: "No (Video Only)"))
+            case .subtitles:
+                rows.append(TechnicalDetailRow(label: "Audio", value: "No (Subtitles)"))
+            case .unknown:
+                if res.resourceType == .audio {
+                    rows.append(TechnicalDetailRow(label: "Audio", value: "Audio Only"))
+                } else if res.resourceType == .video {
+                    rows.append(TechnicalDetailRow(label: "Audio", value: "Unknown"))
+                }
+            }
+        }
+
+        // Subtitles
+        if let res, res.resourceType == .video || res.isStreamingManifest || variant != nil || selected != nil {
+            let hasSubs = (selected?.hasSubtitles == true) || (variant?.hasSubtitles == true) || res.trackType == .subtitles
+            rows.append(TechnicalDetailRow(label: "Subtitles", value: hasSubs ? "Yes" : "No"))
+        }
+
+        // Bitrate
+        if let bitrate = selected?.bitrateText ?? variant?.bitrateText, !bitrate.isEmpty {
+            rows.append(TechnicalDetailRow(label: "Bitrate", value: bitrate))
+        }
+
+        // Codec
+        if let codecs = selected?.codecs ?? variant?.codecs ?? res?.codecs ?? cand?.codecs, !codecs.isEmpty {
+            rows.append(TechnicalDetailRow(label: "Codec", value: codecs))
+        }
+
+        // Duration
+        if let duration = res?.formattedDuration, !duration.isEmpty {
+            rows.append(TechnicalDetailRow(label: "Duration", value: duration))
+        }
+
+        // Format / Container
+        let ext = fileExtension.uppercased()
+        if res?.isStreamingManifest == true || cand?.kind == .hlsManifest || cand?.kind == .dashManifest {
+            let streamKind = (viewModel.downloadCandidateURL?.pathExtension.lowercased() == "mpd" || cand?.kind == .dashManifest) ? "DASH (.mpd)" : "HLS (.m3u8)"
+            rows.append(TechnicalDetailRow(label: "Format", value: ext.isEmpty ? streamKind : "\(streamKind) → \(ext)"))
+        } else if let container = res?.container, !container.isEmpty {
+            rows.append(TechnicalDetailRow(label: "Format", value: container))
+        } else if !ext.isEmpty {
+            rows.append(TechnicalDetailRow(label: "Format", value: ext))
+        }
+
+        if let host = viewModel.downloadCandidateURL?.host, !host.isEmpty {
+            rows.append(TechnicalDetailRow(label: "Host", value: host))
+        }
+
+        return rows
+    }
+
     private func submitDownload() {
         submitErrorMessage = nil
         isSubmitting = true
         viewModel.downloadCandidateFilename = FilenameExtensionHelper.combine(base: baseFilename, ext: fileExtension)
 
+        let resumeID = viewModel.resumeTargetTransferID
+        let resource = viewModel.activeDownloadResource
+        let url = viewModel.downloadCandidateURL
+
         Task { @MainActor in
             do {
-                try await viewModel.executeDownload()
-                isSubmitting = false
-                presentationMode.wrappedValue.dismiss()
+                if let targetID = resumeID, let rm = viewModel.recoveryManager {
+                    if let res = resource {
+                        _ = try await rm.reconnectBrowserResource(transferID: targetID, resource: res)
+                    } else if let url {
+                        try await rm.updateDownloadLink(transferID: targetID, newURLText: url.absoluteString)
+                    }
+                    viewModel.resumeTargetTransferID = nil
+                    viewModel.resumeTargetTransferName = nil
+                    isSubmitting = false
+                    presentationMode.wrappedValue.dismiss()
+                    viewModel.onOpenDownloads?()
+                } else {
+                    try await viewModel.executeDownload()
+                    isSubmitting = false
+                    presentationMode.wrappedValue.dismiss()
+                }
             } catch {
                 submitErrorMessage = error.localizedDescription
                 isSubmitting = false

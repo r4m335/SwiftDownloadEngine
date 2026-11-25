@@ -116,6 +116,7 @@ public struct DownloadsView: View {
     @State private var quickLookURL: URL? = nil
     @State private var playerMediaURL: URL? = nil
     @State private var playerMediaTitle: String = ""
+    @State private var playerSource: LIDPlayerSource? = nil
     @State private var selectedDownloadForDetails: DownloadSnapshot? = nil
     @State private var selectedTransferForDetails: UnifiedTransfer? = nil
     @State private var detectedClipboardURL: URL? = nil
@@ -497,6 +498,7 @@ public struct DownloadsView: View {
             }
             .filePreviewSheet(item: $quickLookURL)
             .lidPlayerPresentation(url: $playerMediaURL, title: playerMediaTitle)
+            .lidPlayerPresentation(source: $playerSource)
             .onAppear {
                 checkClipboardForURL()
             }
@@ -850,6 +852,8 @@ public struct DownloadsView: View {
                     }
                 },
                 onOpen: { triggerHaptic(.light); openTransferFile(transfer) },
+                onStreamOnline: { triggerHaptic(.light); streamTransferOnline(transfer) },
+                onOpenInPlayer: { triggerHaptic(.light); openTransferInPlayer(transfer) },
                 onSaveToFiles: { triggerHaptic(.light); saveTransferToFiles(transfer) },
                 onShare: { triggerHaptic(.light); shareTransferFile(transfer) },
                 onCopyLink: { triggerHaptic(.light); copyTransferLink(transfer) },
@@ -1178,6 +1182,146 @@ public struct DownloadsView: View {
         }
     }
 
+    private func streamTransferOnline(_ transfer: UnifiedTransfer) {
+        if transfer.isTorrent {
+            playerSource = .torrentSwarm(
+                infoHash: transfer.infoHash ?? transfer.id,
+                fileIndex: 0,
+                title: transfer.name
+            )
+            return
+        }
+        guard let url = URL(string: transfer.source) else {
+            viewModel.showNotification("Invalid stream URL")
+            return
+        }
+        Task { @MainActor in
+            let record = try? await viewModel.engine.persistenceStore.fetch(tag: transfer.id)
+            let headers = record?.headers ?? [:]
+            let context = BrowserRequestContext(
+                userAgent: headers["User-Agent"],
+                referer: headers["Referer"],
+                cookies: [],
+                originURL: url
+            )
+            if transfer.type == .hls || url.pathExtension.lowercased() == "m3u8" {
+                playerSource = .hlsStream(
+                    url: url,
+                    variantPreferences: nil,
+                    title: transfer.name,
+                    requestContext: context
+                )
+            } else if transfer.type == .dash || url.pathExtension.lowercased() == "mpd" {
+                playerSource = .dashStream(
+                    manifestURL: url,
+                    selectedRepresentationID: nil,
+                    title: transfer.name,
+                    requestContext: context
+                )
+            } else {
+                playerSource = .networkStream(
+                    url: url,
+                    headers: headers,
+                    title: transfer.name
+                )
+            }
+        }
+    }
+
+    private func openTransferInPlayer(_ transfer: UnifiedTransfer) {
+        if transfer.state == .completed && FileManager.default.fileExists(atPath: transfer.destinationURL.path) {
+            playerSource = .localFile(url: transfer.destinationURL, title: transfer.name)
+            return
+        }
+        if transfer.isTorrent {
+            playerSource = .torrentSwarm(
+                infoHash: transfer.infoHash ?? transfer.id,
+                fileIndex: 0,
+                title: transfer.name
+            )
+            return
+        }
+
+        Task { @MainActor in
+            let fm = FileManager.default
+            if fm.fileExists(atPath: transfer.destinationURL.path),
+               (fm.fileSize(atPath: transfer.destinationURL.path) ?? 0) > 0 {
+                playerSource = .partialDownload(
+                    fileURL: transfer.destinationURL,
+                    totalExpectedBytes: transfer.totalBytes,
+                    title: transfer.name
+                )
+                return
+            }
+
+            // Check HLS persisted segment directory for downloaded segments
+            if let hlsStore = try? HLSPersistenceStore(storageDirectoryURL: viewModel.engine.persistenceStore.storageDirectoryURL),
+               let hlsRecord = try? await hlsStore.fetch(id: transfer.id) {
+                let segDir = hlsRecord.segmentDirectoryURL
+                let orderedParts: [URL] = hlsRecord.segments
+                    .sorted(by: { $0.order < $1.order })
+                    .compactMap { seg in
+                        let exact = segDir.appendingPathComponent("\(seg.identityValue).part")
+                        if fm.fileExists(atPath: exact.path), (fm.fileSize(atPath: exact.path) ?? 0) > 0 {
+                            return exact
+                        }
+                        let numbered = segDir.appendingPathComponent("segment-\(seg.order).part")
+                        if fm.fileExists(atPath: numbered.path), (fm.fileSize(atPath: numbered.path) ?? 0) > 0 {
+                            return numbered
+                        }
+                        return nil
+                    }
+                if !orderedParts.isEmpty {
+                    let previewTS = fm.temporaryDirectory.appendingPathComponent("partial_\(transfer.id).ts")
+                    if let assembled = await Self.assemblePartialTS(parts: orderedParts, to: previewTS) {
+                        playerSource = .partialDownload(
+                            fileURL: assembled,
+                            totalExpectedBytes: transfer.totalBytes,
+                            title: transfer.name
+                        )
+                        return
+                    }
+                }
+            }
+
+            // Check foreground segmented download `.tmp/segment-0.part`
+            let seg0 = transfer.destinationURL.deletingLastPathComponent()
+                .appendingPathComponent(".tmp_\(transfer.id)", isDirectory: true)
+                .appendingPathComponent("segment-0.part")
+            if fm.fileExists(atPath: seg0.path), (fm.fileSize(atPath: seg0.path) ?? 0) > 0 {
+                playerSource = .partialDownload(
+                    fileURL: seg0,
+                    totalExpectedBytes: transfer.totalBytes,
+                    title: transfer.name
+                )
+                return
+            }
+
+            viewModel.showNotification("No downloaded media on disk yet. Try 'Stream Online'.")
+        }
+    }
+
+    private static func assemblePartialTS(parts: [URL], to outputURL: URL) async -> URL? {
+        await Task.detached(priority: .userInitiated) {
+            let fm = FileManager.default
+            if fm.fileExists(atPath: outputURL.path) {
+                try? fm.removeItem(at: outputURL)
+            }
+            guard fm.createFile(atPath: outputURL.path, contents: nil),
+                  let handle = try? FileHandle(forWritingTo: outputURL) else {
+                return nil
+            }
+            defer { try? handle.close() }
+            var totalWritten: Int64 = 0
+            for part in parts {
+                guard let data = try? Data(contentsOf: part), !data.isEmpty else { continue }
+                handle.write(data)
+                totalWritten += Int64(data.count)
+            }
+            return totalWritten > 0 ? outputURL : nil
+        }.value
+    }
+
     private func saveTransferToFiles(_ transfer: UnifiedTransfer) {
         guard FileManager.default.fileExists(atPath: transfer.destinationURL.path) else {
             viewModel.errorMessage = "File not found at '\(transfer.destinationURL.lastPathComponent)'."
@@ -1484,6 +1628,8 @@ public struct UnifiedTransferRowView: View {
     public var isCompact: Bool = false
     public var onTapContent: (() -> Void)?
     public let onOpen: () -> Void
+    public var onStreamOnline: () -> Void = {}
+    public var onOpenInPlayer: () -> Void = {}
     public let onSaveToFiles: () -> Void
     public let onShare: () -> Void
     public let onCopyLink: () -> Void
@@ -1503,6 +1649,8 @@ public struct UnifiedTransferRowView: View {
         isCompact: Bool = false,
         onTapContent: (() -> Void)? = nil,
         onOpen: @escaping () -> Void = {},
+        onStreamOnline: @escaping () -> Void = {},
+        onOpenInPlayer: @escaping () -> Void = {},
         onSaveToFiles: @escaping () -> Void = {},
         onShare: @escaping () -> Void = {},
         onCopyLink: @escaping () -> Void = {},
@@ -1521,6 +1669,8 @@ public struct UnifiedTransferRowView: View {
         self.isCompact = isCompact
         self.onTapContent = onTapContent
         self.onOpen = onOpen
+        self.onStreamOnline = onStreamOnline
+        self.onOpenInPlayer = onOpenInPlayer
         self.onSaveToFiles = onSaveToFiles
         self.onShare = onShare
         self.onCopyLink = onCopyLink
@@ -1577,6 +1727,8 @@ public struct UnifiedTransferRowView: View {
                         transfer: transfer,
                         isScheduled: viewModel.isScheduled(transferID: transfer.id),
                         onOpen: onOpen,
+                        onStreamOnline: onStreamOnline,
+                        onOpenInPlayer: onOpenInPlayer,
                         onSaveToFiles: onSaveToFiles,
                         onShare: onShare,
                         onCopyLink: onCopyLink,
@@ -1690,6 +1842,8 @@ public struct UnifiedTransferRowView: View {
                 transfer: transfer,
                 isScheduled: viewModel.isScheduled(transferID: transfer.id),
                 onOpen: onOpen,
+                onStreamOnline: onStreamOnline,
+                onOpenInPlayer: onOpenInPlayer,
                 onSaveToFiles: onSaveToFiles,
                 onShare: onShare,
                 onCopyLink: onCopyLink,
@@ -1792,6 +1946,8 @@ private struct StableTransferRowMenu: View, Equatable {
     let transfer: UnifiedTransfer
     let isScheduled: Bool
     let onOpen: () -> Void
+    let onStreamOnline: () -> Void
+    let onOpenInPlayer: () -> Void
     let onSaveToFiles: () -> Void
     let onShare: () -> Void
     let onCopyLink: () -> Void
@@ -1819,6 +1975,8 @@ private struct StableTransferRowMenu: View, Equatable {
                 transfer: transfer,
                 isScheduled: isScheduled,
                 onOpen: onOpen,
+                onStreamOnline: onStreamOnline,
+                onOpenInPlayer: onOpenInPlayer,
                 onSaveToFiles: onSaveToFiles,
                 onShare: onShare,
                 onCopyLink: onCopyLink,
@@ -1939,6 +2097,19 @@ public struct UnifiedTransferMenuContent: View {
                 }
             }
 
+            if transfer.destinationURL.isPlayableMedia || transfer.type == .hls || transfer.type == .dash {
+                if URL(string: transfer.source) != nil || transfer.isTorrent {
+                    Button(action: onStreamOnline) {
+                        Label("Stream Online", systemImage: "play.tv")
+                    }
+                }
+                if transfer.state != .completed {
+                    Button(action: onOpenInPlayer) {
+                        Label("Open in Player", systemImage: "play.circle")
+                    }
+                }
+            }
+
             Button(action: onCopyLink) {
                 Label(transfer.isTorrent ? "Copy Torrent Source" : "Copy Download Link", systemImage: "doc.on.doc")
             }
@@ -1968,6 +2139,8 @@ public struct DownloadRowView: View {
     public var isSelectingMultiple: Bool
     public var onTapContent: (() -> Void)?
     public let onOpen: () -> Void
+    public var onStreamOnline: () -> Void = {}
+    public var onOpenInPlayer: () -> Void = {}
     public let onSaveToFiles: () -> Void
     public let onShare: () -> Void
     public let onCopyLink: () -> Void
@@ -1987,6 +2160,8 @@ public struct DownloadRowView: View {
         isSelectingMultiple: Bool = false,
         onTapContent: (() -> Void)? = nil,
         onOpen: @escaping () -> Void = {},
+        onStreamOnline: @escaping () -> Void = {},
+        onOpenInPlayer: @escaping () -> Void = {},
         onSaveToFiles: @escaping () -> Void = {},
         onShare: @escaping () -> Void = {},
         onCopyLink: @escaping () -> Void = {},
@@ -2005,6 +2180,8 @@ public struct DownloadRowView: View {
         self.isSelectingMultiple = isSelectingMultiple
         self.onTapContent = onTapContent
         self.onOpen = onOpen
+        self.onStreamOnline = onStreamOnline
+        self.onOpenInPlayer = onOpenInPlayer
         self.onSaveToFiles = onSaveToFiles
         self.onShare = onShare
         self.onCopyLink = onCopyLink
