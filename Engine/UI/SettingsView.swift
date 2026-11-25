@@ -199,7 +199,7 @@ public struct SettingsView: View {
 
     private var notificationStatusLabel: String {
         switch notificationStatus {
-        case .authorized, .provisional: return "Allowed"
+        case .authorized, .provisional, .ephemeral: return "Allowed"
         case .denied: return "Denied"
         case .notDetermined: return "Not Requested"
         }
@@ -207,7 +207,7 @@ public struct SettingsView: View {
 
     private var notificationStatusColor: Color {
         switch notificationStatus {
-        case .authorized, .provisional: return .green
+        case .authorized, .provisional, .ephemeral: return .green
         case .denied: return .red
         case .notDetermined: return .orange
         }
