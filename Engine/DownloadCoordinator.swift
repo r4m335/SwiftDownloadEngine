@@ -105,6 +105,16 @@ public struct DownloadNetworkPolicy: Codable, Sendable, Equatable, Hashable {
     }
 }
 
+extension EngineConfiguration {
+    public var defaultNetworkPolicy: DownloadNetworkPolicy {
+        DownloadNetworkPolicy(
+            allowsCellularAccess: allowCellular,
+            allowsExpensiveNetworkAccess: allowExpensiveNetwork,
+            allowsConstrainedNetworkAccess: allowConstrainedNetwork
+        )
+    }
+}
+
 /// Request parameters for a download operation coordinated by `DownloadCoordinator`.
 public struct DownloadRequest: Sendable, Equatable, Codable {
     public let id: String

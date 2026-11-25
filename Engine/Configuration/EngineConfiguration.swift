@@ -86,12 +86,4 @@ public struct EngineConfiguration: Sendable, Equatable {
         self.torrentDownloadRateLimit = torrentDownloadRateLimit
         self.torrentUploadRateLimit = torrentUploadRateLimit
     }
-
-    public var defaultNetworkPolicy: DownloadNetworkPolicy {
-        DownloadNetworkPolicy(
-            allowsCellularAccess: allowCellular,
-            allowsExpensiveNetworkAccess: allowExpensiveNetwork,
-            allowsConstrainedNetworkAccess: allowConstrainedNetwork
-        )
-    }
 }
