@@ -384,21 +384,32 @@ final class FindResourcesAndAddDownloadModernizationTests: XCTestCase {
     }
 
     func testGrabberFiltersOutScriptsImagesAndTinyBlobStubs() {
+        let origin = URL(string: "https://example.com")!
         // 1. JS script observed inside a <video> / player context must be rejected
-        let jsObs = BrowserResourceObservation(
+        let jsObs = BrowserMediaDiscoveryObservation(
+            url: URL(string: "https://ssl.p.jwpcdn.com/player/v/8.30.0/provider.airplay.js")!,
             rawURL: "https://ssl.p.jwpcdn.com/player/v/8.30.0/provider.airplay.js",
+            source: .domElement,
+            tag: "video",
             declaredType: "application/javascript",
-            tag: "video"
+            pageOrigin: origin,
+            frameOrigin: origin,
+            mayUseBrowserCredentials: true
         )
-        XCTAssertNil(BrowserMediaCandidate.fromNetworkObservation(jsObs))
+        XCTAssertNil(BrowserMediaCandidateClassifier.classify(observation: jsObs))
 
         // 2. JPG image inside a <video> / <source> tag must classify as .image (directFile), never .video
-        let jpgObs = BrowserResourceObservation(
+        let jpgObs = BrowserMediaDiscoveryObservation(
+            url: URL(string: "https://image.tmdb.org/t/p/original/poster.jpg")!,
             rawURL: "https://image.tmdb.org/t/p/original/poster.jpg",
+            source: .domElement,
+            tag: "source",
             declaredType: "image/jpeg",
-            tag: "source"
+            pageOrigin: origin,
+            frameOrigin: origin,
+            mayUseBrowserCredentials: true
         )
-        let jpgCandidate = BrowserMediaCandidate.fromNetworkObservation(jpgObs)
+        let jpgCandidate = BrowserMediaCandidateClassifier.classify(observation: jpgObs)
         XCTAssertEqual(jpgCandidate?.kind, .directFile)
         XCTAssertEqual(jpgCandidate?.toWebpageResource()?.resourceType, .image)
 

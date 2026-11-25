@@ -124,7 +124,7 @@ public struct BrowserMediaCandidate: Identifiable, Codable, Sendable, Equatable,
         kind == .hlsManifest || kind == .dashManifest
     }
 
-    private static let nonMediaAssetExtensions: Set<String> = [
+    fileprivate static let nonMediaAssetExtensions: Set<String> = [
         "js", "mjs", "cjs", "css", "scss", "html", "htm", "xhtml",
         "php", "asp", "aspx", "jsp", "json", "xml", "map",
         "woff", "woff2", "ttf", "otf", "eot", "wasm", "ico", "cur"
@@ -473,7 +473,7 @@ public enum BrowserMediaCandidateClassifier {
 
         let ext = BrowserDownloadClassifier.extractURLExtension(from: finalURL ?? url)?.lowercased() ?? ""
         let hasExplicitMediaMime = mime?.hasPrefix("video/") == true || mime?.hasPrefix("audio/") == true
-        if Self.nonMediaAssetExtensions.contains(ext) && !hasExplicitMediaMime {
+        if BrowserMediaCandidate.nonMediaAssetExtensions.contains(ext) && !hasExplicitMediaMime {
             return nil
         }
 
