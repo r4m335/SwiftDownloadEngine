@@ -4706,43 +4706,7 @@ public struct BrowserView: View {
             )
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            VStack(spacing: 6) {
-                if viewModel.detectedMediaCount > 0 && !isAddressBarFocused && !isModalPresented && viewModel.currentURL != nil {
-                    HStack {
-                        Spacer()
-                        Button {
-                            #if canImport(UIKit)
-                            UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                            #endif
-                            viewModel.openResourceInspector()
-                        } label: {
-                            HStack(spacing: 6) {
-                                Image(systemName: "arrow.down.circle.fill")
-                                    .font(.system(size: 14, weight: .bold))
-                                    .foregroundColor(.blue)
-                                Text("\(viewModel.detectedMediaCount) Media Found")
-                                    .font(.caption.weight(.bold))
-                                    .foregroundColor(.primary)
-                                Image(systemName: "chevron.right")
-                                    .font(.system(size: 10, weight: .bold))
-                                    .foregroundColor(.secondary)
-                            }
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 7)
-                            .background(.ultraThinMaterial, in: Capsule())
-                            .overlay(Capsule().stroke(Color.blue.opacity(0.35), lineWidth: 1))
-                            .shadow(color: .black.opacity(0.12), radius: 6, x: 0, y: 2)
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel("\(viewModel.detectedMediaCount) downloadable media detected. Tap to open resource inspector.")
-                        .transition(.move(edge: .bottom).combined(with: .opacity))
-                    }
-                    .padding(.horizontal, 14)
-                    .animation(.spring(response: 0.35, dampingFraction: 0.8), value: viewModel.detectedMediaCount)
-                }
-
-                addressBarHeader
-            }
+            addressBarHeader
         }
         .overlay(alignment: .top) {
             VStack(spacing: 8) {
@@ -5008,35 +4972,30 @@ public struct BrowserView: View {
                         isAddressBarFocused = false
                     }
 
-                if viewModel.isLoading {
+                if isAddressBarFocused && !viewModel.urlInputText.isEmpty {
+                    Button {
+                        viewModel.urlInputText = ""
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundColor(.secondary)
+                    }
+                    .accessibilityLabel("Clear search bar")
+                } else if viewModel.isLoading {
                     Button {
                         viewModel.stopLoading()
                     } label: {
                         Image(systemName: "xmark.circle.fill")
                             .foregroundColor(.secondary)
                     }
+                    .accessibilityLabel("Stop loading")
                 } else if !viewModel.urlInputText.isEmpty {
                     Button {
-                        if viewModel.currentURL != nil {
-                            viewModel.reload()
-                        } else {
-                            viewModel.urlInputText = ""
-                        }
+                        viewModel.urlInputText = ""
                     } label: {
-                        Image(systemName: viewModel.currentURL != nil ? "arrow.clockwise" : "xmark.circle.fill")
+                        Image(systemName: "xmark.circle.fill")
                             .foregroundColor(.secondary)
                     }
-                }
-
-                if viewModel.currentURL != nil {
-                    Button {
-                        viewModel.toggleReaderMode()
-                    } label: {
-                        Image(systemName: "doc.plaintext")
-                            .font(.system(size: 13, weight: .semibold))
-                            .foregroundColor(viewModel.isShowingReaderMode ? .blue : .secondary)
-                    }
-                    .accessibilityLabel("Reader Mode")
+                    .accessibilityLabel("Clear search bar")
                 }
 
                 if viewModel.currentURL != nil {
