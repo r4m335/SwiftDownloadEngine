@@ -372,6 +372,8 @@ public struct TypeBadge: View {
     public var body: some View {
         Text(badgeText)
             .font(.system(size: 10, weight: .bold))
+            .lineLimit(1)
+            .fixedSize(horizontal: true, vertical: false)
             .padding(.horizontal, 7)
             .padding(.vertical, 2.5)
             .background(badgeColor.opacity(0.15))
@@ -406,8 +408,10 @@ public struct UnifiedStatusBadge: View {
     }
 
     public var body: some View {
-        Text(state.displayName)
+        Text(state.badgeText)
             .font(.system(size: 10, weight: .bold))
+            .lineLimit(1)
+            .fixedSize(horizontal: true, vertical: false)
             .padding(.horizontal, 7)
             .padding(.vertical, 2.5)
             .background(statusColor.opacity(0.15))

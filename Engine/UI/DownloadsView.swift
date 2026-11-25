@@ -2129,11 +2129,13 @@ public struct StatusBadge: View {
     public var body: some View {
         Text(statusText)
             .font(.caption2.bold())
-            .padding(.horizontal, 6)
-            .padding(.vertical, 2)
+            .lineLimit(1)
+            .fixedSize(horizontal: true, vertical: false)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 2.5)
             .background(backgroundColor.opacity(0.15))
             .foregroundColor(backgroundColor)
-            .cornerRadius(4)
+            .clipShape(Capsule())
     }
 
     private var statusText: String {
