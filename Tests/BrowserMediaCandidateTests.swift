@@ -708,7 +708,7 @@ final class BrowserMediaCandidateTests: XCTestCase {
     }
 
     @MainActor
-    func testResetMediaDiscoveryPreservesLiveResourcesAndVariants() {
+    func testResetMediaDiscoveryClearsOldResourcesAndVariants() {
         let viewModel = BrowserViewModel()
         let tabID = viewModel.activeTabID ?? viewModel.createNewTab()
 
@@ -755,22 +755,18 @@ final class BrowserMediaCandidateTests: XCTestCase {
         viewModel.setDiscoveredResources([liveRes, nonLiveRes], for: tabID)
         viewModel.setVariantStreamItems([liveVariant, nonLiveVariant], for: tabID)
 
-        // Reset media discovery preserves live stream resources and variants
+        // Resetting media discovery clears all old resources and variants on page/site change
         viewModel.resetMediaDiscovery(for: tabID)
 
         let discovered = viewModel.discoveredResources(for: tabID)
-        XCTAssertTrue(discovered.contains(where: { $0.id == "res-live" }))
-        XCTAssertFalse(discovered.contains(where: { $0.id == "res-static" }))
+        XCTAssertTrue(discovered.isEmpty)
 
         let variants = viewModel.variantStreamItems(for: tabID)
-        XCTAssertNotNil(variants["var-live"])
-        XCTAssertNil(variants["var-vod"])
+        XCTAssertTrue(variants.isEmpty)
 
-        // Explicit rescan APIs are callable and preserve live results
+        // Explicit rescan APIs remain callable
         viewModel.rescanResources(includeNonVideo: false)
         viewModel.rescanCurrentPageResources(includeNonVideo: true)
-        let rescanned = viewModel.discoveredResources(for: tabID)
-        XCTAssertTrue(rescanned.contains(where: { $0.id == "res-live" }))
     }
 
     // MARK: - Resource & Candidate Explicit Sorting Tests (Newest, Size, Quality, Name)
