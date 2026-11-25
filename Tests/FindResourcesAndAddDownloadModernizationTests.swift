@@ -465,6 +465,39 @@ final class FindResourcesAndAddDownloadModernizationTests: XCTestCase {
         XCTAssertTrue(browser.isShowingDownloadSheet)
         XCTAssertEqual(browser.downloadCandidateURL, newResource.url)
     }
+
+    @MainActor
+    func testChangingWebsiteOrTabClearsOldDiscoveredResources() {
+        let browser = BrowserViewModel()
+        let firstTabID = browser.createNewTab()
+        let oldStream = WebpageResource(
+            id: "old-hls",
+            url: URL(string: "https://site-a.example.com/stream.m3u8")!,
+            title: "old.mp4",
+            suggestedFilename: "old.mp4",
+            resourceType: .video,
+            trackType: .muxed
+        )
+        browser.discoveredResources = [oldStream]
+        XCTAssertEqual(browser.discoveredResources.count, 1)
+
+        // Switching to a new tab must clear old tab's resources from active discoveredResources
+        let secondTabID = browser.createNewTab()
+        XCTAssertNotEqual(firstTabID, secondTabID)
+        XCTAssertTrue(browser.discoveredResources.isEmpty)
+
+        // Switching back and navigating to a new website must clear old streaming resources too
+        XCTAssertTrue(browser.selectTab(firstTabID))
+        XCTAssertEqual(browser.discoveredResources.count, 1)
+
+        browser.load(url: URL(string: "https://site-b.example.com/watch")!)
+        XCTAssertTrue(browser.discoveredResources.isEmpty)
+
+        // Adding a resource and going home must clear it
+        browser.discoveredResources = [oldStream]
+        browser.goHome()
+        XCTAssertTrue(browser.discoveredResources.isEmpty)
+    }
 }
 
 // MARK: - Mock URLProtocol for HEAD Rejection

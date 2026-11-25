@@ -845,8 +845,11 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         tabVariantStreamItems[id] = [:]
         tabSelectedResourceIDs[id] = []
         tabResourceStates[id] = BrowserTabResourceState()
+        publishMediaCandidates()
+        setToolbarCollapsed(false)
 
         publishMediaCandidates()
+        setToolbarCollapsed(false)
         isShowingTabSwitcher = false
         recordTabAccess(id)
         #if canImport(WebKit)
@@ -1000,6 +1003,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         restoreTabResourceState(for: id)
 
         publishMediaCandidates()
+        setToolbarCollapsed(false)
         isShowingTabSwitcher = false
         errorMessage = nil
         #if canImport(WebKit)
@@ -1495,7 +1499,15 @@ public final class BrowserViewModel: NSObject, ObservableObject {
             }
         }
         guard var tab = tabManager.tab(withID: tabID) else { return }
+        let previousURL = tab.url
         if let url, url.absoluteString != "about:blank" {
+            if let prev = previousURL,
+               prev.absoluteString != "about:blank",
+               (prev.host?.lowercased() != url.host?.lowercased() ||
+                prev.path != url.path ||
+                prev.query != url.query) {
+                resetMediaDiscovery(for: tabID)
+            }
             tab.url = url
         }
         if let title, !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -1574,25 +1586,19 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         tabSessions[tabID]?.mediaDiscoveryBridge.reset()
         resetMediaCandidateCatalog(for: tabID)
 
-        let liveResources = (tabDiscoveredResources[tabID] ?? []).filter {
-            $0.isLive || $0.isStreamingManifest || $0.isBlobResource || $0.isMediaSourceBlob
-        }
-        let liveVariants = (tabVariantStreamItems[tabID] ?? [:]).filter { $1.isLive }
-        let preservedIDs = Set(liveResources.map { $0.id })
-        let selectedIDs = (tabSelectedResourceIDs[tabID] ?? []).filter { preservedIDs.contains($0) }
-
-        tabDiscoveredResources[tabID] = liveResources
-        tabVariantStreamItems[tabID] = liveVariants
-        tabSelectedResourceIDs[tabID] = selectedIDs
+        tabDiscoveredResources[tabID] = []
+        tabVariantStreamItems[tabID] = [:]
+        tabSelectedResourceIDs[tabID] = []
         tabResourceStates[tabID] = BrowserTabResourceState(
-            discoveredResources: liveResources,
-            variantStreamItems: liveVariants,
-            selectedResourceIDs: selectedIDs
+            discoveredResources: [],
+            variantStreamItems: [:],
+            selectedResourceIDs: []
         )
         if tabID == activeTabID {
-            discoveredResources = liveResources
-            variantStreamItems = liveVariants
-            selectedResourceIDs = selectedIDs
+            discoveredResources = []
+            variantStreamItems = [:]
+            selectedResourceIDs = []
+            publishMediaCandidates()
         }
     }
 
@@ -3889,6 +3895,8 @@ public final class BrowserViewModel: NSObject, ObservableObject {
             publishTabState()
         }
         cancelInFlightProbes(for: targetTabID)
+        resetMediaDiscovery(for: targetTabID)
+        setToolbarCollapsed(false)
         guard var tab = tabManager.tab(withID: targetTabID) else { return }
         tab.url = url
         tab.isLoading = true
@@ -4033,7 +4041,15 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         pageTitle = ""
         publishTabState()
         syncActiveTabState()
-        resetMediaCandidateCatalog(for: activeTabID)
+        if let activeTabID {
+            resetMediaDiscovery(for: activeTabID)
+        } else {
+            resetMediaCandidateCatalog(for: activeTabID)
+            discoveredResources = []
+            variantStreamItems = [:]
+            selectedResourceIDs = []
+        }
+        setToolbarCollapsed(false)
         errorMessage = nil
     }
 
