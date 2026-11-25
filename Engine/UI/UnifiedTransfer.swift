@@ -372,11 +372,11 @@ public struct TypeBadge: View {
     public var body: some View {
         Text(badgeText)
             .font(.system(size: 10, weight: .bold))
-            .padding(.horizontal, 6)
-            .padding(.vertical, 2)
-            .background(badgeColor.opacity(0.18))
+            .padding(.horizontal, 7)
+            .padding(.vertical, 2.5)
+            .background(badgeColor.opacity(0.15))
             .foregroundColor(badgeColor)
-            .cornerRadius(4)
+            .clipShape(Capsule())
     }
 
     private var badgeText: String {
@@ -408,11 +408,11 @@ public struct UnifiedStatusBadge: View {
     public var body: some View {
         Text(state.displayName)
             .font(.system(size: 10, weight: .bold))
-            .padding(.horizontal, 6)
-            .padding(.vertical, 2)
-            .background(statusColor.opacity(0.18))
+            .padding(.horizontal, 7)
+            .padding(.vertical, 2.5)
+            .background(statusColor.opacity(0.15))
             .foregroundColor(statusColor)
-            .cornerRadius(4)
+            .clipShape(Capsule())
     }
 
     private var statusColor: Color {

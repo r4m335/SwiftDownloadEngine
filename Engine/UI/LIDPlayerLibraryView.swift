@@ -92,15 +92,46 @@ public struct LIDPlayerLibraryView: View {
         applyLibraryModals(
             NavigationView {
                 VStack(spacing: 0) {
-                    // Top Section Picker
-                    Picker("Section", selection: $selectedSection) {
-                        ForEach(LIDLibrarySection.allCases) { sec in
-                            Text(sec.rawValue).tag(sec)
+                    // Top Section Horizontal Pill Bar
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 8) {
+                            ForEach(LIDLibrarySection.allCases) { sec in
+                                let isSelected = selectedSection == sec
+                                Button {
+                                    withAnimation(.spring(response: 0.28, dampingFraction: 0.8)) {
+                                        selectedSection = sec
+                                    }
+                                } label: {
+                                    HStack(spacing: 5) {
+                                        Image(systemName: sec.icon)
+                                            .font(.system(size: 12, weight: .semibold))
+                                        Text(sec.rawValue)
+                                            .font(.caption.weight(.semibold))
+                                    }
+                                    .padding(.horizontal, 12)
+                                    .padding(.vertical, 7)
+                                    .background(
+                                        ZStack {
+                                            if isSelected {
+                                                Capsule().fill(Color.blue)
+                                            } else {
+                                                Capsule().fill(.regularMaterial)
+                                            }
+                                        }
+                                    )
+                                    .foregroundColor(isSelected ? .white : .primary)
+                                    .clipShape(Capsule())
+                                    .overlay(
+                                        Capsule()
+                                            .stroke(isSelected ? Color.clear : Color.primary.opacity(0.08), lineWidth: 1)
+                                    )
+                                }
+                                .buttonStyle(.plain)
+                            }
                         }
+                        .padding(.horizontal)
+                        .padding(.vertical, 8)
                     }
-                    .pickerStyle(SegmentedPickerStyle())
-                    .padding(.horizontal)
-                    .padding(.vertical, 8)
 
                     // Sub-filter for All Media
                     if selectedSection == .all {

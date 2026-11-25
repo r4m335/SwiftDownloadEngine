@@ -1324,10 +1324,10 @@ public struct ResourceRowView: View {
                             // Track type indicator badge (Muxed, Video, Audio, Subtitles, etc.)
                             Text(resource.trackType.shortLabel)
                                 .font(.system(size: 9, weight: .bold))
-                                .padding(.horizontal, 4)
-                                .padding(.vertical, 1)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
                                 .background(Color.blue.opacity(0.12))
-                                .cornerRadius(3)
+                                .clipShape(Capsule())
                                 .foregroundColor(.blue)
 
                             // Audio indicator: Small speaker icon when audio is present
@@ -1435,10 +1435,10 @@ public struct ResourceRowView: View {
                                 Text(variant.qualityLabel)
                                     .font(.system(size: 10, weight: .bold))
                                     .foregroundColor(.white)
-                                    .padding(.horizontal, 6)
+                                    .padding(.horizontal, 7)
                                     .padding(.vertical, 2)
                                     .background((variant.isLive || resource.isLive) ? Color.red : Color.blue)
-                                    .cornerRadius(4)
+                                    .clipShape(Capsule())
                             } else if let qualitySummary {
                                 Text(qualitySummary)
                                     .font(.system(size: 10, weight: .medium))

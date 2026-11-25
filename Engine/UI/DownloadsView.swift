@@ -220,55 +220,68 @@ public struct DownloadsView: View {
                     .padding(.top, 4)
                 }
 
-                // Error Banner
+                // Error Banner (Frosted Toast)
                 if let error = viewModel.errorMessage {
-                    HStack {
+                    HStack(spacing: 10) {
                         Image(systemName: "exclamationmark.triangle.fill")
-                            .foregroundColor(.white)
+                            .foregroundColor(.red)
                         Text(error)
-                            .font(.caption)
-                            .foregroundColor(.white)
+                            .font(.caption.weight(.medium))
+                            .foregroundColor(.primary)
                             .lineLimit(2)
                         Spacer()
                         Button {
-                            viewModel.clearError()
+                            withAnimation(.spring(response: 0.25, dampingFraction: 0.8)) {
+                                viewModel.clearError()
+                            }
                         } label: {
                             Image(systemName: "xmark.circle.fill")
-                                .foregroundColor(.white)
+                                .foregroundColor(.secondary)
                         }
+                        .buttonStyle(.plain)
                     }
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
-                    .background(Color.red)
-                    .cornerRadius(8)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
+                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .stroke(Color.red.opacity(0.3), lineWidth: 1)
+                    )
                     .padding(.horizontal)
                     .padding(.top, 4)
+                    .transition(.move(edge: .top).combined(with: .opacity))
                 }
 
-                // Notification / Success Banner
+                // Notification / Success Banner (Frosted Toast)
                 if let notification = viewModel.userNotificationMessage {
-                    HStack {
+                    HStack(spacing: 10) {
                         Image(systemName: "checkmark.circle.fill")
-                            .foregroundColor(.white)
+                            .foregroundColor(.green)
                         Text(notification)
-                            .font(.caption)
-                            .bold()
-                            .foregroundColor(.white)
+                            .font(.caption.weight(.semibold))
+                            .foregroundColor(.primary)
                             .lineLimit(2)
                         Spacer()
                         Button {
-                            viewModel.clearNotification()
+                            withAnimation(.spring(response: 0.25, dampingFraction: 0.8)) {
+                                viewModel.clearNotification()
+                            }
                         } label: {
                             Image(systemName: "xmark.circle.fill")
-                                .foregroundColor(.white)
+                                .foregroundColor(.secondary)
                         }
+                        .buttonStyle(.plain)
                     }
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
-                    .background(Color.green)
-                    .cornerRadius(8)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
+                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .stroke(Color.green.opacity(0.3), lineWidth: 1)
+                    )
                     .padding(.horizontal)
                     .padding(.top, 4)
+                    .transition(.move(edge: .top).combined(with: .opacity))
                 }
 
                 // Row 1: Clickable Download Status Counters (Merged Statistics & Status Filters)
@@ -1532,8 +1545,9 @@ public struct UnifiedTransferRowView: View {
                     UnifiedStatusBadge(state: transfer.state)
                 }
 
-                // Visible three-dot (⋮) menu button directly on download row
                 if !isSelectingMultiple {
+                    quickActionCircleButton
+
                     Menu {
                         UnifiedTransferMenuContent(
                             transfer: transfer,
@@ -1620,7 +1634,7 @@ public struct UnifiedTransferRowView: View {
             if !isCompact && transfer.isTorrent {
                 HStack {
                     Text("Peers: \(transfer.connectedPeers ?? 0) • Seeds: \(transfer.connectedSeeds ?? 0)")
-                        .font(.caption2)
+                        .font(.caption2.monospacedDigit())
                         .foregroundColor(.secondary)
                     if let prio = transfer.torrentPriority {
                         Spacer()
@@ -1629,49 +1643,6 @@ public struct UnifiedTransferRowView: View {
                             .foregroundColor(.secondary)
                     }
                 }
-            }
-
-            // Quick Inline Action Controls (hidden in compact mode since swipe actions handle them)
-            if !isCompact {
-                HStack(spacing: 10) {
-                    if transfer.canPause {
-                        Button(action: onPause) {
-                            Label("Pause", systemImage: "pause.fill")
-                                .font(.caption2.weight(.semibold))
-                        }
-                        .buttonStyle(.bordered)
-                        .tint(.orange)
-                    } else if transfer.canResume {
-                        Button(action: onResume) {
-                            Label("Resume", systemImage: "play.fill")
-                                .font(.caption2.weight(.semibold))
-                        }
-                        .buttonStyle(.bordered)
-                        .tint(.green)
-                    } else if transfer.canRetry {
-                        Button(action: onRetry) {
-                            Label("Retry", systemImage: "arrow.clockwise")
-                                .font(.caption2.weight(.semibold))
-                        }
-                        .buttonStyle(.bordered)
-                        .tint(.blue)
-                    } else if transfer.state == .completed {
-                        Button(action: onOpen) {
-                            Label("Open File", systemImage: "doc.text")
-                                .font(.caption2.weight(.semibold))
-                        }
-                        .buttonStyle(.bordered)
-                        .tint(.blue)
-
-                        Button(action: onShare) {
-                            Label("Share", systemImage: "square.and.arrow.up")
-                                .font(.caption2.weight(.semibold))
-                        }
-                        .buttonStyle(.bordered)
-                        .tint(.secondary)
-                    }
-                }
-                .padding(.top, 2)
             }
         }
 
@@ -1713,6 +1684,34 @@ public struct UnifiedTransferRowView: View {
                 onDeleteFile: onDeleteFile
             )
         }
+    }
+
+    @ViewBuilder
+    private var quickActionCircleButton: some View {
+        if transfer.canPause {
+            circularIconButton(icon: "pause.fill", color: .orange, label: "Pause \(transfer.name)", action: onPause)
+        } else if transfer.canResume {
+            circularIconButton(icon: "play.fill", color: .green, label: "Resume \(transfer.name)", action: onResume)
+        } else if transfer.canRetry {
+            circularIconButton(icon: "arrow.clockwise", color: .blue, label: "Retry \(transfer.name)", action: onRetry)
+        } else if transfer.state == .completed {
+            circularIconButton(icon: "arrow.up.forward.square", color: .blue, label: "Open \(transfer.name)", action: onOpen)
+        }
+    }
+
+    private func circularIconButton(icon: String, color: Color, label: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            ZStack {
+                Circle()
+                    .fill(color.opacity(0.15))
+                    .frame(width: 32, height: 32)
+                Image(systemName: icon)
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundColor(color)
+            }
+        }
+        .buttonStyle(BorderlessButtonStyle())
+        .accessibilityLabel(label)
     }
 
     private var transferIconBadge: some View {

@@ -4933,8 +4933,11 @@ public struct BrowserView: View {
 
     private var addressBarHeader: some View {
         VStack(spacing: 4) {
-            // Quick Search Engine Switcher
-            searchEngineQuickSwitcher
+            // Show Quick Search Engine Switcher only when editing or on start page
+            if isAddressBarFocused || viewModel.currentURL == nil {
+                searchEngineQuickSwitcher
+                    .transition(.opacity.combined(with: .move(edge: .bottom)))
+            }
 
             HStack(spacing: 8) {
                 // Address Bar Capsule
@@ -4959,10 +4962,10 @@ public struct BrowserView: View {
                             .font(.system(size: 10, weight: .bold))
                     }
                     .foregroundColor(.purple)
-                    .padding(.horizontal, 5)
+                    .padding(.horizontal, 6)
                     .padding(.vertical, 2)
                     .background(Color.purple.opacity(0.15))
-                    .cornerRadius(4)
+                    .clipShape(Capsule())
                 }
 
                 // Security / Search Icon
