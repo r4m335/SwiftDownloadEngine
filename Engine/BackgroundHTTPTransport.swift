@@ -383,23 +383,30 @@ public enum BackgroundResponseValidator {
         response: URLResponse?,
         expectedStart: Int64,
         expectedEnd: Int64,
-        expectedTotalSize: Int64? = nil
+        expectedTotalSize: Int64? = nil,
+        isRanged: Bool = true
     ) throws {
         guard let httpResponse = response as? HTTPURLResponse else {
             throw BackgroundTransportError.invalidHTTPResponse
         }
 
         // 1. Status Code Validation
-        // Range requests MUST return 206 Partial Content.
-        // Explicitly classify 401/403 (auth) and 404/410 (expired/missing) so they are not treated as retryable 206 mismatches.
+        // Range requests MUST return 206 Partial Content; non-ranged streaming segments return 200 OK (or 206).
+        // Explicitly classify 401/403 (auth) and 404/410 (expired/missing) so they are not treated as retryable status mismatches.
         if httpResponse.statusCode == 401 || httpResponse.statusCode == 403 {
             throw BackgroundTransportError.authenticationRequired(status: httpResponse.statusCode)
         }
         if httpResponse.statusCode == 404 || httpResponse.statusCode == 410 {
             throw BackgroundTransportError.expiredOrMissing(status: httpResponse.statusCode)
         }
-        if httpResponse.statusCode != 206 {
-            throw BackgroundTransportError.unexpectedStatus(expected: 206, actual: httpResponse.statusCode)
+        if isRanged {
+            if httpResponse.statusCode != 206 {
+                throw BackgroundTransportError.unexpectedStatus(expected: 206, actual: httpResponse.statusCode)
+            }
+        } else {
+            if httpResponse.statusCode != 200 && httpResponse.statusCode != 206 {
+                throw BackgroundTransportError.unexpectedStatus(expected: 200, actual: httpResponse.statusCode)
+            }
         }
 
         // 2. HTML Error / Login Page Detection
@@ -408,7 +415,11 @@ public enum BackgroundResponseValidator {
             throw BackgroundTransportError.htmlErrorPageReceived(contentType: contentType ?? "text/html")
         }
 
-        // 3. Content-Range Header Validation
+        // 3. Content-Range Header Validation (only required for ranged requests)
+        guard isRanged else {
+            return
+        }
+
         guard let contentRange = httpResponse.value(forCaseInsensitiveField: "Content-Range") else {
             throw BackgroundTransportError.invalidContentRange
         }
@@ -1518,24 +1529,31 @@ extension BackgroundDownloadSessionManager: URLSessionDownloadDelegate {
                 }
             }
 
+            let isRangedRequest = record.expectedBytes > 0 || record.endOffset > 0 || record.startOffset > 0
+
             if let resp = response {
                 do {
                     try BackgroundResponseValidator.validate(
                         response: resp,
                         expectedStart: record.startOffset,
                         expectedEnd: record.endOffset,
-                        expectedTotalSize: knownTotalSize
+                        expectedTotalSize: knownTotalSize,
+                        isRanged: isRangedRequest
                     )
                 } catch {
-                    do {
-                        try FileManager.default.removeItem(at: stagingURL)
-                    } catch {
-                        PipelineLogger.shared.log(stage: .transport, message: "Failed to remove stagingURL \(stagingURL.path): \(error)")
+                    if FileManager.default.fileExists(atPath: stagingURL.path) {
+                        do {
+                            try FileManager.default.removeItem(at: stagingURL)
+                        } catch {
+                            PipelineLogger.shared.log(stage: .transport, message: "Failed to remove stagingURL \(stagingURL.path): \(error)")
+                        }
                     }
-                    do {
-                        try FileManager.default.removeItem(at: destination)
-                    } catch {
-                        PipelineLogger.shared.log(stage: .transport, message: "Failed to remove destination \(destination.path): \(error)")
+                    if FileManager.default.fileExists(atPath: destination.path) {
+                        do {
+                            try FileManager.default.removeItem(at: destination)
+                        } catch {
+                            PipelineLogger.shared.log(stage: .transport, message: "Failed to remove destination \(destination.path): \(error)")
+                        }
                     }
                     do {
                         try await self.mappingStore.markFailed(sessionIdentifier: sessID, taskIdentifier: taskID, error: error.localizedDescription)
@@ -1555,22 +1573,25 @@ extension BackgroundDownloadSessionManager: URLSessionDownloadDelegate {
             }
 
             let shouldAppend = record.initialSegmentCompletedBytes > 0
-            let expectedFinalBytes = record.segmentLength
+            let expectedNewBytes: Int64? = isRangedRequest ? record.expectedBytes : nil
+            let expectedFinalBytes: Int64? = isRangedRequest ? record.segmentLength : nil
             let finalSize: Int64
             do {
                 finalSize = try BackgroundDownloadFileHandler.relocateOrAppendTemporaryFile(
                     from: stagingURL,
                     to: destination,
-                    expectedNewBytes: record.expectedBytes,
+                    expectedNewBytes: expectedNewBytes,
                     expectedFinalTotalBytes: expectedFinalBytes,
                     append: shouldAppend
                 )
             } catch {
                 PipelineLogger.shared.log(stage: .transport, message: "[BackgroundDownloadSessionManager] Error committing downloaded file: \(error)")
-                do {
-                    try FileManager.default.removeItem(at: stagingURL)
-                } catch {
-                    PipelineLogger.shared.log(stage: .transport, message: "Failed to remove stagingURL \(stagingURL.path): \(error)")
+                if FileManager.default.fileExists(atPath: stagingURL.path) {
+                    do {
+                        try FileManager.default.removeItem(at: stagingURL)
+                    } catch {
+                        PipelineLogger.shared.log(stage: .transport, message: "Failed to remove stagingURL \(stagingURL.path): \(error)")
+                    }
                 }
                 do {
                     try await self.mappingStore.markFailed(sessionIdentifier: sessID, taskIdentifier: taskID, error: error.localizedDescription)

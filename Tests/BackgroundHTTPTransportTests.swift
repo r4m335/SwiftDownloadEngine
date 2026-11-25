@@ -1717,5 +1717,97 @@ final class BackgroundHTTPTransportTests: XCTestCase {
         XCTAssertEqual(customConfig.httpMaximumConnectionsPerHost, 4)
         XCTAssertEqual(customConfig.timeoutIntervalForResource, 1209600)
     }
+
+    func testNonRangedStreamingSegmentResponseValidationAccepts200AndRejectsErrors() throws {
+        let url = URL(string: "https://cdn.example.com/hls/seg-2.ts")!
+
+        // 1. Non-ranged streaming segment returning 200 OK without Content-Range must succeed
+        let resp200 = HTTPURLResponse(url: url, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: [
+            "Content-Type": "video/mp2t",
+            "Content-Length": "131072"
+        ])
+        XCTAssertNoThrow(
+            try BackgroundResponseValidator.validate(
+                response: resp200,
+                expectedStart: 0,
+                expectedEnd: 0,
+                expectedTotalSize: nil,
+                isRanged: false
+            )
+        )
+
+        // 2. Non-ranged streaming segment returning 206 without Content-Range must also succeed
+        let resp206 = HTTPURLResponse(url: url, statusCode: 206, httpVersion: "HTTP/1.1", headerFields: [
+            "Content-Type": "video/mp2t"
+        ])
+        XCTAssertNoThrow(
+            try BackgroundResponseValidator.validate(
+                response: resp206,
+                expectedStart: 0,
+                expectedEnd: 0,
+                expectedTotalSize: nil,
+                isRanged: false
+            )
+        )
+
+        // 3. HTML error page with 200 OK must still be rejected
+        let respHTML = HTTPURLResponse(url: url, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: [
+            "Content-Type": "text/html; charset=utf-8"
+        ])
+        XCTAssertThrowsError(
+            try BackgroundResponseValidator.validate(
+                response: respHTML,
+                expectedStart: 0,
+                expectedEnd: 0,
+                expectedTotalSize: nil,
+                isRanged: false
+            )
+        ) { error in
+            guard case BackgroundTransportError.htmlErrorPageReceived = error else {
+                XCTFail("Expected htmlErrorPageReceived, got \(error)")
+                return
+            }
+        }
+
+        // 4. 403/404/500 must be classified properly
+        let resp403 = HTTPURLResponse(url: url, statusCode: 403, httpVersion: "HTTP/1.1", headerFields: nil)
+        XCTAssertThrowsError(
+            try BackgroundResponseValidator.validate(response: resp403, expectedStart: 0, expectedEnd: 0, isRanged: false)
+        ) { error in
+            guard case BackgroundTransportError.authenticationRequired(status: 403) = error else {
+                XCTFail("Expected authenticationRequired(403), got \(error)")
+                return
+            }
+        }
+
+        let resp500 = HTTPURLResponse(url: url, statusCode: 500, httpVersion: "HTTP/1.1", headerFields: nil)
+        XCTAssertThrowsError(
+            try BackgroundResponseValidator.validate(response: resp500, expectedStart: 0, expectedEnd: 0, isRanged: false)
+        ) { error in
+            guard case BackgroundTransportError.unexpectedStatus(expected: 200, actual: 500) = error else {
+                XCTFail("Expected unexpectedStatus(200, 500), got \(error)")
+                return
+            }
+        }
+    }
+
+    func testBackgroundDownloadFileHandlerRelocatesNonRangedUnknownLengthFile() throws {
+        let sourceURL = storageDirectoryURL.appendingPathComponent("incoming_seg2.tmp")
+        let destURL = storageDirectoryURL.appendingPathComponent("seg-2.part")
+        let payload = Data(repeating: 0x47, count: 188 * 10) // 10 MPEG-TS packets
+        try payload.write(to: sourceURL)
+
+        let finalSize = try BackgroundDownloadFileHandler.relocateOrAppendTemporaryFile(
+            from: sourceURL,
+            to: destURL,
+            expectedNewBytes: nil,
+            expectedFinalTotalBytes: nil,
+            append: false
+        )
+
+        XCTAssertEqual(finalSize, Int64(payload.count))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: destURL.path))
+        XCTAssertEqual(try Data(contentsOf: destURL), payload)
+    }
 }
 
