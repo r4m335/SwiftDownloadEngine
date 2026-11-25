@@ -1257,22 +1257,22 @@ public struct DownloadsView: View {
             if let hlsStore = try? HLSPersistenceStore(storageDirectoryURL: viewModel.engine.persistenceStore.storageDirectoryURL),
                let hlsRecord = try? await hlsStore.load(id: transfer.id) {
                 let segDir = hlsRecord.segmentDirectoryURL
-                let orderedParts: [URL] = hlsRecord.segments
-                    .sorted(by: { $0.order < $1.order })
-                    .compactMap { seg in
-                        let exact = segDir.appendingPathComponent("\(seg.identityValue).part")
-                        if fm.fileExists(atPath: exact.path), (fm.fileSize(atPath: exact.path) ?? 0) > 0 {
-                            return exact
-                        }
-                        let numbered = segDir.appendingPathComponent("segment-\(seg.order).part")
-                        if fm.fileExists(atPath: numbered.path), (fm.fileSize(atPath: numbered.path) ?? 0) > 0 {
-                            return numbered
-                        }
-                        return nil
-                    }
-                if !orderedParts.isEmpty {
+                let partFiles = (try? fm.contentsOfDirectory(
+                    at: segDir,
+                    includingPropertiesForKeys: [.creationDateKey, .fileSizeKey],
+                    options: [.skipsHiddenFiles]
+                ))?
+                .filter { $0.pathExtension.lowercased() == "part" && (fm.fileSize(atPath: $0.path) ?? 0) > 0 }
+                .sorted { lhs, rhs in
+                    let lDate = (try? lhs.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? .distantPast
+                    let rDate = (try? rhs.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? .distantPast
+                    if lDate != rDate { return lDate < rDate }
+                    return lhs.lastPathComponent.localizedStandardCompare(rhs.lastPathComponent) == .orderedAscending
+                } ?? []
+
+                if !partFiles.isEmpty {
                     let previewTS = fm.temporaryDirectory.appendingPathComponent("partial_\(transfer.id).ts")
-                    if let assembled = await Self.assemblePartialTS(parts: orderedParts, to: previewTS) {
+                    if let assembled = await Self.assemblePartialTS(parts: partFiles, to: previewTS) {
                         playerSource = .partialDownload(
                             fileURL: assembled,
                             totalExpectedBytes: transfer.totalBytes,
