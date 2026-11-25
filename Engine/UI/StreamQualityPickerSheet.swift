@@ -150,7 +150,12 @@ public struct StreamQualityPickerSheet: View {
             ) {
                 ForEach(viewModel.qualityPickerOptions) { option in
                     Button {
-                        viewModel.selectQualityOption(option)
+                        #if canImport(UIKit)
+                        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                        #endif
+                        withAnimation(.spring(response: 0.25, dampingFraction: 0.8)) {
+                            viewModel.selectQualityOption(option)
+                        }
                     } label: {
                         HStack(spacing: 12) {
                             // Quality Badge
@@ -184,7 +189,7 @@ public struct StreamQualityPickerSheet: View {
                                 HStack(spacing: 6) {
                                     if let res = option.resolutionText {
                                         Text(res)
-                                            .font(.caption2)
+                                            .font(.caption2.monospacedDigit())
                                             .foregroundColor(.secondary)
                                         Text("•")
                                             .font(.caption2)
@@ -192,7 +197,7 @@ public struct StreamQualityPickerSheet: View {
                                     }
 
                                     Text(option.bitrateText)
-                                        .font(.caption2)
+                                        .font(.caption2.monospacedDigit())
                                         .foregroundColor(.secondary)
 
                                     if let codec = option.videoCodec {
@@ -209,7 +214,7 @@ public struct StreamQualityPickerSheet: View {
                                             .font(.caption2)
                                             .foregroundColor(.secondary)
                                         Text(size)
-                                            .font(.caption2.bold())
+                                            .font(.caption2.monospacedDigit().bold())
                                             .foregroundColor(.primary)
                                     }
                                 }

@@ -27,17 +27,27 @@ public struct UpdateDownloadLinkSheet: View {
     public var body: some View {
         NavigationView {
             VStack(alignment: .leading, spacing: 16) {
-                // Header Information
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(transfer.name)
-                        .font(.headline)
-                        .lineLimit(2)
+                // Header Information Card
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 8) {
+                        Text(transfer.name)
+                            .font(.headline)
+                            .lineLimit(2)
+                        Spacer()
+                        TypeBadge(type: transfer.type)
+                    }
 
                     Text(transfer.type == .hls ? "HLS Streaming Download" : "HTTP Direct Download")
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
-                .padding(.top, 8)
+                .padding(12)
+                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .stroke(Color.primary.opacity(0.06), lineWidth: 1)
+                )
+                .padding(.top, 4)
 
                 // Explanation Note
                 Text("Enter a replacement URL for this download. Completed data will be preserved if the new URL points to the same file.")
@@ -50,7 +60,7 @@ public struct UpdateDownloadLinkSheet: View {
                         .font(.caption.weight(.semibold))
                         .foregroundColor(.secondary)
 
-                    HStack {
+                    HStack(spacing: 8) {
                         TextField("https://...", text: $urlText)
                             .textFieldStyle(RoundedBorderTextFieldStyle())
                             #if os(iOS)
@@ -59,10 +69,25 @@ public struct UpdateDownloadLinkSheet: View {
                             .disableAutocorrection(true)
                             #endif
 
+                        if !urlText.isEmpty {
+                            Button {
+                                urlText = ""
+                                #if canImport(UIKit)
+                                UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                                #endif
+                            } label: {
+                                Image(systemName: "xmark.circle.fill")
+                                    .foregroundColor(.secondary)
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel("Clear link")
+                        }
+
                         #if canImport(UIKit)
                         Button {
                             if let paste = UIPasteboard.general.string?.trimmingCharacters(in: .whitespacesAndNewlines), !paste.isEmpty {
                                 urlText = paste
+                                UIImpactFeedbackGenerator(style: .light).impactOccurred()
                             }
                         } label: {
                             Image(systemName: "doc.on.clipboard")

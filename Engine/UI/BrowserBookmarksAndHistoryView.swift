@@ -408,8 +408,12 @@ public struct BrowserBookmarksAndHistoryView: View {
                     .foregroundColor(.primary)
                 Spacer()
                 Text("\(store.bookmarks(in: folder.id).count)")
-                    .font(.caption)
+                    .font(.caption2.monospacedDigit().bold())
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 2)
+                    .background(Color.secondary.opacity(0.14))
                     .foregroundColor(.secondary)
+                    .clipShape(Capsule())
                 Image(systemName: "chevron.forward")
                     .font(.caption)
                     .foregroundColor(.secondary)
@@ -680,11 +684,22 @@ public struct BrowserBookmarksAndHistoryView: View {
 
     @ViewBuilder
     private func emptyState(icon: String, title: String, message: String) -> some View {
-        VStack(spacing: 12) {
+        VStack(spacing: 14) {
             Spacer()
-            Image(systemName: icon)
-                .font(.system(size: 48))
-                .foregroundColor(.secondary.opacity(0.6))
+            ZStack {
+                Circle()
+                    .fill(
+                        LinearGradient(
+                            colors: [Color.blue.opacity(0.16), Color.indigo.opacity(0.10)],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+                    .frame(width: 82, height: 82)
+                Image(systemName: icon)
+                    .font(.system(size: 36, weight: .semibold))
+                    .foregroundColor(.blue)
+            }
             Text(title)
                 .font(.headline)
             Text(message)
