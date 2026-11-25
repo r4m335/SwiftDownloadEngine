@@ -2268,7 +2268,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
             // Case 1: In active link-refresh session or matched transfer failed -> Open download page in Resume mode
             if recoveryManager?.activeSession != nil || match.statusDot == .failed {
                 let targetID = recoveryManager?.activeSession?.targetTransferID ?? match.transferID
-                let targetName = match.transferName
+                let targetName = downloadDelegate?.unifiedTransfersList.first(where: { $0.id == targetID })?.name ?? resource.suggestedFilename
                 isShowingResourceInspector = false
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
                     guard let self = self else { return }
@@ -6770,8 +6770,9 @@ public struct BrowserDownloadSheet: View {
         }
 
         // Resolution
-        if let resText = selected?.resolutionText ?? variant?.resolutionText ?? variant?.resolution.map({ "\($0.width) × \($0.height)" }) ?? res?.resolutionText,
-           !resText.isEmpty {
+        let variantResText: String? = variant?.resolutionText ?? variant?.resolution.map { "\($0.width) × \($0.height)" }
+        let resolvedResText: String? = selected?.resolutionText ?? variantResText ?? res?.resolutionText
+        if let resText = resolvedResText, !resText.isEmpty {
             rows.append(TechnicalDetailRow(label: "Resolution", value: resText))
         } else if let w = res?.hlsVariantPreferences?.maximumWidth, let h = res?.hlsVariantPreferences?.maximumHeight {
             rows.append(TechnicalDetailRow(label: "Resolution", value: "\(w) × \(h)"))
@@ -6788,7 +6789,7 @@ public struct BrowserDownloadSheet: View {
                 rows.append(TechnicalDetailRow(label: "Audio", value: "No (Video Only)"))
             case .subtitles:
                 rows.append(TechnicalDetailRow(label: "Audio", value: "No (Subtitles)"))
-            case .unknown:
+            default:
                 if res.resourceType == .audio {
                     rows.append(TechnicalDetailRow(label: "Audio", value: "Audio Only"))
                 } else if res.resourceType == .video {

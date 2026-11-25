@@ -1199,10 +1199,9 @@ public struct DownloadsView: View {
             let record = try? await viewModel.engine.persistenceStore.fetch(tag: transfer.id)
             let headers = record?.headers ?? [:]
             let context = BrowserRequestContext(
+                url: url,
                 userAgent: headers["User-Agent"],
-                referer: headers["Referer"],
-                cookies: [],
-                originURL: url
+                customHeaders: headers
             )
             if transfer.type == .hls || url.pathExtension.lowercased() == "m3u8" {
                 playerSource = .hlsStream(
@@ -1256,7 +1255,7 @@ public struct DownloadsView: View {
 
             // Check HLS persisted segment directory for downloaded segments
             if let hlsStore = try? HLSPersistenceStore(storageDirectoryURL: viewModel.engine.persistenceStore.storageDirectoryURL),
-               let hlsRecord = try? await hlsStore.fetch(id: transfer.id) {
+               let hlsRecord = try? await hlsStore.load(id: transfer.id) {
                 let segDir = hlsRecord.segmentDirectoryURL
                 let orderedParts: [URL] = hlsRecord.segments
                     .sorted(by: { $0.order < $1.order })
@@ -2002,6 +2001,8 @@ public struct UnifiedTransferMenuContent: View {
     public let transfer: UnifiedTransfer
     public var isScheduled: Bool = false
     public let onOpen: () -> Void
+    public var onStreamOnline: () -> Void = {}
+    public var onOpenInPlayer: () -> Void = {}
     public let onSaveToFiles: () -> Void
     public let onShare: () -> Void
     public let onCopyLink: () -> Void
@@ -2019,6 +2020,8 @@ public struct UnifiedTransferMenuContent: View {
         transfer: UnifiedTransfer,
         isScheduled: Bool = false,
         onOpen: @escaping () -> Void = {},
+        onStreamOnline: @escaping () -> Void = {},
+        onOpenInPlayer: @escaping () -> Void = {},
         onSaveToFiles: @escaping () -> Void = {},
         onShare: @escaping () -> Void = {},
         onCopyLink: @escaping () -> Void = {},
@@ -2035,6 +2038,8 @@ public struct UnifiedTransferMenuContent: View {
         self.transfer = transfer
         self.isScheduled = isScheduled
         self.onOpen = onOpen
+        self.onStreamOnline = onStreamOnline
+        self.onOpenInPlayer = onOpenInPlayer
         self.onSaveToFiles = onSaveToFiles
         self.onShare = onShare
         self.onCopyLink = onCopyLink
