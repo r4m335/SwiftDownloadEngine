@@ -546,7 +546,8 @@ final class DownloadPersistenceTests: XCTestCase {
 
         // deleteAll() must delete download records without deleting shared store files
         try await store.deleteAll()
-        XCTAssertTrue(try await store.fetchAll().isEmpty)
+        let afterDeleteAll = try await store.fetchAll()
+        XCTAssertTrue(afterDeleteAll.isEmpty)
         for filename in sharedFiles {
             let fileURL = tempStorageURL.appendingPathComponent(filename)
             XCTAssertTrue(FileManager.default.fileExists(atPath: fileURL.path), "\(filename) must not be deleted by deleteAll()")
