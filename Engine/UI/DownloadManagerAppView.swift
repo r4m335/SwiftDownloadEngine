@@ -17,6 +17,7 @@ public struct DownloadManagerAppView: View {
     @State private var isScrubbingTabBar: Bool = false
     @State private var scrubLocationX: CGFloat? = nil
     @State private var lastScrubbedIndex: Int? = nil
+    @State private var isKeyboardVisible: Bool = false
 
     public init(engine: DownloadEngine, downloadsDirectory: URL? = nil) {
         let hlsPersistenceStore: HLSPersistenceStore?
@@ -57,56 +58,73 @@ public struct DownloadManagerAppView: View {
     }
 
     public var body: some View {
-        ZStack {
-            if visitedTabs.contains(0) || viewModel.selectedTab == 0 {
-                DownloadsView(viewModel: viewModel)
-                    .opacity(viewModel.selectedTab == 0 ? 1 : 0)
-                    .allowsHitTesting(viewModel.selectedTab == 0)
-                    .zIndex(viewModel.selectedTab == 0 ? 1 : 0)
-            }
+        ZStack(alignment: .bottom) {
+            ZStack {
+                if visitedTabs.contains(0) || viewModel.selectedTab == 0 {
+                    DownloadsView(viewModel: viewModel)
+                        .opacity(viewModel.selectedTab == 0 ? 1 : 0)
+                        .allowsHitTesting(viewModel.selectedTab == 0)
+                        .zIndex(viewModel.selectedTab == 0 ? 1 : 0)
+                }
 
-            if visitedTabs.contains(1) || viewModel.selectedTab == 1 {
-                BrowserView(viewModel: viewModel, onDownloadInitiated: {
-                    viewModel.selectedTab = 0
-                }, onOpenAddDownload: { url in
-                    viewModel.addDownloadPrefilledURL = url.absoluteString
-                    viewModel.showAddDownloadSheet = true
-                    viewModel.selectedTab = 0
-                }, onOpenDownloads: {
-                    viewModel.selectedTab = 0
-                })
-                .opacity(viewModel.selectedTab == 1 ? 1 : 0)
-                .allowsHitTesting(viewModel.selectedTab == 1)
-                .zIndex(viewModel.selectedTab == 1 ? 1 : 0)
-            }
+                if visitedTabs.contains(1) || viewModel.selectedTab == 1 {
+                    BrowserView(viewModel: viewModel, onDownloadInitiated: {
+                        viewModel.selectedTab = 0
+                    }, onOpenAddDownload: { url in
+                        viewModel.addDownloadPrefilledURL = url.absoluteString
+                        viewModel.showAddDownloadSheet = true
+                        viewModel.selectedTab = 0
+                    }, onOpenDownloads: {
+                        viewModel.selectedTab = 0
+                    })
+                    .opacity(viewModel.selectedTab == 1 ? 1 : 0)
+                    .allowsHitTesting(viewModel.selectedTab == 1)
+                    .zIndex(viewModel.selectedTab == 1 ? 1 : 0)
+                }
 
-            if visitedTabs.contains(2) || viewModel.selectedTab == 2 {
-                LIDPlayerLibraryView(
-                    baseDirectory: viewModel.downloadsDirectoryURL,
-                    knownTransfers: viewModel.unifiedTransfers
-                )
-                .opacity(viewModel.selectedTab == 2 ? 1 : 0)
-                .allowsHitTesting(viewModel.selectedTab == 2)
-                .zIndex(viewModel.selectedTab == 2 ? 1 : 0)
-            }
+                if visitedTabs.contains(2) || viewModel.selectedTab == 2 {
+                    LIDPlayerLibraryView(
+                        baseDirectory: viewModel.downloadsDirectoryURL,
+                        knownTransfers: viewModel.unifiedTransfers
+                    )
+                    .opacity(viewModel.selectedTab == 2 ? 1 : 0)
+                    .allowsHitTesting(viewModel.selectedTab == 2)
+                    .zIndex(viewModel.selectedTab == 2 ? 1 : 0)
+                }
 
-            if visitedTabs.contains(3) || viewModel.selectedTab == 3 {
-                SettingsView(viewModel: viewModel)
-                    .opacity(viewModel.selectedTab == 3 ? 1 : 0)
-                    .allowsHitTesting(viewModel.selectedTab == 3)
-                    .zIndex(viewModel.selectedTab == 3 ? 1 : 0)
+                if visitedTabs.contains(3) || viewModel.selectedTab == 3 {
+                    SettingsView(viewModel: viewModel)
+                        .opacity(viewModel.selectedTab == 3 ? 1 : 0)
+                        .allowsHitTesting(viewModel.selectedTab == 3)
+                        .zIndex(viewModel.selectedTab == 3 ? 1 : 0)
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+            if !isKeyboardVisible {
+                modernBottomTabBar
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
             }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-            modernBottomTabBar
-        }
+        .ignoresSafeArea(.keyboard, edges: .bottom)
         .onAppear {
             visitedTabs.insert(viewModel.selectedTab)
         }
         .onChange(of: viewModel.selectedTab) { newTab in
             visitedTabs.insert(newTab)
         }
+        #if canImport(UIKit)
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
+            withAnimation(.easeOut(duration: 0.18)) {
+                isKeyboardVisible = true
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
+            withAnimation(.easeOut(duration: 0.18)) {
+                isKeyboardVisible = false
+            }
+        }
+        #endif
         .task {
             // Automatically begin observing real-time engine events
             await viewModel.startObserving()

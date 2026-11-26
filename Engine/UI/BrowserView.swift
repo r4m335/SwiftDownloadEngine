@@ -4737,14 +4737,17 @@ public struct BrowserView: View {
                 }
             )
         }
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-            if viewModel.isToolbarCollapsed && !isAddressBarFocused && viewModel.currentURL != nil {
-                collapsedAddressPill
-                    .transition(.scale(scale: 0.9).combined(with: .opacity))
-            } else {
-                addressBarHeader
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
+        .overlay(alignment: .bottom) {
+            Group {
+                if viewModel.isToolbarCollapsed && !isAddressBarFocused && viewModel.currentURL != nil {
+                    collapsedAddressPill
+                        .transition(.scale(scale: 0.9).combined(with: .opacity))
+                } else {
+                    addressBarHeader
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                }
             }
+            .padding(.bottom, isAddressBarFocused ? 6 : 70)
         }
         .animation(.spring(response: 0.28, dampingFraction: 0.86), value: viewModel.isToolbarCollapsed)
         .onReceive(NotificationCenter.default.publisher(for: .sdeBrowserTabRetapped)) { _ in
@@ -5129,9 +5132,8 @@ public struct BrowserView: View {
         }
         }
         .padding(.horizontal, 12)
-        .padding(.top, 6)
-        .padding(.bottom, 8)
-        .background(.ultraThinMaterial)
+        .padding(.top, 4)
+        .padding(.bottom, 4)
     }
 
     private var searchEngineQuickSwitcher: some View {
