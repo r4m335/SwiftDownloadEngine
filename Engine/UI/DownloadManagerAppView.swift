@@ -13,6 +13,10 @@ public struct DownloadManagerAppView: View {
     @StateObject public var viewModel: DownloadManagerViewModel
     @State private var visitedTabs: Set<Int> = [0]
     @Namespace private var tabPillNamespace
+    @State private var tabBarWidth: CGFloat = 0
+    @State private var isScrubbingTabBar: Bool = false
+    @State private var scrubLocationX: CGFloat? = nil
+    @State private var lastScrubbedIndex: Int? = nil
 
     public init(engine: DownloadEngine, downloadsDirectory: URL? = nil) {
         let hlsPersistenceStore: HLSPersistenceStore?
@@ -158,50 +162,142 @@ public struct DownloadManagerAppView: View {
     }
 
     private var modernBottomTabBar: some View {
-        HStack(spacing: 4) {
-            ForEach(tabItems, id: \.index) { item in
-                let isSelected = viewModel.selectedTab == item.index
-                Button {
-                    handleTabTap(item.index)
-                } label: {
-                    VStack(spacing: 3) {
-                        Image(systemName: isSelected ? item.activeIcon : item.icon)
-                            .font(.system(size: 19, weight: isSelected ? .semibold : .medium))
-                            .foregroundColor(isSelected ? .accentColor : .primary)
-                            .frame(height: 22)
-                            .overlay(alignment: .topTrailing) {
-                                if item.badgeCount > 0 {
-                                    Text(item.badgeCount > 99 ? "99+" : "\(item.badgeCount)")
-                                        .font(.system(size: 9, weight: .bold))
-                                        .foregroundColor(.white)
-                                        .padding(.horizontal, item.badgeCount > 9 ? 5 : 0)
-                                        .frame(minWidth: 16, minHeight: 16)
-                                        .background(Capsule().fill(item.badgeColor))
-                                        .offset(x: 11, y: -4)
-                                }
-                            }
+        let count = max(1, tabItems.count)
+        let slotWidth = tabBarWidth > 0 ? (tabBarWidth / CGFloat(count)) : 0
+        let activeHighlightIndex = lastScrubbedIndex ?? viewModel.selectedTab
 
-                        Text(item.title)
-                            .font(.system(size: 10, weight: isSelected ? .bold : .semibold))
-                            .foregroundColor(isSelected ? .accentColor : .primary)
-                            .lineLimit(1)
-                    }
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 8)
-                    .background {
-                        if isSelected {
-                            Capsule()
-                                .fill(Color.primary.opacity(0.09))
-                                .matchedGeometryEffect(id: "activeTabPill", in: tabPillNamespace)
+        return HStack(spacing: 4) {
+            ForEach(tabItems, id: \.index) { item in
+                let isSelected = activeHighlightIndex == item.index
+                let isLensFocused = isScrubbingTabBar && lastScrubbedIndex == item.index
+
+                VStack(spacing: 3) {
+                    Image(systemName: isSelected ? item.activeIcon : item.icon)
+                        .font(.system(size: 19, weight: isSelected ? .semibold : .medium))
+                        .foregroundColor(isSelected ? .accentColor : .primary)
+                        .frame(height: 22)
+                        .overlay(alignment: .topTrailing) {
+                            if item.badgeCount > 0 {
+                                Text(item.badgeCount > 99 ? "99+" : "\(item.badgeCount)")
+                                    .font(.system(size: 9, weight: .bold))
+                                    .foregroundColor(.white)
+                                    .padding(.horizontal, item.badgeCount > 9 ? 5 : 0)
+                                    .frame(minWidth: 16, minHeight: 16)
+                                    .background(Capsule().fill(item.badgeColor))
+                                    .offset(x: 11, y: -4)
+                            }
                         }
-                    }
-                    .contentShape(Capsule())
+
+                    Text(item.title)
+                        .font(.system(size: 10, weight: isSelected ? .bold : .semibold))
+                        .foregroundColor(isSelected ? .accentColor : .primary)
+                        .lineLimit(1)
                 }
-                .buttonStyle(.plain)
+                .scaleEffect(isLensFocused ? 1.12 : 1.0)
+                .animation(.spring(response: 0.22, dampingFraction: 0.78), value: isLensFocused)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 8)
+                .background {
+                    if !isScrubbingTabBar && isSelected {
+                        Capsule()
+                            .fill(Color.primary.opacity(0.09))
+                            .matchedGeometryEffect(id: "activeTabPill", in: tabPillNamespace)
+                    }
+                }
+                .contentShape(Capsule())
+                .accessibilityElement(children: .combine)
                 .accessibilityLabel(item.badgeCount > 0 ? "\(item.title), \(item.badgeCount)" : item.title)
-                .accessibilityAddTraits(isSelected ? [.isSelected] : [])
+                .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : [.isButton])
             }
         }
+        .background(
+            GeometryReader { geo in
+                Color.clear
+                    .onAppear { tabBarWidth = geo.size.width }
+                    .onChange(of: geo.size.width) { newWidth in
+                        tabBarWidth = newWidth
+                    }
+            }
+        )
+        .overlay(alignment: .leading) {
+            if isScrubbingTabBar, let scrubX = scrubLocationX, slotWidth > 0 {
+                let lensWidth = slotWidth + 10
+                let clampedCenter = min(max(scrubX, lensWidth / 2 - 4), tabBarWidth - lensWidth / 2 + 4)
+                Capsule()
+                    .fill(.ultraThinMaterial)
+                    .overlay(
+                        Capsule()
+                            .fill(
+                                LinearGradient(
+                                    colors: [Color.white.opacity(0.38), Color.white.opacity(0.06), Color.clear],
+                                    startPoint: .top,
+                                    endPoint: .bottom
+                                )
+                            )
+                    )
+                    .overlay(
+                        Capsule()
+                            .stroke(Color.white.opacity(0.45), lineWidth: 1)
+                    )
+                    .frame(width: lensWidth, height: 54)
+                    .shadow(color: Color.black.opacity(0.25), radius: 12, x: 0, y: 4)
+                    .offset(x: clampedCenter - lensWidth / 2)
+                    .allowsHitTesting(false)
+                    .transition(.scale(scale: 0.9).combined(with: .opacity))
+            }
+        }
+        .gesture(
+            DragGesture(minimumDistance: 0, coordinateSpace: .local)
+                .onChanged { value in
+                    guard tabBarWidth > 0 else { return }
+                    let x = min(max(value.location.x, 0), tabBarWidth - 1)
+                    let idx = min(count - 1, max(0, Int(x / (tabBarWidth / CGFloat(count)))))
+                    let moved = hypot(value.translation.width, value.translation.height) > 5
+
+                    if moved || isScrubbingTabBar {
+                        if !isScrubbingTabBar {
+                            withAnimation(.spring(response: 0.22, dampingFraction: 0.8)) {
+                                isScrubbingTabBar = true
+                            }
+                            #if canImport(UIKit)
+                            UIImpactFeedbackGenerator(style: .soft).impactOccurred()
+                            #endif
+                        }
+                        scrubLocationX = x
+                        if lastScrubbedIndex != idx {
+                            lastScrubbedIndex = idx
+                            #if canImport(UIKit)
+                            UISelectionFeedbackGenerator().selectionChanged()
+                            #endif
+                            if viewModel.selectedTab != idx {
+                                withAnimation(.spring(response: 0.24, dampingFraction: 0.85)) {
+                                    viewModel.selectedTab = idx
+                                }
+                            }
+                        }
+                    }
+                }
+                .onEnded { value in
+                    let wasScrubbing = isScrubbingTabBar
+                    let width = max(1, tabBarWidth)
+                    let x = min(max(value.location.x, 0), width - 1)
+                    let idx = min(count - 1, max(0, Int(x / (width / CGFloat(count)))))
+
+                    withAnimation(.spring(response: 0.28, dampingFraction: 0.8)) {
+                        isScrubbingTabBar = false
+                        scrubLocationX = nil
+                        lastScrubbedIndex = nil
+                    }
+
+                    if !wasScrubbing {
+                        handleTabTap(idx)
+                    } else if viewModel.selectedTab != idx {
+                        withAnimation(.spring(response: 0.26, dampingFraction: 0.82)) {
+                            viewModel.selectedTab = idx
+                        }
+                    }
+                }
+        )
         .padding(5)
         .background(.ultraThinMaterial, in: Capsule())
         .overlay(
