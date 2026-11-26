@@ -1806,7 +1806,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                     BlobCaptureBridge.cancelCommand(transferID: captureID)
                 )
                 let service = session.blobCaptureService
-                await service.cancel(captureID: captureID, reason: "Blob export timed out")
+                await service.cancel(captureID: captureID)
             }
             #endif
             self.clearActiveBlobCaptureState()
