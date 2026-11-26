@@ -1432,9 +1432,9 @@ public struct LIDPlayerView: View {
             Text("Subtitle delay")
                 .font(.system(size: 15, weight: .bold))
                 .foregroundColor(Color.orange)
-                .frame(width: 320, height: 36)
-                .background(Color.black.opacity(0.75))
-                .cornerRadius(10)
+                .frame(maxWidth: 340)
+                .frame(height: 36)
+                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
 
             // Row 2: Stepper pill: <  0 ms  >
             HStack {
@@ -1466,9 +1466,9 @@ public struct LIDPlayerView: View {
                         .contentShape(Rectangle())
                 }
             }
-            .frame(width: 320, height: 44)
-            .background(Color.black.opacity(0.75))
-            .cornerRadius(10)
+            .frame(maxWidth: 340)
+            .frame(height: 44)
+            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
 
             // Row 3: Action Buttons [ ✓ VOICE HEARD ] [ ✓ TEXT SEEN ] [ RESET ]
             HStack(spacing: 8) {
@@ -1484,8 +1484,7 @@ public struct LIDPlayerView: View {
                     }
                     .foregroundColor(voiceHeardTime != nil ? Color.orange : .white)
                     .frame(maxWidth: .infinity, minHeight: 38)
-                    .background(Color.black.opacity(0.75))
-                    .cornerRadius(10)
+                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
                 }
 
                 // Text Seen Button
@@ -1500,8 +1499,7 @@ public struct LIDPlayerView: View {
                     }
                     .foregroundColor(textSeenTime != nil ? Color.orange : .white)
                     .frame(maxWidth: .infinity, minHeight: 38)
-                    .background(Color.black.opacity(0.75))
-                    .cornerRadius(10)
+                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
                 }
 
                 // Reset Button
@@ -1513,13 +1511,13 @@ public struct LIDPlayerView: View {
                         .foregroundColor(.white)
                         .padding(.horizontal, 16)
                         .frame(minHeight: 38)
-                        .background(Color.black.opacity(0.75))
-                        .cornerRadius(10)
+                        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
                 }
             }
-            .frame(width: 320)
+            .frame(maxWidth: 340)
         }
-        .shadow(color: Color.black.opacity(0.5), radius: 8, x: 0, y: 3)
+        .padding(.horizontal, 20)
+        .shadow(color: Color.black.opacity(0.45), radius: 8, x: 0, y: 3)
     }
 
     private func adjustDelayByMilliseconds(_ deltaMs: Int) {
@@ -1606,9 +1604,9 @@ public struct LIDPlayerView: View {
             Text("Playback speed")
                 .font(.system(size: 15, weight: .bold))
                 .foregroundColor(Color.orange)
-                .frame(width: 320, height: 36)
-                .background(Color.black.opacity(0.75))
-                .cornerRadius(10)
+                .frame(maxWidth: 340)
+                .frame(height: 36)
+                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
 
             // Row 2: Continuous Slider pill: 0.0× ───●─── 2.0×
             HStack(spacing: 12) {
@@ -1636,9 +1634,9 @@ public struct LIDPlayerView: View {
                     .foregroundColor(.white.opacity(0.7))
             }
             .padding(.horizontal, 16)
-            .frame(width: 320, height: 44)
-            .background(Color.black.opacity(0.75))
-            .cornerRadius(10)
+            .frame(maxWidth: 340)
+            .frame(height: 44)
+            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
 
             // Row 3: Action Buttons [ Rate & Status ] [ RESET (1.0×) ]
             HStack(spacing: 8) {
@@ -1652,8 +1650,7 @@ public struct LIDPlayerView: View {
                         .foregroundColor(.white.opacity(0.7))
                 }
                 .frame(maxWidth: .infinity, minHeight: 38)
-                .background(Color.black.opacity(0.75))
-                .cornerRadius(10)
+                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
 
                 Button {
                     engine.setPlaybackRate(1.0)
@@ -1667,13 +1664,13 @@ public struct LIDPlayerView: View {
                         .foregroundColor(.white)
                         .padding(.horizontal, 16)
                         .frame(minHeight: 38)
-                        .background(Color.black.opacity(0.75))
-                        .cornerRadius(10)
+                        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
                 }
             }
-            .frame(width: 320)
+            .frame(maxWidth: 340)
         }
-        .shadow(color: Color.black.opacity(0.5), radius: 8, x: 0, y: 3)
+        .padding(.horizontal, 20)
+        .shadow(color: Color.black.opacity(0.45), radius: 8, x: 0, y: 3)
     }
 
     // MARK: - Helper Views & Methods

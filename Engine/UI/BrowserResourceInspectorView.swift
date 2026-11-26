@@ -412,14 +412,8 @@ public struct BrowserResourceInspectorSheet: View {
                 // Category Filter Pills
                 categoryFilterBar
 
-                // Search Bar
+                // Compact Search + Inline Sort & Group Controls
                 searchAndSelectionHeader
-
-                // Explicit Sort Controls
-                sortControlBar
-
-                // Explicit Grouping Controls
-                groupingControlBar
 
                 // Main Content: List, Loading, Empty, or Error
                 if !filteredResources.isEmpty {
@@ -783,10 +777,70 @@ public struct BrowserResourceInspectorSheet: View {
             #else
             .background(Color.primary.opacity(0.05))
             #endif
-            .cornerRadius(8)
+            .cornerRadius(10)
+
+            // Compact inline Sort menu
+            Menu {
+                ForEach(ResourceSortOption.allCases) { opt in
+                    Button {
+                        sortOption = opt
+                    } label: {
+                        if sortOption == opt {
+                            Label(opt.displayName, systemImage: "checkmark")
+                        } else {
+                            Label(opt.displayName, systemImage: opt.iconName)
+                        }
+                    }
+                }
+                Divider()
+                Button {
+                    sortDirection.toggle()
+                } label: {
+                    Label(
+                        sortDirection == .ascending ? "Order: Ascending" : "Order: Descending",
+                        systemImage: sortDirection.iconName
+                    )
+                }
+            } label: {
+                Image(systemName: "arrow.up.arrow.down")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundColor(.primary)
+                    .frame(width: 34, height: 34)
+                    .background(Color.secondary.opacity(0.14))
+                    .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+            }
+            .accessibilityLabel("Sort resources")
+
+            // Compact inline Group menu
+            Menu {
+                ForEach(ResourceGroupingOption.allCases) { grp in
+                    Button {
+                        groupingOption = grp
+                    } label: {
+                        if groupingOption == grp {
+                            Label(grp.displayName, systemImage: "checkmark")
+                        } else {
+                            Label(grp.displayName, systemImage: grp.iconName)
+                        }
+                    }
+                }
+            } label: {
+                Image(systemName: groupingOption == .none ? "square.grid.2x2" : "folder.fill")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundColor(groupingOption == .none ? .primary : .blue)
+                    .frame(width: 34, height: 34)
+                    .background(groupingOption == .none ? Color.secondary.opacity(0.14) : Color.blue.opacity(0.14))
+                    .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+            }
+            .accessibilityLabel("Group resources")
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 6)
+        #if canImport(UIKit)
+        .background(Color(UIColor.secondarySystemBackground))
+        #else
+        .background(Color.secondary.opacity(0.08))
+        #endif
     }
 
     // MARK: - Resource List

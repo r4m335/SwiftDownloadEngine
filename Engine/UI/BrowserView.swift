@@ -5236,13 +5236,17 @@ public struct BrowserView: View {
                 Button {
                     viewModel.showTabSwitcher()
                 } label: {
-                    ZStack {
+                    if viewModel.tabs.isEmpty {
                         Image(systemName: "square.on.square")
                             .font(.system(size: 18))
-                        if !viewModel.tabs.isEmpty {
+                    } else {
+                        ZStack {
+                            RoundedRectangle(cornerRadius: 4.5, style: .continuous)
+                                .stroke(lineWidth: 1.6)
+                                .frame(width: 19, height: 19)
                             Text("\(viewModel.tabs.count)")
-                                .font(.system(size: 9, weight: .bold))
-                                .offset(x: 1, y: 1)
+                                .font(.system(size: viewModel.tabs.count >= 100 ? 8 : 11, weight: .bold))
+                                .minimumScaleFactor(0.6)
                         }
                     }
                 }
@@ -5651,11 +5655,17 @@ public struct BrowserTabSwitcherView: View {
                             }
                         }
                     }
-
-                    // Action buttons (New Tab, Private Tab, Close All Private)
-                    actionButtons
                 }
                 .padding(16)
+            }
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                VStack(spacing: 0) {
+                    Divider()
+                    actionButtons
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 10)
+                }
+                .background(.ultraThinMaterial)
             }
             .navigationTitle("Tabs (\(viewModel.tabs.count))")
             #if canImport(UIKit)
