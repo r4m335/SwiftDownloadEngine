@@ -5757,8 +5757,8 @@ public struct BrowserTabSwitcherView: View {
                 // Group Menu
                 Menu {
                     Button {
-                        let newTab = viewModel.createNewTab(isIncognito: false)
-                        _ = viewModel.addTabToGroup(tabID: newTab.id, groupID: group.id)
+                        let newTabID = viewModel.createNewTab(isIncognito: false)
+                        _ = viewModel.addTabToGroup(tabID: newTabID, groupID: group.id)
                         dismiss()
                     } label: {
                         Label("New Tab in Group", systemImage: "plus.square.on.square")
