@@ -5593,6 +5593,10 @@ public struct BrowserTabSwitcherView: View {
     @State private var renameGroupText: String = ""
     @State private var isShowingRenameGroupAlert: Bool = false
 
+    @State private var tabForNewGroup: BrowserTabState? = nil
+    @State private var newGroupName: String = ""
+    @State private var isShowingNewGroupAlert: Bool = false
+
     @State private var dropTargetGroupID: UUID? = nil
 
     private let columns = [
@@ -5695,6 +5699,24 @@ public struct BrowserTabSwitcherView: View {
                     groupToRename = nil
                 }
             }
+            .alert("New Tab Group", isPresented: $isShowingNewGroupAlert) {
+                TextField("Group Name", text: $newGroupName)
+                Button("Create") {
+                    let trimmed = newGroupName.trimmingCharacters(in: .whitespacesAndNewlines)
+                    let title = trimmed.isEmpty ? "New Group" : trimmed
+                    if let tab = tabForNewGroup {
+                        withAnimation(.spring(response: 0.28, dampingFraction: 0.85)) {
+                            _ = viewModel.createGroup(title: title, tabIDs: [tab.id])
+                        }
+                    }
+                    tabForNewGroup = nil
+                    newGroupName = ""
+                }
+                Button("Cancel", role: .cancel) {
+                    tabForNewGroup = nil
+                    newGroupName = ""
+                }
+            }
         }
     }
 
@@ -5734,6 +5756,14 @@ public struct BrowserTabSwitcherView: View {
 
                 // Group Menu
                 Menu {
+                    Button {
+                        let newTab = viewModel.createNewTab(isIncognito: false)
+                        _ = viewModel.addTabToGroup(tabID: newTab.id, groupID: group.id)
+                        dismiss()
+                    } label: {
+                        Label("New Tab in Group", systemImage: "plus.square.on.square")
+                    }
+
                     Button {
                         groupToRename = group
                         renameGroupText = group.title
@@ -5805,6 +5835,7 @@ public struct BrowserTabSwitcherView: View {
             tab: tab,
             isActive: tab.id == viewModel.activeTabID,
             previewData: viewModel.tabPreviewCache.preview(for: tab.id),
+            availableGroups: viewModel.groups,
             onSelect: {
                 _ = viewModel.selectTab(tab.id)
                 dismiss()
@@ -5821,12 +5852,22 @@ public struct BrowserTabSwitcherView: View {
                 viewModel.renameTab(tab.id, newTitle: nil)
             },
             onRemoveFromGroup: {
-                withAnimation {
+                withAnimation(.spring(response: 0.28, dampingFraction: 0.85)) {
                     _ = viewModel.removeTabFromGroup(tabID: tab.id)
                 }
             },
+            onMoveToGroup: { targetGroupID in
+                withAnimation(.spring(response: 0.28, dampingFraction: 0.85)) {
+                    _ = viewModel.addTabToGroup(tabID: tab.id, groupID: targetGroupID)
+                }
+            },
+            onMoveToNewGroup: {
+                tabForNewGroup = tab
+                newGroupName = ""
+                isShowingNewGroupAlert = true
+            },
             onGroup: { sourceTabID in
-                withAnimation {
+                withAnimation(.spring(response: 0.28, dampingFraction: 0.85)) {
                     _ = viewModel.groupTabs(sourceTabID: sourceTabID, targetTabID: tab.id)
                 }
             }
@@ -5885,11 +5926,14 @@ public struct BrowserTabCardView: View {
     public let tab: BrowserTabState
     public let isActive: Bool
     public let previewData: Data?
+    public let availableGroups: [BrowserTabGroup]
     public let onSelect: () -> Void
     public let onClose: () -> Void
     public let onRename: (() -> Void)?
     public let onResetName: (() -> Void)?
     public let onRemoveFromGroup: (() -> Void)?
+    public let onMoveToGroup: ((UUID) -> Void)?
+    public let onMoveToNewGroup: (() -> Void)?
     public let onGroup: ((UUID) -> Void)?
 
     @State private var dragOffset: CGSize = .zero
@@ -5900,21 +5944,27 @@ public struct BrowserTabCardView: View {
         tab: BrowserTabState,
         isActive: Bool,
         previewData: Data?,
+        availableGroups: [BrowserTabGroup] = [],
         onSelect: @escaping () -> Void,
         onClose: @escaping () -> Void,
         onRename: (() -> Void)? = nil,
         onResetName: (() -> Void)? = nil,
         onRemoveFromGroup: (() -> Void)? = nil,
+        onMoveToGroup: ((UUID) -> Void)? = nil,
+        onMoveToNewGroup: (() -> Void)? = nil,
         onGroup: ((UUID) -> Void)? = nil
     ) {
         self.tab = tab
         self.isActive = isActive
         self.previewData = previewData
+        self.availableGroups = availableGroups
         self.onSelect = onSelect
         self.onClose = onClose
         self.onRename = onRename
         self.onResetName = onResetName
         self.onRemoveFromGroup = onRemoveFromGroup
+        self.onMoveToGroup = onMoveToGroup
+        self.onMoveToNewGroup = onMoveToNewGroup
         self.onGroup = onGroup
     }
 
@@ -5927,9 +5977,11 @@ public struct BrowserTabCardView: View {
 
             cardContent
                 .offset(dragOffset)
-                .opacity(isDismissing ? 0 : max(0.2, 1.0 - Double(abs(dragOffset.width) / 160.0)))
-                .scaleEffect(isDismissing ? 0.8 : max(0.92, 1.0 - (abs(dragOffset.width) / 800.0)))
+                .rotationEffect(.degrees(max(-7, min(7, Double(dragOffset.width) / 26.0))))
+                .opacity(isDismissing ? 0 : max(0.25, 1.0 - Double(abs(dragOffset.width) / 200.0)))
+                .scaleEffect(isDismissing ? 0.85 : max(0.94, 1.0 - (abs(dragOffset.width) / 900.0)))
         }
+        .clipShape(RoundedRectangle(cornerRadius: 12))
         .contentShape(Rectangle())
         .onDrag {
             NSItemProvider(object: tab.id.uuidString as NSString)
@@ -5981,6 +6033,28 @@ public struct BrowserTabCardView: View {
                     Label("Reset Tab Name", systemImage: "arrow.counterclockwise")
                 }
             }
+            let otherGroups = availableGroups.filter { $0.id != tab.groupID }
+            if !otherGroups.isEmpty || onMoveToNewGroup != nil {
+                Menu {
+                    ForEach(otherGroups) { group in
+                        Button {
+                            onMoveToGroup?(group.id)
+                        } label: {
+                            Label(group.title, systemImage: "folder.fill")
+                        }
+                    }
+                    if let onMoveToNewGroup = onMoveToNewGroup {
+                        if !otherGroups.isEmpty {
+                            Divider()
+                        }
+                        Button(action: onMoveToNewGroup) {
+                            Label("New Group...", systemImage: "folder.badge.plus")
+                        }
+                    }
+                } label: {
+                    Label("Move to Group", systemImage: "folder")
+                }
+            }
             if tab.groupID != nil, let onRemoveFromGroup = onRemoveFromGroup {
                 Button(action: onRemoveFromGroup) {
                     Label("Remove from Group", systemImage: "folder.badge.minus")
@@ -5992,33 +6066,49 @@ public struct BrowserTabCardView: View {
             }
         }
         .gesture(
-            DragGesture(minimumDistance: 15)
+            DragGesture(minimumDistance: 12, coordinateSpace: .local)
                 .onChanged { value in
-                    if abs(value.translation.width) > abs(value.translation.height) {
-                        dragOffset = CGSize(width: value.translation.width, height: 0)
-                    } else if value.translation.height < -20 {
-                        dragOffset = CGSize(width: 0, height: value.translation.height)
+                    guard !isDismissing else { return }
+                    let dx = value.translation.width
+                    let dy = value.translation.height
+                    if abs(dx) >= abs(dy) {
+                        withAnimation(.interactiveSpring(response: 0.16, dampingFraction: 0.9)) {
+                            dragOffset = CGSize(width: dx, height: 0)
+                        }
+                    } else if dy < -20 && abs(dx) < 20 {
+                        withAnimation(.interactiveSpring(response: 0.16, dampingFraction: 0.9)) {
+                            dragOffset = CGSize(width: 0, height: dy)
+                        }
                     }
                 }
                 .onEnded { value in
-                    let shouldClose = BrowserTabSwipePolicy.shouldClose(translationX: Double(value.translation.width), translationY: Double(value.translation.height))
+                    guard !isDismissing else { return }
+                    let dx = Double(value.translation.width)
+                    let dy = Double(value.translation.height)
+                    let predictedDX = Double(value.predictedEndTranslation.width)
+                    let predictedDY = Double(value.predictedEndTranslation.height)
+                    let shouldClose = BrowserTabSwipePolicy.shouldClose(translationX: dx, translationY: dy) ||
+                        (abs(dx) > 28 && BrowserTabSwipePolicy.shouldClose(translationX: predictedDX, translationY: predictedDY))
                     if shouldClose {
                         #if canImport(UIKit)
                         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
                         #endif
-                        withAnimation(.easeOut(duration: 0.2)) {
-                            if abs(value.translation.width) > abs(value.translation.height) {
-                                dragOffset.width = value.translation.width > 0 ? 350 : -350
+                        let horizontal = abs(dx) >= abs(dy)
+                        withAnimation(.easeOut(duration: 0.18)) {
+                            if horizontal {
+                                dragOffset = CGSize(width: dx >= 0 ? 280 : -280, height: 0)
                             } else {
-                                dragOffset.height = -350
+                                dragOffset = CGSize(width: 0, height: -280)
                             }
                             isDismissing = true
                         }
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-                            onClose()
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) {
+                            withAnimation(.spring(response: 0.28, dampingFraction: 0.85)) {
+                                onClose()
+                            }
                         }
                     } else {
-                        withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
+                        withAnimation(.spring(response: 0.28, dampingFraction: 0.78)) {
                             dragOffset = .zero
                         }
                     }

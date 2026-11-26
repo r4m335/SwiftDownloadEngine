@@ -323,4 +323,35 @@ final class BrowserTabGroupingAndRenameTests: XCTestCase {
         XCTAssertEqual(manager.tabs.count, 1)
         XCTAssertEqual(manager.groups.count, 0)
     }
+
+    func testMoveTabBetweenGroupsPrunesEmptySourceGroup() {
+        var manager = BrowserTabManager()
+        let tab1 = manager.tabs[0].id
+        let tab2 = manager.createTab(select: false)
+        let tab3 = manager.createTab(select: false)
+
+        let groupA = manager.createGroup(title: "Group A", tabIDs: [tab1])
+        let groupB = manager.createGroup(title: "Group B", tabIDs: [tab2, tab3])
+
+        XCTAssertEqual(manager.groups.count, 2)
+        XCTAssertEqual(manager.tabsInGroup(groupA.id).map(\.id), [tab1])
+
+        // Move the only tab in Group A to Group B -> Group A is automatically removed
+        XCTAssertTrue(manager.addTabToGroup(tabID: tab1, groupID: groupB.id))
+        XCTAssertEqual(manager.groups.count, 1)
+        XCTAssertEqual(manager.groups.first?.id, groupB.id)
+        XCTAssertEqual(Set(manager.tabsInGroup(groupB.id).map(\.id)), [tab1, tab2, tab3])
+
+        // Move one tab from Group B into a brand-new Group C -> Group B remains with 2 tabs
+        let groupC = manager.createGroup(title: "Group C", tabIDs: [tab1])
+        XCTAssertEqual(manager.groups.count, 2)
+        XCTAssertEqual(manager.tabsInGroup(groupC.id).map(\.id), [tab1])
+        XCTAssertEqual(Set(manager.tabsInGroup(groupB.id).map(\.id)), [tab2, tab3])
+
+        // Drag-group last tab from Group C onto tab2 in Group B -> Group C is pruned
+        let targetGroupID = manager.groupTabs(sourceTabID: tab1, targetTabID: tab2)
+        XCTAssertEqual(targetGroupID, groupB.id)
+        XCTAssertEqual(manager.groups.count, 1)
+        XCTAssertEqual(Set(manager.tabsInGroup(groupB.id).map(\.id)), [tab1, tab2, tab3])
+    }
 }

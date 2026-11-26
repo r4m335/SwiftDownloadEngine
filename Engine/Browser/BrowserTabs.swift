@@ -204,7 +204,11 @@ public struct BrowserTabManager: Sendable, Equatable {
         groups.append(group)
         for tabID in tabIDs {
             if let idx = tabs.firstIndex(where: { $0.id == tabID }) {
+                let oldGroupID = tabs[idx].groupID
                 tabs[idx].groupID = group.id
+                if let oldGroupID, oldGroupID != group.id {
+                    cleanEmptyGroupIfNecessary(oldGroupID)
+                }
             }
         }
         return group
@@ -238,7 +242,11 @@ public struct BrowserTabManager: Sendable, Equatable {
     public mutating func addTabToGroup(tabID: UUID, groupID: UUID) -> Bool {
         guard groups.contains(where: { $0.id == groupID }),
               let tabIndex = tabs.firstIndex(where: { $0.id == tabID }) else { return false }
+        let oldGroupID = tabs[tabIndex].groupID
         tabs[tabIndex].groupID = groupID
+        if let oldGroupID, oldGroupID != groupID {
+            cleanEmptyGroupIfNecessary(oldGroupID)
+        }
         return true
     }
 
@@ -267,7 +275,11 @@ public struct BrowserTabManager: Sendable, Equatable {
         let sourceTab = tabs[sourceIndex]
 
         if let targetGroupID = targetTab.groupID {
+            let oldGroupID = sourceTab.groupID
             tabs[sourceIndex].groupID = targetGroupID
+            if let oldGroupID, oldGroupID != targetGroupID {
+                cleanEmptyGroupIfNecessary(oldGroupID)
+            }
             return targetGroupID
         } else if let sourceGroupID = sourceTab.groupID {
             tabs[targetIndex].groupID = sourceGroupID
