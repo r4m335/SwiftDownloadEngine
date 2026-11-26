@@ -1195,7 +1195,17 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         tabOriginChains[resolvedID]?.insert(normalized)
     }
 
+    private static let blockedExternalSchemes: Set<String> = [
+        "file", "javascript", "data", "blob", "about", "itms-services", "smb", "afp", "ftp"
+    ]
+
+    public static func isAllowedExternalScheme(_ url: URL) -> Bool {
+        guard let scheme = url.scheme?.lowercased(), !scheme.isEmpty else { return false }
+        return !blockedExternalSchemes.contains(scheme)
+    }
+
     private func openExternalScheme(_ url: URL) {
+        guard Self.isAllowedExternalScheme(url) else { return }
         #if canImport(UIKit)
         UIApplication.shared.open(url, options: [:], completionHandler: nil)
         #elseif canImport(AppKit)
@@ -1299,6 +1309,10 @@ public final class BrowserViewModel: NSObject, ObservableObject {
 
     public func openInAssociatedApp(_ link: BrowserExternalAppLink) {
         externalAppLinkPrompt = nil
+        guard Self.isAllowedExternalScheme(link.url) else {
+            continueInBrowser(link)
+            return
+        }
         #if canImport(UIKit)
         UIApplication.shared.open(
             link.url,
@@ -2695,7 +2709,10 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                 if effectiveResource.isLive {
                     let docDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first ?? FileManager.default.temporaryDirectory
                     let videosDir = docDir.appendingPathComponent("Downloads/Videos", isDirectory: true)
-                    let effectiveFilename = self.activeStreamingFilename ?? (effectiveResource.suggestedFilename.isEmpty ? "live_stream.mp4" : effectiveResource.suggestedFilename)
+                    let rawFilename = self.activeStreamingFilename ?? (effectiveResource.suggestedFilename.isEmpty ? "live_stream.mp4" : effectiveResource.suggestedFilename)
+                    let lastComponent = URL(fileURLWithPath: rawFilename).lastPathComponent
+                    let sanitized = FilenameExtensionHelper.sanitizeFilename(lastComponent)
+                    let effectiveFilename = sanitized.isEmpty ? "live_stream.mp4" : sanitized
                     let destination = videosDir.appendingPathComponent(effectiveFilename)
                     let req = LiveRecordingRequest(
                         manifestURL: effectiveResource.url,

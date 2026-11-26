@@ -2015,4 +2015,41 @@ final class BrowserTests: XCTestCase {
         XCTAssertEqual(filtered.count, 2)
         XCTAssertEqual(filtered.map(\.id), ["1", "3"])
     }
+
+    func testSecurityHardeningExternalSchemesAndCrossOriginHeaderStripping() {
+        // Blocked dangerous external schemes
+        XCTAssertFalse(BrowserViewModel.isAllowedExternalScheme(URL(string: "file:///etc/passwd")!))
+        XCTAssertFalse(BrowserViewModel.isAllowedExternalScheme(URL(string: "javascript:alert(1)")!))
+        XCTAssertFalse(BrowserViewModel.isAllowedExternalScheme(URL(string: "data:text/html,hi")!))
+        XCTAssertFalse(BrowserViewModel.isAllowedExternalScheme(URL(string: "itms-services://?action=download-manifest")!))
+        XCTAssertTrue(BrowserViewModel.isAllowedExternalScheme(URL(string: "https://example.com")!))
+        XCTAssertTrue(BrowserViewModel.isAllowedExternalScheme(URL(string: "mailto:user@example.com")!))
+
+        // Cross-origin redirect with matching cookie strips sensitive Authorization / API key headers
+        let originURL = URL(string: "https://origin.example/download")!
+        let cdnURL = URL(string: "https://othercdn.net/file.mp4")!
+        let cookie = BrowserCookie(name: "cdn_token", value: "abc", domain: "othercdn.net", path: "/")
+        let context = BrowserRequestContext(
+            url: originURL,
+            pageURL: originURL,
+            userAgent: "TestAgent",
+            cookies: [cookie],
+            customHeaders: [
+                "Authorization": "Bearer secret-token",
+                "X-API-Key": "secret-key",
+                "Referer": "https://origin.example/"
+            ]
+        )
+
+        let handoff = BrowserDownloadInterceptionManager.prepareHandoff(
+            originalURL: originURL,
+            finalURL: cdnURL,
+            requestContext: context
+        )
+        XCTAssertNotNil(handoff)
+        XCTAssertNil(handoff?.requestContext?.customHeaders["Authorization"])
+        XCTAssertNil(handoff?.requestContext?.customHeaders["X-API-Key"])
+        XCTAssertEqual(handoff?.requestContext?.customHeaders["Referer"], "https://origin.example/")
+        XCTAssertEqual(handoff?.requestContext?.cookies.count, 1)
+    }
 }

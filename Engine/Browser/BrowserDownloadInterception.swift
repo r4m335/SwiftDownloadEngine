@@ -153,12 +153,34 @@ public final class BrowserDownloadInterceptionManager {
         }()
 
         let safeContext: BrowserRequestContext?
-        if !isDowngrade,
-           let context = requestContext,
-           (BrowserHeaderFilter.sameOrigin(originalURL, destinationURL) ||
-            BrowserHeaderFilter.isSameSiteOrSubdomain(originalURL, destinationURL) ||
-            context.cookies.contains(where: { $0.matches(url: destinationURL) })) {
-            safeContext = context
+        if !isDowngrade, let context = requestContext {
+            let isSameOriginOrSite = BrowserHeaderFilter.sameOrigin(originalURL, destinationURL) ||
+                BrowserHeaderFilter.isSameSiteOrSubdomain(originalURL, destinationURL)
+            if isSameOriginOrSite {
+                safeContext = context
+            } else {
+                let matchingCookies = context.cookies.filter { $0.matches(url: destinationURL) }
+                if !matchingCookies.isEmpty {
+                    let sensitiveHeaders: Set<String> = [
+                        "authorization", "proxy-authorization", "cookie", "x-auth-token", "x-api-key"
+                    ]
+                    let filteredHeaders = context.customHeaders.filter {
+                        !sensitiveHeaders.contains($0.key.lowercased())
+                    }
+                    safeContext = BrowserRequestContext(
+                        url: context.url,
+                        pageURL: context.pageURL,
+                        userAgent: context.userAgent,
+                        cookies: matchingCookies,
+                        customHeaders: filteredHeaders,
+                        captureDate: context.captureDate,
+                        source: context.source,
+                        allowedCredentialOrigins: context.allowedCredentialOrigins
+                    )
+                } else {
+                    safeContext = nil
+                }
+            }
         } else {
             safeContext = nil
         }
