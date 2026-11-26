@@ -1515,11 +1515,11 @@ public actor BrowserBlobCaptureReceiver {
                 await writer.fail(transferID: transferID, reason: reason)
                 return BlobCaptureAck.rejected(transferID: transferID, error: .clientFailure(reason: reason))
             case .cancel:
-                let reason = message.reason ?? "Blob export was cancelled."
+                let reason = message.reason ?? "cancelled by client"
                 authorizations.removeValue(forKey: transferID)
                 transferStats.removeValue(forKey: transferID)
                 await writer.cancel(transferID: transferID, reason: reason)
-                return BlobCaptureAck.rejected(transferID: transferID, error: .clientFailure(reason: reason))
+                return BlobCaptureAck(transferID: transferID, accepted: true)
             }
         } catch let error as BlobExportError {
             if !transferID.isEmpty {

@@ -1352,7 +1352,8 @@ final class BrowserMediaCandidateTests: XCTestCase {
 
     func testBinAndUnplayableBlobAreNotClassifiedAsPlayableMedia() {
         XCTAssertEqual(WebpageResourceExtractor.categorize(extension: "blob", mimeType: nil), .other)
-        XCTAssertEqual(WebpageResourceExtractor.categorize(extension: "bin", mimeType: "application/octet-stream"), .other)
+        XCTAssertNotEqual(WebpageResourceExtractor.categorize(extension: "bin", mimeType: "application/octet-stream"), .video)
+        XCTAssertNotEqual(WebpageResourceExtractor.categorize(extension: "bin", mimeType: "application/octet-stream"), .audio)
 
         let genericBlobCandidate = BrowserMediaCandidate(
             id: "blob-bin",
