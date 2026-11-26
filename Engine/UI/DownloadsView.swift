@@ -2414,14 +2414,14 @@ public struct QueueSummaryHeader: View {
                 }
             }
         }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 6)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .padding(4)
+        .background(.ultraThinMaterial, in: Capsule())
         .overlay(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .stroke(Color.primary.opacity(0.06), lineWidth: 1)
+            Capsule()
+                .stroke(Color.primary.opacity(0.14), lineWidth: 0.75)
         )
-        .padding(.horizontal)
+        .shadow(color: Color.black.opacity(0.12), radius: 10, x: 0, y: 4)
+        .padding(.horizontal, 14)
     }
 }
 
@@ -2450,33 +2450,26 @@ public struct HeaderStat: View {
         Button {
             action?()
         } label: {
-            VStack(spacing: 2) {
+            VStack(spacing: 1) {
                 Text("\(count)")
-                    .font(.headline.weight(isSelected ? .bold : .semibold))
-                    .foregroundColor(color)
+                    .font(.subheadline.weight(isSelected ? .bold : .semibold))
+                    .foregroundColor(isSelected ? color : .primary)
                     .lineLimit(1)
                     .minimumScaleFactor(0.75)
 
                 Text(label)
-                    .font(.caption2.weight(isSelected ? .semibold : .regular))
-                    .foregroundColor(isSelected ? .primary : .secondary)
+                    .font(.system(size: 10, weight: isSelected ? .bold : .medium))
+                    .foregroundColor(isSelected ? color : .secondary)
                     .lineLimit(1)
                     .minimumScaleFactor(0.75)
-
-                // Subtle underline indicator
-                Capsule()
-                    .fill(isSelected ? color : Color.clear)
-                    .frame(height: 2.5)
-                    .padding(.horizontal, 4)
-                    .padding(.top, 2)
             }
-            .frame(maxWidth: .infinity, minHeight: 44)
+            .frame(maxWidth: .infinity, minHeight: 40)
             .padding(.vertical, 4)
             .background(
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(isSelected ? color.opacity(0.12) : Color.clear)
+                Capsule()
+                    .fill(isSelected ? color.opacity(0.16) : Color.clear)
             )
-            .contentShape(Rectangle())
+            .contentShape(Capsule())
         }
         .buttonStyle(.plain)
         .accessibilityElement(children: .combine)
