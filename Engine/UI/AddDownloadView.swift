@@ -225,8 +225,10 @@ public struct AddDownloadView: View {
                         }
                     }
                 }
+                .modernStackNavigation()
             }
         }
+        .modernStackNavigation()
     }
 
     private func applyPrefilledURL() {

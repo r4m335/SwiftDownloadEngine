@@ -238,4 +238,32 @@ public struct DownloadManagerAppView: View {
         }
     }
 }
+
+public extension View {
+    /// Applies `.navigationViewStyle(.stack)` on iOS so sheets and root views never split unexpectedly.
+    @ViewBuilder
+    func modernStackNavigation() -> some View {
+        #if os(iOS)
+        self.navigationViewStyle(.stack)
+        #else
+        self
+        #endif
+    }
+
+    /// Uses native iOS 16+ medium/large sheet detents with a visible drag indicator while preserving iOS 15 compatibility.
+    @ViewBuilder
+    func modernSheetDetents() -> some View {
+        #if os(iOS)
+        if #available(iOS 16.0, *) {
+            self
+                .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.visible)
+        } else {
+            self
+        }
+        #else
+        self
+        #endif
+    }
+}
 #endif

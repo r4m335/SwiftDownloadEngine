@@ -458,6 +458,7 @@ public struct DownloadsView: View {
                 Text("Remove \(selectedIDs.count) selected item\(selectedIDs.count == 1 ? "" : "s") from the queue. Choose whether to also delete the downloaded files from disk.")
             }
         }
+        .modernStackNavigation()
     }
 
     // MARK: - Toolbar Construction (macOS 12 / iOS 15 Compatibility)

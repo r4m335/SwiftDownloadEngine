@@ -195,6 +195,7 @@ public struct SettingsView: View {
             #endif
             .navigationTitle("Settings")
         }
+        .modernStackNavigation()
     }
 
     private var notificationStatusLabel: String {

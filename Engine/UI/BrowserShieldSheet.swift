@@ -168,6 +168,7 @@ public struct BrowserShieldSheet: View {
                 BrowserClearDataSheet(viewModel: viewModel)
             }
         }
+        .modernStackNavigation()
     }
 
     private func iconForPermission(_ type: BrowserPermissionType) -> String {

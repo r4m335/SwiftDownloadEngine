@@ -72,7 +72,7 @@ public struct BrowserReaderView: View {
                     }
                     .popover(isPresented: $isShowingAppearanceMenu) {
                         appearancePopoverContent
-                            .frame(width: 300)
+                            .frame(minWidth: 260, maxWidth: 340)
                             .padding()
                     }
 

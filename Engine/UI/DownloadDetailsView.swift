@@ -122,6 +122,8 @@ public struct DownloadDetailsView: View {
             NavigationView {
                 addTrackerForm(for: transfer)
             }
+            .modernStackNavigation()
+            .modernSheetDetents()
             #else
             addTrackerForm(for: transfer)
             #endif

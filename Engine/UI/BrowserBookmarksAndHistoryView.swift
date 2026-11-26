@@ -88,10 +88,6 @@ public struct BrowserBookmarksAndHistoryView: View {
                 .padding(.horizontal, 16)
                 .padding(.vertical, 8)
 
-                searchField
-
-                Divider()
-
                 if selectedMode == .bookmarks {
                     bookmarksView
                 } else {
@@ -102,6 +98,7 @@ public struct BrowserBookmarksAndHistoryView: View {
             #if canImport(UIKit)
             .navigationBarTitleDisplayMode(.inline)
             #endif
+            .searchable(text: $searchQuery, prompt: selectedMode == .bookmarks ? "Search bookmarks" : "Search history")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Done") {
@@ -769,6 +766,7 @@ public struct BrowserBookmarksAndHistoryView: View {
                 }
             }
         }
+        .modernStackNavigation()
     }
 
     @ViewBuilder
@@ -810,6 +808,7 @@ public struct BrowserBookmarksAndHistoryView: View {
                 }
             }
         }
+        .modernStackNavigation()
     }
 
     @ViewBuilder
@@ -870,6 +869,7 @@ public struct BrowserBookmarksAndHistoryView: View {
                 }
             }
         }
+        .modernStackNavigation()
     }
 }
 #endif

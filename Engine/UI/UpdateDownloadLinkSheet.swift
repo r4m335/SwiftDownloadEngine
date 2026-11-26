@@ -151,22 +151,22 @@ public struct UpdateDownloadLinkSheet: View {
                     }
                 }
             }
-            .alert(isPresented: Binding(
+            .alert("Resume Unavailable", isPresented: Binding(
                 get: { restartConfirmationReason != nil },
                 set: { if !$0 { restartConfirmationReason = nil } }
             )) {
-                Alert(
-                    title: Text("Resume Unavailable"),
-                    message: Text(restartConfirmationReason ?? "Server does not support range requests. Restart from byte 0?"),
-                    primaryButton: .destructive(Text("Restart from 0")) {
-                        Task {
-                            await executeUpdate(forceRestart: true)
-                        }
-                    },
-                    secondaryButton: .cancel()
-                )
+                Button("Restart from 0", role: .destructive) {
+                    Task {
+                        await executeUpdate(forceRestart: true)
+                    }
+                }
+                Button("Cancel", role: .cancel) { }
+            } message: {
+                Text(restartConfirmationReason ?? "Server does not support range requests. Restart from byte 0?")
             }
         }
+        .modernStackNavigation()
+        .modernSheetDetents()
     }
 
     private func executeUpdate(forceRestart: Bool) async {

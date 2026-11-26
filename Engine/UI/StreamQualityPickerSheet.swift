@@ -38,6 +38,8 @@ public struct StreamQualityPickerSheet: View {
                 }
             }
         }
+        .modernStackNavigation()
+        .modernSheetDetents()
     }
 
     // MARK: - Subviews

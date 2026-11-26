@@ -5728,6 +5728,7 @@ public struct BrowserTabSwitcherView: View {
                 }
             }
         }
+        .modernStackNavigation()
     }
 
     private func groupSection(_ group: BrowserTabGroup) -> some View {
@@ -6439,6 +6440,8 @@ public struct BrowserMagnetConfirmationSheet: View {
                 }
             }
         }
+        .modernStackNavigation()
+        .modernSheetDetents()
     }
 
     private func submitMagnet() {

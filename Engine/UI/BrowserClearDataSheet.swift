@@ -106,6 +106,8 @@ public struct BrowserClearDataSheet: View {
                 Text("This will permanently remove the selected browsing data for the '\(timeRange.rawValue)' time range. This action cannot be undone.")
             }
         }
+        .modernStackNavigation()
+        .modernSheetDetents()
     }
 
     private var isSelectionEmpty: Bool {

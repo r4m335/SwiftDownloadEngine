@@ -482,15 +482,13 @@ public struct BrowserResourceInspectorSheet: View {
                 viewModel.expandStreamingManifests()
             }
             .lidPlayerPresentation(source: $activePlaybackSource)
-            .alert(isPresented: Binding<Bool>(
+            .alert("Playback Notice", isPresented: Binding<Bool>(
                 get: { drmWarningAlert != nil },
                 set: { if !$0 { drmWarningAlert = nil } }
             )) {
-                Alert(
-                    title: Text("Playback Notice"),
-                    message: Text(drmWarningAlert ?? "This stream cannot be played directly."),
-                    dismissButton: .default(Text("OK"))
-                )
+                Button("OK", role: .cancel) { }
+            } message: {
+                Text(drmWarningAlert ?? "This stream cannot be played directly.")
             }
             .onChange(of: sortOption) { newOption in
                 viewModel.resourceSortOption = newOption
@@ -517,6 +515,7 @@ public struct BrowserResourceInspectorSheet: View {
                 }
             }
         }
+        .modernStackNavigation()
     }
 
     // MARK: - Explicit Sort & Grouping Controls
