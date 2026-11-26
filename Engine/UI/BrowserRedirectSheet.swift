@@ -15,37 +15,38 @@ public struct BrowserRedirectSheet: View {
 
     public var body: some View {
         let accentColor: Color = prompt.isSuspicious ? .orange : .blue
-        let content = VStack(spacing: 18) {
+        let content = VStack(spacing: 14) {
             // Top Header Badge & Title
-            VStack(spacing: 10) {
+            VStack(spacing: 6) {
                 ZStack {
                     Circle()
                         .fill(accentColor.opacity(0.14))
-                        .frame(width: 60, height: 60)
+                        .frame(width: 48, height: 48)
                     Image(systemName: prompt.isSuspicious ? "exclamationmark.shield.fill" : "arrow.up.right.square.fill")
-                        .font(.system(size: 28, weight: .semibold))
+                        .font(.system(size: 22, weight: .semibold))
                         .foregroundColor(accentColor)
                 }
-                .padding(.top, 20)
+                .padding(.top, 12)
 
                 Text(prompt.isSuspicious ? "Suspicious Redirect" : "Open External Page?")
-                    .font(.title3.bold())
+                    .font(.headline.bold())
                     .multilineTextAlignment(.center)
 
                 Text(prompt.reason.rawValue)
-                    .font(.subheadline)
+                    .font(.footnote)
                     .foregroundColor(.secondary)
                     .multilineTextAlignment(.center)
+                    .lineLimit(2)
                     .padding(.horizontal, 20)
             }
 
             // Origin -> Destination Flow Card
-            VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 10) {
                 HStack(spacing: 10) {
                     Image(systemName: "globe")
-                        .font(.system(size: 13, weight: .semibold))
+                        .font(.system(size: 12, weight: .semibold))
                         .foregroundColor(.secondary)
-                        .frame(width: 24, height: 24)
+                        .frame(width: 22, height: 22)
                         .background(Color.secondary.opacity(0.12), in: Circle())
 
                     VStack(alignment: .leading, spacing: 1) {
@@ -63,9 +64,9 @@ public struct BrowserRedirectSheet: View {
 
                 HStack(spacing: 10) {
                     Image(systemName: "arrow.down")
-                        .font(.system(size: 11, weight: .bold))
+                        .font(.system(size: 10, weight: .bold))
                         .foregroundColor(accentColor)
-                        .frame(width: 24)
+                        .frame(width: 22)
                     Rectangle()
                         .fill(Color.secondary.opacity(0.2))
                         .frame(height: 1)
@@ -73,18 +74,18 @@ public struct BrowserRedirectSheet: View {
 
                 HStack(alignment: .top, spacing: 10) {
                     Image(systemName: prompt.destinationURL.scheme?.lowercased() == "https" ? "lock.fill" : "exclamationmark.triangle.fill")
-                        .font(.system(size: 13, weight: .semibold))
+                        .font(.system(size: 12, weight: .semibold))
                         .foregroundColor(prompt.destinationURL.scheme?.lowercased() == "https" ? .green : .orange)
-                        .frame(width: 24, height: 24)
+                        .frame(width: 22, height: 22)
                         .background((prompt.destinationURL.scheme?.lowercased() == "https" ? Color.green : Color.orange).opacity(0.14), in: Circle())
 
-                    VStack(alignment: .leading, spacing: 3) {
+                    VStack(alignment: .leading, spacing: 2) {
                         Text("Destination")
                             .font(.caption2.weight(.semibold))
                             .foregroundColor(.secondary)
                             .textCase(.uppercase)
                         Text(prompt.destinationHost)
-                            .font(.system(.callout, design: .monospaced).weight(.semibold))
+                            .font(.system(.subheadline, design: .monospaced).weight(.semibold))
                             .foregroundColor(.primary)
                             .lineLimit(1)
                         Text(prompt.destinationURL.absoluteString)
@@ -96,7 +97,7 @@ public struct BrowserRedirectSheet: View {
                     Spacer()
                 }
             }
-            .padding(16)
+            .padding(14)
             .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: 16, style: .continuous)
@@ -104,20 +105,18 @@ public struct BrowserRedirectSheet: View {
             )
             .padding(.horizontal, 20)
 
-            Spacer(minLength: 8)
-
             // Action Buttons
-            VStack(spacing: 10) {
+            VStack(spacing: 8) {
                 Button {
                     viewModel.confirmRedirectInNewTab(prompt)
                     presentationMode.wrappedValue.dismiss()
                 } label: {
                     Label("Open in New Tab", systemImage: "plus.square.on.square")
-                        .font(.headline)
+                        .font(.subheadline.weight(.bold))
                         .foregroundColor(.white)
                         .frame(maxWidth: .infinity)
-                        .frame(height: 50)
-                        .background(accentColor, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                        .frame(height: 46)
+                        .background(accentColor, in: RoundedRectangle(cornerRadius: 13, style: .continuous))
                 }
                 .buttonStyle(.plain)
 
@@ -129,8 +128,8 @@ public struct BrowserRedirectSheet: View {
                         .font(.subheadline.weight(.semibold))
                         .foregroundColor(.primary)
                         .frame(maxWidth: .infinity)
-                        .frame(height: 46)
-                        .background(Color.secondary.opacity(0.14), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                        .frame(height: 44)
+                        .background(Color.secondary.opacity(0.14), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
                 }
                 .buttonStyle(.plain)
 
@@ -142,13 +141,14 @@ public struct BrowserRedirectSheet: View {
                         .font(.subheadline.weight(.medium))
                         .foregroundColor(.secondary)
                         .frame(maxWidth: .infinity)
-                        .frame(height: 38)
+                        .frame(height: 34)
                 }
                 .buttonStyle(.plain)
             }
             .padding(.horizontal, 20)
-            .padding(.bottom, 16)
+            .padding(.bottom, 12)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         #if canImport(UIKit)
         .background(Color(UIColor.systemGroupedBackground).ignoresSafeArea())
         #endif
@@ -156,7 +156,7 @@ public struct BrowserRedirectSheet: View {
         #if os(iOS)
         if #available(iOS 16.0, *) {
             content
-                .presentationDetents([.medium, .large])
+                .presentationDetents([.fraction(0.68), .large])
                 .presentationDragIndicator(.visible)
         } else {
             content
