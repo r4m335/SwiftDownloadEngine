@@ -2971,7 +2971,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
     public func expandStreamingManifests(in resources: [WebpageResource]? = nil, tabID: UUID? = nil) {
         let targets = resources ?? discoveredResources
         let targetTabID = tabID ?? activeTabID
-        let pageTitle = targetTabID.flatMap { tabManager.tab(withID: $0)?.title } ?? currentTitle
+        let pageTitle = targetTabID.flatMap { tabManager.tab(withID: $0)?.title } ?? self.pageTitle
         discoveryCoordinator.discoveredResources = discoveredResources
         discoveryCoordinator.variantStreamItems = variantStreamItems
         discoveryCoordinator.selectedResourceIDs = selectedResourceIDs
@@ -7033,7 +7033,6 @@ public struct BrowserDownloadSheet: View {
                 manifestText: res?.manifestText ?? cand?.cachedManifestText ?? "",
                 url: targetURL,
                 mimeType: res?.mimeType ?? cand?.mimeType,
-                durationSeconds: res?.duration,
                 requestContext: res?.requestContext ?? cand?.requestContext
             )
             let matched: StreamQualityOption? = {
@@ -7048,7 +7047,7 @@ public struct BrowserDownloadSheet: View {
                 }
                 return options.first
             }()
-            if let bytes = matched?.estimatedSizeBytes ?? options.compactMap(\.estimatedSizeBytes).first, bytes > 0 {
+            if let bytes = matched?.estimatedSizeBytes ?? options.compactMap({ $0.estimatedSizeBytes }).first, bytes > 0 {
                 estimatedStreamBytes = bytes
             }
         } catch {
