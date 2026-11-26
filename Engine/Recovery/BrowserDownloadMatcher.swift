@@ -98,7 +98,7 @@ public struct BrowserDownloadMatcher: Sendable {
                let tHost = transferURL.host?.lowercased(),
                let rHost = resource.url.host?.lowercased(),
                tHost == rHost,
-               (transfer.state == .failed || !isGenericMediaStem(resource.suggestedFilename)),
+               (dotForState(transfer.state) == .failed || !isGenericMediaStem(resource.suggestedFilename)),
                matchesHLSRendition(resource: resource, transfer: transfer) {
                 let dot = dotForState(transfer.state)
                 return DownloadMatchResult(transferID: transfer.id, statusDot: dot, confidence: .renditionAndFilename)
