@@ -156,8 +156,9 @@ public struct LIDPlayerLibraryView: View {
                 }
                 .navigationTitle("Media Library")
                 #if os(iOS)
-                .navigationBarTitleDisplayMode(.inline)
+                .navigationBarTitleDisplayMode(onDismiss == nil ? .large : .inline)
                 #endif
+                .searchable(text: $searchText, prompt: "Search videos & audio...")
                 .toolbar {
                     ToolbarItem(placement: .cancellationAction) {
                         if let dismiss = onDismiss {
@@ -165,10 +166,24 @@ public struct LIDPlayerLibraryView: View {
                         }
                     }
                     ToolbarItem(placement: .primaryAction) {
-                        Button {
-                            Task { await refreshLibrary() }
-                        } label: {
-                            Image(systemName: "arrow.clockwise")
+                        HStack(spacing: 12) {
+                            if selectedSection == .all {
+                                Button {
+                                    withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                                        isGridView.toggle()
+                                    }
+                                } label: {
+                                    Image(systemName: isGridView ? "list.bullet" : "square.grid.2x2")
+                                        .font(.system(size: 15, weight: .semibold))
+                                }
+                                .accessibilityLabel(isGridView ? "Switch to List View" : "Switch to Grid View")
+                            }
+
+                            Button {
+                                Task { await refreshLibrary() }
+                            } label: {
+                                Image(systemName: "arrow.clockwise")
+                            }
                         }
                     }
                 }
@@ -176,6 +191,9 @@ public struct LIDPlayerLibraryView: View {
                     await refreshLibrary()
                 }
             }
+            #if os(iOS)
+            .navigationViewStyle(.stack)
+            #endif
         )
     }
 
@@ -278,39 +296,32 @@ public struct LIDPlayerLibraryView: View {
     private var allMediaFilterBar: some View {
         HStack(spacing: 8) {
             ForEach([LIDMediaType.all, .video, .audio], id: \.self) { type in
+                let isSelected = mediaFilter == type
                 Button {
-                    withAnimation(.spring(response: 0.25, dampingFraction: 0.8)) {
+                    withAnimation(.spring(response: 0.25, dampingFraction: 0.82)) {
                         mediaFilter = type
                     }
                 } label: {
                     Text(type.rawValue)
-                        .font(.caption.bold())
-                        .padding(.horizontal, 12)
+                        .font(.caption.weight(.semibold))
+                        .padding(.horizontal, 14)
                         .padding(.vertical, 6)
-                        .background(mediaFilter == type ? Color.blue : Color.secondary.opacity(0.15))
-                        .foregroundColor(mediaFilter == type ? .white : .primary)
-                        .cornerRadius(16)
+                        .background(
+                            Capsule()
+                                .fill(isSelected ? Color.blue.opacity(0.16) : Color.secondary.opacity(0.1))
+                        )
+                        .foregroundColor(isSelected ? .blue : .secondary)
+                        .overlay(
+                            Capsule()
+                                .stroke(isSelected ? Color.blue.opacity(0.35) : Color.clear, lineWidth: 1)
+                        )
                 }
                 .buttonStyle(.plain)
             }
             Spacer()
-
-            Button {
-                withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
-                    isGridView.toggle()
-                }
-            } label: {
-                Image(systemName: isGridView ? "list.bullet" : "square.grid.2x2")
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundColor(.primary)
-                    .padding(7)
-                    .background(.ultraThinMaterial, in: Circle())
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel(isGridView ? "Switch to List View" : "Switch to Grid View")
         }
         .padding(.horizontal)
-        .padding(.bottom, 6)
+        .padding(.bottom, 8)
     }
 
     // MARK: - Sections
@@ -620,58 +631,74 @@ public struct LIDPlayerLibraryView: View {
 
     private func mediaRow(for item: LIDMediaItem, showResumeBadge: Bool = false) -> some View {
         HStack(spacing: 12) {
-            // Media Thumbnail / Icon
-            LIDMediaThumbnailView(url: item.url, mediaType: item.mediaType)
-                .frame(width: 48, height: 48)
-                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            // Widescreen Media Thumbnail with progress overlay
+            ZStack(alignment: .bottom) {
+                LIDMediaThumbnailView(url: item.url, mediaType: item.mediaType)
+                    .frame(width: 76, height: 48)
+                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .stroke(Color.primary.opacity(0.08), lineWidth: 0.8)
+                    )
+
+                if item.progressFraction > 0.02 && !item.isCompleted {
+                    GeometryReader { geo in
+                        VStack {
+                            Spacer()
+                            ZStack(alignment: .leading) {
+                                Rectangle()
+                                    .fill(Color.black.opacity(0.45))
+                                    .frame(height: 3)
+                                Rectangle()
+                                    .fill(Color.blue)
+                                    .frame(width: geo.size.width * min(1, max(0, item.progressFraction)), height: 3)
+                            }
+                        }
+                    }
+                    .frame(width: 76, height: 48)
+                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                }
+            }
 
             // Title & Details
             VStack(alignment: .leading, spacing: 4) {
                 Text(item.title)
-                    .font(.subheadline.bold())
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundColor(.primary)
                     .lineLimit(1)
 
                 HStack(spacing: 6) {
+                    Text(item.url.pathExtension.uppercased())
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundColor(.secondary)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color.secondary.opacity(0.12), in: Capsule())
+
                     Text(ByteCountFormatter.string(fromByteCount: item.fileSize, countStyle: .file))
                         .font(.caption2)
                         .foregroundColor(.secondary)
 
-                    Text("•")
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
-
-                    Text(item.url.pathExtension.uppercased())
-                        .font(.caption2.bold())
-                        .foregroundColor(.secondary)
-
                     if showResumeBadge && item.lastPositionSeconds > 0 {
-                        Text("•")
-                            .font(.caption2)
-                            .foregroundColor(.secondary)
-
-                        Text("Resume at \(formatTime(item.lastPositionSeconds))")
-                            .font(.caption2.bold())
+                        Text("Resume \(formatTime(item.lastPositionSeconds))")
+                            .font(.system(size: 10, weight: .semibold))
                             .foregroundColor(.blue)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Color.blue.opacity(0.12), in: Capsule())
                     }
-                }
-
-                if item.progressFraction > 0.02 && !item.isCompleted {
-                    ProgressView(value: item.progressFraction)
-                        .frame(height: 3)
-                        .accentColor(.blue)
-                        .padding(.top, 2)
                 }
             }
 
-            Spacer()
+            Spacer(minLength: 4)
 
             // Favorite Button
             Button {
                 libraryStore.toggleFavorite(for: item)
             } label: {
                 Image(systemName: item.isFavorite ? "star.fill" : "star")
-                    .font(.system(size: 16))
-                    .foregroundColor(item.isFavorite ? .yellow : .gray.opacity(0.5))
+                    .font(.system(size: 15))
+                    .foregroundColor(item.isFavorite ? .yellow : .secondary.opacity(0.45))
             }
             .buttonStyle(BorderlessButtonStyle())
 
@@ -680,16 +707,17 @@ public struct LIDPlayerLibraryView: View {
                 mediaContextMenuItems(for: item)
             } label: {
                 Image(systemName: "ellipsis")
-                    .font(.system(size: 18))
+                    .font(.system(size: 16, weight: .semibold))
                     .foregroundColor(.secondary)
-                    .padding(8)
+                    .frame(width: 28, height: 28)
+                    .contentShape(Rectangle())
             }
         }
         .contentShape(Rectangle())
         .onTapGesture {
             playMedia(item)
         }
-        .padding(.vertical, 4)
+        .padding(.vertical, 5)
     }
 
     // MARK: - Playlist Detail View
@@ -978,18 +1006,23 @@ public struct LIDPlayerLibraryView: View {
     // MARK: - Empty State View
 
     private func emptyStateView(icon: String, title: String, message: String) -> some View {
-        VStack(spacing: 12) {
+        VStack(spacing: 14) {
             Spacer()
-            Image(systemName: icon)
-                .font(.system(size: 48))
-                .foregroundColor(.secondary)
+            ZStack {
+                Circle()
+                    .fill(Color.blue.opacity(0.12))
+                    .frame(width: 72, height: 72)
+                Image(systemName: icon)
+                    .font(.system(size: 30, weight: .semibold))
+                    .foregroundColor(.blue)
+            }
             Text(title)
-                .font(.headline)
+                .font(.title3.bold())
             Text(message)
                 .font(.subheadline)
                 .foregroundColor(.secondary)
                 .multilineTextAlignment(.center)
-                .padding(.horizontal, 32)
+                .padding(.horizontal, 36)
             Spacer()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
