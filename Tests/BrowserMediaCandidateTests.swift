@@ -1386,9 +1386,9 @@ final class BrowserMediaCandidateTests: XCTestCase {
             mimeType: "video/mp4",
             isSupported: true
         )
-        let blobRow = BrowserResourceItemRow(
+        let blobRow = ResourceRowView(
             resource: blobVideoResource,
-            onDownload: {},
+            onSelect: {},
             onPreview: {}
         )
         XCTAssertFalse(blobRow.isPlayable)
@@ -1402,9 +1402,9 @@ final class BrowserMediaCandidateTests: XCTestCase {
             mimeType: "application/octet-stream",
             isSupported: true
         )
-        let binRow = BrowserResourceItemRow(
+        let binRow = ResourceRowView(
             resource: binResource,
-            onDownload: {},
+            onSelect: {},
             onPreview: {}
         )
         XCTAssertFalse(binRow.isPlayable)
