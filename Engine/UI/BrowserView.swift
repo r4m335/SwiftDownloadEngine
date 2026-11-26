@@ -5445,22 +5445,6 @@ public struct BrowserHomeView: View {
                             .foregroundColor(.primary)
 
                         Spacer()
-
-                        Button {
-                            isShowingAddSheet = true
-                        } label: {
-                            HStack(spacing: 4) {
-                                Image(systemName: "plus")
-                                Text("Add")
-                            }
-                            .font(.caption.weight(.semibold))
-                            .foregroundColor(.blue)
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 5)
-                            .background(.ultraThinMaterial, in: Capsule())
-                            .overlay(Capsule().stroke(Color.blue.opacity(0.2), lineWidth: 1))
-                        }
-                        .buttonStyle(.plain)
                     }
                     .padding(.horizontal, 16)
 

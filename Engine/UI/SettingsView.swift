@@ -20,33 +20,6 @@ public struct SettingsView: View {
     public var body: some View {
         NavigationView {
             List {
-                // Quick Overview Summary Card
-                Section {
-                    HStack(spacing: 16) {
-                        overviewStat(
-                            value: "\(viewModel.statusCounts.active)",
-                            label: "Active",
-                            icon: "arrow.down.circle.fill",
-                            color: .blue
-                        )
-                        Divider()
-                        overviewStat(
-                            value: "\(viewModel.statusCounts.completed)",
-                            label: "Completed",
-                            icon: "checkmark.circle.fill",
-                            color: .green
-                        )
-                        Divider()
-                        overviewStat(
-                            value: "\(viewModel.statusCounts.paused)",
-                            label: "Paused",
-                            icon: "pause.circle.fill",
-                            color: .orange
-                        )
-                    }
-                    .padding(.vertical, 6)
-                }
-
                 Section(header: Text("Preferences Categories")) {
                     // Category 1: Downloader
                     NavigationLink {
@@ -212,24 +185,6 @@ public struct SettingsView: View {
         case .denied: return .red
         case .notDetermined: return .orange
         }
-    }
-
-    @ViewBuilder
-    private func overviewStat(value: String, label: String, icon: String, color: Color) -> some View {
-        VStack(spacing: 4) {
-            HStack(spacing: 4) {
-                Image(systemName: icon)
-                    .font(.caption)
-                    .foregroundColor(color)
-                Text(value)
-                    .font(.headline.monospacedDigit().bold())
-                    .foregroundColor(.primary)
-            }
-            Text(label)
-                .font(.caption2)
-                .foregroundColor(.secondary)
-        }
-        .frame(maxWidth: .infinity)
     }
 }
 
