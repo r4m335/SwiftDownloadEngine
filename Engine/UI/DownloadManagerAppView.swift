@@ -53,49 +53,48 @@ public struct DownloadManagerAppView: View {
     }
 
     public var body: some View {
-        VStack(spacing: 0) {
-            ZStack {
-                if visitedTabs.contains(0) || viewModel.selectedTab == 0 {
-                    DownloadsView(viewModel: viewModel)
-                        .opacity(viewModel.selectedTab == 0 ? 1 : 0)
-                        .allowsHitTesting(viewModel.selectedTab == 0)
-                        .zIndex(viewModel.selectedTab == 0 ? 1 : 0)
-                }
-
-                if visitedTabs.contains(1) || viewModel.selectedTab == 1 {
-                    BrowserView(viewModel: viewModel, onDownloadInitiated: {
-                        viewModel.selectedTab = 0
-                    }, onOpenAddDownload: { url in
-                        viewModel.addDownloadPrefilledURL = url.absoluteString
-                        viewModel.showAddDownloadSheet = true
-                        viewModel.selectedTab = 0
-                    }, onOpenDownloads: {
-                        viewModel.selectedTab = 0
-                    })
-                    .opacity(viewModel.selectedTab == 1 ? 1 : 0)
-                    .allowsHitTesting(viewModel.selectedTab == 1)
-                    .zIndex(viewModel.selectedTab == 1 ? 1 : 0)
-                }
-
-                if visitedTabs.contains(2) || viewModel.selectedTab == 2 {
-                    LIDPlayerLibraryView(
-                        baseDirectory: viewModel.downloadsDirectoryURL,
-                        knownTransfers: viewModel.unifiedTransfers
-                    )
-                    .opacity(viewModel.selectedTab == 2 ? 1 : 0)
-                    .allowsHitTesting(viewModel.selectedTab == 2)
-                    .zIndex(viewModel.selectedTab == 2 ? 1 : 0)
-                }
-
-                if visitedTabs.contains(3) || viewModel.selectedTab == 3 {
-                    SettingsView(viewModel: viewModel)
-                        .opacity(viewModel.selectedTab == 3 ? 1 : 0)
-                        .allowsHitTesting(viewModel.selectedTab == 3)
-                        .zIndex(viewModel.selectedTab == 3 ? 1 : 0)
-                }
+        ZStack {
+            if visitedTabs.contains(0) || viewModel.selectedTab == 0 {
+                DownloadsView(viewModel: viewModel)
+                    .opacity(viewModel.selectedTab == 0 ? 1 : 0)
+                    .allowsHitTesting(viewModel.selectedTab == 0)
+                    .zIndex(viewModel.selectedTab == 0 ? 1 : 0)
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
 
+            if visitedTabs.contains(1) || viewModel.selectedTab == 1 {
+                BrowserView(viewModel: viewModel, onDownloadInitiated: {
+                    viewModel.selectedTab = 0
+                }, onOpenAddDownload: { url in
+                    viewModel.addDownloadPrefilledURL = url.absoluteString
+                    viewModel.showAddDownloadSheet = true
+                    viewModel.selectedTab = 0
+                }, onOpenDownloads: {
+                    viewModel.selectedTab = 0
+                })
+                .opacity(viewModel.selectedTab == 1 ? 1 : 0)
+                .allowsHitTesting(viewModel.selectedTab == 1)
+                .zIndex(viewModel.selectedTab == 1 ? 1 : 0)
+            }
+
+            if visitedTabs.contains(2) || viewModel.selectedTab == 2 {
+                LIDPlayerLibraryView(
+                    baseDirectory: viewModel.downloadsDirectoryURL,
+                    knownTransfers: viewModel.unifiedTransfers
+                )
+                .opacity(viewModel.selectedTab == 2 ? 1 : 0)
+                .allowsHitTesting(viewModel.selectedTab == 2)
+                .zIndex(viewModel.selectedTab == 2 ? 1 : 0)
+            }
+
+            if visitedTabs.contains(3) || viewModel.selectedTab == 3 {
+                SettingsView(viewModel: viewModel)
+                    .opacity(viewModel.selectedTab == 3 ? 1 : 0)
+                    .allowsHitTesting(viewModel.selectedTab == 3)
+                    .zIndex(viewModel.selectedTab == 3 ? 1 : 0)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .safeAreaInset(edge: .bottom, spacing: 0) {
             modernBottomTabBar
         }
         .onAppear {
@@ -159,60 +158,59 @@ public struct DownloadManagerAppView: View {
     }
 
     private var modernBottomTabBar: some View {
-        VStack(spacing: 0) {
-            Divider()
-                .opacity(0.6)
-
-            HStack(spacing: 4) {
-                ForEach(tabItems, id: \.index) { item in
-                    let isSelected = viewModel.selectedTab == item.index
-                    Button {
-                        handleTabTap(item.index)
-                    } label: {
-                        VStack(spacing: 3) {
-                            ZStack {
-                                if isSelected {
-                                    Capsule()
-                                        .fill(Color.accentColor.opacity(0.14))
-                                        .frame(width: 54, height: 30)
-                                        .matchedGeometryEffect(id: "activeTabPill", in: tabPillNamespace)
+        HStack(spacing: 4) {
+            ForEach(tabItems, id: \.index) { item in
+                let isSelected = viewModel.selectedTab == item.index
+                Button {
+                    handleTabTap(item.index)
+                } label: {
+                    VStack(spacing: 3) {
+                        Image(systemName: isSelected ? item.activeIcon : item.icon)
+                            .font(.system(size: 19, weight: isSelected ? .semibold : .medium))
+                            .foregroundColor(isSelected ? .accentColor : .primary)
+                            .frame(height: 22)
+                            .overlay(alignment: .topTrailing) {
+                                if item.badgeCount > 0 {
+                                    Text(item.badgeCount > 99 ? "99+" : "\(item.badgeCount)")
+                                        .font(.system(size: 9, weight: .bold))
+                                        .foregroundColor(.white)
+                                        .padding(.horizontal, item.badgeCount > 9 ? 5 : 0)
+                                        .frame(minWidth: 16, minHeight: 16)
+                                        .background(Capsule().fill(item.badgeColor))
+                                        .offset(x: 11, y: -4)
                                 }
-
-                                Image(systemName: isSelected ? item.activeIcon : item.icon)
-                                    .font(.system(size: 19, weight: isSelected ? .semibold : .regular))
-                                    .foregroundColor(isSelected ? .accentColor : .secondary)
-                                    .frame(width: 54, height: 30)
-                                    .overlay(alignment: .topTrailing) {
-                                        if item.badgeCount > 0 {
-                                            Text(item.badgeCount > 99 ? "99+" : "\(item.badgeCount)")
-                                                .font(.system(size: 9, weight: .bold))
-                                                .foregroundColor(.white)
-                                                .padding(.horizontal, item.badgeCount > 9 ? 4 : 0)
-                                                .frame(minWidth: 16, minHeight: 16)
-                                                .background(Capsule().fill(item.badgeColor))
-                                                .offset(x: -6, y: 1)
-                                        }
-                                    }
                             }
 
-                            Text(item.title)
-                                .font(.system(size: 10, weight: isSelected ? .bold : .medium))
-                                .foregroundColor(isSelected ? .accentColor : .secondary)
-                                .lineLimit(1)
-                        }
-                        .frame(maxWidth: .infinity)
-                        .padding(.top, 6)
-                        .padding(.bottom, 4)
-                        .contentShape(Rectangle())
+                        Text(item.title)
+                            .font(.system(size: 10, weight: isSelected ? .bold : .semibold))
+                            .foregroundColor(isSelected ? .accentColor : .primary)
+                            .lineLimit(1)
                     }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel(item.badgeCount > 0 ? "\(item.title), \(item.badgeCount)" : item.title)
-                    .accessibilityAddTraits(isSelected ? [.isSelected] : [])
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 8)
+                    .background {
+                        if isSelected {
+                            Capsule()
+                                .fill(Color.primary.opacity(0.09))
+                                .matchedGeometryEffect(id: "activeTabPill", in: tabPillNamespace)
+                        }
+                    }
+                    .contentShape(Capsule())
                 }
+                .buttonStyle(.plain)
+                .accessibilityLabel(item.badgeCount > 0 ? "\(item.title), \(item.badgeCount)" : item.title)
+                .accessibilityAddTraits(isSelected ? [.isSelected] : [])
             }
-            .padding(.horizontal, 8)
-            .background(.ultraThinMaterial)
         }
+        .padding(5)
+        .background(.ultraThinMaterial, in: Capsule())
+        .overlay(
+            Capsule()
+                .stroke(Color.primary.opacity(0.14), lineWidth: 0.75)
+        )
+        .shadow(color: Color.black.opacity(0.22), radius: 14, x: 0, y: 6)
+        .padding(.horizontal, 16)
+        .padding(.bottom, 4)
     }
 
     private func handleTabTap(_ index: Int) {
