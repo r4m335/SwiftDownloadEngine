@@ -666,7 +666,8 @@ public final class BrowserResourceDiscoveryCoordinator: ObservableObject {
     public func expandStreamingManifests(
         in resources: [WebpageResource]? = nil,
         tabID: UUID? = nil,
-        activeTabID: UUID? = nil
+        activeTabID: UUID? = nil,
+        pageTitle: String? = nil
     ) {
         let targetTabID = tabID ?? activeTabID
         let currentResources = (targetTabID == activeTabID)
@@ -686,7 +687,7 @@ public final class BrowserResourceDiscoveryCoordinator: ObservableObject {
             }
             for manifest in targets {
                 if Task.isCancelled { break }
-                let expanded = await self.streamManifestExpander.expand(manifestResource: manifest, tabID: targetTabID)
+                let expanded = await self.streamManifestExpander.expand(manifestResource: manifest, tabID: targetTabID, pageTitle: pageTitle)
                 if Task.isCancelled { break }
                 guard expanded.count > 1 || (expanded.count == 1 && expanded[0].id != manifest.id) else {
                     continue

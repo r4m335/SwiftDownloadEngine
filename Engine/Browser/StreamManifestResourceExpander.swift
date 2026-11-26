@@ -283,7 +283,8 @@ public actor StreamManifestResourceExpander {
     public func expand(
         manifestResource: WebpageResource,
         tabID: UUID? = nil,
-        session: URLSession = .shared
+        session: URLSession = .shared,
+        pageTitle: String? = nil
     ) async -> [WebpageResource] {
         let key = BrowserRequestContext.manifestCacheKey(
             for: manifestResource.url,
@@ -322,7 +323,7 @@ public actor StreamManifestResourceExpander {
         }
 
         let task = Task<ExpansionResult, Never> {
-            await self.performExpansion(manifestResource: manifestResource, session: session)
+            await self.performExpansion(manifestResource: manifestResource, session: session, pageTitle: pageTitle)
         }
         inFlight[key] = task
 
@@ -345,7 +346,8 @@ public actor StreamManifestResourceExpander {
 
     private func performExpansion(
         manifestResource: WebpageResource,
-        session: URLSession
+        session: URLSession,
+        pageTitle: String? = nil
     ) async -> ExpansionResult {
         if Task.isCancelled {
             return Self.emptyResult(for: manifestResource.url)
@@ -507,7 +509,8 @@ public actor StreamManifestResourceExpander {
             let (variants, items) = Self.buildVariants(
                 from: options,
                 masterResource: manifestResource,
-                manifestText: effectiveText
+                manifestText: effectiveText,
+                pageTitle: pageTitle
             )
 
             return ExpansionResult(
@@ -561,6 +564,74 @@ public actor StreamManifestResourceExpander {
         }
     }
 
+    /// Derives a meaningful base filename stem for HLS/DASH streams, avoiding generic names like "stream", "master", or "index".
+    public static func meaningfulBaseStem(
+        for masterResource: WebpageResource,
+        pageTitle: String? = nil
+    ) -> String {
+        let genericStems: Set<String> = [
+            "", "stream", "video", "audio", "media", "master", "playlist",
+            "index", "manifest", "chunklist", "prog_index", "hls", "dash", "download"
+        ]
+        let raw = (masterResource.suggestedFilename as NSString).deletingPathExtension
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if !raw.isEmpty && !genericStems.contains(raw.lowercased()) {
+            return raw
+        }
+
+        // Try meaningful parent path component from URL (e.g. .../big_buck_bunny/master.m3u8)
+        let pathComponents = masterResource.url.pathComponents.dropFirst().dropLast().reversed()
+        let ignoredSegments: Set<String> = [
+            "hls", "dash", "v1", "v2", "v3", "stream", "streams", "media", "video",
+            "videos", "cdn", "api", "live", "vod", "manifest", "manifests", "playlist", "assets"
+        ]
+        for segment in pathComponents {
+            let clean = segment.trimmingCharacters(in: .whitespacesAndNewlines)
+            let lower = clean.lowercased()
+            let isDigitsOrHex = lower.range(of: #"^[0-9a-f\-]{1,36}$"#, options: .regularExpression) != nil
+            if clean.count >= 4, !ignoredSegments.contains(lower), !isDigitsOrHex {
+                return sanitizeFilenameStem(clean)
+            }
+        }
+
+        // Fall back to webpage title (e.g. "Big Buck Bunny - Watch Online")
+        if let title = pageTitle?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !title.isEmpty,
+           title.lowercased() != "new tab",
+           title.lowercased() != "untitled",
+           !title.lowercased().hasPrefix("http://"),
+           !title.lowercased().hasPrefix("https://") {
+            let trimmedTitle: String = {
+                for sep in [" | ", " - ", " — ", " :: "] {
+                    if let range = title.range(of: sep),
+                       title[..<range.lowerBound].count >= 4 {
+                        return String(title[..<range.lowerBound])
+                    }
+                }
+                return title
+            }()
+            let sanitized = sanitizeFilenameStem(trimmedTitle)
+            if !sanitized.isEmpty {
+                return sanitized
+            }
+        }
+
+        return raw.isEmpty ? "video" : raw
+    }
+
+    private static func sanitizeFilenameStem(_ raw: String) -> String {
+        let invalid = CharacterSet(charactersIn: "/\\?%*|\"<>:\n\r\t")
+        let parts = raw.components(separatedBy: invalid)
+        let joined = parts.joined(separator: "_")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: #"\s+"#, with: "_", options: .regularExpression)
+            .replacingOccurrences(of: #"_+"#, with: "_", options: .regularExpression)
+        if joined.count > 60 {
+            return String(joined.prefix(60)).trimmingCharacters(in: CharacterSet(charactersIn: "_-"))
+        }
+        return joined
+    }
+
     /// Converts parsed stream quality options into individual `WebpageResource` candidates
     /// and associated `HLSVariantStreamItem` presentation models.
     public static func buildVariants(
@@ -568,14 +639,11 @@ public actor StreamManifestResourceExpander {
         masterResource: WebpageResource,
         manifestText: String?,
         durationSeconds: Double? = nil,
-        includeIFrameVariants: Bool = false
+        includeIFrameVariants: Bool = false,
+        pageTitle: String? = nil
     ) -> (variants: [WebpageResource], items: [HLSVariantStreamItem]) {
         let effectiveDuration = durationSeconds ?? masterResource.duration
-        let baseStem: String = {
-            let raw = (masterResource.suggestedFilename as NSString).deletingPathExtension
-            let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-            return trimmed.isEmpty ? "video" : trimmed
-        }()
+        let baseStem = meaningfulBaseStem(for: masterResource, pageTitle: pageTitle)
 
         let effectiveText = manifestText ?? masterResource.manifestText ?? ""
         var drmResult = StreamDRMDetector.evaluate(manifestText: effectiveText, url: masterResource.url)
@@ -776,7 +844,8 @@ public actor StreamManifestResourceExpander {
         masterResource: WebpageResource,
         manifestText: String,
         durationSeconds: Double? = nil,
-        includeIFrameVariants: Bool = false
+        includeIFrameVariants: Bool = false,
+        pageTitle: String? = nil
     ) -> (variants: [WebpageResource], items: [HLSVariantStreamItem]) {
         guard let options = try? StreamQualityInspector.inspect(
             manifestText: manifestText,
@@ -854,7 +923,8 @@ public actor StreamManifestResourceExpander {
             masterResource: masterResource,
             manifestText: manifestText,
             durationSeconds: durationSeconds,
-            includeIFrameVariants: includeIFrameVariants
+            includeIFrameVariants: includeIFrameVariants,
+            pageTitle: pageTitle
         )
     }
 }

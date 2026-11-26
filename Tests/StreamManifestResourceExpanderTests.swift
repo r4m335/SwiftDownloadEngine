@@ -1026,6 +1026,65 @@ final class StreamManifestResourceExpanderTests: XCTestCase {
         let hasInFlight = await expander.hasInFlightTasks(for: tabID)
         XCTAssertFalse(hasInFlight)
     }
+
+    func testGenericStream360DoesNotMatchDifferentVideoAndDerivesRealName() {
+        let matcher = BrowserDownloadMatcher()
+        let existingTransfer = UnifiedTransfer(
+            id: "t-stream-360",
+            type: .hls,
+            name: "stream-360p.mp4",
+            source: "https://cdn-one.example/video1/master.m3u8",
+            state: .completed,
+            totalBytes: 50_000_000,
+            completedBytes: 50_000_000,
+            downloadSpeedBytesPerSecond: 0
+        )
+
+        let differentHostResource = WebpageResource(
+            id: "res-other-site",
+            url: URL(string: "https://cdn-two.example/video99/master.m3u8")!,
+            title: "HLS 360p",
+            suggestedFilename: "stream-360p.mp4",
+            resourceType: .video,
+            mimeType: "application/vnd.apple.mpegurl",
+            hlsVariantPreferences: HLSVariantSelectionPreferences(maximumHeight: 360)
+        )
+        XCTAssertNil(matcher.match(resource: differentHostResource, transfers: [existingTransfer]))
+
+        let sameHostDifferentPath = WebpageResource(
+            id: "res-same-host-other-video",
+            url: URL(string: "https://cdn-one.example/video2/master.m3u8")!,
+            title: "HLS 360p",
+            suggestedFilename: "stream-360p.mp4",
+            resourceType: .video,
+            mimeType: "application/vnd.apple.mpegurl",
+            hlsVariantPreferences: HLSVariantSelectionPreferences(maximumHeight: 360)
+        )
+        XCTAssertNil(matcher.match(resource: sameHostDifferentPath, transfers: [existingTransfer]))
+
+        // Real video name from pageTitle when manifest filename is generic ("stream.m3u8" or "manifest.mpd")
+        let genericHLS = WebpageResource(
+            url: URL(string: "https://cdn.example/hls/master.m3u8")!,
+            title: "HLS Master Playlist",
+            suggestedFilename: "stream.m3u8",
+            resourceType: .video
+        )
+        XCTAssertEqual(
+            StreamManifestResourceExpander.meaningfulBaseStem(for: genericHLS, pageTitle: "Big Buck Bunny - Watch Online"),
+            "Big_Buck_Bunny"
+        )
+
+        let genericDASH = WebpageResource(
+            url: URL(string: "https://cdn.example/dash/big_buck_bunny/manifest.mpd")!,
+            title: "DASH Manifest",
+            suggestedFilename: "manifest.mpd",
+            resourceType: .video
+        )
+        XCTAssertEqual(
+            StreamManifestResourceExpander.meaningfulBaseStem(for: genericDASH, pageTitle: "Example"),
+            "big_buck_bunny"
+        )
+    }
 }
 
 // MARK: - Failing URL Protocol Helper for Error Testing

@@ -93,7 +93,13 @@ public struct BrowserDownloadMatcher: Sendable {
             }
 
             // Check 3: HLS Rendition & Filename matching (when URLs differ due to refreshed master manifest)
-            if (transfer.type == .hls || resource.isStreamingManifest) && matchesHLSRendition(resource: resource, transfer: transfer) {
+            if (transfer.type == .hls || resource.isStreamingManifest),
+               let transferURL = URL(string: transfer.source),
+               let tHost = transferURL.host?.lowercased(),
+               let rHost = resource.url.host?.lowercased(),
+               tHost == rHost,
+               !isGenericMediaStem(resource.suggestedFilename),
+               matchesHLSRendition(resource: resource, transfer: transfer) {
                 let dot = dotForState(transfer.state)
                 return DownloadMatchResult(transferID: transfer.id, statusDot: dot, confidence: .renditionAndFilename)
             }
@@ -205,6 +211,20 @@ public struct BrowserDownloadMatcher: Sendable {
         }
 
         return false
+    }
+
+    private func isGenericMediaStem(_ filename: String) -> Bool {
+        var stem = (filename as NSString).deletingPathExtension
+            .lowercased()
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if let range = stem.range(of: #"(?:[-_](?:\d{3,4}p|\d+x\d+|audio|subtitles?|thumbnails?))+$"#, options: .regularExpression) {
+            stem.removeSubrange(range)
+        }
+        let genericStems: Set<String> = [
+            "", "stream", "video", "audio", "media", "master", "playlist",
+            "index", "manifest", "chunklist", "prog_index", "hls", "dash", "download"
+        ]
+        return genericStems.contains(stem)
     }
 
     private func dotForState(_ state: UnifiedTransferState) -> DownloadStatusDot {

@@ -84,6 +84,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
     @Published public var activeStreamingFilename: String? = nil
     @Published public var resumeTargetTransferID: String? = nil
     @Published public var resumeTargetTransferName: String? = nil
+    @Published public var existingTransferWarning: (transferID: String, statusDot: DownloadStatusDot, transferName: String)? = nil
     private var activeMSECaptureSuggestedFilename: String? = nil
 
     /// Count of distinct downloadable media assets detected on the active webpage.
@@ -2282,68 +2283,34 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         activeDownloadResource = resource
         resumeTargetTransferID = nil
         resumeTargetTransferName = nil
-        // Evaluate against existing transfers to avoid duplicates and handle link recovery
-        if let match = matchingTransfer(for: resource) {
-            // Case 1: In active link-refresh session or matched transfer failed -> Open download page in Resume mode
-            if recoveryManager?.activeSession != nil || match.statusDot == .failed {
-                let targetID = recoveryManager?.activeSession?.targetTransferID ?? match.transferID
-                let targetName = downloadDelegate?.unifiedTransfersList.first(where: { $0.id == targetID })?.name ?? resource.suggestedFilename
-                isShowingResourceInspector = false
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
-                    guard let self = self else { return }
-                    self.resumeTargetTransferID = targetID
-                    self.resumeTargetTransferName = targetName
-                    self.activeDownloadResource = resource
-                    let matchedCandidate = self.mediaCandidates.first { cand in
-                        cand.id == resource.id ||
-                        cand.rawURL.caseInsensitiveCompare(resource.url.absoluteString) == .orderedSame ||
-                        (cand.url != nil && cand.url == resource.url)
-                    }
-                    let candidate = matchedCandidate ?? BrowserMediaCandidateClassifier.classify(resource: resource)
-                    self.activeDownloadCandidate = candidate
-                    self.downloadCandidateURL = resource.url
-                    self.downloadCandidateFilename = targetName.isEmpty ? (resource.suggestedFilename.isEmpty ? "download" : resource.suggestedFilename) : targetName
-                    self.downloadCandidateRequestContext = resource.requestContext ?? candidate.requestContext
-                    self.useBrowserCredentials = (resource.requestContext != nil || candidate.requestContext != nil)
-                    self.downloadCandidateThreads = 6
-                    self.downloadCandidateSpeedLimitKBps = ""
-                    self.isShowingQualityPicker = false
-                    self.selectedQualityOption = nil
-                    self.isShowingDownloadSheet = true
-                }
-                return
-            }
+        existingTransferWarning = nil
 
-            // Case 2: Currently downloading -> Avoid starting duplicate transfer
-            if match.statusDot == .downloading {
-                isShowingResourceInspector = false
-                onOpenDownloads?()
-                return
+        let match = matchingTransfer(for: resource)
+        let isFailedOrRecovery = (match != nil) && (recoveryManager?.activeSession != nil || match?.statusDot == .failed)
+        let targetID: String? = isFailedOrRecovery ? (recoveryManager?.activeSession?.targetTransferID ?? match?.transferID) : nil
+        let targetName: String? = {
+            if let targetID {
+                return downloadDelegate?.unifiedTransfersList.first(where: { $0.id == targetID })?.name ?? resource.suggestedFilename
             }
-
-            // Case 3: Paused -> Resume existing transfer
-            if match.statusDot == .paused {
-                isShowingResourceInspector = false
-                Task { [weak self] in
-                    try? await self?.recoveryManager?.retry(transferID: match.transferID)
-                    await MainActor.run {
-                        self?.onOpenDownloads?()
-                    }
-                }
-                return
+            if let match {
+                return downloadDelegate?.unifiedTransfersList.first(where: { $0.id == match.transferID })?.name ?? resource.suggestedFilename
             }
-
-            // Case 4: Completed -> Avoid creating duplicate download
-            if match.statusDot == .completed {
-                isShowingResourceInspector = false
-                onOpenDownloads?()
-                return
-            }
-        }
+            return nil
+        }()
 
         isShowingResourceInspector = false
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
             guard let self = self else { return }
+            if let targetID, let targetName {
+                self.resumeTargetTransferID = targetID
+                self.resumeTargetTransferName = targetName
+            } else if let match {
+                self.existingTransferWarning = (
+                    transferID: match.transferID,
+                    statusDot: match.statusDot,
+                    transferName: targetName ?? resource.suggestedFilename
+                )
+            }
             self.activeDownloadResource = resource
             let matchedCandidate = self.mediaCandidates.first { cand in
                 cand.id == resource.id ||
@@ -2353,7 +2320,10 @@ public final class BrowserViewModel: NSObject, ObservableObject {
             let candidate = matchedCandidate ?? BrowserMediaCandidateClassifier.classify(resource: resource)
             self.activeDownloadCandidate = candidate
             self.downloadCandidateURL = resource.url
-            self.downloadCandidateFilename = resource.suggestedFilename.isEmpty ? (candidate.suggestedFilename.isEmpty ? "download" : candidate.suggestedFilename) : resource.suggestedFilename
+            let preferredFilename = (isFailedOrRecovery ? targetName : nil) ?? resource.suggestedFilename
+            self.downloadCandidateFilename = preferredFilename.isEmpty
+                ? (candidate.suggestedFilename.isEmpty ? "download" : candidate.suggestedFilename)
+                : preferredFilename
             self.downloadCandidateRequestContext = resource.requestContext ?? candidate.requestContext
             self.useBrowserCredentials = (resource.requestContext != nil || candidate.requestContext != nil)
             self.downloadCandidateThreads = 6
@@ -3000,10 +2970,12 @@ public final class BrowserViewModel: NSObject, ObservableObject {
     /// into individual selectable video and audio quality resources directly in `discoveredResources`.
     public func expandStreamingManifests(in resources: [WebpageResource]? = nil, tabID: UUID? = nil) {
         let targets = resources ?? discoveredResources
+        let targetTabID = tabID ?? activeTabID
+        let pageTitle = targetTabID.flatMap { tabManager.tab(withID: $0)?.title } ?? currentTitle
         discoveryCoordinator.discoveredResources = discoveredResources
         discoveryCoordinator.variantStreamItems = variantStreamItems
         discoveryCoordinator.selectedResourceIDs = selectedResourceIDs
-        discoveryCoordinator.expandStreamingManifests(in: targets, tabID: tabID, activeTabID: activeTabID)
+        discoveryCoordinator.expandStreamingManifests(in: targets, tabID: tabID, activeTabID: activeTabID, pageTitle: pageTitle)
     }
 
         // MARK: - Interactive Stream Quality Picker (Phase 3 Milestone 3.1)
@@ -6566,6 +6538,8 @@ public struct BrowserDownloadSheet: View {
     @State private var submitErrorMessage: String? = nil
     @State private var baseFilename: String = ""
     @State private var fileExtension: String = ""
+    @State private var estimatedStreamBytes: Int64? = nil
+    @State private var isEstimatingSize: Bool = false
 
     private var isPreSelectedVariant: Bool {
         viewModel.activeDownloadResource?.hlsVariantPreferences != nil ||
@@ -6670,6 +6644,26 @@ public struct BrowserDownloadSheet: View {
     public var body: some View {
         NavigationView {
             Form {
+                if let warning = viewModel.existingTransferWarning {
+                    Section {
+                        HStack(alignment: .top, spacing: 10) {
+                            Image(systemName: warning.statusDot == .completed ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                                .foregroundColor(warning.statusDot == .completed ? .blue : .orange)
+                                .font(.system(size: 18))
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(warning.statusDot == .completed ? "Already Downloaded" : (warning.statusDot == .paused ? "Paused in Downloads" : "Already Downloading"))
+                                    .font(.subheadline.bold())
+                                Text(warning.statusDot == .completed
+                                     ? "You already downloaded '\(warning.transferName)'. You can still download it again."
+                                     : "'\(warning.transferName)' is already in your Downloads list.")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+                        .padding(.vertical, 2)
+                    }
+                }
+
                 // MARK: - FILE NAME
                 Section(header: Text("FILE NAME")) {
                     HStack(alignment: .center, spacing: 6) {
@@ -6829,7 +6823,7 @@ public struct BrowserDownloadSheet: View {
                                 ProgressView()
                                     .padding(.trailing, 8)
                             }
-                            Text(isResumeMode ? "Resume" : info.buttonTitle)
+                            Text(isResumeMode ? "Resume" : (viewModel.existingTransferWarning?.statusDot == .completed ? "Download Again" : info.buttonTitle))
                                 .font(.system(size: 17, weight: .bold))
                                 .foregroundColor(.white)
                             Spacer()
@@ -6846,9 +6840,13 @@ public struct BrowserDownloadSheet: View {
                     Button("Cancel") {
                         viewModel.resumeTargetTransferID = nil
                         viewModel.resumeTargetTransferName = nil
+                        viewModel.existingTransferWarning = nil
                         presentationMode.wrappedValue.dismiss()
                     }
                 }
+            }
+            .task {
+                await estimateStreamingSizeIfNeeded()
             }
             .onAppear {
                 let (base, ext) = FilenameExtensionHelper.split(filename: viewModel.downloadCandidateFilename)
@@ -6892,13 +6890,15 @@ public struct BrowserDownloadSheet: View {
         // Size / Predicted Size
         if res?.isLive == true || variant?.isLive == true {
             rows.append(TechnicalDetailRow(label: "Size", value: "Live Broadcast"))
-        } else if let bytes = selected?.estimatedSizeBytes ?? variant?.estimatedSizeBytes {
+        } else if let bytes = selected?.estimatedSizeBytes ?? variant?.estimatedSizeBytes ?? estimatedStreamBytes {
             rows.append(TechnicalDetailRow(label: "Predicted Size", value: "~\(StreamQualityOption.formatByteSize(bytes))"))
         } else if let sizeText = selected?.estimatedSizeText ?? variant?.estimatedSizeText,
                   !sizeText.isEmpty && sizeText != "Size unavailable" {
             rows.append(TechnicalDetailRow(label: "Predicted Size", value: sizeText))
         } else if let size = res?.estimatedSize ?? cand?.estimatedSize, size > 0 {
             rows.append(TechnicalDetailRow(label: "Size", value: StreamQualityOption.formatByteSize(size)))
+        } else if isEstimatingSize {
+            rows.append(TechnicalDetailRow(label: "Predicted Size", value: "Estimating..."))
         } else {
             rows.append(TechnicalDetailRow(label: "Size", value: "Unknown"))
         }
@@ -6990,11 +6990,13 @@ public struct BrowserDownloadSheet: View {
                     }
                     viewModel.resumeTargetTransferID = nil
                     viewModel.resumeTargetTransferName = nil
+                    viewModel.existingTransferWarning = nil
                     isSubmitting = false
                     presentationMode.wrappedValue.dismiss()
                     viewModel.onOpenDownloads?()
                 } else {
                     try await viewModel.executeDownload()
+                    viewModel.existingTransferWarning = nil
                     isSubmitting = false
                     presentationMode.wrappedValue.dismiss()
                 }
@@ -7002,6 +7004,55 @@ public struct BrowserDownloadSheet: View {
                 submitErrorMessage = error.localizedDescription
                 isSubmitting = false
             }
+        }
+    }
+
+    @MainActor
+    private func estimateStreamingSizeIfNeeded() async {
+        let res = viewModel.activeDownloadResource
+        let cand = viewModel.activeDownloadCandidate
+        let variant = res.flatMap { viewModel.variantStreamItems[$0.id] }
+        let selected = viewModel.selectedQualityOption
+
+        if res?.isLive == true || variant?.isLive == true { return }
+        if selected?.estimatedSizeBytes != nil || variant?.estimatedSizeBytes != nil || estimatedStreamBytes != nil { return }
+        if let size = res?.estimatedSize ?? cand?.estimatedSize, size > 0 { return }
+
+        let isStreaming = res?.isStreamingManifest == true ||
+            cand?.kind == .hlsManifest ||
+            cand?.kind == .dashManifest ||
+            viewModel.downloadCandidateURL?.pathExtension.lowercased() == "m3u8" ||
+            viewModel.downloadCandidateURL?.pathExtension.lowercased() == "mpd"
+        guard isStreaming, let targetURL = res?.url ?? viewModel.downloadCandidateURL else { return }
+
+        isEstimatingSize = true
+        defer { isEstimatingSize = false }
+
+        do {
+            let options = try await StreamQualityInspector.inspect(
+                manifestText: res?.manifestText ?? cand?.cachedManifestText ?? "",
+                url: targetURL,
+                mimeType: res?.mimeType ?? cand?.mimeType,
+                durationSeconds: res?.duration,
+                requestContext: res?.requestContext ?? cand?.requestContext
+            )
+            let matched: StreamQualityOption? = {
+                if let exactURI = res?.hlsVariantPreferences?.exactURI {
+                    return options.first(where: { $0.uri == exactURI })
+                }
+                if let maxH = res?.hlsVariantPreferences?.maximumHeight {
+                    return options.first(where: { $0.resolution?.height == maxH })
+                }
+                if let repID = res?.dashVideoRepresentationID {
+                    return options.first(where: { $0.dashVideoRepresentationID == repID })
+                }
+                return options.first
+            }()
+            if let bytes = matched?.estimatedSizeBytes ?? options.compactMap(\.estimatedSizeBytes).first, bytes > 0 {
+                estimatedStreamBytes = bytes
+            }
+        } catch {
+            // Keep Size: Unknown when manifest inspection fails
         }
     }
 }
