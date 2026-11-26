@@ -1349,5 +1349,65 @@ final class BrowserMediaCandidateTests: XCTestCase {
         )
         XCTAssertEqual(filteredAudioOnly.map(\.id), ["r2"])
     }
+
+    func testBinAndUnplayableBlobAreNotClassifiedAsPlayableMedia() {
+        XCTAssertEqual(WebpageResourceExtractor.categorize(extension: "blob", mimeType: nil), .other)
+        XCTAssertEqual(WebpageResourceExtractor.categorize(extension: "bin", mimeType: "application/octet-stream"), .other)
+
+        let genericBlobCandidate = BrowserMediaCandidate(
+            id: "blob-bin",
+            url: URL(string: "blob:https://example.com/abc-123"),
+            rawURL: "blob:https://example.com/abc-123",
+            kind: .completeBlob,
+            blobKind: .blob,
+            mimeType: nil,
+            suggestedFilename: "browser_blob.bin",
+            availability: .captureCandidate
+        )
+        XCTAssertEqual(genericBlobCandidate.toWebpageResource()?.resourceType, .other)
+
+        let binMediaCandidate = BrowserMediaCandidate(
+            id: "direct-bin",
+            url: URL(string: "https://example.com/data.bin"),
+            rawURL: "https://example.com/data.bin",
+            kind: .directMedia,
+            mimeType: "application/octet-stream",
+            suggestedFilename: "data.bin",
+            availability: .downloadable
+        )
+        XCTAssertEqual(binMediaCandidate.toWebpageResource()?.resourceType, .other)
+
+        let blobVideoResource = WebpageResource(
+            id: "blob-vid",
+            url: URL(string: "blob:https://example.com/vid-1")!,
+            title: "blob_video.mp4",
+            suggestedFilename: "blob_video.mp4",
+            resourceType: .video,
+            mimeType: "video/mp4",
+            isSupported: true
+        )
+        let blobRow = BrowserResourceItemRow(
+            resource: blobVideoResource,
+            onDownload: {},
+            onPreview: {}
+        )
+        XCTAssertFalse(blobRow.isPlayable)
+
+        let binResource = WebpageResource(
+            id: "bin-file",
+            url: URL(string: "https://example.com/payload.bin")!,
+            title: "payload.bin",
+            suggestedFilename: "payload.bin",
+            resourceType: .video,
+            mimeType: "application/octet-stream",
+            isSupported: true
+        )
+        let binRow = BrowserResourceItemRow(
+            resource: binResource,
+            onDownload: {},
+            onPreview: {}
+        )
+        XCTAssertFalse(binRow.isPlayable)
+    }
 }
 

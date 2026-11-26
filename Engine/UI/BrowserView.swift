@@ -424,6 +424,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
     private var activeBlobCaptureOriginalURL: URL?
     private var activeBlobCaptureMIMEType: String?
     private var activeBlobCaptureSuggestedFilename: String?
+    private var blobCaptureTimeoutTask: Task<Void, Never>?
 
     // Optional MSE capture state (7H.4). Metadata observation remains the
     // default; bytes are retained only while an explicit capture is active.
@@ -1691,6 +1692,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         blobCaptureSnapshot = nil
         blobCaptureErrorMessage = nil
         isCapturingBlob = true
+        scheduleBlobCaptureTimeout(for: captureID, tabID: resolvedTabID)
 
         #if canImport(WebKit)
         BrowserDiagnosticLogger.shared.log(
@@ -1771,13 +1773,45 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                 )
                 await service.cancel(captureID: captureID)
                 self.blobCaptureErrorMessage = "The browser Blob capture could not start: \(error.localizedDescription)"
-                self.isCapturingBlob = false
-                self.activeBlobCaptureID = nil
-                self.activeBlobCaptureTabID = nil
-                self.activeBlobCaptureSuggestedFilename = nil
+                self.clearActiveBlobCaptureState()
             }
         }
         #endif
+    }
+
+    private func clearActiveBlobCaptureState() {
+        blobCaptureTimeoutTask?.cancel()
+        blobCaptureTimeoutTask = nil
+        activeBlobCaptureID = nil
+        activeBlobCaptureTabID = nil
+        activeBlobCaptureOriginalURL = nil
+        activeBlobCaptureMIMEType = nil
+        activeBlobCaptureSuggestedFilename = nil
+        blobCaptureSnapshot = nil
+        isCapturingBlob = false
+    }
+
+    private func scheduleBlobCaptureTimeout(for captureID: String, tabID: UUID, timeoutSeconds: TimeInterval = 15) {
+        blobCaptureTimeoutTask?.cancel()
+        blobCaptureTimeoutTask = Task { @MainActor [weak self] in
+            let nanos = UInt64(max(1.0, timeoutSeconds) * 1_000_000_000)
+            try? await Task.sleep(nanoseconds: nanos)
+            guard !Task.isCancelled,
+                  let self,
+                  self.isCapturingBlob,
+                  self.activeBlobCaptureID == captureID else { return }
+            #if canImport(WebKit)
+            if let session = self.tabSessions[tabID] {
+                _ = try? await session.webView.evaluateJavaScript(
+                    BlobCaptureBridge.cancelCommand(transferID: captureID)
+                )
+                let service = session.blobCaptureService
+                await service.cancel(captureID: captureID, reason: "Blob export timed out")
+            }
+            #endif
+            self.clearActiveBlobCaptureState()
+            self.blobCaptureErrorMessage = "Blob export timed out. This site may use a streaming buffer or revoked Blob URL that cannot be exported directly."
+        }
     }
 
     /// Cancels the active page reader and removes the native partial file.
@@ -1792,12 +1826,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
             let service = session.blobCaptureService
             Task { await service.cancel(captureID: captureID) }
         }
-        activeBlobCaptureID = nil
-        activeBlobCaptureTabID = nil
-        activeBlobCaptureOriginalURL = nil
-        activeBlobCaptureMIMEType = nil
-        activeBlobCaptureSuggestedFilename = nil
-        isCapturingBlob = false
+        clearActiveBlobCaptureState()
     }
 
     /// Handles unexpected WebContent process termination (crash or memory pressure) for blob captures.
@@ -1811,12 +1840,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
             }
         }
         if activeBlobCaptureTabID == tabID {
-            activeBlobCaptureID = nil
-            activeBlobCaptureTabID = nil
-            activeBlobCaptureOriginalURL = nil
-            activeBlobCaptureMIMEType = nil
-            activeBlobCaptureSuggestedFilename = nil
-            isCapturingBlob = false
+            clearActiveBlobCaptureState()
             blobCaptureErrorMessage = "The webpage process was terminated by iOS (likely memory pressure). Partial download preserved for recovery."
         }
     }
@@ -1849,29 +1873,24 @@ public final class BrowserViewModel: NSObject, ObservableObject {
 
         if let snapshot = acknowledgement.snapshot {
             blobCaptureSnapshot = snapshot
+            if !snapshot.isComplete {
+                scheduleBlobCaptureTimeout(for: acknowledgement.transferID, tabID: tabID)
+            }
         }
         guard acknowledgement.accepted else {
             blobCaptureErrorMessage = acknowledgement.error?.localizedDescription ??
                 "The browser Blob could not be exported."
-            isCapturingBlob = false
-            activeBlobCaptureID = nil
-            activeBlobCaptureTabID = nil
-            activeBlobCaptureOriginalURL = nil
-            activeBlobCaptureMIMEType = nil
-            activeBlobCaptureSuggestedFilename = nil
+            clearActiveBlobCaptureState()
             return
         }
         if acknowledgement.snapshot?.isComplete == true {
+            blobCaptureTimeoutTask?.cancel()
+            blobCaptureTimeoutTask = nil
             guard let snapshot = acknowledgement.snapshot,
                   snapshot.bytesWritten > 0,
                   let finalURL = snapshot.finalURL else {
                 blobCaptureErrorMessage = "The Blob capture failed: 0 bytes received or no finalized output produced."
-                isCapturingBlob = false
-                activeBlobCaptureID = nil
-                activeBlobCaptureTabID = nil
-                activeBlobCaptureOriginalURL = nil
-                activeBlobCaptureMIMEType = nil
-                activeBlobCaptureSuggestedFilename = nil
+                clearActiveBlobCaptureState()
                 return
             }
             let candidateFilename = self.activeBlobCaptureSuggestedFilename?.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1883,15 +1902,12 @@ public final class BrowserViewModel: NSObject, ObservableObject {
             }
             guard !filename.isEmpty else {
                 blobCaptureErrorMessage = "The Blob was captured but no finalized output filename was produced."
-                isCapturingBlob = false
-                activeBlobCaptureID = nil
-                activeBlobCaptureTabID = nil
-                activeBlobCaptureOriginalURL = nil
-                activeBlobCaptureMIMEType = nil
-                activeBlobCaptureSuggestedFilename = nil
+                clearActiveBlobCaptureState()
                 return
             }
             let expectedSize = snapshot.expectedSize
+            let originalURL = self.activeBlobCaptureOriginalURL
+            let mimeType = self.activeBlobCaptureMIMEType
             Task { @MainActor [weak self] in
                 do {
                     guard let self,
@@ -1902,26 +1918,16 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                         fileURL: finalURL,
                         filename: filename,
                         expectedSize: expectedSize,
-                        originalURL: self.activeBlobCaptureOriginalURL,
-                        mimeType: self.activeBlobCaptureMIMEType
+                        originalURL: originalURL,
+                        mimeType: mimeType
                     )
-                    self.isCapturingBlob = false
-                    self.activeBlobCaptureID = nil
-                    self.activeBlobCaptureTabID = nil
-                    self.activeBlobCaptureOriginalURL = nil
-                    self.activeBlobCaptureMIMEType = nil
-                    self.activeBlobCaptureSuggestedFilename = nil
+                    self.clearActiveBlobCaptureState()
                     self.downloadSuccessNotification = "Blob download completed: \(filename)"
                     self.onDownloadInitiated?()
                 } catch {
                     guard let self else { return }
                     self.blobCaptureErrorMessage = error.localizedDescription
-                    self.isCapturingBlob = false
-                    self.activeBlobCaptureID = nil
-                    self.activeBlobCaptureTabID = nil
-                    self.activeBlobCaptureOriginalURL = nil
-                    self.activeBlobCaptureMIMEType = nil
-                    self.activeBlobCaptureSuggestedFilename = nil
+                    self.clearActiveBlobCaptureState()
                 }
             }
         }

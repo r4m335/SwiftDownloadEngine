@@ -534,7 +534,7 @@ public struct WebpageResourceExtractor {
         }
 
         if let e = cleanExt {
-            if videoExtensions.contains(e) || e == "blob" {
+            if videoExtensions.contains(e) {
                 if let m = cleanMime {
                     if m.hasPrefix("audio/") { return .audio }
                     if m.hasPrefix("image/") { return .image }

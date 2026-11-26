@@ -1259,10 +1259,17 @@ public struct ResourceRowView: View {
 
     public var isPlayable: Bool {
         let isHLS = resource.isStreamingManifest && (resource.url.pathExtension.lowercased() == "m3u8" || resource.mimeType?.lowercased().contains("mpegurl") == true)
+        let ext = resource.url.pathExtension.lowercased()
+        let lowerFilename = resource.suggestedFilename.lowercased()
+        let lowerMime = resource.mimeType?.lowercased()
+        let hasExplicitMediaMime = lowerMime?.hasPrefix("video/") == true || lowerMime?.hasPrefix("audio/") == true
+        let isBinWithoutMediaMime = (ext == "bin" || lowerFilename.hasSuffix(".bin")) && !hasExplicitMediaMime
         let isPlayableDirect = (resource.resourceType == .video || resource.resourceType == .audio) &&
             !resource.isSegmentChunk &&
+            !resource.isBlobResource &&
+            !isBinWithoutMediaMime &&
             resource.isSupported &&
-            resource.url.pathExtension.lowercased() != "mpd"
+            ext != "mpd"
         return onPreview != nil && (isHLS || isPlayableDirect)
     }
 

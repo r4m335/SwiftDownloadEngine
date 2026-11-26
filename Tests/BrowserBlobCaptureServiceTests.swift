@@ -1281,5 +1281,36 @@ final class BrowserBlobCaptureServiceTests: XCTestCase {
         XCTAssertEqual(recoveredDiag?.lastSuccessfulCheckpointOffset, 800)
         XCTAssertEqual(recoveredDiag?.stagingFileSize, 800)
     }
+
+    func testFailureMessageReturnsRejectedAckWithClientFailureReason() async throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("blob-failure-ack-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let service = BrowserBlobCaptureService(destinationDirectoryURL: dir)
+        await service.authorize(
+            transferID: "t-fail-1",
+            tabID: "tab-1",
+            documentID: "doc-1",
+            candidateID: "cand-1",
+            suggestedFilename: "video.mp4"
+        )
+
+        let payload: [String: Any] = [
+            "version": 2,
+            "kind": "failure",
+            "transferID": "t-fail-1",
+            "tabID": "tab-1",
+            "candidateID": "cand-1",
+            "reason": "Blob is empty (0 bytes) or MediaSource-backed."
+        ]
+        let data = try JSONSerialization.data(withJSONObject: payload)
+        let ack = await service.receiver.receive(data: data)
+
+        XCTAssertFalse(ack.accepted)
+        XCTAssertEqual(ack.transferID, "t-fail-1")
+        XCTAssertEqual(ack.error, .clientFailure(reason: "Blob is empty (0 bytes) or MediaSource-backed."))
+    }
 }
 

@@ -447,6 +447,7 @@ public enum BlobExportError: Error, LocalizedError, Codable, Sendable, Equatable
     case diskFull
     case storageCriticallyLow(requiredBytes: Int64, availableBytes: Int64, minimumReserveBytes: Int64)
     case processTerminated(reason: String)
+    case clientFailure(reason: String)
     case transferAlreadyTerminal
     case cleanupFailed
 
@@ -490,6 +491,8 @@ public enum BlobExportError: Error, LocalizedError, Codable, Sendable, Equatable
             return "Available storage (\(avail) bytes) is insufficient for required \(req) bytes while maintaining minimum reserve of \(res) bytes."
         case .processTerminated(let reason):
             return "WebContent process terminated: \(reason)"
+        case .clientFailure(let reason):
+            return reason
         case .transferAlreadyTerminal: return "The transfer has already completed, failed, or been cancelled."
         case .cleanupFailed: return "The staging file could not be cleaned up."
         }
@@ -1506,15 +1509,17 @@ public actor BrowserBlobCaptureReceiver {
                 transferStats.removeValue(forKey: transferID)
                 return BlobCaptureAck(transferID: transferID, accepted: true, snapshot: snapshot)
             case .failure:
+                let reason = message.reason ?? "The browser Blob could not be exported."
                 authorizations.removeValue(forKey: transferID)
                 transferStats.removeValue(forKey: transferID)
-                await writer.fail(transferID: transferID, reason: message.reason ?? "client failure")
-                return BlobCaptureAck(transferID: transferID, accepted: true)
+                await writer.fail(transferID: transferID, reason: reason)
+                return BlobCaptureAck.rejected(transferID: transferID, error: .clientFailure(reason: reason))
             case .cancel:
+                let reason = message.reason ?? "Blob export was cancelled."
                 authorizations.removeValue(forKey: transferID)
                 transferStats.removeValue(forKey: transferID)
-                await writer.cancel(transferID: transferID, reason: message.reason ?? "cancelled by client")
-                return BlobCaptureAck(transferID: transferID, accepted: true)
+                await writer.cancel(transferID: transferID, reason: reason)
+                return BlobCaptureAck.rejected(transferID: transferID, error: .clientFailure(reason: reason))
             }
         } catch let error as BlobExportError {
             if !transferID.isEmpty {
@@ -1716,7 +1721,11 @@ public enum BlobCaptureBridge {
         return btoa(bin);
     }
     function digestHex(bytes) {
-        if (!window.crypto || !window.crypto.subtle) { return Promise.reject(new Error("SHA-256 unavailable")); }
+        if (!window.crypto || !window.crypto.subtle) {
+            var d = makeRollingDigest();
+            d.update(bytes);
+            return d.finalize();
+        }
         var buf = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
         return window.crypto.subtle.digest("SHA-256", buf).then(function(ab) {
             return Array.prototype.map.call(new Uint8Array(ab), function(b) { return b.toString(16).padStart(2,"0"); }).join("");

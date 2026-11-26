@@ -151,22 +151,38 @@ public struct BrowserMediaCandidate: Identifiable, Codable, Sendable, Equatable,
         }
 
         let categorized = WebpageResourceExtractor.categorize(extension: ext, mimeType: mimeType)
+        let lowerFilename = suggestedFilename.lowercased()
+        let isBinWithoutMediaMime = (ext == "bin" || lowerFilename.hasSuffix(".bin")) && !hasExplicitMediaMime
         let resourceType: WebpageResourceType
         switch kind {
         case .hlsManifest, .dashManifest, .mediaSource, .protectedMedia:
-            resourceType = .video
+            resourceType = isBinWithoutMediaMime ? .other : .video
         case .directMedia:
-            switch categorized {
-            case .audio, .image, .document, .archive:
-                resourceType = categorized
-            default:
-                resourceType = .video
+            if isBinWithoutMediaMime {
+                resourceType = .other
+            } else {
+                switch categorized {
+                case .audio, .image, .document, .archive:
+                    resourceType = categorized
+                default:
+                    resourceType = .video
+                }
             }
         case .completeBlob:
-            if let mime = lowerMime, mime.contains("audio") {
+            if isBinWithoutMediaMime {
+                resourceType = .other
+            } else if categorized != .other {
+                resourceType = categorized
+            } else if let mime = lowerMime, mime.contains("audio") {
+                resourceType = .audio
+            } else if hasExplicitMediaMime || ["mp4", "webm", "mov", "m4v", "mkv", "avi", "flv"].contains(ext) ||
+                        ["mp4", "webm", "mov", "m4v"].contains((lowerFilename as NSString).pathExtension) {
+                resourceType = .video
+            } else if ["mp3", "m4a", "aac", "wav", "flac", "ogg"].contains(ext) ||
+                        ["mp3", "m4a", "aac", "wav", "flac", "ogg"].contains((lowerFilename as NSString).pathExtension) {
                 resourceType = .audio
             } else {
-                resourceType = .video
+                resourceType = .other
             }
         case .directFile:
             if categorized != .other {
@@ -484,8 +500,9 @@ public enum BrowserMediaCandidateClassifier {
         let isMediaTag = observation.tag?.lowercased() == "video" ||
             observation.tag?.lowercased() == "audio" ||
             observation.tag?.lowercased() == "source"
-        let isMedia = (type == .video || type == .audio) ||
-            (isMediaTag && type != .image && type != .document && type != .archive)
+        let isBinWithoutMediaMime = ext == "bin" && !hasExplicitMediaMime
+        let isMedia = !isBinWithoutMediaMime && ((type == .video || type == .audio) ||
+            (isMediaTag && type != .image && type != .document && type != .archive))
         let isKnownFile = isMedia || type == .image || type == .document || type == .archive
         guard isKnownFile else { return nil }
 
