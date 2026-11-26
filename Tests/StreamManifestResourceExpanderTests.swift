@@ -1031,13 +1031,13 @@ final class StreamManifestResourceExpanderTests: XCTestCase {
         let matcher = BrowserDownloadMatcher()
         let existingTransfer = UnifiedTransfer(
             id: "t-stream-360",
-            type: .hls,
             name: "stream-360p.mp4",
-            source: "https://cdn-one.example/video1/master.m3u8",
+            type: .hls,
             state: .completed,
-            totalBytes: 50_000_000,
             completedBytes: 50_000_000,
-            downloadSpeedBytesPerSecond: 0
+            totalBytes: 50_000_000,
+            destinationURL: URL(fileURLWithPath: "/tmp/stream-360p.mp4"),
+            source: "https://cdn-one.example/video1/master.m3u8"
         )
 
         let differentHostResource = WebpageResource(
