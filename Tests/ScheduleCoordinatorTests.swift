@@ -392,4 +392,15 @@ final class ScheduleCoordinatorTests: XCTestCase {
         XCTAssertTrue(persistedRule.targetDownloadIDs.contains("valid-task-1"))
         XCTAssertFalse(persistedRule.targetDownloadIDs.contains("ghost-task-999"))
     }
+
+    @MainActor
+    func testBackgroundStopTaskIdentifierAndScheduling() {
+        XCTAssertEqual(
+            ScheduleCoordinator.scheduleReconcileTaskIdentifier,
+            "com.r4m335.SwiftDownloadEngine.schedule-reconcile"
+        )
+        let coordinator = ScheduleCoordinator(persistenceStore: persistenceStore)
+        coordinator.registerBackgroundStopTaskIfNeeded()
+        coordinator.scheduleNextStopReconciliation(now: Date())
+    }
 }

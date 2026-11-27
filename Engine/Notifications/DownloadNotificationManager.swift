@@ -21,6 +21,7 @@ public enum NotificationPermissionStatus: String, Sendable, Codable, Equatable {
 // MARK: - Action & Category Identifiers
 
 public enum DownloadNotificationCategory {
+    public static let transferThreadIdentifier = "DownloadEngineKit.transfers"
     public static let activeTransfer = "DownloadEngineKit.category.activeTransfer"
     public static let pausedTransfer = "DownloadEngineKit.category.pausedTransfer"
     public static let failedTransfer = "DownloadEngineKit.category.failedTransfer"
@@ -617,6 +618,7 @@ public enum DownloadNotificationManager: @unchecked Sendable {
         guard isUserNotificationsAvailable else { return }
         let content = UNMutableNotificationContent()
         content.title = filename
+        content.threadIdentifier = DownloadNotificationCategory.transferThreadIdentifier
         let percent = Int(progress * 100)
         let speedText = speedBytesPerSecond > 0
             ? ByteCountFormatter.string(fromByteCount: Int64(speedBytesPerSecond), countStyle: .file) + "/s"
@@ -806,6 +808,7 @@ public enum DownloadNotificationManager: @unchecked Sendable {
         content.title = "Download Failed"
         content.body = "\(filename): \(error)"
         content.sound = .default
+        content.threadIdentifier = DownloadNotificationCategory.transferThreadIdentifier
         content.categoryIdentifier = DownloadNotificationCategory.failedTransfer
         content.userInfo = [
             downloadIDUserInfoKey: downloadID,
@@ -816,6 +819,28 @@ public enum DownloadNotificationManager: @unchecked Sendable {
         let trigger = UNTimeIntervalNotificationTrigger(timeInterval: 0.1, repeats: false)
         let request = UNNotificationRequest(
             identifier: "download-failed-\(downloadID)",
+            content: content,
+            trigger: trigger
+        )
+        Task { try? await transport.addNotification(request: request) }
+        #endif
+    }
+
+    public static func postAllDownloadsCompletedNotification(completedCount: Int) {
+        #if canImport(UserNotifications)
+        guard isUserNotificationsAvailable, completedCount > 0 else { return }
+        let content = UNMutableNotificationContent()
+        content.title = "All Downloads Complete"
+        content.body = completedCount == 1
+            ? "1 download finished."
+            : "\(completedCount) downloads finished."
+        content.sound = .default
+        content.threadIdentifier = DownloadNotificationCategory.transferThreadIdentifier
+        content.categoryIdentifier = DownloadNotificationCategory.completedTransfer
+
+        let trigger = UNTimeIntervalNotificationTrigger(timeInterval: 0.1, repeats: false)
+        let request = UNNotificationRequest(
+            identifier: "downloads-all-complete",
             content: content,
             trigger: trigger
         )
@@ -870,6 +895,7 @@ public enum DownloadNotificationManager: @unchecked Sendable {
         content.body = filename
         content.sound = .default
         content.categoryIdentifier = DownloadNotificationCategory.completedTransfer
+        content.threadIdentifier = DownloadNotificationCategory.transferThreadIdentifier
         content.userInfo = userInfo
 
         let trigger = UNTimeIntervalNotificationTrigger(timeInterval: 0.1, repeats: false)

@@ -3,6 +3,9 @@ import Foundation
 #if canImport(UIKit)
 import UIKit
 #endif
+#if canImport(BackgroundTasks)
+import BackgroundTasks
+#endif
 #if os(iOS) || os(tvOS) || os(watchOS)
 import UserNotifications
 #endif
@@ -18,7 +21,9 @@ import UserNotifications
 @MainActor
 public final class ScheduleCoordinator: ObservableObject {
     public static let torrentBackgroundLimitationMessage = "Torrents can only be downloaded while the app is in the foreground. iOS terminates background sockets. HTTP/HTTPS downloads will run via background scheduling."
-    public static let scheduledBackgroundBehaviorMessage = "When the app goes to the background outside the window, scheduled HTTP downloads are handed to URLSession and requested to start at the next window. iOS start times are approximate; stop times are reminders and are enforced when the app next reconciles."
+    public static let scheduledBackgroundBehaviorMessage = "When the app goes to the background outside the window, scheduled HTTP downloads are handed to URLSession and requested to start at the next window. iOS start times are approximate; stop times are requested via BGAppRefreshTask and reconciled when iOS wakes the app or on next foreground."
+    public static let scheduleReconcileTaskIdentifier = "com.r4m335.SwiftDownloadEngine.schedule-reconcile"
+    private static var didRegisterBackgroundTask = false
 
     public let engine: DownloadEngine?
     public let persistenceStore: DownloadPersistenceStore
@@ -46,6 +51,7 @@ public final class ScheduleCoordinator: ObservableObject {
         self.resumeHandler = resumeHandler
         self.pauseHandler = pauseHandler
         registerTimeChangeObservers()
+        registerBackgroundStopTaskIfNeeded()
     }
 
     deinit {
@@ -76,6 +82,51 @@ public final class ScheduleCoordinator: ObservableObject {
             }
         })
 #endif
+    }
+
+    private func registerBackgroundStopTaskIfNeeded() {
+        #if canImport(BackgroundTasks) && os(iOS)
+        guard Bundle.main.bundleIdentifier != nil,
+              NSClassFromString("XCTest") == nil,
+              !Self.didRegisterBackgroundTask else { return }
+        Self.didRegisterBackgroundTask = true
+        BGTaskScheduler.shared.register(forTaskWithIdentifier: Self.scheduleReconcileTaskIdentifier, using: nil) { [weak self] task in
+            guard let appRefreshTask = task as? BGAppRefreshTask else {
+                task.setTaskCompleted(success: false)
+                return
+            }
+            Task { @MainActor [weak self] in
+                guard let self else {
+                    appRefreshTask.setTaskCompleted(success: false)
+                    return
+                }
+                appRefreshTask.expirationHandler = {
+                    appRefreshTask.setTaskCompleted(success: false)
+                }
+                await self.reconcile()
+                self.scheduleNextStopReconciliation()
+                appRefreshTask.setTaskCompleted(success: true)
+            }
+        }
+        #endif
+    }
+
+    public func scheduleNextStopReconciliation(now: Date = Date()) {
+        #if canImport(BackgroundTasks) && os(iOS)
+        guard Bundle.main.bundleIdentifier != nil,
+              NSClassFromString("XCTest") == nil else { return }
+        let stopDates = rules.compactMap { rule -> Date? in
+            guard rule.isEnabled, let stopTime = rule.stopTime else { return nil }
+            return nextOccurrence(of: stopTime, weekdays: rule.weekdays, after: now)
+        }
+        guard let earliestStop = stopDates.min() else {
+            BGTaskScheduler.shared.cancel(taskRequestWithIdentifier: Self.scheduleReconcileTaskIdentifier)
+            return
+        }
+        let request = BGAppRefreshTaskRequest(identifier: Self.scheduleReconcileTaskIdentifier)
+        request.earliestBeginDate = earliestStop
+        try? BGTaskScheduler.shared.submit(request)
+        #endif
     }
 
     private func handleTimeChange() async {
@@ -126,6 +177,7 @@ public final class ScheduleCoordinator: ObservableObject {
             rules.append(updated)
         }
         await updateNotifications(for: updated, requestPermission: updated.isEnabled && !wasEnabled)
+        scheduleNextStopReconciliation()
         await reconcile()
     }
 
@@ -359,6 +411,8 @@ public final class ScheduleCoordinator: ObservableObject {
                 rules[idx] = updatedRule
             }
         }
+
+        scheduleNextStopReconciliation(now: now)
 
         return ScheduleReconciliationReport(
             timestamp: now,

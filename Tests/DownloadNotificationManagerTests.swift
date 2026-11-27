@@ -426,4 +426,14 @@ final class DownloadNotificationManagerTests: XCTestCase {
         manager.onDownloadCompleted?("dummy-id", tempDir)
         XCTAssertTrue(callbackCalled)
     }
+
+    func testTransferThreadIdentifierAndAllDownloadsCompletedNotification() {
+        XCTAssertEqual(
+            DownloadNotificationCategory.transferThreadIdentifier,
+            "DownloadEngineKit.transfers"
+        )
+        // Verify calling with 0 and positive counts completes safely across platforms
+        DownloadNotificationManager.postAllDownloadsCompletedNotification(completedCount: 0)
+        DownloadNotificationManager.postAllDownloadsCompletedNotification(completedCount: 3)
+    }
 }

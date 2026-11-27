@@ -29,10 +29,12 @@
     <key>BGTaskSchedulerPermittedIdentifiers</key>
     <array>
         <string>com.r4m335.SwiftDownloadEngine.continued-download</string>
+        <string>com.r4m335.SwiftDownloadEngine.schedule-reconcile</string>
     </array>
     <key>UIBackgroundModes</key>
     <array>
         <string>audio</string>
+        <string>fetch</string>
     </array>
     <key>NSCameraUsageDescription</key>
     <string>LID Browser requires camera access when websites request photo or video capture.</string>
