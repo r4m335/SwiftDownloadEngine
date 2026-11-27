@@ -4,10 +4,6 @@ import Foundation
 import FoundationNetworking
 #endif
 
-/// A manifest candidate handed off by browser discovery. The candidate is still
-/// untrusted input and is validated again before any request is made.
-public struct StreamingManifestCandidate: Sendable, Equatable {
-
 public actor StreamingDownloadOrchestrator {
     public static func createDefault() -> StreamingDownloadOrchestrator {
         StreamingDownloadOrchestrator(segmentExecutor: URLSessionStreamingSegmentExecutor())
