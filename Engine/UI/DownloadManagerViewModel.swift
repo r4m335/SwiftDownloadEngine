@@ -10,12 +10,8 @@ import FoundationNetworking
 
 #if canImport(Combine)
 import Combine
-#else
-/// Cross-platform fallback for Combine's ObservableObject on non-Apple environments.
-public protocol ObservableObject: AnyObject {}
+#endif
 
-/// Cross-platform fallback for Combine's @Published property wrapper on non-Apple environments.
-@propertyWrapper
 /// Main-actor isolated view model bridging `DownloadEngine` and `TorrentEngine` to UI layers (SwiftUI / UIKit).
 ///
 /// Features:
