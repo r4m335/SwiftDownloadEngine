@@ -12,7 +12,7 @@ import Security
 /// - Scopes credentials to domain and/or download ID.
 /// - Deletes sensitive credentials automatically when a download record is deleted.
 /// - Provides cross-platform fallback for non-Apple test environments.
-public final class KeychainManager: @unchecked Sendable {
+public final class KeychainManager: Sendable {
     public static let shared = KeychainManager()
 
     private let lock = NSLock()

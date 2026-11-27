@@ -29,7 +29,7 @@ public enum PipelineStage: String, Sendable {
 /// Thread-safe in-memory diagnostic logger for streaming download pipelines (HLS/DASH).
 /// Keeps a bounded circular buffer (last 200 lines) and automatically redacts
 /// sensitive authentication tokens, session cookies, and credentialed URL parameters.
-public final class PipelineLogger: @unchecked Sendable, ObservableObject {
+public final class PipelineLogger: ObservableObject {
     public static let shared = PipelineLogger()
 
     public static let maxLogCount: Int = 200

@@ -130,7 +130,7 @@ public struct BrowserSessionSnapshot: Sendable, Equatable {
 public enum DownloadRequestEnricher {
 
     /// Thread-safe holder for the latest active browser session snapshot.
-    public final class SnapshotHolder: @unchecked Sendable {
+    public final class SnapshotHolder {
         private let lock = NSLock()
         private var _snapshot: BrowserSessionSnapshot?
 

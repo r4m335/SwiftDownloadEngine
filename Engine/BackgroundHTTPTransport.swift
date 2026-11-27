@@ -755,7 +755,7 @@ public struct BackgroundReconciliationReport: Equatable, Sendable {
 /// 4. Validates HTTP 206 Partial Content, Content-Range headers, and expected total file size.
 /// 5. Uses crash-safe staging-and-replace file handling preserving destination on failure.
 /// 6. Feeds completed segment progress directly into `DownloadPersistenceStore` (no competing truth).
-public final class BackgroundDownloadSessionManager: NSObject, @unchecked Sendable {
+public final class BackgroundDownloadSessionManager: NSObject {
 
     public static let defaultSessionIdentifier = "com.r4m335.DownloadEngineKit.background-http"
 

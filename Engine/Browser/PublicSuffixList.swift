@@ -8,7 +8,7 @@ import Foundation
 /// 2. Wildcard rules (e.g. `*.ck`, `*.er`, `*.nom.br`, `*.sch.uk`, `*.tokyo.jp`)
 /// 3. Exception rules prefixed with `!` (e.g. `!www.ck`, `!metro.tokyo.jp`, `!city.kawasaki.jp`)
 /// 4. Extensible runtime registration of arbitrary PSL rules via `addRule(_:)`.
-public final class PublicSuffixList: @unchecked Sendable {
+public final class PublicSuffixList {
 
     /// Represents a parsed rule from the Public Suffix List.
     public struct Rule: Sendable, Hashable {

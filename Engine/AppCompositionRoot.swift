@@ -188,12 +188,12 @@ public final class AppCompositionRoot {
         let settings = AppSettings.load(from: userDefaults)
         let config = settings.makeEngineConfiguration()
 
-        // 3. Shared Singletons & Loggers
+        // 3. Injected Services & Loggers
         let pipelineLogger = PipelineLogger.shared
         let diagnosticLogger = BrowserDiagnosticLogger.shared
         let keychain = KeychainManager.shared
-        let connectivityGate = NetworkConnectivityGate.shared
-        let psl = PublicSuffixList.shared
+        let connectivityGate = NetworkConnectivityGate()
+        let psl = PublicSuffixList()
 
         // 4. Persistence Stores
         let persistence: DownloadPersistenceStore
@@ -230,7 +230,7 @@ public final class AppCompositionRoot {
         let quickAccessStore = QuickAccessStore(defaults: userDefaults, customStorageURL: browserDir.appendingPathComponent("quick_access.json"))
         let faviconService = FaviconService.shared
         let tabPreviewCache = BrowserTabPreviewCache(customCacheDirectoryURL: browserDir.appendingPathComponent("TabPreviews", isDirectory: true))
-        let certStore = BrowserCertificateDecisionStore.shared
+        let certStore = BrowserCertificateDecisionStore()
 
         // 5. Media & Subtitle Stores
         let libraryDir = storeDir.appendingPathComponent("Library", isDirectory: true)
@@ -254,15 +254,18 @@ public final class AppCompositionRoot {
         let liveStreamRecorder = LiveStreamRecorder(libraryStore: libraryStore)
 
         // 6. Browser Coordinators & Handlers
-        let contentBlocker = BrowserContentBlocker.shared
-        let permissionCoordinator = BrowserPermissionCoordinator.shared
-        let authenticationHandler = BrowserAuthenticationHandler.shared
-        let promptHandler = BrowserPromptHandler.shared
-        let streamManifestExpander = StreamManifestResourceExpander.shared
-        let urlInspector = URLInspector.shared
+        let contentBlocker = BrowserContentBlocker()
+        let permissionCoordinator = BrowserPermissionCoordinator()
+        let authenticationHandler = BrowserAuthenticationHandler()
+        let promptHandler = BrowserPromptHandler()
+        let streamManifestExpander = StreamManifestResourceExpander()
+        let urlInspector = URLInspector()
 
         // 7. Core Transfer Engines
-        let session = ForegroundURLSession.make(maximumConnectionsPerHost: SegmentAllocator.maxThreadCount)
+        let session = ForegroundURLSession.make(
+            maximumConnectionsPerHost: SegmentAllocator.maxThreadCount,
+            proxyDictionary: config.connectionProxyDictionary
+        )
         let budget = SharedRequestBudget(maxGlobalRequests: config.maxGlobalRequests)
         let limiter = BandwidthLimiter(bytesPerSecond: config.globalBandwidthLimitBytesPerSecond)
 
@@ -273,7 +276,8 @@ public final class AppCompositionRoot {
                 persistenceStore: persistence,
                 requestBudget: budget,
                 globalBandwidthLimiter: limiter,
-                backgroundSessionManager: backgroundSessionManager
+                backgroundSessionManager: backgroundSessionManager,
+                connectivityGate: connectivityGate
             )
         } catch {
             fatalError("Failed to initialize production DownloadCoordinator: \(error)")

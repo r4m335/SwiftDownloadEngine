@@ -7,7 +7,7 @@ import FoundationNetworking
 /// Bridges URLSession's delegate callbacks to an async sequence of Data
 /// chunks. The URLSession task is suspended while the bounded queue is full,
 /// providing backpressure without creating a per-byte async suspension.
-final class URLSessionDataChunkStream: NSObject, URLSessionDataDelegate, @unchecked Sendable {
+final class URLSessionDataChunkStream: NSObject, URLSessionDataDelegate {
     private static let highWaterMark = 1 * 1024 * 1024
     private static let lowWaterMark = 256 * 1024
 

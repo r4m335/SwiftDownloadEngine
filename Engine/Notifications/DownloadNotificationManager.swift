@@ -66,7 +66,7 @@ public protocol NotificationCenterTransport: Sendable {
 // MARK: - System Notification Center Transport
 
 #if canImport(UserNotifications)
-public final class SystemNotificationCenterTransport: NotificationCenterTransport, @unchecked Sendable {
+public final class SystemNotificationCenterTransport: NotificationCenterTransport {
     public static let shared = SystemNotificationCenterTransport()
 
     public init() {}
@@ -153,7 +153,7 @@ public final class SystemNotificationCenterTransport: NotificationCenterTranspor
 
 // MARK: - Mock Notification Center Transport for Unit Tests
 
-public final class MockNotificationCenterTransport: NotificationCenterTransport, @unchecked Sendable {
+public final class MockNotificationCenterTransport: NotificationCenterTransport {
     private let lock = NSLock()
     public var stubbedPermissionStatus: NotificationPermissionStatus = .notDetermined
     public var requestAuthorizationResult: Bool = true
@@ -277,7 +277,7 @@ public struct TransferProgressSnapshot: Sendable, Codable, Equatable {
 
 /// Manages notification permissions, lifecycle dispatches, throttled progress notifications,
 /// actionable controls, and relaunch reconciliation across HTTP, torrent, and live recording transfers.
-public enum DownloadNotificationManager: @unchecked Sendable {
+public enum DownloadNotificationManager {
 
     // MARK: - Notification Names: HTTP & Stream Transfers
 

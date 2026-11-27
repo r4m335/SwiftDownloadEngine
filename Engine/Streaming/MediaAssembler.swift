@@ -397,14 +397,14 @@ public enum MediaAssembler {
     }
 
 #if canImport(AVFoundation)
-    private final class MuxState: @unchecked Sendable {
+    private final class MuxState {
         let lock = NSLock()
         var appendFailed = false
         var lastError: String? = nil
         var samplesAppended = 0
     }
 
-    private final class MuxTrackContext: @unchecked Sendable {
+    private final class MuxTrackContext {
         let kind: MediaAssemblyTrackKind
         let reader: AVAssetReader
         let output: AVAssetReaderTrackOutput

@@ -42,7 +42,7 @@ public struct SpeedMetrics: Equatable, Sendable {
 /// - Sensible ETA: Reports estimated remaining time only when total size is known, file size > 0,
 ///   and transfer rate > 0. Returns `nil` for zero-byte or indeterminate-size downloads without inventing numbers.
 /// - Non-blocking: Synchronous locked sampling avoids actor hops on high-frequency chunk writes.
-public final class DownloadSpeedTracker: @unchecked Sendable {
+public final class DownloadSpeedTracker {
     private struct ByteSample {
         let timestamp: TimeInterval
         let bytes: Int64
@@ -164,7 +164,7 @@ public struct BandwidthSample: Identifiable, Equatable, Sendable, Codable {
 /// - Enforces a strict upper bound on sample capacity (`maxCapacity`) to prevent memory growth.
 /// - Calculates peak download and upload rates across the active window.
 /// - Thread-safe via NSLock.
-public final class BandwidthHistoryTracker: @unchecked Sendable {
+public final class BandwidthHistoryTracker {
     private let lock = NSLock()
     private var samples: [BandwidthSample] = []
     public let maxDuration: TimeInterval

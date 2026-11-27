@@ -526,7 +526,7 @@ final class HTTPRangeProbe: Sendable {
 
 // MARK: - Redirect Tracking Delegate & Task Management
 
-final class ManagedTaskCancelledBox: @unchecked Sendable {
+final class ManagedTaskCancelledBox {
     private let lock = NSLock()
     private var _wasCancelled = false
 
@@ -544,7 +544,7 @@ final class ManagedTaskCancelledBox: @unchecked Sendable {
     }
 }
 
-private final class RedirectCaptureDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+private final class RedirectCaptureDelegate: NSObject, URLSessionTaskDelegate {
     private let lock = NSLock()
     private var _resolvedFinalURL: URL?
     private weak var _activeTask: URLSessionTask?
