@@ -464,25 +464,7 @@ public struct AppSettings: Codable, Sendable, Equatable, SchemaVersioned {
     }
 
     public static func makeProxyDictionary(enabled: Bool, host rawHost: String, port: Int) -> [AnyHashable: Any]? {
-        let host = rawHost.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard enabled, !host.isEmpty, port > 0, port <= 65535 else {
-            return nil
-        }
-        #if canImport(CFNetwork)
-        var dict: [AnyHashable: Any] = [
-            kCFNetworkProxiesHTTPEnable as AnyHashable: 1,
-            kCFNetworkProxiesHTTPProxy as AnyHashable: host,
-            kCFNetworkProxiesHTTPPort as AnyHashable: port
-        ]
-        #if os(macOS)
-        dict[kCFNetworkProxiesHTTPSEnable as AnyHashable] = 1
-        dict[kCFNetworkProxiesHTTPSProxy as AnyHashable] = host
-        dict[kCFNetworkProxiesHTTPSPort as AnyHashable] = port
-        #endif
-        return dict
-        #else
-        return nil
-        #endif
+        EngineConfiguration.makeProxyDictionary(enabled: enabled, host: rawHost, port: port)
     }
 
     /// Loads settings from standard UserDefaults with schema version check, migration, and corruption preservation.

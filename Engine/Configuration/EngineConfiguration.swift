@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(CFNetwork)
+import CFNetwork
+#endif
 
 /// Defines how duplicate file downloads are handled when a file with the destination name already exists.
 public enum DuplicateNamingRule: String, Codable, Sendable, CaseIterable {
@@ -37,7 +40,29 @@ public struct EngineConfiguration: Sendable, Equatable {
 
     /// Builds a `URLSessionConfiguration.connectionProxyDictionary` when proxy is enabled and valid.
     public var connectionProxyDictionary: [AnyHashable: Any]? {
-        AppSettings.makeProxyDictionary(enabled: proxyEnabled, host: proxyHost, port: proxyPort)
+        Self.makeProxyDictionary(enabled: proxyEnabled, host: proxyHost, port: proxyPort)
+    }
+
+    public static func makeProxyDictionary(enabled: Bool, host rawHost: String, port: Int) -> [AnyHashable: Any]? {
+        let host = rawHost.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard enabled, !host.isEmpty, port > 0, port <= 65535 else {
+            return nil
+        }
+        #if canImport(CFNetwork)
+        var dict: [AnyHashable: Any] = [
+            kCFNetworkProxiesHTTPEnable as AnyHashable: 1,
+            kCFNetworkProxiesHTTPProxy as AnyHashable: host,
+            kCFNetworkProxiesHTTPPort as AnyHashable: port
+        ]
+        #if os(macOS)
+        dict[kCFNetworkProxiesHTTPSEnable as AnyHashable] = 1
+        dict[kCFNetworkProxiesHTTPSProxy as AnyHashable] = host
+        dict[kCFNetworkProxiesHTTPSPort as AnyHashable] = port
+        #endif
+        return dict
+        #else
+        return nil
+        #endif
     }
 
     public static let `default` = EngineConfiguration(
