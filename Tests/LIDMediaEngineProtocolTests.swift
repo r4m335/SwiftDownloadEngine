@@ -48,19 +48,29 @@ final class LIDMediaEngineProtocolTests: XCTestCase {
 
     @MainActor
     func testVLCKitBackendStubOperations() {
+        final class FailSpy: LIDMediaEngineDelegate {
+            var lastError: String?
+            var states: [LIDPlaybackState] = []
+            func engineDidUpdateState(_ engine: LIDMediaEngineProtocol, state: LIDPlaybackState) { states.append(state) }
+            func engineDidUpdateTime(_ engine: LIDMediaEngineProtocol, currentSeconds: Double, durationSeconds: Double) {}
+            func engineDidUpdateBuffering(_ engine: LIDMediaEngineProtocol, bufferedSeconds: Double) {}
+            func engineDidUpdateMetadata(_ engine: LIDMediaEngineProtocol, metadata: LIDMediaMetadata) {}
+            func engineDidFail(_ engine: LIDMediaEngineProtocol, error: String) { lastError = error }
+        }
+
         let backend = LIDVLCKitBackend()
+        let spy = FailSpy()
+        backend.delegate = spy
         XCTAssertEqual(backend.backendType, .vlcKit)
         XCTAssertEqual(backend.playbackState, .idle)
 
         let dummySource = LIDPlayerSource.localFile(url: URL(fileURLWithPath: "/tmp/test.ts"), title: "Test")
         backend.load(source: dummySource, autoPlay: false)
-        XCTAssertEqual(backend.playbackState, .loading)
+        XCTAssertEqual(backend.playbackState, .failed(LIDVLCKitBackend.unavailableMessage))
+        XCTAssertEqual(spy.lastError, LIDVLCKitBackend.unavailableMessage)
 
         backend.play()
-        XCTAssertEqual(backend.playbackState, .playing)
-
-        backend.pause()
-        XCTAssertEqual(backend.playbackState, .paused)
+        XCTAssertEqual(backend.playbackState, .failed(LIDVLCKitBackend.unavailableMessage))
 
         backend.seek(to: 42.0)
         XCTAssertEqual(backend.currentPositionSeconds, 42.0)

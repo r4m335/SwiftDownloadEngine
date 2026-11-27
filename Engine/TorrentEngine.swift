@@ -1310,7 +1310,7 @@ public actor TorrentEngine {
             throw error
         }
 
-        let task = TorrentTask(
+        var task = TorrentTask(
             id: record.id,
             source: record.source,
             name: record.name,
@@ -1324,6 +1324,7 @@ public actor TorrentEngine {
             isExplicitlyPaused: record.isExplicitlyPaused,
             isSequentialDownload: isSequential
         )
+        task.errorMessage = "Native libtorrent backend is not linked in this build; peer transfers are unavailable."
         tasks[infoHash.lowercased()] = task
         return task
     }
@@ -1400,7 +1401,7 @@ public actor TorrentEngine {
             throw error
         }
 
-        let task = TorrentTask(
+        var task = TorrentTask(
             id: record.id,
             source: record.source,
             name: record.name,
@@ -1412,6 +1413,7 @@ public actor TorrentEngine {
             isExplicitlyPaused: record.isExplicitlyPaused,
             isSequentialDownload: isSequential
         )
+        task.errorMessage = "Native libtorrent backend is not linked in this build; peer transfers are unavailable."
         tasks[infoHash] = task
         return task
     }

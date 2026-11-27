@@ -660,6 +660,7 @@ public final class LIDVLCKitBackend: NSObject, LIDMediaEngineProtocol {
     public func setAspectRatio(_ ratio: LIDAspectRatio) {}
 
     private var currentLoadedSource: LIDPlayerSource?
+    public static let unavailableMessage = "VLCKit playback engine is not available in this build."
 
     public override init() {
         super.init()
@@ -667,17 +668,18 @@ public final class LIDVLCKitBackend: NSObject, LIDMediaEngineProtocol {
 
     public func load(source: LIDPlayerSource, autoPlay: Bool) {
         self.currentLoadedSource = source
-        self.playbackState = .loading
-        delegate?.engineDidUpdateState(self, state: self.playbackState)
-        if autoPlay {
-            self.play()
-        }
+        failWithUnavailableError()
     }
 
     public func play() {
-        guard currentLoadedSource != nil else { return }
-        self.playbackState = .playing
+        failWithUnavailableError()
+    }
+
+    private func failWithUnavailableError() {
+        PipelineLogger.shared.log(stage: .playback, message: Self.unavailableMessage)
+        self.playbackState = .failed(Self.unavailableMessage)
         delegate?.engineDidUpdateState(self, state: self.playbackState)
+        delegate?.engineDidFail(self, error: Self.unavailableMessage)
     }
 
     public func pause() {

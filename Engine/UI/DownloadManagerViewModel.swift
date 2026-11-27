@@ -342,16 +342,22 @@ public enum DownloadsDirectoryManager: Sendable {
         return results
     }
 
-    /// Resolves the default destination downloads directory with defensive validation and fallback cascades.
-    public static func defaultDownloadsDirectory() -> URL {
+    /// Resolves the default destination downloads directory with defensive validation and surfaces any temporary-directory fallback error.
+    public static func resolveDefaultDownloadsDirectory() -> (url: URL, fallbackError: String?) {
         do {
-            return try validatedDownloadsDirectory()
+            return (try validatedDownloadsDirectory(), nil)
         } catch {
             let emergencyURL = FileManager.default.temporaryDirectory.appendingPathComponent("EmergencyDownloads", isDirectory: true)
             _ = try? FileManager.default.createDirectory(at: emergencyURL, withIntermediateDirectories: true, attributes: defaultDirectoryAttributes)
-            PipelineLogger.shared.log("[FileSystem] Critical fallback: using emergency temporary directory: \(emergencyURL.path)")
-            return emergencyURL
+            let msg = "Downloads folder could not be accessed (\(error.localizedDescription)). Using temporary storage — files may be purged by the system."
+            PipelineLogger.shared.log("[FileSystem] \(msg)")
+            return (emergencyURL, msg)
         }
+    }
+
+    /// Resolves the default destination downloads directory with defensive validation and fallback cascades.
+    public static func defaultDownloadsDirectory() -> URL {
+        resolveDefaultDownloadsDirectory().url
     }
 }
 
@@ -510,17 +516,26 @@ public final class DownloadManagerViewModel: ObservableObject {
         self.torrentEngine = torrentEngine
         self.streamingOrchestrator = streamingOrchestrator
         let resolvedDirectory: URL
+        var directoryFallbackError: String? = nil
         if let custom = downloadsDirectory {
             do {
                 resolvedDirectory = try Self.ensureDirectoryExistsAndWritable(custom)
             } catch {
-                PipelineLogger.shared.log("[DownloadManager] Custom downloads directory '\(custom.path)' unwritable: \(error.localizedDescription). Falling back to validated default.")
-                resolvedDirectory = Self.defaultDownloadsDirectory()
+                let defaultResolved = DownloadsDirectoryManager.resolveDefaultDownloadsDirectory()
+                resolvedDirectory = defaultResolved.url
+                directoryFallbackError = defaultResolved.fallbackError
+                    ?? "Custom downloads directory '\(custom.lastPathComponent)' is not writable (\(error.localizedDescription)). Using default Downloads folder."
+                PipelineLogger.shared.log("[DownloadManager] \(directoryFallbackError!)")
             }
         } else {
-            resolvedDirectory = Self.defaultDownloadsDirectory()
+            let defaultResolved = DownloadsDirectoryManager.resolveDefaultDownloadsDirectory()
+            resolvedDirectory = defaultResolved.url
+            directoryFallbackError = defaultResolved.fallbackError
         }
         self.downloadsDirectoryURL = resolvedDirectory
+        if let directoryFallbackError {
+            self.errorMessage = directoryFallbackError
+        }
         self.userDefaults = userDefaults
         self.scheduleCoordinator = ScheduleCoordinator(
             engine: engine,
@@ -1661,6 +1676,9 @@ public final class DownloadManagerViewModel: ObservableObject {
             self.errorMessage = error
             throw TorrentEngineError.sessionNotRunning
         }
+        if !TorrentEngine.isNativeBackendAvailable {
+            self.errorMessage = "BitTorrent downloads require the native libtorrent backend, which is not linked in this build."
+        }
 
         let trimmed = magnetURI.trimmingCharacters(in: .whitespacesAndNewlines)
         let parsedMagnet: MagnetLink
@@ -1723,6 +1741,9 @@ public final class DownloadManagerViewModel: ObservableObject {
             self.errorMessage = error
             throw TorrentEngineError.sessionNotRunning
         }
+        if !TorrentEngine.isNativeBackendAvailable {
+            self.errorMessage = "BitTorrent downloads require the native libtorrent backend, which is not linked in this build."
+        }
 
         let resolvedPriority = priority ?? defaultTorrentPriority
         do {
@@ -1775,6 +1796,9 @@ public final class DownloadManagerViewModel: ObservableObject {
             let error = "Torrent engine is not initialized."
             self.errorMessage = error
             throw TorrentEngineError.sessionNotRunning
+        }
+        if !TorrentEngine.isNativeBackendAvailable {
+            self.errorMessage = "BitTorrent downloads require the native libtorrent backend, which is not linked in this build."
         }
 
         let resolvedPriority = priority ?? defaultTorrentPriority

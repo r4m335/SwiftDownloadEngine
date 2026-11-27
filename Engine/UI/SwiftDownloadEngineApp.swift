@@ -247,6 +247,7 @@ public struct SwiftDownloadEngineApp: App {
         )
 
         var engineInstance: DownloadEngine? = nil
+        var storageFallbackError: String? = nil
         do {
             try DownloadManagerViewModel.ensureDirectoryExistsAndWritable(storeDir)
             engineInstance = try DownloadEngine(
@@ -256,7 +257,8 @@ public struct SwiftDownloadEngineApp: App {
                 backgroundSessionManager: bgManager
             )
         } catch {
-            print("Notice: DownloadEngine primary storage initialization failed: \(error.localizedDescription). Initializing fallback storage.")
+            storageFallbackError = "Persistent download storage failed (\(error.localizedDescription)). Using temporary storage — queue state may not persist across restarts."
+            PipelineLogger.shared.log(stage: .coordinator, message: storageFallbackError!)
             let fallbackStore = FileManager.default.temporaryDirectory.appendingPathComponent("Downloads_Fallback", isDirectory: true)
             do {
                 try FileManager.default.createDirectory(at: fallbackStore, withIntermediateDirectories: true)
@@ -368,6 +370,9 @@ public struct SwiftDownloadEngineApp: App {
             userDefaults: .standard,
             streamingOrchestrator: orchestrator
         )
+        if let storageFallbackError {
+            vm.errorMessage = storageFallbackError
+        }
         Task { await engine.setStreamingOrchestrator(orchestrator) }
         _viewModel = StateObject(wrappedValue: vm)
     }
