@@ -48,6 +48,8 @@
     <string>LID Download Manager requires local network access to discover BitTorrent swarm peers and stream media on your local network.</string>
     <key>NSAppTransportSecurity</key>
     <dict>
+        <key>NSAllowsArbitraryLoads</key>
+        <true/>
         <key>NSAllowsArbitraryLoadsInWebContent</key>
         <true/>
         <key>NSAllowsLocalNetworking</key>
