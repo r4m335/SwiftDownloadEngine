@@ -1,7 +1,10 @@
 import Foundation
 
 /// Durable persisted metadata snapshot of an active or interrupted live stream recording session.
-public struct LiveRecordingRecord: Codable, Identifiable, Sendable {
+public struct LiveRecordingRecord: Codable, Identifiable, Sendable, SchemaVersioned {
+    public static let currentSchemaVersion: Int = 1
+
+    public var schemaVersion: Int
     public let id: String
     public let request: LiveRecordingRequest
     public var state: String
@@ -17,6 +20,7 @@ public struct LiveRecordingRecord: Codable, Identifiable, Sendable {
     public var updatedAt: Date
 
     public init(
+        schemaVersion: Int = LiveRecordingRecord.currentSchemaVersion,
         id: String,
         request: LiveRecordingRequest,
         state: String,
@@ -31,6 +35,7 @@ public struct LiveRecordingRecord: Codable, Identifiable, Sendable {
         createdAt: Date = Date(),
         updatedAt: Date = Date()
     ) {
+        self.schemaVersion = schemaVersion
         self.id = id
         self.request = request
         self.state = state
@@ -44,6 +49,30 @@ public struct LiveRecordingRecord: Codable, Identifiable, Sendable {
         self.outputContainerFormat = outputContainerFormat
         self.createdAt = createdAt
         self.updatedAt = updatedAt
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion, id, request, state, recordedDurationSeconds, recordedSegmentCount
+        case bytesWritten, recordedSegments, initializationSegmentURLs, committedSegmentKeys
+        case scratchDirectoryPath, outputContainerFormat, createdAt, updatedAt
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.schemaVersion = try c.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 1
+        self.id = try c.decode(String.self, forKey: .id)
+        self.request = try c.decode(LiveRecordingRequest.self, forKey: .request)
+        self.state = try c.decode(String.self, forKey: .state)
+        self.recordedDurationSeconds = try c.decode(Double.self, forKey: .recordedDurationSeconds)
+        self.recordedSegmentCount = try c.decode(Int.self, forKey: .recordedSegmentCount)
+        self.bytesWritten = try c.decode(Int64.self, forKey: .bytesWritten)
+        self.recordedSegments = try c.decode([LiveRecordedSegment].self, forKey: .recordedSegments)
+        self.initializationSegmentURLs = try c.decode([URL].self, forKey: .initializationSegmentURLs)
+        self.committedSegmentKeys = try c.decode([String].self, forKey: .committedSegmentKeys)
+        self.scratchDirectoryPath = try c.decode(String.self, forKey: .scratchDirectoryPath)
+        self.outputContainerFormat = try c.decodeIfPresent(String.self, forKey: .outputContainerFormat)
+        self.createdAt = try c.decode(Date.self, forKey: .createdAt)
+        self.updatedAt = try c.decode(Date.self, forKey: .updatedAt)
     }
 }
 
@@ -125,13 +154,7 @@ public actor LiveRecordingStore {
 
         let fileURL = sessionFileURL(for: record.id)
         let data = try encoder.encode(rec)
-        let stagingURL = folder.appendingPathComponent("session.json.tmp")
-        try data.write(to: stagingURL, options: .atomic)
-
-        if FileManager.default.fileExists(atPath: fileURL.path) {
-            try? FileManager.default.removeItem(at: fileURL)
-        }
-        try FileManager.default.moveItem(at: stagingURL, to: fileURL)
+        try DurableStorage.writeAtomically(data, to: fileURL)
     }
 
     public func load(sessionID: String) async -> LiveRecordingRecord? {
@@ -139,13 +162,19 @@ public actor LiveRecordingStore {
             return cached
         }
         let fileURL = sessionFileURL(for: sessionID)
-        guard FileManager.default.fileExists(atPath: fileURL.path),
-              let data = try? Data(contentsOf: fileURL),
-              let record = try? decoder.decode(LiveRecordingRecord.self, from: data) else {
+        do {
+            guard let record = try DurableStorage.load(from: fileURL, decoder: decoder) as LiveRecordingRecord? else {
+                return nil
+            }
+            cache[sessionID] = record
+            return record
+        } catch {
+            PipelineLogger.shared.log(
+                stage: .persistence,
+                message: "[LiveRecordingStore] Failed to load session \(sessionID) at \(fileURL.path): \(error.localizedDescription)"
+            )
             return nil
         }
-        cache[sessionID] = record
-        return record
     }
 
     public func delete(sessionID: String) async throws {

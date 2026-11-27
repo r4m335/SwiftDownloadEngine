@@ -641,7 +641,11 @@ public actor DownloadQueueManager {
         }
 
         await cleanupDiskFiles(for: id, destinationURL: item.request.destinationURL, deleteFiles: true)
-        try? await persistenceStore.delete(tag: id)
+        do {
+            try await persistenceStore.delete(tag: id)
+        } catch {
+            PipelineLogger.shared.log("[DownloadQueueManager] Failed to delete persistence record for \(id): \(error.localizedDescription)")
+        }
 
         item.completedBytes = 0
         item.state = .pending
@@ -677,10 +681,18 @@ public actor DownloadQueueManager {
         await cleanupDiskFiles(for: id, destinationURL: item.request.destinationURL, deleteFiles: deleteDestinationFile)
 
         if deleteDestinationFile {
-            try? await persistenceStore.delete(tag: id)
+            do {
+                try await persistenceStore.delete(tag: id)
+            } catch {
+                PipelineLogger.shared.log("[DownloadQueueManager] Failed to delete persistence record for \(id): \(error.localizedDescription)")
+            }
             KeychainManager.shared.deleteCredentials(forDownloadId: id)
         } else {
-            _ = try? await persistenceStore.updateState(tag: id, state: .cancelled)
+            do {
+                _ = try await persistenceStore.updateState(tag: id, state: .cancelled)
+            } catch {
+                PipelineLogger.shared.log("[DownloadQueueManager] Failed to persist cancelled state for \(id): \(error.localizedDescription)")
+            }
         }
 
         persistQueue()
@@ -827,10 +839,18 @@ public actor DownloadQueueManager {
         for (id, item) in items where item.state == .cancelled {
             await cleanupDiskFiles(for: id, destinationURL: item.request.destinationURL, deleteFiles: deleteDestinationFiles)
             if deleteDestinationFiles {
-                try? await persistenceStore.delete(tag: id)
+                do {
+                    try await persistenceStore.delete(tag: id)
+                } catch {
+                    PipelineLogger.shared.log("[DownloadQueueManager] Failed to delete persistence record for \(id): \(error.localizedDescription)")
+                }
                 KeychainManager.shared.deleteCredentials(forDownloadId: id)
             } else {
-                _ = try? await persistenceStore.updateState(tag: id, state: .cancelled)
+                do {
+                    _ = try await persistenceStore.updateState(tag: id, state: .cancelled)
+                } catch {
+                    PipelineLogger.shared.log("[DownloadQueueManager] Failed to persist cancelled state for \(id): \(error.localizedDescription)")
+                }
             }
         }
 

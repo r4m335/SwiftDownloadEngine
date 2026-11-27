@@ -362,4 +362,88 @@ final class PersistenceSchemaAndMigrationTests: XCTestCase {
         XCTAssertEqual(qDecoded.schemaVersion, 1)
         XCTAssertEqual(qDecoded.reason, "validation failed")
     }
+
+    func testUserDefaultsVersionedLayerAndCorruptionPreservation() throws {
+        let suiteName = "DurableStorageTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        // 1. Round-trip AppSettings and LIDPlayerSettings through SchemaVersioned UserDefaults layer
+        var settings = AppSettings.default
+        settings.maxConcurrentDownloads = 5
+        settings.save(to: defaults)
+        let loadedSettings = AppSettings.load(from: defaults)
+        XCTAssertEqual(loadedSettings.maxConcurrentDownloads, 5)
+        XCTAssertEqual(loadedSettings.schemaVersion, AppSettings.currentSchemaVersion)
+
+        let playerStore = LIDPlayerSettingsStore(userDefaults: defaults)
+        playerStore.settings.seekIntervalSeconds = 15
+        let reloadedPlayer = LIDPlayerSettingsStore(userDefaults: defaults)
+        XCTAssertEqual(reloadedPlayer.settings.seekIntervalSeconds, 15)
+        XCTAssertEqual(reloadedPlayer.settings.schemaVersion, LIDPlayerSettings.currentSchemaVersion)
+
+        // 2. Legacy BrowserSnifferFilter without schemaVersion decodes and migrates cleanly
+        let legacyFilterJSON = #"{"allowedExtensions":["mp4"],"allowedMIMETypes":["video/"],"isFilterEnabled":false}"#.data(using: .utf8)!
+        let filterKey = "test.filter.\(UUID().uuidString)"
+        defaults.set(legacyFilterJSON, forKey: filterKey)
+        let loadedFilter = DurableStorage.loadFromUserDefaults(BrowserSnifferFilter.self, forKey: filterKey, defaults: defaults)
+        XCTAssertEqual(loadedFilter?.schemaVersion, 1)
+        XCTAssertEqual(loadedFilter?.isFilterEnabled, false)
+
+        // 3. Corrupt UserDefaults payload is preserved under a .corrupt. backup key rather than silently discarded
+        let corruptKey = "test.corrupt.\(UUID().uuidString)"
+        let garbage = Data("{not-valid-json".utf8)
+        defaults.set(garbage, forKey: corruptKey)
+        let failedDecode = DurableStorage.loadFromUserDefaults(BrowserSnifferFilter.self, forKey: corruptKey, defaults: defaults)
+        XCTAssertNil(failedDecode)
+        let backupKey = defaults.dictionaryRepresentation().keys.first { $0.hasPrefix("\(corruptKey).corrupt.") }
+        XCTAssertNotNil(backupKey, "Corrupt UserDefaults data should be preserved under a .corrupt. key")
+
+        // 4. Future schema version returns nil without overwriting stored data
+        var futureFilter = BrowserSnifferFilter(schemaVersion: 999)
+        futureFilter.isFilterEnabled = false
+        let futureKey = "test.future.\(UUID().uuidString)"
+        DurableStorage.saveToUserDefaults(futureFilter, forKey: futureKey, defaults: defaults)
+        let futureLoaded = DurableStorage.loadFromUserDefaults(BrowserSnifferFilter.self, forKey: futureKey, defaults: defaults)
+        XCTAssertNil(futureLoaded)
+        XCTAssertNotNil(defaults.data(forKey: futureKey))
+    }
+
+    func testLiveRecordingStoreSchemaVersionedAndQuarantine() async throws {
+        let store = try LiveRecordingStore(storageDirectoryURL: tempDirectory.appendingPathComponent("LiveRecordings", isDirectory: true))
+        let req = LiveRecordingRequest(
+            title: "Test Stream",
+            manifestURL: URL(string: "https://example.com/live.m3u8")!,
+            destinationURL: tempDirectory.appendingPathComponent("out.mp4")
+        )
+        let record = LiveRecordingRecord(
+            id: "rec-1",
+            request: req,
+            state: "recording",
+            recordedDurationSeconds: 12.5,
+            recordedSegmentCount: 3,
+            bytesWritten: 1024,
+            scratchDirectoryPath: tempDirectory.path
+        )
+        XCTAssertEqual(record.schemaVersion, LiveRecordingRecord.currentSchemaVersion)
+
+        try await store.save(record: record)
+
+        // Fresh store instance loads persisted record
+        let store2 = try LiveRecordingStore(storageDirectoryURL: tempDirectory.appendingPathComponent("LiveRecordings", isDirectory: true))
+        let loaded = await store2.load(sessionID: "rec-1")
+        XCTAssertEqual(loaded?.id, "rec-1")
+        XCTAssertEqual(loaded?.schemaVersion, 1)
+
+        // Corrupt session.json should be quarantined by DurableStorage on load
+        let corruptFolder = tempDirectory.appendingPathComponent("LiveRecordings/rec-corrupt", isDirectory: true)
+        try FileManager.default.createDirectory(at: corruptFolder, withIntermediateDirectories: true)
+        let corruptFile = corruptFolder.appendingPathComponent("session.json")
+        try Data("{corrupt".utf8).write(to: corruptFile)
+
+        let badLoaded = await store2.load(sessionID: "rec-corrupt")
+        XCTAssertNil(badLoaded)
+        let files = try FileManager.default.contentsOfDirectory(at: corruptFolder, includingPropertiesForKeys: nil)
+        XCTAssertTrue(files.contains { $0.lastPathComponent.contains(".corrupt.") }, "Corrupted LiveRecordingStore session.json should be quarantined")
+    }
 }

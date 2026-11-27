@@ -404,15 +404,27 @@ public enum DownloadNotificationManager: @unchecked Sendable {
 
     private static func savePersistedNotifiedIDsLocked() {
         guard let url = persistenceFileURL else { return }
-        if let data = try? JSONEncoder().encode(Array(notifiedIDs)) {
-            try? data.write(to: url, options: .atomic)
+        do {
+            let data = try JSONEncoder().encode(Array(notifiedIDs))
+            try DurableStorage.writeAtomically(data, to: url)
+        } catch {
+            PipelineLogger.shared.log(
+                stage: .persistence,
+                message: "[DownloadNotificationManager] Failed to persist notified IDs to \(url.path): \(error.localizedDescription)"
+            )
         }
     }
 
     private static func savePersistedActiveSnapshotsLocked() {
         guard let url = activeNotificationFileURL else { return }
-        if let data = try? JSONEncoder().encode(activeTransferSnapshots) {
-            try? data.write(to: url, options: .atomic)
+        do {
+            let data = try JSONEncoder().encode(activeTransferSnapshots)
+            try DurableStorage.writeAtomically(data, to: url)
+        } catch {
+            PipelineLogger.shared.log(
+                stage: .persistence,
+                message: "[DownloadNotificationManager] Failed to persist active notification snapshots to \(url.path): \(error.localizedDescription)"
+            )
         }
     }
 

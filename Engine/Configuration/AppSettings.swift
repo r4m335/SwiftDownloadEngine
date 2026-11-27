@@ -118,11 +118,13 @@ public enum BrowserReaderFontFamily: String, CaseIterable, Identifiable, Codable
 
 /// Codable user-facing preferences stored in UserDefaults (@AppStorage).
 /// Features a `version` field for seamless migrations across app updates.
-public struct AppSettings: Codable, Sendable, Equatable {
+public struct AppSettings: Codable, Sendable, Equatable, SchemaVersioned {
     public static let currentVersion: Int = 8
+    public static var currentSchemaVersion: Int { currentVersion }
     public static let userDefaultsKey = "com.r4m335.DownloadEngineKit.AppSettings"
 
     public var version: Int
+    public var schemaVersion: Int { version }
     public var maxConcurrentDownloads: Int
     public var maxGlobalRequests: Int
     public var timeoutSeconds: Int
@@ -440,25 +442,22 @@ public struct AppSettings: Codable, Sendable, Equatable {
         #endif
     }
 
-    /// Loads settings from standard UserDefaults with schema version check and fallback.
+    /// Loads settings from standard UserDefaults with schema version check, migration, and corruption preservation.
     public static func load(from defaults: UserDefaults = .standard) -> AppSettings {
-        guard let data = defaults.data(forKey: userDefaultsKey),
-              let settings = try? JSONDecoder().decode(AppSettings.self, from: data) else {
-            return .default
-        }
-        if settings.version < currentVersion {
-            var migrated = settings
-            migrated.version = currentVersion
-            migrated.save(to: defaults)
-            return migrated
-        }
-        return settings
+        return DurableStorage.loadFromUserDefaults(
+            AppSettings.self,
+            forKey: userDefaultsKey,
+            defaults: defaults,
+            migrate: { settings in
+                var migrated = settings
+                migrated.version = currentVersion
+                return migrated
+            }
+        ) ?? .default
     }
 
     /// Persists settings to standard UserDefaults.
     public func save(to defaults: UserDefaults = .standard) {
-        if let data = try? JSONEncoder().encode(self) {
-            defaults.set(data, forKey: Self.userDefaultsKey)
-        }
+        DurableStorage.saveToUserDefaults(self, forKey: Self.userDefaultsKey, defaults: defaults)
     }
 }

@@ -988,7 +988,11 @@ public actor TorrentEngine {
             if rec.state == .error {
                 rec.state = .checking
             }
-            try? await persistenceStore.saveRecord(rec)
+            do {
+                try await persistenceStore.saveRecord(rec)
+            } catch {
+                PipelineLogger.shared.log(stage: .persistence, message: "[TorrentEngine] Failed to save record for \(key): \(error.localizedDescription)")
+            }
         }
         tasks[key]?.errorMessage = nil
         if tasks[key]?.state == .error {
@@ -1003,7 +1007,11 @@ public actor TorrentEngine {
         if var rec = await scheduler?.record(for: key) {
             rec.errorMessage = nil
             rec.state = .queued
-            try? await persistenceStore.saveRecord(rec)
+            do {
+                try await persistenceStore.saveRecord(rec)
+            } catch {
+                PipelineLogger.shared.log(stage: .persistence, message: "[TorrentEngine] Failed to save record for \(key): \(error.localizedDescription)")
+            }
         }
         tasks[key]?.errorMessage = nil
         let changes = await scheduler?.pumpQueue()
@@ -1029,7 +1037,11 @@ public actor TorrentEngine {
             for h in Array(pendingHashes) {
                 if bridge.isResumeDataReady(forTorrentWithHash: h) {
                     if let data = bridge.resumeData(forTorrentWithHash: h) {
-                        try? await persistenceStore.saveResumeData(data, for: h)
+                        do {
+                            try await persistenceStore.saveResumeData(data, for: h)
+                        } catch {
+                            PipelineLogger.shared.log(stage: .persistence, message: "[TorrentEngine] Failed to save fast-resume data for \(h): \(error.localizedDescription)")
+                        }
                     }
                     pendingHashes.remove(h)
                 } else if bridge.resumeDataError(forTorrentWithHash: h) != nil {
@@ -1822,7 +1834,11 @@ public actor TorrentEngine {
             if rec.state == .error {
                 rec.state = .checking
             }
-            try? await persistenceStore.saveRecord(rec)
+            do {
+                try await persistenceStore.saveRecord(rec)
+            } catch {
+                PipelineLogger.shared.log(stage: .persistence, message: "[TorrentEngine] Failed to save record for \(key): \(error.localizedDescription)")
+            }
         }
         tasks[key]?.errorMessage = nil
         if tasks[key]?.state == .error {
@@ -1836,7 +1852,11 @@ public actor TorrentEngine {
         if var rec = await scheduler?.record(for: key) {
             rec.errorMessage = nil
             rec.state = .queued
-            try? await persistenceStore.saveRecord(rec)
+            do {
+                try await persistenceStore.saveRecord(rec)
+            } catch {
+                PipelineLogger.shared.log(stage: .persistence, message: "[TorrentEngine] Failed to save record for \(key): \(error.localizedDescription)")
+            }
         }
         tasks[key]?.errorMessage = nil
         let changes = await scheduler?.pumpQueue()
@@ -1854,7 +1874,11 @@ public actor TorrentEngine {
     public func saveFastResumeState(timeoutSeconds: TimeInterval = 2.0) async {
         let records = await scheduler?.allRecords() ?? []
         for rec in records {
-            try? await persistenceStore.saveRecord(rec)
+            do {
+                try await persistenceStore.saveRecord(rec)
+            } catch {
+                PipelineLogger.shared.log(stage: .persistence, message: "[TorrentEngine] Failed to save record for \(key): \(error.localizedDescription)")
+            }
         }
     }
 

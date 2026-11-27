@@ -1354,7 +1354,11 @@ public final class LiveStreamRecorder: ObservableObject {
             outputContainerFormat: req.destinationURL.pathExtension,
             updatedAt: Date()
         )
-        try? await recordingStore?.save(record: record)
+        do {
+            try await recordingStore?.save(record: record)
+        } catch {
+            PipelineLogger.shared.log(stage: .persistence, message: "[LiveStreamRecorder] Failed to persist recording snapshot for \(sessionID): \(error.localizedDescription)")
+        }
     }
 
     // MARK: - Network Helpers

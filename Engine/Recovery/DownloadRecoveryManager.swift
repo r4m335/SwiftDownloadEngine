@@ -109,7 +109,11 @@ public final class DownloadRecoveryManager: ObservableObject {
                 KeychainManager.shared.deleteCredentials(forDownloadId: transferID)
                 var sanitizedRecord = record
                 sanitizedRecord.headers = headersToUpdate
-                try? await persistenceStore.save(sanitizedRecord)
+                do {
+                    try await persistenceStore.save(sanitizedRecord)
+                } catch {
+                    PipelineLogger.shared.log(stage: .persistence, message: "[DownloadRecoveryManager] Failed to persist sanitized headers for \(transferID): \(error.localizedDescription)")
+                }
             }
             try? await engine.queueManager.updateRequest(
                 id: transferID,

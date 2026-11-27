@@ -1785,7 +1785,11 @@ extension BackgroundDownloadSessionManager: URLSessionDownloadDelegate {
                         try await self.mappingStore.markCompleted(sessionIdentifier: sessID, taskIdentifier: taskID, finalBytes: committedBytes)
                     } catch {}
                     if let persistence = self.persistenceStore {
-                        _ = try? await persistence.updateSegmentProgress(tag: rec.downloadID, segmentID: rec.segmentID, completedBytes: rec.segmentLength)
+                        do {
+                            _ = try await persistence.updateSegmentProgress(tag: rec.downloadID, segmentID: rec.segmentID, completedBytes: rec.segmentLength)
+                        } catch {
+                            PipelineLogger.shared.log(stage: .persistence, message: "[BackgroundDownloadSessionManager] Failed to update segment progress for \(rec.downloadID)/\(rec.segmentID): \(error.localizedDescription)")
+                        }
                         if let dlRec = try? await persistence.fetch(tag: rec.downloadID), dlRec.isAllSegmentsCompleted {
                             let filename = dlRec.suggestedFilename ?? dlRec.destinationURL.lastPathComponent
                             DownloadNotificationManager.postDownloadCompletedNotification(filename: filename, downloadID: rec.downloadID)

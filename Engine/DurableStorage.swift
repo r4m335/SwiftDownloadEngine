@@ -68,7 +68,14 @@ public enum DurableStorage {
                     try fileManager.moveItem(at: tempURL, to: destinationURL)
                     try? fileManager.removeItem(at: backupURL)
                 } catch {
-                    try? fileManager.moveItem(at: backupURL, to: destinationURL)
+                    do {
+                        try fileManager.moveItem(at: backupURL, to: destinationURL)
+                    } catch let restoreError {
+                        PipelineLogger.shared.log(
+                            stage: .persistence,
+                            message: "[DurableStorage] Failed to restore backup \(backupURL.path) to \(destinationURL.path): \(restoreError.localizedDescription)"
+                        )
+                    }
                     try? fileManager.removeItem(at: tempURL)
                     throw PersistenceStorageError.writeFailed(url: destinationURL, underlyingError: error.localizedDescription)
                 }
@@ -85,7 +92,14 @@ public enum DurableStorage {
                 try fileManager.moveItem(at: tempURL, to: destinationURL)
                 try? fileManager.removeItem(at: backupURL)
             } catch {
-                try? fileManager.moveItem(at: backupURL, to: destinationURL)
+                do {
+                    try fileManager.moveItem(at: backupURL, to: destinationURL)
+                } catch let restoreError {
+                    PipelineLogger.shared.log(
+                        stage: .persistence,
+                        message: "[DurableStorage] Failed to restore backup \(backupURL.path) to \(destinationURL.path): \(restoreError.localizedDescription)"
+                    )
+                }
                 try? fileManager.removeItem(at: tempURL)
                 throw PersistenceStorageError.writeFailed(url: destinationURL, underlyingError: error.localizedDescription)
             }
@@ -201,6 +215,59 @@ public enum DurableStorage {
             let quarantinedAt = quarantineCorruptFile(at: url, error: primaryError, fileManager: fileManager)
             let desc = "Quarantined at \(quarantinedAt?.path ?? "unknown"): \(primaryError.localizedDescription)"
             throw PersistenceStorageError.corruptedData(url: url, underlyingError: desc)
+        }
+    }
+
+    /// Loads a `SchemaVersioned` model from `UserDefaults`, migrating older schemas and preserving raw bytes on decode failure.
+    public static func loadFromUserDefaults<T: SchemaVersioned>(
+        _ type: T.Type,
+        forKey key: String,
+        defaults: UserDefaults = .standard,
+        decoder: JSONDecoder = JSONDecoder(),
+        migrate: ((T) -> T)? = nil
+    ) -> T? {
+        guard let data = defaults.data(forKey: key) else { return nil }
+        do {
+            let decoded = try decoder.decode(T.self, from: data)
+            if decoded.schemaVersion > T.currentSchemaVersion {
+                PipelineLogger.shared.log(
+                    stage: .persistence,
+                    message: "[DurableStorage] Future schema version \(decoded.schemaVersion) > \(T.currentSchemaVersion) for UserDefaults key '\(key)'; preserving stored data."
+                )
+                return nil
+            }
+            if decoded.schemaVersion < T.currentSchemaVersion, let migrate {
+                let migrated = migrate(decoded)
+                saveToUserDefaults(migrated, forKey: key, defaults: defaults)
+                return migrated
+            }
+            return decoded
+        } catch {
+            let backupKey = "\(key).corrupt.\(Int(Date().timeIntervalSince1970))"
+            defaults.set(data, forKey: backupKey)
+            PipelineLogger.shared.log(
+                stage: .persistence,
+                message: "[DurableStorage] Failed to decode \(T.self) for UserDefaults key '\(key)' (preserved at '\(backupKey)'): \(error.localizedDescription)"
+            )
+            return nil
+        }
+    }
+
+    /// Encodes and persists a `SchemaVersioned` model to `UserDefaults` with error logging.
+    public static func saveToUserDefaults<T: SchemaVersioned>(
+        _ value: T,
+        forKey key: String,
+        defaults: UserDefaults = .standard,
+        encoder: JSONEncoder = JSONEncoder()
+    ) {
+        do {
+            let data = try encoder.encode(value)
+            defaults.set(data, forKey: key)
+        } catch {
+            PipelineLogger.shared.log(
+                stage: .persistence,
+                message: "[DurableStorage] Failed to encode \(T.self) for UserDefaults key '\(key)': \(error.localizedDescription)"
+            )
         }
     }
 }

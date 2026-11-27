@@ -1299,12 +1299,30 @@ public actor StreamingDownloadOrchestrator {
         }
 
         // 3. Persist paused state
+        await persistDASHState(id: transferID, state: .paused)
         try await persistHLSState(
             id: parentID,
             state: .paused
         )
-        _ = try? await dashPersistenceStore?.updateState(id: transferID, state: .paused)
         PipelineLogger.shared.log("[HLS Pipeline] Paused transfer: \(transferID)")
+    }
+
+    private func persistDASHState(id: String, state: DASHTransferState) async {
+        guard let dashStore = dashPersistenceStore else { return }
+        do {
+            _ = try await dashStore.updateState(id: id, state: state)
+        } catch {
+            PipelineLogger.shared.log("[DASH Pipeline] Failed to persist state \(state) for \(id): \(error.localizedDescription)")
+        }
+    }
+
+    private func persistDASHAssemblyState(id: String, assemblyState: DASHAssemblyState) async {
+        guard let dashStore = dashPersistenceStore else { return }
+        do {
+            _ = try await dashStore.updateAssemblyState(id: id, assemblyState: assemblyState)
+        } catch {
+            PipelineLogger.shared.log("[DASH Pipeline] Failed to persist assembly state \(assemblyState) for \(id): \(error.localizedDescription)")
+        }
     }
 
     public func resume(transferID: String) async throws {
@@ -1322,7 +1340,7 @@ public actor StreamingDownloadOrchestrator {
             id: hlsParentID(for: transferID),
             state: .downloading
         )
-        _ = try? await dashPersistenceStore?.updateState(id: transferID, state: .downloading)
+        await persistDASHState(id: transferID, state: .downloading)
         PipelineLogger.shared.log("[HLS Pipeline] Resumed transfer: \(transferID)")
     }
 
@@ -1347,7 +1365,7 @@ public actor StreamingDownloadOrchestrator {
             transferID: parentID,
             proposal: proposal
         )
-        _ = try? await dashPersistenceStore?.updateState(id: transferID, state: .cancelled)
+        await persistDASHState(id: transferID, state: .cancelled)
         PipelineLogger.shared.log("[HLS Pipeline] Cancelled transfer: \(transferID)")
     }
 
@@ -1407,7 +1425,11 @@ public actor StreamingDownloadOrchestrator {
                 let dest = directory.appendingPathComponent("\(res.identity.value).part")
                 let size = FileManager.default.fileSize(atPath: dest.path) ?? 0
                 if size > 0 && !record.completedSegmentOrders.contains(res.identity.order) {
-                    _ = try? await persistence.markSegmentCompleted(id: transferID, order: res.identity.order)
+                    do {
+                        _ = try await persistence.markSegmentCompleted(id: transferID, order: res.identity.order)
+                    } catch {
+                        PipelineLogger.shared.log("[HLS Pipeline] Failed to mark segment \(res.identity.order) completed for \(transferID): \(error.localizedDescription)")
+                    }
                 }
             }
         }
@@ -1419,7 +1441,11 @@ public actor StreamingDownloadOrchestrator {
             if let first = components.first, let order = Int(first) {
                 let size = FileManager.default.fileSize(atPath: file.path) ?? 0
                 if size > 0 && !record.completedSegmentOrders.contains(order) {
-                    _ = try? await persistence.markSegmentCompleted(id: transferID, order: order)
+                    do {
+                        _ = try await persistence.markSegmentCompleted(id: transferID, order: order)
+                    } catch {
+                        PipelineLogger.shared.log("[HLS Pipeline] Failed to mark segment \(order) completed for \(transferID): \(error.localizedDescription)")
+                    }
                 }
             }
         }
@@ -1454,7 +1480,11 @@ public actor StreamingDownloadOrchestrator {
             }
         }
         if !newlyCompleted.isEmpty {
-            _ = try? await persistence.updateCompletedSegmentOrders(id: transferID, completedOrders: Array(newlyCompleted))
+            do {
+                _ = try await persistence.updateCompletedSegmentOrders(id: transferID, completedOrders: Array(newlyCompleted))
+            } catch {
+                PipelineLogger.shared.log("[DASH Pipeline] Failed to update completed segments for \(transferID): \(error.localizedDescription)")
+            }
         }
     }
 
@@ -1902,7 +1932,11 @@ public actor StreamingDownloadOrchestrator {
             }
             if var record = try? await persistence.load(id: directOrParentID) {
                 if !record.completedSegmentOrders.contains(order) {
-                    _ = try? await persistence.markSegmentCompleted(id: directOrParentID, order: order)
+                    do {
+                        _ = try await persistence.markSegmentCompleted(id: directOrParentID, order: order)
+                    } catch {
+                        PipelineLogger.shared.log("[HLS Background] Failed to mark segment \(order) completed for \(directOrParentID): \(error.localizedDescription)")
+                    }
                     record.completedSegmentOrders.insert(order)
                 }
                 if let engine = self.downloadEngine {
@@ -1937,7 +1971,11 @@ public actor StreamingDownloadOrchestrator {
             }
             if var record = try? await persistence.load(id: targetID) {
                 if !record.completedSegmentOrders.contains(order) {
-                    _ = try? await persistence.updateCompletedSegmentOrders(id: targetID, completedOrders: [order])
+                    do {
+                        _ = try await persistence.updateCompletedSegmentOrders(id: targetID, completedOrders: [order])
+                    } catch {
+                        PipelineLogger.shared.log("[DASH Background] Failed to mark segment \(order) completed for \(targetID): \(error.localizedDescription)")
+                    }
                     record.completedSegmentOrders.insert(order)
                 }
                 if let engine = self.downloadEngine {
@@ -4319,7 +4357,7 @@ public actor StreamingDownloadOrchestrator {
             if isCancelled {
                 await segmentExecutor.cancel(transferID: parentID)
                 await cleanupHLSChildRecords(proposal: runProposal)
-                _ = try? await dashPersistenceStore?.updateState(id: parentID, state: .cancelled)
+                await persistDASHState(id: parentID, state: .cancelled)
                 if let engine = self.downloadEngine {
                     do {
                         try await engine.cancelDownload(id: parentID)
@@ -4329,7 +4367,7 @@ public actor StreamingDownloadOrchestrator {
                 }
                 throw StreamingDownloadOrchestratorError.cancelled
             }
-            _ = try? await dashPersistenceStore?.updateState(id: parentID, state: .failed)
+            await persistDASHState(id: parentID, state: .failed)
             if let engine = self.downloadEngine {
                 await engine.failStreamingDownload(id: parentID, reason: error.localizedDescription)
             }
@@ -4341,7 +4379,7 @@ public actor StreamingDownloadOrchestrator {
             DASHCompletedResource(resource: $0.0, fileURL: $0.1)
         }
         do {
-            _ = try? await dashPersistenceStore?.updateAssemblyState(id: parentID, assemblyState: .inProgress)
+            await persistDASHAssemblyState(id: parentID, assemblyState: .inProgress)
             let assemblyOutput: MediaAssemblyOutput
             if isTextOnly, let textPlan = transferPlan.text {
                 assemblyOutput = try assembleDASHSubtitles(
@@ -4371,7 +4409,7 @@ public actor StreamingDownloadOrchestrator {
             }
             try Task.checkCancellation()
             if isCancelled(transferID: parentID) {
-                _ = try? await dashPersistenceStore?.updateState(id: parentID, state: .cancelled)
+                await persistDASHState(id: parentID, state: .cancelled)
                 if let engine = self.downloadEngine {
                     do {
                         try await engine.cancelDownload(id: parentID)
@@ -4388,7 +4426,7 @@ public actor StreamingDownloadOrchestrator {
                 guard validationReport.outcome.isConfirmedValid else {
                     let failureReason = validationReport.outcome.localizedDescription
                     PipelineLogger.shared.log("[DASH Pipeline] Final output validation failed: \(failureReason). Preserving downloaded segments for recovery.")
-                    _ = try? await dashPersistenceStore?.updateAssemblyState(id: parentID, assemblyState: .failed)
+                    await persistDASHAssemblyState(id: parentID, assemblyState: .failed)
                     throw StreamingDownloadOrchestratorError.dashReconstructionFailed(
                         DASHVODReconstructionError.assemblyFailed(
                             .finalValidationFailed(reason: failureReason)
@@ -4398,7 +4436,7 @@ public actor StreamingDownloadOrchestrator {
             } else {
                 guard FileManager.default.fileExists(atPath: assemblyOutput.destinationURL.path),
                       (FileManager.default.fileSize(atPath: assemblyOutput.destinationURL.path) ?? 0) > 0 else {
-                    _ = try? await dashPersistenceStore?.updateAssemblyState(id: parentID, assemblyState: .failed)
+                    await persistDASHAssemblyState(id: parentID, assemblyState: .failed)
                     throw StreamingDownloadOrchestratorError.dashReconstructionFailed(
                         DASHVODReconstructionError.assemblyFailed(
                             .finalValidationFailed(reason: "Subtitle file is empty or missing.")
@@ -4415,8 +4453,8 @@ public actor StreamingDownloadOrchestrator {
                 )
                 PipelineLogger.shared.log("[DASH Pipeline] Successfully completed stream in DownloadEngine: \(assemblyOutput.destinationURL.path)")
             }
-            _ = try? await dashPersistenceStore?.updateState(id: parentID, state: .completed)
-            _ = try? await dashPersistenceStore?.updateAssemblyState(id: parentID, assemblyState: .completed)
+            await persistDASHState(id: parentID, state: .completed)
+            await persistDASHAssemblyState(id: parentID, assemblyState: .completed)
             let dashFilename = assemblyOutput.destinationURL.lastPathComponent
             DownloadNotificationManager.postDownloadCompletedNotification(filename: dashFilename, downloadID: parentID)
             try Task.checkCancellation()

@@ -104,8 +104,11 @@ public final class BrowserSessionStore {
 
             // Maintain rolling backup of the last valid session file
             if FileManager.default.fileExists(atPath: fileURL.path) {
-                if let existingData = try? Data(contentsOf: fileURL) {
-                    try? existingData.write(to: backupFileURL, options: .atomic)
+                do {
+                    let existingData = try Data(contentsOf: fileURL)
+                    try DurableStorage.writeAtomically(existingData, to: backupFileURL)
+                } catch {
+                    PipelineLogger.shared.log(stage: .browser, message: "[BrowserSessionStore] Failed to update rolling backup at \(backupFileURL.path): \(error.localizedDescription)")
                 }
             }
 

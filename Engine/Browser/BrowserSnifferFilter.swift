@@ -1,7 +1,10 @@
 import Foundation
 
 /// User-configurable sniffer filter preferences for media grabber sniffing.
-public struct BrowserSnifferFilter: Codable, Sendable, Equatable {
+public struct BrowserSnifferFilter: Codable, Sendable, Equatable, SchemaVersioned {
+    public static let currentSchemaVersion: Int = 1
+
+    public var schemaVersion: Int
     public var allowedExtensions: [String]
     public var allowedMIMETypes: [String]
     public var isFilterEnabled: Bool
@@ -23,13 +26,27 @@ public struct BrowserSnifferFilter: Codable, Sendable, Equatable {
     public static let userDefaultsKey = "DownloadEngineKit.BrowserSnifferFilter"
 
     public init(
+        schemaVersion: Int = BrowserSnifferFilter.currentSchemaVersion,
         allowedExtensions: [String] = BrowserSnifferFilter.defaultExtensions,
         allowedMIMETypes: [String] = BrowserSnifferFilter.defaultMIMETypes,
         isFilterEnabled: Bool = true
     ) {
+        self.schemaVersion = schemaVersion
         self.allowedExtensions = allowedExtensions
         self.allowedMIMETypes = allowedMIMETypes
         self.isFilterEnabled = isFilterEnabled
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion, allowedExtensions, allowedMIMETypes, isFilterEnabled
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.schemaVersion = try container.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 1
+        self.allowedExtensions = try container.decode([String].self, forKey: .allowedExtensions)
+        self.allowedMIMETypes = try container.decode([String].self, forKey: .allowedMIMETypes)
+        self.isFilterEnabled = try container.decode(Bool.self, forKey: .isFilterEnabled)
     }
 
     public func matches(candidate: BrowserMediaCandidate) -> Bool {
@@ -66,16 +83,18 @@ public struct BrowserSnifferFilter: Codable, Sendable, Equatable {
     }
 
     public static func load() -> BrowserSnifferFilter {
-        guard let data = UserDefaults.standard.data(forKey: userDefaultsKey),
-              let filter = try? JSONDecoder().decode(BrowserSnifferFilter.self, from: data) else {
-            return BrowserSnifferFilter()
-        }
-        return filter
+        return DurableStorage.loadFromUserDefaults(
+            BrowserSnifferFilter.self,
+            forKey: userDefaultsKey,
+            migrate: { filter in
+                var migrated = filter
+                migrated.schemaVersion = currentSchemaVersion
+                return migrated
+            }
+        ) ?? BrowserSnifferFilter()
     }
 
     public func save() {
-        if let data = try? JSONEncoder().encode(self) {
-            UserDefaults.standard.set(data, forKey: BrowserSnifferFilter.userDefaultsKey)
-        }
+        DurableStorage.saveToUserDefaults(self, forKey: BrowserSnifferFilter.userDefaultsKey)
     }
 }

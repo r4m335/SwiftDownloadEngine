@@ -35,11 +35,13 @@ public enum LIDPlayerOrientationPreference: String, CaseIterable, Identifiable, 
 
 /// Persistent user-facing preferences for the LID Media Player.
 /// Stored independently in UserDefaults under key `DownloadEngineKit.LIDPlayerSettings`.
-public struct LIDPlayerSettings: Codable, Sendable, Equatable {
+public struct LIDPlayerSettings: Codable, Sendable, Equatable, SchemaVersioned {
     public static let currentVersion: Int = 1
+    public static var currentSchemaVersion: Int { currentVersion }
     public static let userDefaultsKey = "DownloadEngineKit.LIDPlayerSettings"
 
     public var version: Int
+    public var schemaVersion: Int { version }
 
     // MARK: - Playback Behavior
     public var defaultPlaybackSpeed: Double
@@ -240,18 +242,20 @@ public final class LIDPlayerSettingsStore: ObservableObject {
 
     public init(userDefaults: UserDefaults = .standard) {
         self.userDefaults = userDefaults
-        if let data = userDefaults.data(forKey: LIDPlayerSettings.userDefaultsKey),
-           let decoded = try? JSONDecoder().decode(LIDPlayerSettings.self, from: data) {
-            self.settings = decoded
-        } else {
-            self.settings = .default
-        }
+        self.settings = DurableStorage.loadFromUserDefaults(
+            LIDPlayerSettings.self,
+            forKey: LIDPlayerSettings.userDefaultsKey,
+            defaults: userDefaults,
+            migrate: { decoded in
+                var migrated = decoded
+                migrated.version = LIDPlayerSettings.currentVersion
+                return migrated
+            }
+        ) ?? .default
     }
 
     public func save() {
-        if let encoded = try? JSONEncoder().encode(settings) {
-            userDefaults.set(encoded, forKey: LIDPlayerSettings.userDefaultsKey)
-        }
+        DurableStorage.saveToUserDefaults(settings, forKey: LIDPlayerSettings.userDefaultsKey, defaults: userDefaults)
     }
 
     public func resetToDefaults() {
