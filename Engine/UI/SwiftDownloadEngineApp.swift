@@ -222,7 +222,14 @@ public struct SwiftDownloadEngineApp: App {
 
     /// Convenience initializer configuring production engines and view model automatically.
     public init() {
-        let downloadsDir = DownloadManagerViewModel.defaultDownloadsDirectory()
+        let initialSettings = AppSettings.load(from: .standard)
+        let downloadsDir: URL
+        if let bookmarked = initialSettings.resolvedDefaultDownloadDirectory(),
+           (try? DownloadManagerViewModel.ensureDirectoryExistsAndWritable(bookmarked.url)) != nil {
+            downloadsDir = bookmarked.url
+        } else {
+            downloadsDir = DownloadManagerViewModel.defaultDownloadsDirectory()
+        }
         let storeDir = Self.defaultStorageDirectory()
 
         var bgManager: BackgroundDownloadSessionManager? = nil
@@ -240,10 +247,10 @@ public struct SwiftDownloadEngineApp: App {
         }
         #endif
 
-        let initialSettings = AppSettings.load(from: .standard)
         let engineConfig = initialSettings.makeEngineConfiguration()
         let foregroundSession = ForegroundURLSession.make(
-            maximumConnectionsPerHost: SegmentAllocator.maxThreadCount
+            maximumConnectionsPerHost: SegmentAllocator.maxThreadCount,
+            proxyDictionary: engineConfig.connectionProxyDictionary
         )
 
         var engineInstance: DownloadEngine? = nil

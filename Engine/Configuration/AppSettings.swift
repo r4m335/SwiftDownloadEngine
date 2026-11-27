@@ -415,26 +415,69 @@ public struct AppSettings: Codable, Sendable, Equatable, SchemaVersioned {
             allowConstrainedNetwork: allowConstrainedNetwork,
             maxConcurrentTorrents: maxConcurrentTorrents,
             defaultTorrentPriority: defaultTorrentPriority,
-            defaultSeedingPreference: seedingPref
+            defaultSeedingPreference: seedingPref,
+            proxyEnabled: proxyEnabled,
+            proxyHost: proxyHost,
+            proxyPort: proxyPort
         )
+    }
+
+    /// Resolves `defaultDownloadDirectoryBookmark` into a writable directory URL if present and valid.
+    public func resolvedDefaultDownloadDirectory() -> (url: URL, refreshedBookmark: Data?)? {
+        guard let bookmarkData = defaultDownloadDirectoryBookmark else { return nil }
+        var isStale = false
+        do {
+            #if os(macOS)
+            let url = try URL(
+                resolvingBookmarkData: bookmarkData,
+                options: [.withSecurityScope],
+                relativeTo: nil,
+                bookmarkDataIsStale: &isStale
+            )
+            #else
+            let url = try URL(
+                resolvingBookmarkData: bookmarkData,
+                options: [],
+                relativeTo: nil,
+                bookmarkDataIsStale: &isStale
+            )
+            #endif
+            _ = url.startAccessingSecurityScopedResource()
+            var refreshed: Data? = nil
+            if isStale {
+                #if os(macOS)
+                refreshed = try? url.bookmarkData(options: [.withSecurityScope], includingResourceValuesForKeys: nil, relativeTo: nil)
+                #else
+                refreshed = try? url.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil)
+                #endif
+            }
+            return (url, refreshed)
+        } catch {
+            PipelineLogger.shared.log(stage: .persistence, message: "[AppSettings] Failed to resolve defaultDownloadDirectoryBookmark: \(error.localizedDescription)")
+            return nil
+        }
     }
 
     /// Builds a `URLSessionConfiguration.connectionProxyDictionary` when proxy is enabled and valid.
     public var connectionProxyDictionary: [AnyHashable: Any]? {
-        let host = proxyHost.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard proxyEnabled, !host.isEmpty, proxyPort > 0, proxyPort <= 65535 else {
+        Self.makeProxyDictionary(enabled: proxyEnabled, host: proxyHost, port: proxyPort)
+    }
+
+    public static func makeProxyDictionary(enabled: Bool, host rawHost: String, port: Int) -> [AnyHashable: Any]? {
+        let host = rawHost.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard enabled, !host.isEmpty, port > 0, port <= 65535 else {
             return nil
         }
         #if canImport(CFNetwork)
         var dict: [AnyHashable: Any] = [
             kCFNetworkProxiesHTTPEnable as AnyHashable: 1,
             kCFNetworkProxiesHTTPProxy as AnyHashable: host,
-            kCFNetworkProxiesHTTPPort as AnyHashable: proxyPort
+            kCFNetworkProxiesHTTPPort as AnyHashable: port
         ]
         #if os(macOS)
         dict[kCFNetworkProxiesHTTPSEnable as AnyHashable] = 1
         dict[kCFNetworkProxiesHTTPSProxy as AnyHashable] = host
-        dict[kCFNetworkProxiesHTTPSPort as AnyHashable] = proxyPort
+        dict[kCFNetworkProxiesHTTPSPort as AnyHashable] = port
         #endif
         return dict
         #else

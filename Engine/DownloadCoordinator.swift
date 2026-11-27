@@ -472,7 +472,7 @@ public actor DownloadCoordinator {
 
     public static let sharedSession: URLSession = ForegroundURLSession.make()
 
-    private let session: URLSession
+    private var session: URLSession
     private let connectivityGate = NetworkConnectivityGate.shared
     public let persistenceStore: DownloadPersistenceStore
 
@@ -556,6 +556,18 @@ public actor DownloadCoordinator {
     /// those tasks are resumed.
     public func setPendingBackgroundEarliestBeginDate(_ date: Date, for downloadID: String) {
         pendingBackgroundEarliestBeginDates[downloadID] = date
+    }
+
+    /// Rebuilds the foreground `URLSession` when proxy settings change at runtime.
+    public func updateSession(proxyDictionary: [AnyHashable: Any]?) {
+        let previous = self.session
+        self.session = ForegroundURLSession.make(
+            maximumConnectionsPerHost: SegmentAllocator.maxThreadCount,
+            proxyDictionary: proxyDictionary
+        )
+        if previous !== URLSession.shared && previous !== DownloadCoordinator.sharedSession {
+            previous.finishTasksAndInvalidate()
+        }
     }
 
     /// Dynamically updates the global bandwidth limit.

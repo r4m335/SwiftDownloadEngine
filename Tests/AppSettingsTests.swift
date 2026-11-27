@@ -314,4 +314,54 @@ final class AppSettingsTests: XCTestCase {
 
         manager.deleteInternetPassword(server: server)
     }
+
+    @MainActor
+    func testAppSettings_ProxyBookmarkAndCustomCategoryFoldersConnectedToEngine() async throws {
+        let suiteName = "AppSettingsConnectedTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent("ConnectedSettings_\(UUID().uuidString)", isDirectory: true)
+        let customDownloadsDir = tempDir.appendingPathComponent("CustomDownloads", isDirectory: true)
+        try FileManager.default.createDirectory(at: customDownloadsDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        #if os(macOS)
+        let bookmarkData = try customDownloadsDir.bookmarkData(options: [.withSecurityScope], includingResourceValuesForKeys: nil, relativeTo: nil)
+        #else
+        let bookmarkData = try customDownloadsDir.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil)
+        #endif
+
+        var settings = AppSettings.default
+        settings.proxyEnabled = true
+        settings.proxyHost = "127.0.0.1"
+        settings.proxyPort = 8888
+        settings.defaultDownloadDirectoryBookmark = bookmarkData
+        settings.customCategoryFolders[DownloadCategory.video.rawValue] = "MyMovies"
+        settings.enableGlobalSpeedLimit = true
+        settings.globalSpeedLimitKBps = 1024
+        settings.seedingMode = .ratio
+        settings.targetRatio = 2.5
+        settings.save(to: defaults)
+
+        let engineConfig = settings.makeEngineConfiguration()
+        XCTAssertTrue(engineConfig.proxyEnabled)
+        XCTAssertEqual(engineConfig.proxyHost, "127.0.0.1")
+        XCTAssertEqual(engineConfig.proxyPort, 8888)
+        XCTAssertNotNil(engineConfig.connectionProxyDictionary)
+        XCTAssertEqual(engineConfig.globalBandwidthLimitBytesPerSecond, 1024 * 1024)
+        XCTAssertEqual(engineConfig.defaultSeedingPreference.targetRatio, 2.5)
+
+        let engine = try DownloadEngine(configuration: engineConfig, storageDirectoryURL: tempDir)
+        let vm = DownloadManagerViewModel(engine: engine, userDefaults: defaults)
+        XCTAssertEqual(vm.downloadsDirectoryURL.standardizedFileURL.path, customDownloadsDir.standardizedFileURL.path)
+
+        let videoDir = try vm.categoryDownloadsDirectory(for: .video)
+        XCTAssertEqual(videoDir.lastPathComponent, "MyMovies")
+
+        try await vm.applySettings(settings)
+        let updatedConfig = await engine.configuration
+        XCTAssertTrue(updatedConfig.proxyEnabled)
+        XCTAssertEqual(updatedConfig.proxyPort, 8888)
+    }
 }

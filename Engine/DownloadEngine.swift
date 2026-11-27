@@ -341,10 +341,16 @@ public actor DownloadEngine {
 
     /// Dynamically applies a new EngineConfiguration at runtime.
     public func updateConfiguration(_ newConfig: EngineConfiguration) async throws {
+        let previous = self.configuration
         self.configuration = newConfig
         try await queueManager.setMaxConcurrentDownloads(newConfig.maxConcurrentDownloads)
         try await queueManager.setMaxGlobalRequests(newConfig.maxGlobalRequests)
         await coordinator.globalBandwidthLimiter.setRateLimit(newConfig.globalBandwidthLimitBytesPerSecond)
+        if previous.proxyEnabled != newConfig.proxyEnabled ||
+            previous.proxyHost != newConfig.proxyHost ||
+            previous.proxyPort != newConfig.proxyPort {
+            await coordinator.updateSession(proxyDictionary: newConfig.connectionProxyDictionary)
+        }
     }
 
     public weak var streamingOrchestrator: StreamingDownloadOrchestrator?

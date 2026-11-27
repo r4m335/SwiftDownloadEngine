@@ -375,7 +375,7 @@ public enum DownloadsDirectoryManager: Sendable {
 public final class DownloadManagerViewModel: ObservableObject {
     public let engine: DownloadEngine
     public let torrentEngine: TorrentEngine?
-    public let downloadsDirectoryURL: URL
+    public private(set) var downloadsDirectoryURL: URL
     private let userDefaults: UserDefaults
 
     public enum SettingsKeys {
@@ -515,6 +515,7 @@ public final class DownloadManagerViewModel: ObservableObject {
         self.engine = engine
         self.torrentEngine = torrentEngine
         self.streamingOrchestrator = streamingOrchestrator
+        let loadedSettingsAtInit = AppSettings.load(from: userDefaults)
         let resolvedDirectory: URL
         var directoryFallbackError: String? = nil
         if let custom = downloadsDirectory {
@@ -525,6 +526,21 @@ public final class DownloadManagerViewModel: ObservableObject {
                 resolvedDirectory = defaultResolved.url
                 directoryFallbackError = defaultResolved.fallbackError
                     ?? "Custom downloads directory '\(custom.lastPathComponent)' is not writable (\(error.localizedDescription)). Using default Downloads folder."
+                PipelineLogger.shared.log("[DownloadManager] \(directoryFallbackError!)")
+            }
+        } else if let bookmarked = loadedSettingsAtInit.resolvedDefaultDownloadDirectory() {
+            do {
+                resolvedDirectory = try Self.ensureDirectoryExistsAndWritable(bookmarked.url)
+                if let refreshed = bookmarked.refreshedBookmark {
+                    var updated = loadedSettingsAtInit
+                    updated.defaultDownloadDirectoryBookmark = refreshed
+                    updated.save(to: userDefaults)
+                }
+            } catch {
+                let defaultResolved = DownloadsDirectoryManager.resolveDefaultDownloadsDirectory()
+                resolvedDirectory = defaultResolved.url
+                directoryFallbackError = defaultResolved.fallbackError
+                    ?? "Bookmarked downloads folder is not writable (\(error.localizedDescription)). Using default Downloads folder."
                 PipelineLogger.shared.log("[DownloadManager] \(directoryFallbackError!)")
             }
         } else {
@@ -2294,7 +2310,17 @@ public final class DownloadManagerViewModel: ObservableObject {
         userDefaults.set(newSettings.targetRatio, forKey: SettingsKeys.defaultSeedingRatio)
         userDefaults.set(TimeInterval(newSettings.targetDurationMinutes * 60), forKey: SettingsKeys.defaultSeedingDuration)
 
+        let previousBookmark = self.appSettings.defaultDownloadDirectoryBookmark
         self.appSettings = newSettings
+        if newSettings.defaultDownloadDirectoryBookmark != previousBookmark,
+           let bookmarked = newSettings.resolvedDefaultDownloadDirectory() {
+            do {
+                let verified = try Self.ensureDirectoryExistsAndWritable(bookmarked.url)
+                self.downloadsDirectoryURL = verified
+            } catch {
+                self.errorMessage = "Selected downloads folder is not writable (\(error.localizedDescription))."
+            }
+        }
         self.selectedSortOrder = newSettings.downloadSortOrder
         rebuildUnifiedTransfers()
         let engineConfig = newSettings.makeEngineConfiguration()

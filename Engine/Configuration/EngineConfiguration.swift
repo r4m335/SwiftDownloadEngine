@@ -31,6 +31,14 @@ public struct EngineConfiguration: Sendable, Equatable {
     public var defaultSeedingPreference: SeedingPreference
     public var torrentDownloadRateLimit: Int?
     public var torrentUploadRateLimit: Int?
+    public var proxyEnabled: Bool
+    public var proxyHost: String
+    public var proxyPort: Int
+
+    /// Builds a `URLSessionConfiguration.connectionProxyDictionary` when proxy is enabled and valid.
+    public var connectionProxyDictionary: [AnyHashable: Any]? {
+        AppSettings.makeProxyDictionary(enabled: proxyEnabled, host: proxyHost, port: proxyPort)
+    }
 
     public static let `default` = EngineConfiguration(
         maxConcurrentDownloads: 3,
@@ -67,7 +75,10 @@ public struct EngineConfiguration: Sendable, Equatable {
         defaultTorrentPriority: TorrentPriority = .normal,
         defaultSeedingPreference: SeedingPreference = SeedingPreference(mode: .ratio, targetRatio: 1.0, targetDurationSeconds: 3600),
         torrentDownloadRateLimit: Int? = nil,
-        torrentUploadRateLimit: Int? = nil
+        torrentUploadRateLimit: Int? = nil,
+        proxyEnabled: Bool = false,
+        proxyHost: String = "",
+        proxyPort: Int = 8080
     ) {
         self.maxConcurrentDownloads = max(1, maxConcurrentDownloads)
         self.maxGlobalRequests = max(1, maxGlobalRequests)
@@ -85,5 +96,8 @@ public struct EngineConfiguration: Sendable, Equatable {
         self.defaultSeedingPreference = defaultSeedingPreference
         self.torrentDownloadRateLimit = torrentDownloadRateLimit
         self.torrentUploadRateLimit = torrentUploadRateLimit
+        self.proxyEnabled = proxyEnabled
+        self.proxyHost = proxyHost
+        self.proxyPort = proxyPort
     }
 }
