@@ -746,18 +746,7 @@ public enum BrowserMediaCandidateClassifier {
             lastObserved: lastObserved,
             isLive: isLive,
             documentGeneration: documentGeneration,
-            navigationGeneration: navigationGeneration,
-            rawURL: rawURL,
-            finalURL: finalURL,
-            candidateKind: kind,
-            blobKind: blobKind,
-            availability: availability,
-            evidence: evidence,
-            documentID: documentID,
-            associatedManifestID: associatedManifestID,
-            associatedManifestURL: associatedManifestURL,
-            width: width,
-            height: height
+            navigationGeneration: navigationGeneration
         )
     }
 
