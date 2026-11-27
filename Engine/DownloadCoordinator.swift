@@ -332,14 +332,6 @@ public enum DownloadCoordinatorError: Error, LocalizedError, Equatable, Sendable
     }
 }
 
-        return false
-    }
-
-    func getCompletedBytes() -> [Int: Int64] {
-        completedByID
-    }
-}
-
 /// Master download coordinator managing multi-segmented parallel downloads and lifecycle states.
 ///
 /// Workflow:

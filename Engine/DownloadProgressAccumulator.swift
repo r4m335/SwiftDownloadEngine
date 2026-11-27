@@ -50,3 +50,10 @@ actor ProgressAccumulator {
             lastFlushedTimeByID[segmentID] = Date()
             return true
         }
+        return false
+    }
+
+    func getCompletedBytes() -> [Int: Int64] {
+        completedByID
+    }
+}
