@@ -337,14 +337,24 @@ public final class LIDPlaybackEngine: NSObject, ObservableObject, LIDMediaEngine
             #endif
         }
 
-        // Auto-resume from history position if recorded
+        self.pendingResumePositionSeconds = nil
+        self.pendingResumeSessionGeneration = self.sessionGeneration
+
+        // Auto-resume from history position once media is ready (not during load)
         if resumeFromHistory {
             let mediaID = source.mediaIdentifier
+            let targetGen = self.sessionGeneration
             Task { [weak self] in
-                guard let self = self else { return }
+                guard let self = self, self.sessionGeneration == targetGen else { return }
                 if let resumeSec = await self.historyStore.resumePosition(mediaIdentifier: mediaID),
-                   resumeSec > 0 {
-                    self.seek(to: resumeSec)
+                   resumeSec > 0,
+                   self.sessionGeneration == targetGen {
+                    if self.playbackState.isPlaying || self.playbackState.isPaused {
+                        self.seek(to: resumeSec)
+                    } else {
+                        self.pendingResumePositionSeconds = resumeSec
+                        self.pendingResumeSessionGeneration = targetGen
+                    }
                 }
             }
         }
@@ -417,6 +427,8 @@ public final class LIDPlaybackEngine: NSObject, ObservableObject, LIDMediaEngine
         #endif
 
         self.sessionGeneration &+= 1
+        self.pendingResumePositionSeconds = nil
+        self.pendingResumeSessionGeneration = self.sessionGeneration
         vlcBackend.activeSessionGeneration = 0
         avBackend.activeSessionGeneration = 0
         vlcBackend.stop()
@@ -436,6 +448,7 @@ public final class LIDPlaybackEngine: NSObject, ObservableObject, LIDMediaEngine
 
     @MainActor
     public func seek(to seconds: Double) {
+        self.pendingResumePositionSeconds = nil
         let target = max(0.0, min(seconds, durationSeconds > 0 ? durationSeconds : seconds))
         PipelineLogger.shared.logPlayer(
             session: currentSessionId,
@@ -681,6 +694,17 @@ public final class LIDPlaybackEngine: NSObject, ObservableObject, LIDMediaEngine
         trackManager.removeExternalSubtitle(url: url)
     }
 
+    public private(set) var pendingResumePositionSeconds: Double? = nil
+    private var pendingResumeSessionGeneration: UInt64 = 0
+
+    private func applyPendingResumePositionIfReady() {
+        guard let resumeSec = pendingResumePositionSeconds,
+              pendingResumeSessionGeneration == sessionGeneration,
+              resumeSec > 0 else { return }
+        pendingResumePositionSeconds = nil
+        seek(to: resumeSec)
+    }
+
     // MARK: - LIDMediaEngineDelegate Implementation
 
     public func engineDidUpdateState(_ engine: LIDMediaEngineProtocol, state: LIDPlaybackState) {
@@ -689,6 +713,9 @@ public final class LIDPlaybackEngine: NSObject, ObservableObject, LIDMediaEngine
         self.playbackState = state
         if state.isPlaying || state.isPaused || state.isFailed {
             cancelLoadingWatchdog()
+        }
+        if state.isPlaying || state.isPaused {
+            applyPendingResumePositionIfReady()
         }
         if state == .playing {
             refreshTracks()

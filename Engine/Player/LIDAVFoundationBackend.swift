@@ -256,6 +256,7 @@ public final class LIDAVFoundationBackend: NSObject, LIDMediaEngineProtocol {
 
         self.currentLoadedSource = nil
         self.activeSessionGeneration = 0
+        self.pendingSeekSeconds = nil
         self.currentPositionSeconds = 0.0
         self.durationSeconds = 0.0
         self.bufferedDurationSeconds = 0.0
@@ -266,6 +267,11 @@ public final class LIDAVFoundationBackend: NSObject, LIDMediaEngineProtocol {
     public func seek(to seconds: Double) {
         #if canImport(AVFoundation)
         guard let p = player else { return }
+        guard let item = p.currentItem, item.status == .readyToPlay else {
+            self.pendingSeekSeconds = seconds
+            return
+        }
+        self.pendingSeekSeconds = nil
         let time = CMTime(seconds: seconds, preferredTimescale: 600)
         p.seek(to: time, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] finished in
             guard let self = self, finished else { return }
@@ -274,6 +280,8 @@ public final class LIDAVFoundationBackend: NSObject, LIDMediaEngineProtocol {
         }
         #endif
     }
+
+    private var pendingSeekSeconds: Double? = nil
 
     // MARK: - Track Management
 
@@ -391,6 +399,10 @@ public final class LIDAVFoundationBackend: NSObject, LIDMediaEngineProtocol {
                     self.playbackState = .playing
                     self.delegate?.engineDidUpdateState(self, state: self.playbackState)
                     self.delegate?.engineDidUpdateTime(self, currentSeconds: self.currentPositionSeconds, durationSeconds: self.durationSeconds)
+                    if let pending = self.pendingSeekSeconds {
+                        self.pendingSeekSeconds = nil
+                        self.seek(to: pending)
+                    }
                 case .failed:
                     let err = observedItem.error?.localizedDescription ?? "Playback failed"
                     self.playbackState = .failed(error: err)

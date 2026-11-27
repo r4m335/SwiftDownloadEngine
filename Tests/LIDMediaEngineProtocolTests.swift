@@ -145,4 +145,36 @@ final class LIDMediaEngineProtocolTests: XCTestCase {
         XCTAssertTrue(LIDPlaybackEngine.validateTSHeader(url: validTS))
         XCTAssertFalse(LIDPlaybackEngine.validateTSHeader(url: invalidTS))
     }
+
+    @MainActor
+    func testResumePositionDeferredUntilMediaReady() async throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent("ResumeTest_\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let mediaURL = tempDir.appendingPathComponent("movie.mp4")
+        try Data("mock".utf8).write(to: mediaURL)
+        let source = LIDPlayerSource.localFile(url: mediaURL, title: "Movie")
+
+        let historyStore = LIDPlaybackHistoryStore(storageDirectory: tempDir)
+        await historyStore.recordProgress(
+            mediaIdentifier: source.mediaIdentifier,
+            title: "Movie",
+            positionSeconds: 75.0,
+            durationSeconds: 300.0
+        )
+
+        let engine = LIDPlaybackEngine(historyStore: historyStore)
+        engine.load(source: source, autoPlay: false, resumeFromHistory: true)
+
+        // Allow async history lookup Task to run while still loading
+        try await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertEqual(engine.pendingResumePositionSeconds, 75.0)
+        XCTAssertEqual(engine.currentPositionSeconds, 0.0, "Resume position must not seek during load before media is ready")
+
+        // Once backend reports ready/playing, pending resume position is applied
+        engine.engineDidUpdateState(engine.vlcBackend, state: .playing)
+        XCTAssertNil(engine.pendingResumePositionSeconds)
+        XCTAssertEqual(engine.currentPositionSeconds, 75.0)
+    }
 }
