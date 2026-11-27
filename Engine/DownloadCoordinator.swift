@@ -333,7 +333,7 @@ public enum DownloadCoordinatorError: Error, LocalizedError, Equatable, Sendable
 }
 
 /// Thread-safe accumulator computing aggregate progress across concurrent workers.
-private actor ProgressAccumulator {
+actor ProgressAccumulator {
     private let segmentsByID: [Int: DownloadSegment]
     private var completedByID: [Int: Int64]
     private var lastFlushedBytesByID: [Int: Int64] = [:]
