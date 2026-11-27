@@ -263,4 +263,22 @@ final class UnifiedTransferTests: XCTestCase {
         XCTAssertEqual(item1, item2)
         XCTAssertEqual(item1.url, sampleURL)
     }
+
+    func testProxySettingsAndPerHostConnectionCap() {
+        var settings = AppSettings.default
+        XCTAssertFalse(settings.proxyEnabled)
+        XCTAssertNil(settings.connectionProxyDictionary)
+        XCTAssertEqual(settings.maxConcurrentDownloadsPerHost, 2)
+
+        settings.proxyEnabled = true
+        settings.proxyHost = "127.0.0.1"
+        settings.proxyPort = 8888
+        #if canImport(CFNetwork)
+        let dict = settings.connectionProxyDictionary
+        XCTAssertNotNil(dict)
+        let session = ForegroundURLSession.make(maximumConnectionsPerHost: 4, proxyDictionary: dict)
+        XCTAssertEqual(session.configuration.httpMaximumConnectionsPerHost, 4)
+        XCTAssertNotNil(session.configuration.connectionProxyDictionary)
+        #endif
+    }
 }

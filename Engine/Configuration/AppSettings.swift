@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(CFNetwork)
+import CFNetwork
+#endif
 
 /// User-selectable sort order for download listings (HTTP and BitTorrent transfers).
 public enum DownloadSortOrder: String, CaseIterable, Identifiable, Codable, Sendable {
@@ -167,6 +170,12 @@ public struct AppSettings: Codable, Sendable, Equatable {
     public var readerFontFamily: BrowserReaderFontFamily
     public var readerFontSize: Double
 
+    // Per-host concurrency & HTTP/HTTPS Proxy
+    public var maxConcurrentDownloadsPerHost: Int
+    public var proxyEnabled: Bool
+    public var proxyHost: String
+    public var proxyPort: Int
+
     public static let `default` = AppSettings(
         version: currentVersion,
         maxConcurrentDownloads: 3,
@@ -204,7 +213,11 @@ public struct AppSettings: Codable, Sendable, Equatable {
         restoreTabsOnLaunch: true,
         readerTheme: .light,
         readerFontFamily: .serif,
-        readerFontSize: 18.0
+        readerFontSize: 18.0,
+        maxConcurrentDownloadsPerHost: 2,
+        proxyEnabled: false,
+        proxyHost: "",
+        proxyPort: 8080
     )
 
     public init(
@@ -244,7 +257,11 @@ public struct AppSettings: Codable, Sendable, Equatable {
         restoreTabsOnLaunch: Bool = true,
         readerTheme: BrowserReaderTheme = .light,
         readerFontFamily: BrowserReaderFontFamily = .serif,
-        readerFontSize: Double = 18.0
+        readerFontSize: Double = 18.0,
+        maxConcurrentDownloadsPerHost: Int = 2,
+        proxyEnabled: Bool = false,
+        proxyHost: String = "",
+        proxyPort: Int = 8080
     ) {
         self.version = version
         self.maxConcurrentDownloads = max(1, maxConcurrentDownloads)
@@ -283,6 +300,10 @@ public struct AppSettings: Codable, Sendable, Equatable {
         self.readerTheme = readerTheme
         self.readerFontFamily = readerFontFamily
         self.readerFontSize = readerFontSize
+        self.maxConcurrentDownloadsPerHost = max(1, maxConcurrentDownloadsPerHost)
+        self.proxyEnabled = proxyEnabled
+        self.proxyHost = proxyHost.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.proxyPort = max(1, min(65535, proxyPort))
     }
 
     public init(from decoder: Decoder) throws {
@@ -325,6 +346,10 @@ public struct AppSettings: Codable, Sendable, Equatable {
         self.readerTheme = try container.decodeIfPresent(BrowserReaderTheme.self, forKey: .readerTheme) ?? .light
         self.readerFontFamily = try container.decodeIfPresent(BrowserReaderFontFamily.self, forKey: .readerFontFamily) ?? .serif
         self.readerFontSize = try container.decodeIfPresent(Double.self, forKey: .readerFontSize) ?? 18.0
+        self.maxConcurrentDownloadsPerHost = max(1, try container.decodeIfPresent(Int.self, forKey: .maxConcurrentDownloadsPerHost) ?? 2)
+        self.proxyEnabled = try container.decodeIfPresent(Bool.self, forKey: .proxyEnabled) ?? false
+        self.proxyHost = try container.decodeIfPresent(String.self, forKey: .proxyHost) ?? ""
+        self.proxyPort = max(1, min(65535, try container.decodeIfPresent(Int.self, forKey: .proxyPort) ?? 8080))
     }
 
     /// Resolves the URL template of the currently active search engine (built-in or custom).
@@ -390,6 +415,26 @@ public struct AppSettings: Codable, Sendable, Equatable {
             defaultTorrentPriority: defaultTorrentPriority,
             defaultSeedingPreference: seedingPref
         )
+    }
+
+    /// Builds a `URLSessionConfiguration.connectionProxyDictionary` when proxy is enabled and valid.
+    public var connectionProxyDictionary: [AnyHashable: Any]? {
+        let host = proxyHost.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard proxyEnabled, !host.isEmpty, proxyPort > 0, proxyPort <= 65535 else {
+            return nil
+        }
+        #if canImport(CFNetwork)
+        return [
+            kCFNetworkProxiesHTTPEnable as AnyHashable: 1,
+            kCFNetworkProxiesHTTPProxy as AnyHashable: host,
+            kCFNetworkProxiesHTTPPort as AnyHashable: proxyPort,
+            kCFNetworkProxiesHTTPSEnable as AnyHashable: 1,
+            kCFNetworkProxiesHTTPSProxy as AnyHashable: host,
+            kCFNetworkProxiesHTTPSPort as AnyHashable: proxyPort
+        ]
+        #else
+        return nil
+        #endif
     }
 
     /// Loads settings from standard UserDefaults with schema version check and fallback.

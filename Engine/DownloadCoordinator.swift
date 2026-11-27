@@ -2315,23 +2315,19 @@ public actor DownloadCoordinator {
         acquiredPermit = true
 
         do {
-            var (bytes, response) = try await session.bytes(for: urlRequest)
-            guard var httpResponse = response as? HTTPURLResponse else {
-                throw DownloadCoordinatorError.unexpectedSingleStreamError(
-                    reason: "Unexpected HTTP response: not HTTPURLResponse"
-                )
-            }
+            var chunkStream = URLSessionDataChunkStream(session: session, request: urlRequest)
+            defer { chunkStream.cancel() }
+            var httpResponse = try await chunkStream.start()
+
             if (httpResponse.statusCode == 401 || httpResponse.statusCode == 403) {
                 if let fresh = await attemptCredentialRefresh(for: probeResult.finalURL, downloadID: request.id) {
                     for (k, v) in fresh {
                         urlRequest.setValue(v, forHTTPHeaderField: k)
                     }
                     PipelineLogger.shared.log("[DownloadCoordinator] Retrying single stream download after credential refresh for \(request.id)")
-                    let (retryBytes, retryResponse) = try await session.bytes(for: urlRequest)
-                    if let retryHTTP = retryResponse as? HTTPURLResponse {
-                        bytes = retryBytes
-                        httpResponse = retryHTTP
-                    }
+                    chunkStream.cancel()
+                    chunkStream = URLSessionDataChunkStream(session: session, request: urlRequest)
+                    httpResponse = try await chunkStream.start()
                 }
             }
 
@@ -2388,9 +2384,9 @@ public actor DownloadCoordinator {
             var lastFlushedSingleStreamTime = Date()
 
             do {
-                for try await byte in bytes {
+                while let chunk = try await chunkStream.next() {
                     try Task.checkCancellation()
-                    buffer.append(byte)
+                    buffer.append(chunk)
                     if buffer.count >= 64 * 1024 {
                         try await BandwidthLimiter.throttle(
                             bytes: Int64(buffer.count),

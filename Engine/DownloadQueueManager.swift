@@ -222,6 +222,7 @@ public actor DownloadQueueManager {
     private var sequenceCounter: Int64 = 0
     private var activeTasks: [String: Task<Void, Never>] = [:]
     public private(set) var maxConcurrentDownloads: Int
+    public private(set) var maxConcurrentDownloadsPerHost: Int
     private var isProcessingQueue: Bool = false
 
     private let encoder: JSONEncoder
@@ -237,7 +238,8 @@ public actor DownloadQueueManager {
         coordinator: DownloadCoordinator,
         persistenceStore: DownloadPersistenceStore,
         queueStoreURL: URL? = nil,
-        maxConcurrentDownloads: Int = 3
+        maxConcurrentDownloads: Int = 3,
+        maxConcurrentDownloadsPerHost: Int = 2
     ) {
         self.coordinator = coordinator
         self.persistenceStore = persistenceStore
@@ -247,6 +249,7 @@ public actor DownloadQueueManager {
             self.queueStoreURL = persistenceStore.storageDirectoryURL.appendingPathComponent("queue_manifest.json")
         }
         self.maxConcurrentDownloads = max(1, maxConcurrentDownloads)
+        self.maxConcurrentDownloadsPerHost = max(1, maxConcurrentDownloadsPerHost)
 
         let enc = JSONEncoder()
         enc.outputFormatting = [.prettyPrinted, .sortedKeys]
@@ -1160,7 +1163,18 @@ public actor DownloadQueueManager {
         defer { isProcessingQueue = false }
 
         while activeTasks.count < maxConcurrentDownloads {
-            let pendingItems = items.values.filter { $0.state == .pending }
+            let activeHostCounts: [String: Int] = activeTasks.keys.reduce(into: [:]) { counts, activeID in
+                if let host = items[activeID]?.request.url.host?.lowercased(), !host.isEmpty {
+                    counts[host, default: 0] += 1
+                }
+            }
+            let pendingItems = items.values.filter { item in
+                guard item.state == .pending else { return false }
+                if let host = item.request.url.host?.lowercased(), !host.isEmpty {
+                    return activeHostCounts[host, default: 0] < maxConcurrentDownloadsPerHost
+                }
+                return true
+            }
             guard !pendingItems.isEmpty else { break }
 
             // Deterministic scheduling:

@@ -1223,10 +1223,14 @@ public struct DownloadsView: View {
             }
             defer { try? handle.close() }
             var totalWritten: Int64 = 0
+            let chunkSize = 256 * 1024
             for part in parts {
-                guard let data = try? Data(contentsOf: part), !data.isEmpty else { continue }
-                handle.write(data)
-                totalWritten += Int64(data.count)
+                guard let reader = try? FileHandle(forReadingFrom: part) else { continue }
+                defer { try? reader.close() }
+                while let chunk = try? reader.read(upToCount: chunkSize), !chunk.isEmpty {
+                    handle.write(chunk)
+                    totalWritten += Int64(chunk.count)
+                }
             }
             return totalWritten > 0 ? outputURL : nil
         }.value

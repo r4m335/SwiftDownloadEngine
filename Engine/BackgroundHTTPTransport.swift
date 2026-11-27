@@ -958,6 +958,9 @@ public final class BackgroundDownloadSessionManager: NSObject, @unchecked Sendab
         config.httpMaximumConnectionsPerHost = max(1, maximumConnectionsPerHost)
         config.timeoutIntervalForResource = max(60, resourceTimeoutInterval)
 #endif
+        if let proxyDictionary = AppSettings.load().connectionProxyDictionary {
+            config.connectionProxyDictionary = proxyDictionary
+        }
         return URLSession(configuration: config, delegate: self, delegateQueue: delegateQueue)
     }
 

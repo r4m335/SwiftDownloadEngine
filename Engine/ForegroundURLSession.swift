@@ -12,10 +12,17 @@ import FoundationNetworking
 /// a byte-range request whose validator or byte offsets may have changed.
 enum ForegroundURLSession {
     static let maximumRangeWorkers = SegmentAllocator.maxThreadCount
+    static let defaultConnectionsPerHost = 6
 
-    static func make(maximumConnectionsPerHost: Int = maximumRangeWorkers) -> URLSession {
+    static func make(
+        maximumConnectionsPerHost: Int = defaultConnectionsPerHost,
+        proxyDictionary: [AnyHashable: Any]? = AppSettings.load().connectionProxyDictionary
+    ) -> URLSession {
         let configuration = URLSessionConfiguration.default
         configuration.httpMaximumConnectionsPerHost = max(1, maximumConnectionsPerHost)
+        if let proxyDictionary {
+            configuration.connectionProxyDictionary = proxyDictionary
+        }
         configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
         configuration.urlCache = nil
         configuration.httpCookieStorage = nil

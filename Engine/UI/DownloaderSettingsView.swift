@@ -24,6 +24,9 @@ public struct DownloaderSettingsView: View {
     @State private var authUsername: String = ""
     @State private var authPassword: String = ""
     @State private var keychainFeedbackMessage: String? = nil
+    @State private var proxyEnabled: Bool = false
+    @State private var proxyHost: String = ""
+    @State private var proxyPortText: String = "8080"
 
     // HTTP Queue & Speed Limit
     @State private var maxConcurrent: Int = 3
@@ -328,8 +331,22 @@ public struct DownloaderSettingsView: View {
             // Section 8: Secure Credentials & Proxy (Stored in iOS Keychain)
             Section(
                 header: Text("Secure Authentication & Proxy"),
-                footer: Text("Sensitive auth passwords and proxy credentials are encrypted in the iOS Keychain (kSecClassInternetPassword) and never stored in plain AppSettings.")
+                footer: Text("HTTP/HTTPS proxy applies to engine downloads. Sensitive auth passwords and proxy credentials are encrypted in the iOS Keychain (kSecClassInternetPassword) and never stored in plain AppSettings.")
             ) {
+                Toggle("Enable HTTP/HTTPS Proxy", isOn: $proxyEnabled)
+                if proxyEnabled {
+                    TextField("Proxy Host (e.g. 127.0.0.1)", text: $proxyHost)
+                        #if canImport(UIKit)
+                        .autocapitalization(.none)
+                        .keyboardType(.URL)
+                        #endif
+                        .disableAutocorrection(true)
+                    TextField("Proxy Port (e.g. 8080)", text: $proxyPortText)
+                        #if canImport(UIKit)
+                        .keyboardType(.numberPad)
+                        #endif
+                }
+
                 TextField("Server / Host (e.g. example.com)", text: $authServer)
                     #if canImport(UIKit)
                     .autocapitalization(.none)
@@ -424,6 +441,9 @@ public struct DownloaderSettingsView: View {
         self.enableGlobalSpeedLimit = settings.enableGlobalSpeedLimit
         self.globalSpeedLimitKBps = String(settings.globalSpeedLimitKBps)
         self.isAutomaticCategorizationEnabled = settings.isAutomaticCategorizationEnabled
+        self.proxyEnabled = settings.proxyEnabled
+        self.proxyHost = settings.proxyHost
+        self.proxyPortText = String(settings.proxyPort)
 
         if let rule = viewModel.scheduleRules.first {
             self.scheduleEnabled = rule.isEnabled
@@ -460,6 +480,9 @@ public struct DownloaderSettingsView: View {
         updated.targetRatio = targetRatio
         updated.targetDurationMinutes = targetDurationMinutes
         updated.isAutomaticCategorizationEnabled = isAutomaticCategorizationEnabled
+        updated.proxyEnabled = proxyEnabled
+        updated.proxyHost = proxyHost.trimmingCharacters(in: .whitespacesAndNewlines)
+        updated.proxyPort = max(1, min(65535, Int(proxyPortText.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 8080))
 
         var currentRule = viewModel.scheduleRules.first ?? ScheduleRule()
         currentRule.isEnabled = scheduleEnabled
