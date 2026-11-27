@@ -66,11 +66,11 @@ final class LIDMediaEngineProtocolTests: XCTestCase {
 
         let dummySource = LIDPlayerSource.localFile(url: URL(fileURLWithPath: "/tmp/test.ts"), title: "Test")
         backend.load(source: dummySource, autoPlay: false)
-        XCTAssertEqual(backend.playbackState, .failed(LIDVLCKitBackend.unavailableMessage))
+        XCTAssertEqual(backend.playbackState, .failed(error: LIDVLCKitBackend.unavailableMessage))
         XCTAssertEqual(spy.lastError, LIDVLCKitBackend.unavailableMessage)
 
         backend.play()
-        XCTAssertEqual(backend.playbackState, .failed(LIDVLCKitBackend.unavailableMessage))
+        XCTAssertEqual(backend.playbackState, .failed(error: LIDVLCKitBackend.unavailableMessage))
 
         backend.seek(to: 42.0)
         XCTAssertEqual(backend.currentPositionSeconds, 42.0)

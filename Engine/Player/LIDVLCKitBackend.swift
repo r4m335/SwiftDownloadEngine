@@ -676,8 +676,8 @@ public final class LIDVLCKitBackend: NSObject, LIDMediaEngineProtocol {
     }
 
     private func failWithUnavailableError() {
-        PipelineLogger.shared.log(stage: .playback, message: Self.unavailableMessage)
-        self.playbackState = .failed(Self.unavailableMessage)
+        PipelineLogger.shared.log("[LIDVLCKitBackend] \(Self.unavailableMessage)")
+        self.playbackState = .failed(error: Self.unavailableMessage)
         delegate?.engineDidUpdateState(self, state: self.playbackState)
         delegate?.engineDidFail(self, error: Self.unavailableMessage)
     }
