@@ -1,56 +1,47 @@
-# SwiftDownloadEngine
+# SwiftDownloadEngine (`DownloadEngineKit`)
 
 [![Swift](https://img.shields.io/badge/Swift-5.9%20%7C%206.0-orange.svg)](https://swift.org)
-[![Platform](https://img.shields.io/badge/Platforms-macOS%20%7C%20iOS%20%7C%20Linux-blue.svg)](https://swift.org)
-[![Tests](https://img.shields.io/badge/Tests-144%20Passing-brightgreen.svg)]()
+[![Platform](https://img.shields.io/badge/Platforms-iOS%2015%2B%20%7C%20macOS%2012%2B-blue.svg)](https://swift.org)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-A high-performance, resilient, multi-segment HTTP range download engine for Swift. Architected from modern multi-connection acceleration principles, **SwiftDownloadEngine** delivers accelerated parallel downloads, token-bucket bandwidth throttling, global HTTP request budgeting, cooperative pause/resume, persistent queue scheduling, and reactive Swift Concurrency event streams.
+A multi-protocol download engine, streaming media pipeline, BitTorrent client, integrated browser, and media player library for Apple platforms (**`DownloadEngineKit`**). Built on Swift Concurrency (`actor`, `async/await`, `AsyncStream`) with durable `SchemaVersioned` persistence.
 
 ---
 
 ## Key Features
 
-* **Accelerated Multi-Segment Transfers:** Dynamically partitions large files into contiguous byte ranges using `Range: bytes=start-end` over parallel worker streams (`SegmentDownloader`).
-* **Actor-Isolated Architecture:** Built strictly on modern Swift structured concurrency (`actor`, `async/await`, `withThrowingTaskGroup`) for guaranteed data-race safety without manual locks.
-* **Resilient Pause & Resume:** Durable checkpoints survive sudden app terminations or process kills. Validates HTTP validators (`ETag`, `Last-Modified`, `Accept-Ranges`) to ensure segment integrity on resume.
-* **Dual Storage Strategies:** Direct-seek preallocated writes (`directSeek`) or individual part-file buffering (`partFiles`) with disk-space preflighting.
-* **Global & Per-Download Bandwidth Throttling:** High-precision token-bucket rate limiting (`BandwidthLimiter`) enforcing strict bandwidth caps across all connections or per individual download.
-* **In-Flight HTTP Request Budgeting:** Prevents connection starvation and server rate limits by strictly bounding concurrent active HTTP requests across segments and downloads (`SharedRequestBudget`).
-* **Reactive Event Streams:** Non-competing broadcast fan-out via `AsyncStream<DownloadEvent>` with bounded buffering and progress coalescing (max 20 Hz) to keep UI responsive.
-* **Persistent Priority Queue:** Manages downloads across `.high`, `.normal`, and `.low` priorities with FIFO ordering within equal priority bands.
-* **Integrity Verification:** Automated SHA-256 post-transfer hashing and validation (`ChecksumOutcome`).
-* **Cross-Platform:** Zero third-party dependencies. Compiles and executes identically on macOS, iOS, and Linux (via SwiftPM).
+* **Accelerated Multi-Segment HTTP Transfers:** Partitions range-capable files across parallel worker streams (`SegmentDownloader`, `AdaptiveSegmentWorkQueue`) with work stealing, token-bucket rate limiting (`BandwidthLimiter`), global/per-host concurrency caps, and HTTP/HTTPS proxy support (`ForegroundURLSession`, `BackgroundHTTPTransport`).
+* **Resilient Pause, Resume & Crash Recovery:** Atomic writes via `DurableStorage` (`SchemaVersioned`), HTTP validator checks (`ETag`, `Last-Modified`, `Accept-Ranges`), and `BGTaskScheduler` reconciliation (`ScheduleCoordinator`).
+* **Streaming Media Pipeline (HLS, DASH, Live, Blob, MSE):**
+  * Parses HLS (`HLSManifestParser`) and DASH MPD (`DASHManifestParser`) manifests, decrypts AES-128 HLS segments (`HLSSegmentDecryptor`), and muxes/reconstructs outputs (`MediaAssembler`, `HLSVODReconstruction`, `DASHVODReconstruction`).
+  * Supports live stream recording (`LiveStreamRecorder`, `LiveRecordingStore`), bounded `blob:` export (`BrowserBlobCaptureService`), and MSE capture (`BrowserMSECaptureService`).
+* **BitTorrent Support:** Native `libtorrent` 2.0 bridge (`TorrentSessionBridge.mm` / `LibTorrent.xcframework`) on iOS with queue scheduling (`TorrentQueueScheduler`), sequential download mode, tracker management, seeding policies, and periodic fast-resume persistence (`TorrentPersistenceStore`). When `LibTorrent` is not linked, the engine surfaces an explicit error rather than silently pretending to transfer peers.
+* **Integrated Web Browser & Resource Grabber:** Multi-tab `WKWebView` browser (`BrowserView`, `BrowserViewModel`) with ad/tracker/popup blocking (`BrowserContentBlocker`), bookmarks/history/quick access, incognito tabs, reader mode, and unified per-tab/per-document resource discovery (`WebpageResource`, `BrowserMediaCandidate`, `BrowserResourceDiscoveryCoordinator`).
+* **Integrated Media Player (`LIDPlaybackEngine`):** Dual-backend playback (`LIDAVFoundationBackend` and `LIDVLCKitBackend`), subtitle search/storage (`LIDSubtitleStore`), library/history tracking, and deferred ready-state resume positioning.
+* **Localization, Accessibility & Dynamic Type:** `L10n` localization wrapper, VoiceOver accessibility labels across core controls, and `@ScaledMetric` Dynamic Type scaling (`L10nAndAccessibility.swift`).
 
 ---
 
 ## Architecture Overview
 
 ```
-                      ┌────────────────────────────────────────┐
-                      │             DownloadEngine             │  ◄── Public Facade
-                      │   (AsyncStream<DownloadEvent>, Actor)  │
-                      └──────────────────┬─────────────────────┘
-                                         │
-                 ┌───────────────────────┴───────────────────────┐
-                 ▼                                               ▼
-   ┌───────────────────────────┐                   ┌───────────────────────────┐
-   │   DownloadQueueManager    │                   │    DownloadCoordinator    │
-   │ (Priority & Concurrency)  │                   │ (Segment Orchestration)   │
-   └─────────────┬─────────────┘                   └─────────────┬─────────────┘
-                 │                                               │
-                 │         ┌───────────────────────────┐         │
-                 ├────────►│   SharedRequestBudget     │◄────────┤
-                 │         │  (Global Request Cap)     │         │
-                 │         └───────────────────────────┘         │
-                 │         ┌───────────────────────────┐         │
-                 ├────────►│     BandwidthLimiter      │◄────────┤
-                 │         │ (Token-Bucket Throttle)   │         │
-                 │         └───────────────────────────┘         │
-                 │         ┌───────────────────────────┐         │
-                 └────────►│  DownloadPersistenceStore │◄────────┘
-                           │ (Atomic Metadata/Resume)  │
-                           └───────────────────────────┘
+                     ┌────────────────────────────────────────┐
+                     │          AppCompositionRoot            │  ◄── Dependency Injection
+                     └──────────────────┬─────────────────────┘
+                                        │
+        ┌───────────────────────────────┼───────────────────────────────┐
+        ▼                               ▼                               ▼
+┌───────────────────┐         ┌───────────────────┐         ┌───────────────────────┐
+│  DownloadEngine   │         │  TorrentEngine    │         │ StreamingDownload     │
+│ (HTTP Queue/Coord)│         │ (libtorrent 2.0)  │         │ Orchestrator (HLS/DASH│
+└─────────┬─────────┘         └─────────┬─────────┘         └───────────┬───────────┘
+          │                             │                               │
+          └─────────────────────────────┼───────────────────────────────┘
+                                        ▼
+                       ┌─────────────────────────────────┐
+                       │   DurableStorage / Persistence  │
+                       │ (SchemaVersioned + Quarantine)  │
+                       └─────────────────────────────────┘
 ```
 
 ---
@@ -65,109 +56,48 @@ dependencies: [
 ]
 ```
 
-Or add the URL directly via Xcode: **File** > **Add Package Dependencies...**
+Link the `DownloadEngineKit` product in your target.
 
 ---
 
 ## Quick Start
 
-### 1. Construct the Engine
-
 ```swift
 import Foundation
-import SwiftDownloadEngine
+import DownloadEngineKit
 
-// Create the engine with customizable concurrency and bandwidth caps
 let engine = try DownloadEngine(
-    storageDirectoryURL: nil,        // Defaults to Application Support / Linux fallback
-    maxConcurrentDownloads: 3,      // Max active parallel downloads
-    maxGlobalRequests: 12,           // Max concurrent in-flight HTTP requests
-    globalBandwidthLimit: 2_097_152  // 2 MB/s global bandwidth limit
+    storageDirectoryURL: nil,
+    maxConcurrentDownloads: 3,
+    maxGlobalRequests: 12,
+    globalBandwidthLimit: 2_097_152
 )
-```
 
-### 2. Observe Real-Time Download Events
-
-`DownloadEngine.events()` yields an independent `AsyncStream<DownloadEvent>`:
-
-```swift
-Task {
-    for await event in await engine.events() {
-        switch event {
-        case .started(let snap):
-            print("Download started: \(snap.id)")
-        case .progressUpdated(let snap):
-            print("Progress [\(snap.id)]: \(Int(snap.progressFraction * 100))% - Speed: \(snap.currentBytesPerSecond / 1024) KB/s")
-        case .completed(let snap):
-            print("Finished: \(snap.id) -> \(snap.destinationURL.path)")
-        case .failed(let snap, let reason):
-            print("Download failed: \(snap.id) - Reason: \(reason)")
-        case .integrityVerified(let id, let outcome):
-            print("SHA-256 verification for \(id): \(outcome)")
-        default:
-            break
-        }
-    }
-}
-```
-
-### 3. Add and Manage Downloads
-
-```swift
 let destination = FileManager.default.temporaryDirectory.appendingPathComponent("sample.iso")
-
 let request = DownloadRequest(
     url: URL(string: "https://example.com/sample.iso")!,
     destinationURL: destination,
-    configuredThreadCount: 8,              // Dynamic multi-segment parallel workers
-    retryCount: 3,
-    expectedSHA256: "e8964d4c55ec266ef61d68a2bf172fc22ae1d62ebc22d10c0e1cfeb93bcf91c9",
-    maxConcurrentRequests: 4,              // Per-download connection budget
-    speedLimitBytesPerSecond: 1_048_576    // Per-download rate limit (1 MB/s)
+    configuredThreadCount: 8,
+    retryCount: 3
 )
 
-// Enqueue with priority
-let initialSnapshot = try await engine.addDownload(request, priority: .high, autoStart: true)
-
-// Query live authoritative snapshot anytime
-if let live = await engine.snapshot(for: request.id) {
-    print("State: \(live.state), Transferred: \(live.completedBytes) / \(live.totalBytes ?? 0) bytes")
-}
-
-// Cooperative lifecycle controls
-try await engine.pauseDownload(id: request.id)
-try await engine.resumeDownload(id: request.id)
-try await engine.cancelDownload(id: request.id, deleteFile: false)
-try await engine.removeDownload(id: request.id, deleteFile: false)
-```
-
-### 4. Dynamic Limit Controls
-
-```swift
-// Adjust active limits on the fly without resetting transfers
-try await engine.setMaxGlobalRequests(16)
-await engine.setGlobalSpeedLimit(5_000_000) // 5 MB/s
-try await engine.setMaxConcurrentDownloads(5)
+let snapshot = try await engine.addDownload(request, priority: .high, autoStart: true)
+try await engine.pauseDownload(id: snapshot.id)
+try await engine.resumeDownload(id: snapshot.id)
 ```
 
 ---
 
 ## Testing & Verification
 
-The test suite validates real-world networking scenarios without external network dependencies using an integrated, RFC 7233-compliant local HTTP server (`LocalHTTPRangeServer`).
-
 ```bash
-# Run the entire test suite
 swift test
 ```
 
-### Test Coverage Highlights:
-* **Segment Allocation:** Contiguous, non-overlapping boundary partitioning and thread count clamping.
-* **HTTP Range Probe:** Range validation, redirects, content-length detection, and validator capture (`ETag`, `Last-Modified`).
-* **Pause, Resume & Interruption Recovery:** Verifies state preservation across process `SIGKILL` interruptions and source validator modifications.
-* **Queue Lifecycle & Priority:** Strict `.high` > `.normal` > `.low` scheduling and FIFO sequencing.
-* **Resource Throttling:** Validates token-bucket rate limiting tolerances and shared request permit acquisition/release.
-* **Engine Facade & Event Streams:** Broadcast fan-out, late subscribers, task cancellation cleanup, and progress coalescing.
+GitHub Actions (`.github/workflows/ios-build.yml`) runs:
+1. **Swift Package Tests** (`swift test`)
+2. **Milestone 1-3** (libtorrent 2.0 iOS native build, bridge & transfer engine tests)
+3. **iOS Device Build** (`xcodebuild` arm64 device build)
 
 ---
 
@@ -175,24 +105,25 @@ swift test
 
 ```text
 ├── Engine/
-│   ├── DownloadEngine.swift            # High-level public facade & event streams
-│   ├── DownloadCoordinator.swift       # Download orchestration & lifecycle
-│   ├── DownloadQueueManager.swift      # Persistent priority queue & scheduling
-│   ├── DownloadPersistence.swift      # Durable checkpoints & metadata store
-│   ├── DownloadFileWriter.swift       # Direct-seek & part-file atomic writers
-│   ├── SegmentDownloader.swift        # Concurrently executing range workers
-│   ├── SegmentAllocator.swift         # Dynamic segment boundary calculations
-│   ├── HTTPRangeProbe.swift           # Server range capability & size probing
-│   ├── BandwidthLimiter.swift         # Token-bucket rate limiter
-│   ├── SharedRequestBudget.swift      # Global HTTP active request semaphore
-│   └── DownloadSpeedTracker.swift     # Monotonic moving-average speed & ETA
-├── Tests/
-│   ├── DownloadEngineTests.swift      # Facade and AsyncStream integration tests
-│   ├── DownloadCoordinatorTests.swift # Coordinator unit and integration tests
-│   ├── DownloadQueueManagerTests.swift# Queue scheduler and priority tests
-│   ├── ResourceThrottlingTests.swift  # Bandwidth and budget throttling tests
-│   ├── PauseResumeAndRecoveryTests.swift # Interruption & process recovery tests
-│   └── LocalHTTPRangeServer.swift     # In-process deterministic range server
+│   ├── AppCompositionRoot.swift            # Dependency injection container
+│   ├── DownloadEngine.swift                # Public HTTP download facade & event streams
+│   ├── DownloadCoordinator*.swift          # Multi-segment, single-stream & recovery
+│   ├── DownloadQueueManager.swift          # Persistent priority queue & per-host caps
+│   ├── DownloadPersistence.swift           # Durable download & schedule persistence
+│   ├── DurableStorage.swift                # Atomic writes, SchemaVersioned & quarantine
+│   ├── TorrentEngine.swift                 # BitTorrent facade & periodic fast-resume
+│   ├── TorrentQueueScheduler.swift         # Torrent queue, priority & seeding policies
+│   ├── Configuration/                      # AppSettings & EngineConfiguration
+│   ├── Browser/                            # Tab manager, content blocker, resource grabber
+│   ├── Streaming/                          # HLS, DASH, live recording & MediaAssembler
+│   ├── Player/                             # LIDPlaybackEngine, AVFoundation/VLCKit, subtitles
+│   ├── Scheduling/                         # ScheduleCoordinator & BGTaskScheduler hooks
+│   ├── Notifications/                      # DownloadNotificationManager (grouped/actionable)
+│   ├── Recovery/                           # DownloadRecoveryManager & BrowserDownloadMatcher
+│   ├── Security/                           # KeychainManager
+│   └── UI/                                 # SwiftUI views, ViewModels, L10n & Dynamic Type
+├── iOSApp/                                 # iOS app entry point, Info.plist, PrivacyInfo
+├── Tests/                                  # Unit & integration test suites
 └── Package.swift
 ```
 
