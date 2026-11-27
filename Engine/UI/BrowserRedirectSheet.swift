@@ -23,7 +23,7 @@ public struct BrowserRedirectSheet: View {
                         .fill(accentColor.opacity(0.14))
                         .frame(width: 48, height: 48)
                     Image(systemName: prompt.isSuspicious ? "exclamationmark.shield.fill" : "arrow.up.right.square.fill")
-                        .font(.system(size: 22, weight: .semibold))
+                        .scaledFont(size: 22, weight: .semibold)
                         .foregroundColor(accentColor)
                 }
                 .padding(.top, 12)
@@ -44,7 +44,7 @@ public struct BrowserRedirectSheet: View {
             VStack(alignment: .leading, spacing: 10) {
                 HStack(spacing: 10) {
                     Image(systemName: "globe")
-                        .font(.system(size: 12, weight: .semibold))
+                        .scaledFont(size: 12, weight: .semibold)
                         .foregroundColor(.secondary)
                         .frame(width: 22, height: 22)
                         .background(Color.secondary.opacity(0.12), in: Circle())
@@ -64,7 +64,7 @@ public struct BrowserRedirectSheet: View {
 
                 HStack(spacing: 10) {
                     Image(systemName: "arrow.down")
-                        .font(.system(size: 10, weight: .bold))
+                        .scaledFont(size: 10, weight: .bold)
                         .foregroundColor(accentColor)
                         .frame(width: 22)
                     Rectangle()
@@ -74,7 +74,7 @@ public struct BrowserRedirectSheet: View {
 
                 HStack(alignment: .top, spacing: 10) {
                     Image(systemName: prompt.destinationURL.scheme?.lowercased() == "https" ? "lock.fill" : "exclamationmark.triangle.fill")
-                        .font(.system(size: 12, weight: .semibold))
+                        .scaledFont(size: 12, weight: .semibold)
                         .foregroundColor(prompt.destinationURL.scheme?.lowercased() == "https" ? .green : .orange)
                         .frame(width: 22, height: 22)
                         .background((prompt.destinationURL.scheme?.lowercased() == "https" ? Color.green : Color.orange).opacity(0.14), in: Circle())

@@ -97,9 +97,9 @@ public struct FilePreviewContainerView: View {
                     Button(action: dismiss) {
                         HStack(spacing: 6) {
                             Image(systemName: "xmark.circle.fill")
-                                .font(.system(size: 18, weight: .bold))
+                                .scaledFont(size: 18, weight: .bold)
                             Text("Done")
-                                .font(.system(size: 15, weight: .semibold))
+                                .scaledFont(size: 15, weight: .semibold)
                         }
                         .foregroundColor(.primary)
                         .padding(.horizontal, 14)
@@ -148,7 +148,7 @@ public struct FilePreviewContainerView: View {
     private var fallbackView: some View {
         VStack(spacing: 16) {
             Image(systemName: "doc.fill")
-                .font(.system(size: 64))
+                .scaledFont(size: 64)
                 .foregroundColor(.accentColor)
             Text(url.lastPathComponent)
                 .font(.headline)

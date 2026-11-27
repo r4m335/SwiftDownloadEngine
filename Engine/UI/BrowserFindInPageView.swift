@@ -31,7 +31,7 @@ public struct BrowserFindInPageView: View {
             HStack(spacing: 6) {
                 Image(systemName: "magnifyingglass")
                     .foregroundColor(.secondary)
-                    .font(.system(size: 14))
+                    .scaledFont(size: 14)
 
                 TextField("Find in Page...", text: $query)
                     .focused($isFieldFocused)
@@ -50,7 +50,7 @@ public struct BrowserFindInPageView: View {
                     } label: {
                         Image(systemName: "xmark.circle.fill")
                             .foregroundColor(.secondary)
-                            .font(.system(size: 14))
+                            .scaledFont(size: 14)
                     }
                 }
             }
@@ -81,7 +81,7 @@ public struct BrowserFindInPageView: View {
             // Previous Button (Chevron Up)
             Button(action: onPrevious) {
                 Image(systemName: "chevron.up")
-                    .font(.system(size: 14, weight: .bold))
+                    .scaledFont(size: 14, weight: .bold)
                     .frame(width: 32, height: 32)
             }
             .disabled(result.matchCount == 0)
@@ -89,7 +89,7 @@ public struct BrowserFindInPageView: View {
             // Next Button (Chevron Down)
             Button(action: onNext) {
                 Image(systemName: "chevron.down")
-                    .font(.system(size: 14, weight: .bold))
+                    .scaledFont(size: 14, weight: .bold)
                     .frame(width: 32, height: 32)
             }
             .disabled(result.matchCount == 0)

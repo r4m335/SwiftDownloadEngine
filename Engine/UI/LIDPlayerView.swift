@@ -430,7 +430,7 @@ public struct LIDPlayerView: View {
                             dismiss()
                         } label: {
                             Image(systemName: "xmark")
-                                .font(.system(size: 13, weight: .bold))
+                                .scaledFont(size: 13, weight: .bold)
                                 .foregroundColor(.white.opacity(0.85))
                                 .padding(9)
                                 .background(Color.black.opacity(0.45))
@@ -571,7 +571,7 @@ public struct LIDPlayerView: View {
     private func errorOverlayView(error: String) -> some View {
         VStack(spacing: 16) {
             Image(systemName: "exclamationmark.triangle.fill")
-                .font(.system(size: 42))
+                .scaledFont(size: 42)
                 .foregroundColor(.yellow)
             Text("Playback Error")
                 .font(.headline)
@@ -837,7 +837,7 @@ public struct LIDPlayerView: View {
                     Image(systemName: "bolt.fill")
                         .foregroundColor(.yellow)
                     Text("2× Speed")
-                        .font(.system(size: 14, weight: .bold))
+                        .scaledFont(size: 14, weight: .bold)
                         .foregroundColor(.white)
                 }
                 .padding(.horizontal, 18)
@@ -864,11 +864,11 @@ public struct LIDPlayerView: View {
                 HStack(spacing: 8) {
                     if seekHUDText.hasPrefix("-") {
                         Image(systemName: seekIconName(seconds: playerSettings.seekIntervalSeconds, isForward: false))
-                            .font(.system(size: 18, weight: .bold))
+                            .scaledFont(size: 18, weight: .bold)
                             .foregroundColor(.white)
                     } else if seekHUDText.hasPrefix("+") {
                         Image(systemName: seekIconName(seconds: playerSettings.seekIntervalSeconds, isForward: true))
-                            .font(.system(size: 18, weight: .bold))
+                            .scaledFont(size: 18, weight: .bold)
                             .foregroundColor(.white)
                     }
                     Text(seekHUDText)
@@ -896,7 +896,7 @@ public struct LIDPlayerView: View {
         VStack(spacing: 8) {
             HStack(spacing: 8) {
                 Image(systemName: icon)
-                    .font(.system(size: 18, weight: .semibold))
+                    .scaledFont(size: 18, weight: .semibold)
                     .foregroundColor(accent)
                 Text(label)
                     .font(.caption.bold())
@@ -941,13 +941,14 @@ public struct LIDPlayerView: View {
                     dismiss()
                 } label: {
                     Image(systemName: "xmark")
-                        .font(.system(size: 14, weight: .bold))
+                        .scaledFont(size: 14, weight: .bold)
                         .foregroundColor(.white)
                         .padding(10)
                         .background(.ultraThinMaterial, in: Circle())
                         .overlay(Circle().stroke(Color.white.opacity(0.2), lineWidth: 1))
                         .preferredColorScheme(.dark)
                 }
+                .accessibilityLabel(L10n.tr("Close Player"))
 
                 Text(title)
                     .font(.subheadline.weight(.semibold))
@@ -960,7 +961,7 @@ public struct LIDPlayerView: View {
                             .fill(Color.red)
                             .frame(width: 8, height: 8)
                         Text(engine.streamContext.isDVRSeekable ? "LIVE DVR" : "LIVE")
-                            .font(.system(size: 10, weight: .black))
+                            .scaledFont(size: 10, weight: .black)
                             .foregroundColor(.white)
                     }
                     .padding(.horizontal, 6)
@@ -972,14 +973,14 @@ public struct LIDPlayerView: View {
                 if let speed = engine.streamContext.swarmDownloadSpeed, speed > 0 {
                     HStack(spacing: 4) {
                         Image(systemName: "arrow.down.circle.fill")
-                            .font(.system(size: 11))
+                            .scaledFont(size: 11)
                             .foregroundColor(.green)
                         Text(formatSwarmSpeed(speed))
-                            .font(.system(size: 10, weight: .bold, design: .monospaced))
+                            .scaledFont(size: 10, weight: .bold, design: .monospaced)
                             .foregroundColor(.white)
                         if let peers = engine.streamContext.swarmConnectedPeers, peers > 0 {
                             Text("· \(peers)p")
-                                .font(.system(size: 10, weight: .medium))
+                                .scaledFont(size: 10, weight: .medium)
                                 .foregroundColor(.white.opacity(0.8))
                         }
                     }
@@ -1011,14 +1012,16 @@ public struct LIDPlayerView: View {
                     resetControlsTimer()
                 } label: {
                     Image(systemName: seekIconName(seconds: playerSettings.seekIntervalSeconds, isForward: false))
-                        .font(.system(size: 32))
+                        .scaledFont(size: 32)
                         .foregroundColor(.white)
                 }
+                .accessibilityLabel(L10n.tr("Skip Backward %d Seconds", playerSettings.seekIntervalSeconds))
 
                 if engine.playbackState.isBuffering {
                     ProgressView()
                         .progressViewStyle(CircularProgressViewStyle(tint: .white))
                         .scaleEffect(1.6)
+                        .accessibilityLabel(L10n.tr("Buffering"))
                 } else {
                     Button {
                         if engine.playbackState.isEnded {
@@ -1029,9 +1032,10 @@ public struct LIDPlayerView: View {
                         resetControlsTimer()
                     } label: {
                         Image(systemName: engine.playbackState.isEnded ? "arrow.counterclockwise.circle.fill" : (engine.playbackState.isPlaying ? "pause.circle.fill" : "play.circle.fill"))
-                            .font(.system(size: 64))
+                            .scaledFont(size: 64)
                             .foregroundColor(.white)
                     }
+                    .accessibilityLabel(engine.playbackState.isEnded ? L10n.tr("Replay") : (engine.playbackState.isPlaying ? L10n.tr("Pause") : L10n.tr("Play")))
                 }
 
                 Button {
@@ -1040,9 +1044,10 @@ public struct LIDPlayerView: View {
                     resetControlsTimer()
                 } label: {
                     Image(systemName: seekIconName(seconds: playerSettings.seekIntervalSeconds, isForward: true))
-                        .font(.system(size: 32))
+                        .scaledFont(size: 32)
                         .foregroundColor(.white)
                 }
+                .accessibilityLabel(L10n.tr("Skip Forward %d Seconds", playerSettings.seekIntervalSeconds))
             }
 
             Spacer()
@@ -1052,7 +1057,7 @@ public struct LIDPlayerView: View {
                 // Bottom row 1: Timeline, current time, duration
                 HStack(spacing: 12) {
                     Text(formatTime(isDraggingScrubber ? scrubPosition : engine.currentPositionSeconds))
-                        .font(.system(size: 12, weight: .medium, design: .monospaced))
+                        .scaledFont(size: 12, weight: .medium, design: .monospaced)
                         .foregroundColor(.white)
 
                     Slider(
@@ -1073,6 +1078,7 @@ public struct LIDPlayerView: View {
                         }
                     )
                     .accentColor(.blue)
+                    .accessibilityLabel(L10n.tr("Playback Timeline"))
 
                     // Toggle duration between total time and remaining time
                     Button {
@@ -1081,11 +1087,11 @@ public struct LIDPlayerView: View {
                         if showRemainingTime {
                             let rem = max(0.0, engine.durationSeconds - (isDraggingScrubber ? scrubPosition : engine.currentPositionSeconds))
                             Text("-" + formatTime(rem))
-                                .font(.system(size: 12, weight: .medium, design: .monospaced))
+                                .scaledFont(size: 12, weight: .medium, design: .monospaced)
                                 .foregroundColor(.white.opacity(0.8))
                         } else {
                             Text(formatTime(engine.durationSeconds))
-                                .font(.system(size: 12, weight: .medium, design: .monospaced))
+                                .scaledFont(size: 12, weight: .medium, design: .monospaced)
                                 .foregroundColor(.white.opacity(0.8))
                         }
                     }
@@ -1106,9 +1112,9 @@ public struct LIDPlayerView: View {
                         } label: {
                             HStack(spacing: 4) {
                                 Image(systemName: "gauge.with.needle")
-                                    .font(.system(size: 12))
+                                    .scaledFont(size: 12)
                                 Text(String(format: "%.2f×", engine.playbackRate))
-                                    .font(.system(size: 12, weight: .bold, design: .monospaced))
+                                    .scaledFont(size: 12, weight: .bold, design: .monospaced)
                             }
                             .padding(.horizontal, 10)
                             .padding(.vertical, 5)
@@ -1123,7 +1129,7 @@ public struct LIDPlayerView: View {
                             resetControlsTimer()
                         } label: {
                             Image(systemName: "captions.bubble.fill")
-                                .font(.system(size: 15, weight: .semibold))
+                                .scaledFont(size: 15, weight: .semibold)
                                 .foregroundColor(.white)
                                 .padding(6)
                                 .background(Color.black.opacity(0.4))
@@ -1142,10 +1148,10 @@ public struct LIDPlayerView: View {
                         } label: {
                             HStack(spacing: 3) {
                                 Image(systemName: "timer")
-                                    .font(.system(size: 14, weight: .semibold))
+                                    .scaledFont(size: 14, weight: .semibold)
                                 if abs(engine.trackManager.subtitleDelay) > 0.001 {
                                     Text(formatDelayMilliseconds(engine.trackManager.subtitleDelay))
-                                        .font(.system(size: 11, weight: .bold, design: .monospaced))
+                                        .scaledFont(size: 11, weight: .bold, design: .monospaced)
                                 }
                             }
                             .foregroundColor(showSubtitleDelayPanel ? Color.orange : .white)
@@ -1160,7 +1166,7 @@ public struct LIDPlayerView: View {
                             resetControlsTimer()
                         } label: {
                             Image(systemName: "rotate.right")
-                                .font(.system(size: 15, weight: .semibold))
+                                .scaledFont(size: 15, weight: .semibold)
                                 .foregroundColor(.white)
                                 .padding(6)
                                 .background(Color.black.opacity(0.4))
@@ -1173,7 +1179,7 @@ public struct LIDPlayerView: View {
                             resetControlsTimer()
                         } label: {
                             Text(aspectRatio.rawValue)
-                                .font(.system(size: 12, weight: .bold))
+                                .scaledFont(size: 12, weight: .bold)
                                 .padding(.horizontal, 10)
                                 .padding(.vertical, 5)
                                 .background(Color.white.opacity(0.2))
@@ -1187,7 +1193,7 @@ public struct LIDPlayerView: View {
                             resetControlsTimer()
                         } label: {
                             Image(systemName: engine.isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill")
-                                .font(.system(size: 15, weight: .semibold))
+                                .scaledFont(size: 15, weight: .semibold)
                                 .foregroundColor(.white)
                                 .padding(6)
                                 .background(Color.black.opacity(0.4))
@@ -1202,7 +1208,7 @@ public struct LIDPlayerView: View {
                                 resetControlsTimer()
                             } label: {
                                 Image(systemName: "pip.enter")
-                                    .font(.system(size: 15, weight: .semibold))
+                                    .scaledFont(size: 15, weight: .semibold)
                                     .foregroundColor(.white)
                                     .padding(6)
                                     .background(Color.black.opacity(0.4))
@@ -1226,7 +1232,7 @@ public struct LIDPlayerView: View {
                             )
                         } label: {
                             Image(systemName: "lock")
-                                .font(.system(size: 14, weight: .semibold))
+                                .scaledFont(size: 14, weight: .semibold)
                                 .foregroundColor(.white)
                                 .padding(6)
                                 .background(Color.black.opacity(0.4))
@@ -1239,7 +1245,7 @@ public struct LIDPlayerView: View {
                             resetControlsTimer()
                         } label: {
                             Image(systemName: "stethoscope")
-                                .font(.system(size: 14, weight: .semibold))
+                                .scaledFont(size: 14, weight: .semibold)
                                 .foregroundColor(.white)
                                 .padding(6)
                                 .background(Color.black.opacity(0.4))
@@ -1248,7 +1254,7 @@ public struct LIDPlayerView: View {
 
                         if let res = engine.metadata.naturalWidth, let h = engine.metadata.naturalHeight {
                             Text("\(Int(res))×\(Int(h))")
-                                .font(.system(size: 11, weight: .medium))
+                                .scaledFont(size: 11, weight: .medium)
                                 .foregroundColor(.white.opacity(0.7))
                                 .padding(.leading, 4)
                         }
@@ -1430,7 +1436,7 @@ public struct LIDPlayerView: View {
         VStack(spacing: 8) {
             // Row 1: Title pill
             Text("Subtitle delay")
-                .font(.system(size: 15, weight: .bold))
+                .scaledFont(size: 15, weight: .bold)
                 .foregroundColor(Color.orange)
                 .frame(maxWidth: 340)
                 .frame(height: 36)
@@ -1442,7 +1448,7 @@ public struct LIDPlayerView: View {
                     adjustDelayByMilliseconds(-playerSettings.subtitleDelayStepMs)
                 } label: {
                     Image(systemName: "chevron.left")
-                        .font(.system(size: 18, weight: .bold))
+                        .scaledFont(size: 18, weight: .bold)
                         .foregroundColor(.white)
                         .frame(width: 50, height: 44)
                         .contentShape(Rectangle())
@@ -1451,7 +1457,7 @@ public struct LIDPlayerView: View {
                 Spacer()
 
                 Text(formatDelayMilliseconds(engine.trackManager.subtitleDelay))
-                    .font(.system(size: 17, weight: .bold, design: .monospaced))
+                    .scaledFont(size: 17, weight: .bold, design: .monospaced)
                     .foregroundColor(.white)
 
                 Spacer()
@@ -1460,7 +1466,7 @@ public struct LIDPlayerView: View {
                     adjustDelayByMilliseconds(playerSettings.subtitleDelayStepMs)
                 } label: {
                     Image(systemName: "chevron.right")
-                        .font(.system(size: 18, weight: .bold))
+                        .scaledFont(size: 18, weight: .bold)
                         .foregroundColor(.white)
                         .frame(width: 50, height: 44)
                         .contentShape(Rectangle())
@@ -1478,9 +1484,9 @@ public struct LIDPlayerView: View {
                 } label: {
                     HStack(spacing: 4) {
                         Image(systemName: "checkmark")
-                            .font(.system(size: 11, weight: .black))
+                            .scaledFont(size: 11, weight: .black)
                         Text("VOICE HEARD")
-                            .font(.system(size: 11, weight: .bold))
+                            .scaledFont(size: 11, weight: .bold)
                     }
                     .foregroundColor(voiceHeardTime != nil ? Color.orange : .white)
                     .frame(maxWidth: .infinity, minHeight: 38)
@@ -1493,9 +1499,9 @@ public struct LIDPlayerView: View {
                 } label: {
                     HStack(spacing: 4) {
                         Image(systemName: "checkmark")
-                            .font(.system(size: 11, weight: .black))
+                            .scaledFont(size: 11, weight: .black)
                         Text("TEXT SEEN")
-                            .font(.system(size: 11, weight: .bold))
+                            .scaledFont(size: 11, weight: .bold)
                     }
                     .foregroundColor(textSeenTime != nil ? Color.orange : .white)
                     .frame(maxWidth: .infinity, minHeight: 38)
@@ -1507,7 +1513,7 @@ public struct LIDPlayerView: View {
                     handleResetSubtitleDelay()
                 } label: {
                     Text("RESET")
-                        .font(.system(size: 11, weight: .bold))
+                        .scaledFont(size: 11, weight: .bold)
                         .foregroundColor(.white)
                         .padding(.horizontal, 16)
                         .frame(minHeight: 38)
@@ -1602,7 +1608,7 @@ public struct LIDPlayerView: View {
         VStack(spacing: 8) {
             // Row 1: Title pill
             Text("Playback speed")
-                .font(.system(size: 15, weight: .bold))
+                .scaledFont(size: 15, weight: .bold)
                 .foregroundColor(Color.orange)
                 .frame(maxWidth: 340)
                 .frame(height: 36)
@@ -1611,7 +1617,7 @@ public struct LIDPlayerView: View {
             // Row 2: Continuous Slider pill: 0.0× ───●─── 2.0×
             HStack(spacing: 12) {
                 Text("0.0×")
-                    .font(.system(size: 12, weight: .bold, design: .monospaced))
+                    .scaledFont(size: 12, weight: .bold, design: .monospaced)
                     .foregroundColor(.white.opacity(0.7))
 
                 Slider(
@@ -1630,7 +1636,7 @@ public struct LIDPlayerView: View {
                 .accentColor(Color.orange)
 
                 Text("2.0×")
-                    .font(.system(size: 12, weight: .bold, design: .monospaced))
+                    .scaledFont(size: 12, weight: .bold, design: .monospaced)
                     .foregroundColor(.white.opacity(0.7))
             }
             .padding(.horizontal, 16)
@@ -1642,11 +1648,11 @@ public struct LIDPlayerView: View {
             HStack(spacing: 8) {
                 HStack(spacing: 6) {
                     Text(String(format: "%.2f×", engine.playbackRate))
-                        .font(.system(size: 14, weight: .bold, design: .monospaced))
+                        .scaledFont(size: 14, weight: .bold, design: .monospaced)
                         .foregroundColor(abs(engine.playbackRate - 1.0) < 0.01 ? .white : Color.orange)
 
                     Text(engine.playbackRate == 0 ? "Paused" : (abs(engine.playbackRate - 1.0) < 0.01 ? "Normal" : (engine.playbackRate > 1.0 ? "Faster" : "Slower")))
-                        .font(.system(size: 11, weight: .semibold))
+                        .scaledFont(size: 11, weight: .semibold)
                         .foregroundColor(.white.opacity(0.7))
                 }
                 .frame(maxWidth: .infinity, minHeight: 38)
@@ -1660,7 +1666,7 @@ public struct LIDPlayerView: View {
                     }
                 } label: {
                     Text("RESET")
-                        .font(.system(size: 11, weight: .bold))
+                        .scaledFont(size: 11, weight: .bold)
                         .foregroundColor(.white)
                         .padding(.horizontal, 16)
                         .frame(minHeight: 38)
@@ -1678,7 +1684,7 @@ public struct LIDPlayerView: View {
     private var fallbackView: some View {
         VStack(spacing: 16) {
             Image(systemName: "film")
-                .font(.system(size: 48))
+                .scaledFont(size: 48)
                 .foregroundColor(.white)
             Text(title)
                 .font(.headline)

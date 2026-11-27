@@ -14,7 +14,7 @@ public struct AppPrivacyView: View {
                             .fill(Color.green.opacity(0.15))
                             .frame(width: 64, height: 64)
                         Image(systemName: "lock.shield.fill")
-                            .font(.system(size: 32))
+                            .scaledFont(size: 32)
                             .foregroundColor(.green)
                     }
 

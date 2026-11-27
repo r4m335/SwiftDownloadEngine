@@ -68,7 +68,7 @@ public struct BrowserReaderView: View {
                         isShowingAppearanceMenu.toggle()
                     } label: {
                         Image(systemName: "textformat.size")
-                            .font(.system(size: 16, weight: .semibold))
+                            .scaledFont(size: 16, weight: .semibold)
                     }
                     .popover(isPresented: $isShowingAppearanceMenu) {
                         appearancePopoverContent
@@ -80,7 +80,7 @@ public struct BrowserReaderView: View {
                         onShare()
                     } label: {
                         Image(systemName: "square.and.arrow.up")
-                            .font(.system(size: 16))
+                            .scaledFont(size: 16)
                     }
                 }
             }
@@ -118,7 +118,7 @@ public struct BrowserReaderView: View {
                     HStack(spacing: 4) {
                         Image(systemName: "minus")
                         Text("A")
-                            .font(.system(size: 14, weight: .bold))
+                            .scaledFont(size: 14, weight: .bold)
                     }
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 8)
@@ -138,7 +138,7 @@ public struct BrowserReaderView: View {
                 } label: {
                     HStack(spacing: 4) {
                         Text("A")
-                            .font(.system(size: 20, weight: .bold))
+                            .scaledFont(size: 20, weight: .bold)
                         Image(systemName: "plus")
                     }
                     .frame(maxWidth: .infinity)
@@ -183,7 +183,7 @@ public struct BrowserReaderView: View {
 
                 if settings.theme == theme {
                     Image(systemName: "checkmark")
-                        .font(.system(size: 16, weight: .bold))
+                        .scaledFont(size: 16, weight: .bold)
                         .foregroundColor(labelColor)
                 }
             }
@@ -223,7 +223,7 @@ public struct BrowserReaderView: View {
                 }
 
                 Text(article.plainText)
-                    .font(.system(size: CGFloat(settings.fontSize)))
+                    .scaledFont(size: CGFloat(settings.fontSize))
                     .foregroundColor(themeTextColor)
                     .lineSpacing(CGFloat(settings.fontSize * 0.4))
             }

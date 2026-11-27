@@ -14,7 +14,7 @@ public struct AboutView: View {
                             .fill(LinearGradient(colors: [Color.blue, Color.indigo], startPoint: .topLeading, endPoint: .bottomTrailing))
                             .frame(width: 72, height: 72)
                         Image(systemName: "arrow.down.circle.fill")
-                            .font(.system(size: 40))
+                            .scaledFont(size: 40)
                             .foregroundColor(.white)
                     }
 
@@ -46,7 +46,7 @@ public struct AboutView: View {
                     HStack(spacing: 12) {
                         Image(systemName: "hand.raised.shield.fill")
                             .foregroundColor(.green)
-                            .font(.system(size: 18))
+                            .scaledFont(size: 18)
                         VStack(alignment: .leading, spacing: 2) {
                             Text("App Privacy & Policy")
                                 .font(.body)
@@ -62,7 +62,7 @@ public struct AboutView: View {
                     HStack(spacing: 12) {
                         Image(systemName: "safari.fill")
                             .foregroundColor(.blue)
-                            .font(.system(size: 18))
+                            .scaledFont(size: 18)
                         VStack(alignment: .leading, spacing: 2) {
                             Text("Privacy Policy (Web)")
                                 .font(.body)
@@ -84,7 +84,7 @@ public struct AboutView: View {
                     HStack(spacing: 12) {
                         Image(systemName: "doc.text.magnifyingglass")
                             .foregroundColor(.blue)
-                            .font(.system(size: 18))
+                            .scaledFont(size: 18)
                         VStack(alignment: .leading, spacing: 2) {
                             Text("Open Source Licenses")
                                 .font(.body)

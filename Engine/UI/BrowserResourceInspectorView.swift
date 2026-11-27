@@ -559,7 +559,7 @@ public struct BrowserResourceInspectorSheet: View {
             } label: {
                 HStack(spacing: 4) {
                     Image(systemName: sortDirection.iconName)
-                        .font(.system(size: 13, weight: .semibold))
+                        .scaledFont(size: 13, weight: .semibold)
                     Text(sortDirection == .ascending ? "Asc" : "Desc")
                         .font(.caption.weight(.medium))
                 }
@@ -752,7 +752,7 @@ public struct BrowserResourceInspectorSheet: View {
             HStack(spacing: 6) {
                 Image(systemName: "magnifyingglass")
                     .foregroundColor(.secondary)
-                    .font(.system(size: 14))
+                    .scaledFont(size: 14)
 
                 TextField("Search name, domain, codec, 1080p...", text: $searchText)
                     #if canImport(UIKit)
@@ -766,7 +766,7 @@ public struct BrowserResourceInspectorSheet: View {
                     } label: {
                         Image(systemName: "xmark.circle.fill")
                             .foregroundColor(.secondary)
-                            .font(.system(size: 14))
+                            .scaledFont(size: 14)
                     }
                 }
             }
@@ -802,7 +802,7 @@ public struct BrowserResourceInspectorSheet: View {
                 }
             } label: {
                 Image(systemName: "arrow.up.arrow.down")
-                    .font(.system(size: 13, weight: .semibold))
+                    .scaledFont(size: 13, weight: .semibold)
                     .foregroundColor(.primary)
                     .frame(width: 34, height: 34)
                     .background(Color.secondary.opacity(0.14))
@@ -825,7 +825,7 @@ public struct BrowserResourceInspectorSheet: View {
                 }
             } label: {
                 Image(systemName: groupingOption == .none ? "square.grid.2x2" : "folder.fill")
-                    .font(.system(size: 13, weight: .semibold))
+                    .scaledFont(size: 13, weight: .semibold)
                     .foregroundColor(groupingOption == .none ? .primary : .blue)
                     .frame(width: 34, height: 34)
                     .background(groupingOption == .none ? Color.secondary.opacity(0.14) : Color.blue.opacity(0.14))
@@ -1077,7 +1077,7 @@ public struct BrowserResourceInspectorSheet: View {
         VStack(spacing: 16) {
             Spacer()
             Image(systemName: "doc.text.magnifyingglass")
-                .font(.system(size: 48))
+                .scaledFont(size: 48)
                 .foregroundColor(.secondary)
 
             Text("No Resources Found")
@@ -1103,7 +1103,7 @@ public struct BrowserResourceInspectorSheet: View {
         VStack(spacing: 16) {
             Spacer()
             Image(systemName: "exclamationmark.triangle.fill")
-                .font(.system(size: 48))
+                .scaledFont(size: 48)
                 .foregroundColor(.orange)
 
             Text("Inspection Failed")
@@ -1340,7 +1340,7 @@ public struct ResourceRowView: View {
                     onToggleSelect?()
                 } label: {
                     Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
-                        .font(.system(size: 22))
+                        .scaledFont(size: 22)
                         .foregroundColor(isSelected ? .blue : .secondary)
                 }
                 .buttonStyle(BorderlessButtonStyle())
@@ -1355,7 +1355,7 @@ public struct ResourceRowView: View {
                             .fill(fileIconColor.opacity(0.14))
                             .frame(width: 40, height: 40)
                         Image(systemName: fileIconName)
-                            .font(.system(size: 20))
+                            .scaledFont(size: 20)
                             .foregroundColor(fileIconColor)
                     }
 
@@ -1387,9 +1387,9 @@ public struct ResourceRowView: View {
                             if resource.isDRMProtected || candidate?.kind == .protectedMedia {
                                 HStack(spacing: 3) {
                                     Image(systemName: "lock.fill")
-                                        .font(.system(size: 8))
+                                        .scaledFont(size: 8)
                                     Text(resource.drmProtectionType ?? "DRM")
-                                        .font(.system(size: 9, weight: .bold))
+                                        .scaledFont(size: 9, weight: .bold)
                                 }
                                 .foregroundColor(.white)
                                 .padding(.horizontal, 6)
@@ -1403,7 +1403,7 @@ public struct ResourceRowView: View {
                                         .fill(Color.white)
                                         .frame(width: 5, height: 5)
                                     Text("LIVE")
-                                        .font(.system(size: 9, weight: .bold))
+                                        .scaledFont(size: 9, weight: .bold)
                                 }
                                 .foregroundColor(.white)
                                 .padding(.horizontal, 6)
@@ -1414,9 +1414,9 @@ public struct ResourceRowView: View {
                             } else if resource.isExpired() {
                                 HStack(spacing: 3) {
                                     Image(systemName: "exclamationmark.clock.fill")
-                                        .font(.system(size: 8))
+                                        .scaledFont(size: 8)
                                     Text("Expired")
-                                        .font(.system(size: 9, weight: .bold))
+                                        .scaledFont(size: 9, weight: .bold)
                                 }
                                 .foregroundColor(.white)
                                 .padding(.horizontal, 6)
@@ -1427,9 +1427,9 @@ public struct ResourceRowView: View {
                             } else if resource.isExpiringSoon() {
                                 HStack(spacing: 3) {
                                     Image(systemName: "clock.badge.exclamationmark")
-                                        .font(.system(size: 8))
+                                        .scaledFont(size: 8)
                                     Text("Expiring")
-                                        .font(.system(size: 9, weight: .medium))
+                                        .scaledFont(size: 9, weight: .medium)
                                 }
                                 .foregroundColor(.orange)
                                 .fixedSize(horizontal: true, vertical: false)
@@ -1437,7 +1437,7 @@ public struct ResourceRowView: View {
 
                             if let variant = variantItem {
                                 Text(variant.qualityLabel)
-                                    .font(.system(size: 10, weight: .bold))
+                                    .scaledFont(size: 10, weight: .bold)
                                     .foregroundColor(.white)
                                     .padding(.horizontal, 7)
                                     .padding(.vertical, 2)
@@ -1447,7 +1447,7 @@ public struct ResourceRowView: View {
                             }
 
                             Text(resource.trackType.shortLabel)
-                                .font(.system(size: 9, weight: .bold))
+                                .scaledFont(size: 9, weight: .bold)
                                 .padding(.horizontal, 6)
                                 .padding(.vertical, 2)
                                 .background(Color.blue.opacity(0.12))
@@ -1457,14 +1457,14 @@ public struct ResourceRowView: View {
 
                             if (variantItem?.hasSubtitles == true) || resource.trackType == .subtitles {
                                 Image(systemName: "captions.bubble.fill")
-                                    .font(.system(size: 10))
+                                    .scaledFont(size: 10)
                                     .foregroundColor(.purple)
                                     .fixedSize(horizontal: true, vertical: false)
                             }
 
                             if let host = resource.url.host {
                                 Text(host)
-                                    .font(.system(size: 10))
+                                    .scaledFont(size: 10)
                                     .foregroundColor(.secondary)
                                     .lineLimit(1)
                                     .truncationMode(.middle)
@@ -1488,7 +1488,7 @@ public struct ResourceRowView: View {
                         onPreview?()
                     } label: {
                         Image(systemName: "play.circle.fill")
-                            .font(.system(size: 26))
+                            .scaledFont(size: 26)
                             .foregroundColor(.green)
                     }
                     .buttonStyle(BorderlessButtonStyle())
@@ -1499,7 +1499,7 @@ public struct ResourceRowView: View {
                         onOpenBrowser()
                     } label: {
                         Image(systemName: "safari.fill")
-                            .font(.system(size: 24))
+                            .scaledFont(size: 24)
                             .foregroundColor(.blue)
                     }
                     .buttonStyle(BorderlessButtonStyle())

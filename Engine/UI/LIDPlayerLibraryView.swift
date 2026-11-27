@@ -104,7 +104,7 @@ public struct LIDPlayerLibraryView: View {
                                 } label: {
                                     HStack(spacing: 5) {
                                         Image(systemName: sec.icon)
-                                            .font(.system(size: 12, weight: .semibold))
+                                            .scaledFont(size: 12, weight: .semibold)
                                         Text(sec.rawValue)
                                             .font(.caption.weight(.semibold))
                                     }
@@ -174,7 +174,7 @@ public struct LIDPlayerLibraryView: View {
                                     }
                                 } label: {
                                     Image(systemName: isGridView ? "list.bullet" : "square.grid.2x2")
-                                        .font(.system(size: 15, weight: .semibold))
+                                        .scaledFont(size: 15, weight: .semibold)
                                 }
                                 .accessibilityLabel(isGridView ? "Switch to List View" : "Switch to Grid View")
                             }
@@ -511,14 +511,14 @@ public struct LIDPlayerLibraryView: View {
                 HStack(spacing: 4) {
                     if item.isFavorite {
                         Image(systemName: "star.fill")
-                            .font(.system(size: 10, weight: .bold))
+                            .scaledFont(size: 10, weight: .bold)
                             .foregroundColor(.yellow)
                             .padding(4)
                             .background(.ultraThinMaterial, in: Circle())
                     }
 
                     Text(item.url.pathExtension.uppercased())
-                        .font(.system(size: 9, weight: .bold))
+                        .scaledFont(size: 9, weight: .bold)
                         .foregroundColor(.white)
                         .padding(.horizontal, 6)
                         .padding(.vertical, 3)
@@ -669,7 +669,7 @@ public struct LIDPlayerLibraryView: View {
 
                 HStack(spacing: 6) {
                     Text(item.url.pathExtension.uppercased())
-                        .font(.system(size: 10, weight: .bold))
+                        .scaledFont(size: 10, weight: .bold)
                         .foregroundColor(.secondary)
                         .padding(.horizontal, 6)
                         .padding(.vertical, 2)
@@ -681,7 +681,7 @@ public struct LIDPlayerLibraryView: View {
 
                     if showResumeBadge && item.lastPositionSeconds > 0 {
                         Text("Resume \(formatTime(item.lastPositionSeconds))")
-                            .font(.system(size: 10, weight: .semibold))
+                            .scaledFont(size: 10, weight: .semibold)
                             .foregroundColor(.blue)
                             .padding(.horizontal, 6)
                             .padding(.vertical, 2)
@@ -697,7 +697,7 @@ public struct LIDPlayerLibraryView: View {
                 libraryStore.toggleFavorite(for: item)
             } label: {
                 Image(systemName: item.isFavorite ? "star.fill" : "star")
-                    .font(.system(size: 15))
+                    .scaledFont(size: 15)
                     .foregroundColor(item.isFavorite ? .yellow : .secondary.opacity(0.45))
             }
             .buttonStyle(BorderlessButtonStyle())
@@ -707,7 +707,7 @@ public struct LIDPlayerLibraryView: View {
                 mediaContextMenuItems(for: item)
             } label: {
                 Image(systemName: "ellipsis")
-                    .font(.system(size: 16, weight: .semibold))
+                    .scaledFont(size: 16, weight: .semibold)
                     .foregroundColor(.secondary)
                     .frame(width: 28, height: 28)
                     .contentShape(Rectangle())
@@ -1013,7 +1013,7 @@ public struct LIDPlayerLibraryView: View {
                     .fill(Color.blue.opacity(0.12))
                     .frame(width: 72, height: 72)
                 Image(systemName: icon)
-                    .font(.system(size: 30, weight: .semibold))
+                    .scaledFont(size: 30, weight: .semibold)
                     .foregroundColor(.blue)
             }
             Text(title)
@@ -1245,7 +1245,7 @@ private struct LIDMediaThumbnailView: View {
 
     private var fallbackIcon: some View {
         Image(systemName: mediaType == .video ? "film.fill" : "music.note")
-            .font(.system(size: 20, weight: .semibold))
+            .scaledFont(size: 20, weight: .semibold)
             .foregroundColor(mediaType == .video ? .blue : .orange)
     }
 

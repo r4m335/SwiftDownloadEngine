@@ -1479,7 +1479,7 @@ public struct VerticalThreeDotsButtonLabel: View {
 
             Image(systemName: "ellipsis")
                 .rotationEffect(.degrees(90))
-                .font(.system(size: 14, weight: .bold))
+                .scaledFont(size: 14, weight: .bold)
                 .foregroundColor(.primary)
         }
         .frame(width: 32, height: 32)
@@ -1794,7 +1794,7 @@ public struct UnifiedTransferRowView: View {
                     .fill(color.opacity(0.15))
                     .frame(width: 32, height: 32)
                 Image(systemName: icon)
-                    .font(.system(size: 13, weight: .bold))
+                    .scaledFont(size: 13, weight: .bold)
                     .foregroundColor(color)
             }
         }
@@ -1809,7 +1809,7 @@ public struct UnifiedTransferRowView: View {
                 .frame(width: 38, height: 38)
 
             Image(systemName: iconNameForTransfer)
-                .font(.system(size: 16, weight: .semibold))
+                .scaledFont(size: 16, weight: .semibold)
                 .foregroundColor(statusColor)
         }
     }
@@ -2364,7 +2364,7 @@ public struct QueueSummaryHeader: View {
         let counts = viewModel.statusCounts
         HStack(spacing: 4) {
             HeaderStat(
-                label: "All",
+                label: L10n.tr("All"),
                 count: counts.all,
                 color: DownloadFilter.all.accentColor,
                 isSelected: viewModel.selectedFilter == .all
@@ -2375,7 +2375,7 @@ public struct QueueSummaryHeader: View {
             }
 
             HeaderStat(
-                label: "Active",
+                label: L10n.tr("Active"),
                 count: counts.active,
                 color: DownloadFilter.active.accentColor,
                 isSelected: viewModel.selectedFilter == .active
@@ -2386,7 +2386,7 @@ public struct QueueSummaryHeader: View {
             }
 
             HeaderStat(
-                label: "Paused",
+                label: L10n.tr("Paused"),
                 count: counts.paused,
                 color: DownloadFilter.paused.accentColor,
                 isSelected: viewModel.selectedFilter == .paused
@@ -2397,7 +2397,7 @@ public struct QueueSummaryHeader: View {
             }
 
             HeaderStat(
-                label: "Completed",
+                label: L10n.tr("Completed"),
                 count: counts.completed,
                 color: DownloadFilter.completed.accentColor,
                 isSelected: viewModel.selectedFilter == .completed
@@ -2408,7 +2408,7 @@ public struct QueueSummaryHeader: View {
             }
 
             HeaderStat(
-                label: "Failed",
+                label: L10n.tr("Failed"),
                 count: counts.failed,
                 color: DownloadFilter.failed.accentColor,
                 isSelected: viewModel.selectedFilter == .failed
@@ -2462,7 +2462,7 @@ public struct HeaderStat: View {
                     .minimumScaleFactor(0.75)
 
                 Text(label)
-                    .font(.system(size: 10, weight: isSelected ? .bold : .medium))
+                    .scaledFont(size: 10, weight: isSelected ? .bold : .medium)
                     .foregroundColor(isSelected ? color : .secondary)
                     .lineLimit(1)
                     .minimumScaleFactor(0.75)
@@ -2477,9 +2477,9 @@ public struct HeaderStat: View {
         }
         .buttonStyle(.plain)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(label), \(count) items")
+        .accessibilityLabel(L10n.tr("%@, %d downloads", label, count))
         .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : [.isButton])
-        .accessibilityHint("Filter downloads by \(label)")
+        .accessibilityHint(L10n.tr("Filter downloads by %@", label))
     }
 }
 
@@ -2601,7 +2601,7 @@ public struct CategoryFilterBar: View {
                 } label: {
                     HStack(spacing: 4) {
                         Image(systemName: "square.grid.2x2")
-                            .font(.system(size: 11))
+                            .scaledFont(size: 11)
                         Text("All")
                             .font(.caption.bold())
                     }
@@ -2619,7 +2619,7 @@ public struct CategoryFilterBar: View {
                     } label: {
                         HStack(spacing: 4) {
                             Image(systemName: category.iconName)
-                                .font(.system(size: 11))
+                                .scaledFont(size: 11)
                             Text(category.displayName)
                                 .font(.caption.bold())
                         }
@@ -2671,7 +2671,7 @@ public struct EmptyDownloadsState: View {
                     .frame(width: 90, height: 90)
 
                 Image(systemName: category?.iconName ?? "arrow.down.circle.fill")
-                    .font(.system(size: 40, weight: .semibold))
+                    .scaledFont(size: 40, weight: .semibold)
                     .foregroundColor(.blue)
             }
 

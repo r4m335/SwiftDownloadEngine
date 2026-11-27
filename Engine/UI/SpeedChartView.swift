@@ -74,7 +74,7 @@ public struct SpeedChartView: View {
                         .frame(width: 28, height: 28)
                     Image(systemName: "arrow.down")
                         .foregroundColor(.blue)
-                        .font(.system(size: 13, weight: .bold))
+                        .scaledFont(size: 13, weight: .bold)
                 }
 
                 VStack(alignment: .leading, spacing: 1) {
@@ -83,7 +83,7 @@ public struct SpeedChartView: View {
                         .foregroundColor(.primary)
 
                     Text("Peak: \(UIFormatters.formatSpeed(peakDownloadSpeed))")
-                        .font(.system(size: 10, weight: .medium))
+                        .scaledFont(size: 10, weight: .medium)
                         .foregroundColor(.secondary)
                 }
             }
@@ -98,7 +98,7 @@ public struct SpeedChartView: View {
                         .foregroundColor(.primary)
 
                     Text("Peak: \(UIFormatters.formatSpeed(peakUploadSpeed))")
-                        .font(.system(size: 10, weight: .medium))
+                        .scaledFont(size: 10, weight: .medium)
                         .foregroundColor(.secondary)
                 }
 
@@ -108,7 +108,7 @@ public struct SpeedChartView: View {
                         .frame(width: 28, height: 28)
                     Image(systemName: "arrow.up")
                         .foregroundColor(.green)
-                        .font(.system(size: 13, weight: .bold))
+                        .scaledFont(size: 13, weight: .bold)
                 }
             }
         }
@@ -128,7 +128,7 @@ public struct SpeedChartView: View {
             Spacer()
             Text("Now")
         }
-        .font(.system(size: 9))
+        .scaledFont(size: 9)
         .foregroundColor(.secondary)
         .padding(.horizontal, 4)
     }
@@ -207,7 +207,7 @@ private struct SwiftChartsSpeedGraph: View {
                 if let sec = value.as(Double.self) {
                     AxisValueLabel {
                         Text(sec == 0 ? "Now" : "\(Int(sec))s")
-                            .font(.system(size: 9))
+                            .scaledFont(size: 9)
                     }
                 }
             }
@@ -218,7 +218,7 @@ private struct SwiftChartsSpeedGraph: View {
                 if let spd = value.as(Double.self) {
                     AxisValueLabel {
                         Text(UIFormatters.formatSpeed(spd))
-                            .font(.system(size: 8))
+                            .scaledFont(size: 8)
                     }
                 }
             }
@@ -257,15 +257,15 @@ private struct CustomPathSpeedGraph: View {
                 // Y-Axis speed labels
                 VStack(alignment: .trailing) {
                     Text(UIFormatters.formatSpeed(ceilingSpeed))
-                        .font(.system(size: 8))
+                        .scaledFont(size: 8)
                         .foregroundColor(.secondary)
                     Spacer()
                     Text(UIFormatters.formatSpeed(ceilingSpeed * 0.5))
-                        .font(.system(size: 8))
+                        .scaledFont(size: 8)
                         .foregroundColor(.secondary)
                     Spacer()
                     Text("0 B/s")
-                        .font(.system(size: 8))
+                        .scaledFont(size: 8)
                         .foregroundColor(.secondary)
                 }
                 .padding(.trailing, 2)

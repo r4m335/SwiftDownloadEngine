@@ -102,7 +102,7 @@ public struct LIDSubtitleSearchView: View {
                     VStack(spacing: 12) {
                         Spacer()
                         Image(systemName: "captions.bubble")
-                            .font(.system(size: 48))
+                            .scaledFont(size: 48)
                             .foregroundColor(.secondary)
                         Text("No subtitles found")
                             .font(.headline)
@@ -312,7 +312,7 @@ private struct SubtitleResultRow: View {
         HStack(spacing: 12) {
             // Language badge
             Text(result.languageCode.uppercased())
-                .font(.system(size: 11, weight: .bold))
+                .scaledFont(size: 11, weight: .bold)
                 .foregroundColor(.white)
                 .frame(width: 32, height: 24)
                 .background(badgeColor(for: result.matchQuality))

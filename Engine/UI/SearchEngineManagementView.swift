@@ -135,7 +135,7 @@ public struct SearchEngineManagementView: View {
                                     isShowingAddSheet = true
                                 } label: {
                                     Image(systemName: "pencil.circle")
-                                        .font(.system(size: 20))
+                                        .scaledFont(size: 20)
                                         .foregroundColor(.secondary)
                                 }
                                 .buttonStyle(.plain)

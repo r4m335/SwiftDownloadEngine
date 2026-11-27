@@ -91,7 +91,7 @@ public struct UpdateDownloadLinkSheet: View {
                             }
                         } label: {
                             Image(systemName: "doc.on.clipboard")
-                                .font(.system(size: 16))
+                                .scaledFont(size: 16)
                                 .padding(8)
                         }
                         .buttonStyle(.bordered)

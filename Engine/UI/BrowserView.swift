@@ -515,7 +515,7 @@ public struct BrowserView: View {
             HStack(spacing: 6) {
                 if let url = viewModel.currentURL {
                     Image(systemName: url.scheme?.lowercased() == "https" ? "lock.fill" : "lock.slash.fill")
-                        .font(.system(size: 10, weight: .semibold))
+                        .scaledFont(size: 10, weight: .semibold)
                         .foregroundColor(url.scheme?.lowercased() == "https" ? .green : .orange)
                 }
                 Text(collapsedWebsiteName)
@@ -553,7 +553,7 @@ public struct BrowserView: View {
                     viewModel.isShowingShieldSheet = true
                 } label: {
                     Image(systemName: shieldIconName)
-                        .font(.system(size: 13, weight: .semibold))
+                        .scaledFont(size: 13, weight: .semibold)
                         .foregroundColor(shieldIconColor)
                 }
                 .buttonStyle(.plain)
@@ -563,9 +563,9 @@ public struct BrowserView: View {
                 if viewModel.isCurrentTabIncognito {
                     HStack(spacing: 3) {
                         Image(systemName: "eyeglasses")
-                            .font(.system(size: 11, weight: .bold))
+                            .scaledFont(size: 11, weight: .bold)
                         Text("Private")
-                            .font(.system(size: 10, weight: .bold))
+                            .scaledFont(size: 10, weight: .bold)
                     }
                     .foregroundColor(.purple)
                     .padding(.horizontal, 6)
@@ -578,16 +578,16 @@ public struct BrowserView: View {
                 if let url = viewModel.currentURL {
                     if url.scheme?.lowercased() == "https" {
                         Image(systemName: "lock.fill")
-                            .font(.system(size: 12))
+                            .scaledFont(size: 12)
                             .foregroundColor(.green)
                     } else {
                         Image(systemName: "lock.slash.fill")
-                            .font(.system(size: 12))
+                            .scaledFont(size: 12)
                             .foregroundColor(.orange)
                     }
                 } else {
                     Image(systemName: "magnifyingglass")
-                        .font(.system(size: 12))
+                        .scaledFont(size: 12)
                         .foregroundColor(.secondary)
                 }
 
@@ -635,13 +635,13 @@ public struct BrowserView: View {
                     } label: {
                         ZStack(alignment: .topTrailing) {
                             Image(systemName: "doc.text.magnifyingglass")
-                                .font(.system(size: 14, weight: .semibold))
+                                .scaledFont(size: 14, weight: .semibold)
                                 .foregroundColor(.primary)
                                 .frame(width: 26, height: 26)
 
                             if viewModel.detectedMediaCount > 0 {
                                 Text("\(viewModel.detectedMediaCount)")
-                                    .font(.system(size: 9, weight: .bold))
+                                    .scaledFont(size: 9, weight: .bold)
                                     .foregroundColor(.white)
                                     .padding(.horizontal, viewModel.detectedMediaCount > 9 ? 3 : 0)
                                     .frame(minWidth: 14, minHeight: 14)
@@ -716,11 +716,11 @@ public struct BrowserView: View {
             } label: {
                 HStack(spacing: 4) {
                     Image(systemName: "magnifyingglass")
-                        .font(.system(size: 10, weight: .semibold))
+                        .scaledFont(size: 10, weight: .semibold)
                     Text(viewModel.currentSearchEngineName)
-                        .font(.system(size: 11, weight: .semibold))
+                        .scaledFont(size: 11, weight: .semibold)
                     Image(systemName: "chevron.up.chevron.down")
-                        .font(.system(size: 9, weight: .bold))
+                        .scaledFont(size: 9, weight: .bold)
                 }
                 .foregroundColor(.secondary)
                 .padding(.horizontal, 8)
@@ -749,9 +749,9 @@ public struct BrowserView: View {
                     viewModel.goBack()
                 } label: {
                     Image(systemName: "chevron.backward")
-                        .font(.system(size: 18, weight: .semibold))
+                        .scaledFont(size: 18, weight: .semibold)
                 }
-                .accessibilityLabel("Back")
+                .accessibilityLabel(L10n.tr("Back"))
                 .disabled(!viewModel.canGoBack)
                 .frame(maxWidth: .infinity, minHeight: 44)
 
@@ -760,9 +760,9 @@ public struct BrowserView: View {
                     viewModel.goForward()
                 } label: {
                     Image(systemName: "chevron.forward")
-                        .font(.system(size: 18, weight: .semibold))
+                        .scaledFont(size: 18, weight: .semibold)
                 }
-                .accessibilityLabel("Forward")
+                .accessibilityLabel(L10n.tr("Forward"))
                 .disabled(!viewModel.canGoForward)
                 .frame(maxWidth: .infinity, minHeight: 44)
 
@@ -771,9 +771,9 @@ public struct BrowserView: View {
                     viewModel.goHome()
                 } label: {
                     Image(systemName: "house.fill")
-                        .font(.system(size: 18))
+                        .scaledFont(size: 18)
                 }
-                .accessibilityLabel("Home")
+                .accessibilityLabel(L10n.tr("Home"))
                 .frame(maxWidth: .infinity, minHeight: 44)
 
                 // Tab overview button with live count badge
@@ -782,19 +782,19 @@ public struct BrowserView: View {
                 } label: {
                     if viewModel.tabs.isEmpty {
                         Image(systemName: "square.on.square")
-                            .font(.system(size: 18))
+                            .scaledFont(size: 18)
                     } else {
                         ZStack {
                             RoundedRectangle(cornerRadius: 4.5, style: .continuous)
                                 .stroke(lineWidth: 1.6)
                                 .frame(width: 19, height: 19)
                             Text("\(viewModel.tabs.count)")
-                                .font(.system(size: viewModel.tabs.count >= 100 ? 8 : 11, weight: .bold))
+                                .scaledFont(size: viewModel.tabs.count >= 100 ? 8 : 11, weight: .bold)
                                 .minimumScaleFactor(0.6)
                         }
                     }
                 }
-                .accessibilityLabel("Tabs (\(viewModel.tabs.count) open)")
+                .accessibilityLabel(L10n.tr("Tabs (%d open)", viewModel.tabs.count))
                 .disabled(viewModel.tabs.isEmpty)
                 .frame(maxWidth: .infinity, minHeight: 44)
 
@@ -807,9 +807,9 @@ public struct BrowserView: View {
                     }
                 } label: {
                     Image(systemName: viewModel.isLoading ? "xmark" : "arrow.clockwise")
-                        .font(.system(size: 18))
+                        .scaledFont(size: 18)
                 }
-                .accessibilityLabel(viewModel.isLoading ? "Stop" : "Reload")
+                .accessibilityLabel(viewModel.isLoading ? L10n.tr("Stop") : L10n.tr("Reload"))
                 .disabled(viewModel.currentURL == nil && !viewModel.isLoading)
                 .frame(maxWidth: .infinity, minHeight: 44)
 
@@ -912,12 +912,12 @@ struct BrowserOverflowMenu: View, Equatable {
             ZStack(alignment: .topTrailing) {
                 Image(systemName: "ellipsis")
                     .rotationEffect(.degrees(90))
-                    .font(.system(size: 18, weight: .semibold))
+                    .scaledFont(size: 18, weight: .semibold)
 
                 // Priority Badge Indicator: Blue for active downloads
                 if activeDownloadCount > 0 {
                     Text("\(activeDownloadCount)")
-                        .font(.system(size: 9, weight: .bold))
+                        .scaledFont(size: 9, weight: .bold)
                         .foregroundColor(.white)
                         .padding(.horizontal, 4)
                         .padding(.vertical, 1)

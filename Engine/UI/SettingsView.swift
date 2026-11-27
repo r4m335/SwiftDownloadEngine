@@ -20,55 +20,58 @@ public struct SettingsView: View {
     public var body: some View {
         NavigationView {
             List {
-                Section(header: Text("Preferences Categories")) {
+                Section(header: Text(L10n.tr("Preferences Categories"))) {
                     // Category 1: Downloader
                     NavigationLink {
                         DownloaderSettingsView(viewModel: viewModel)
                     } label: {
                         SettingsCategoryRow(
-                            title: "Downloader",
-                            subtitle: "Concurrency, network, bandwidth limits, storage, BitTorrent & scheduler",
+                            title: L10n.tr("Downloader"),
+                            subtitle: L10n.tr("Concurrency, network, bandwidth limits, storage, BitTorrent & scheduler"),
                             icon: "arrow.down.circle.fill",
                             gradient: [.blue, .cyan]
                         )
                     }
+                    .accessibilityLabel(L10n.tr("Downloader Settings"))
 
                     // Category 2: Browser
                     NavigationLink {
                         BrowserSettingsView(viewModel: viewModel)
                     } label: {
                         SettingsCategoryRow(
-                            title: "Browser",
-                            subtitle: "Search engine, homepage, privacy shields, ad blocking & reader mode",
+                            title: L10n.tr("Browser"),
+                            subtitle: L10n.tr("Search engine, homepage, privacy shields, ad blocking & reader mode"),
                             icon: "globe",
                             gradient: [.indigo, .purple]
                         )
                     }
+                    .accessibilityLabel(L10n.tr("Browser Settings"))
 
                     // Category 3: Media Player
                     NavigationLink {
                         MediaPlayerSettingsView()
                     } label: {
                         SettingsCategoryRow(
-                            title: "Media Player",
-                            subtitle: "Playback speed, aspect ratio, subtitles, audio, gestures & orientation",
+                            title: L10n.tr("Media Player"),
+                            subtitle: L10n.tr("Playback speed, aspect ratio, subtitles, audio, gestures & orientation"),
                             icon: "play.tv.fill",
                             gradient: [.orange, .pink]
                         )
                     }
+                    .accessibilityLabel(L10n.tr("Media Player Settings"))
                 }
 
-                Section(header: Text("Interface & Notifications")) {
+                Section(header: Text(L10n.tr("Interface & Notifications"))) {
                     Toggle(isOn: $downloadsCompactMode) {
-                        Label("Compact Download Cards", systemImage: "rectangle.grid.1x2")
+                        Label(L10n.tr("Compact Download Cards"), systemImage: "rectangle.grid.1x2")
                     }
 
                     Toggle(isOn: $mediaLibraryGridView) {
-                        Label("Media Library Grid Layout", systemImage: "square.grid.2x2")
+                        Label(L10n.tr("Media Library Grid Layout"), systemImage: "square.grid.2x2")
                     }
 
                     HStack {
-                        Label("Transfer Notifications", systemImage: "bell.badge")
+                        Label(L10n.tr("Transfer Notifications"), systemImage: "bell.badge")
                         Spacer()
                         Text(notificationStatusLabel)
                             .font(.caption.weight(.semibold))
@@ -201,7 +204,7 @@ private struct SettingsCategoryRow: View {
                     .fill(LinearGradient(colors: gradient, startPoint: .topLeading, endPoint: .bottomTrailing))
                     .frame(width: 38, height: 38)
                 Image(systemName: icon)
-                    .font(.system(size: 18, weight: .semibold))
+                    .scaledFont(size: 18, weight: .semibold)
                     .foregroundColor(.white)
             }
 

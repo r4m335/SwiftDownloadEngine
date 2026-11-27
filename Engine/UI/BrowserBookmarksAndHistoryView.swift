@@ -694,7 +694,7 @@ public struct BrowserBookmarksAndHistoryView: View {
                     )
                     .frame(width: 82, height: 82)
                 Image(systemName: icon)
-                    .font(.system(size: 36, weight: .semibold))
+                    .scaledFont(size: 36, weight: .semibold)
                     .foregroundColor(.blue)
             }
             Text(title)

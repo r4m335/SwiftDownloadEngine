@@ -65,7 +65,7 @@ public struct StreamQualityPickerSheet: View {
         VStack(spacing: 16) {
             Spacer()
             Image(systemName: "exclamationmark.triangle.fill")
-                .font(.system(size: 44))
+                .scaledFont(size: 44)
                 .foregroundColor(.orange)
             Text("Quality Discovery Incomplete")
                 .font(.headline)
@@ -89,7 +89,7 @@ public struct StreamQualityPickerSheet: View {
         VStack(spacing: 16) {
             Spacer()
             Image(systemName: "film")
-                .font(.system(size: 44))
+                .scaledFont(size: 44)
                 .foregroundColor(.secondary)
             Text("No Specific Renditions Discovered")
                 .font(.headline)
@@ -162,7 +162,7 @@ public struct StreamQualityPickerSheet: View {
                         HStack(spacing: 12) {
                             // Quality Badge
                             Text(option.qualityBadge)
-                                .font(.system(size: 11, weight: .bold))
+                                .scaledFont(size: 11, weight: .bold)
                                 .foregroundColor(.white)
                                 .frame(width: 58, height: 26)
                                 .background(option.badgeColor)
@@ -172,7 +172,7 @@ public struct StreamQualityPickerSheet: View {
                             VStack(alignment: .leading, spacing: 3) {
                                 HStack(spacing: 6) {
                                     Text(option.label)
-                                        .font(.system(size: 15, weight: .semibold))
+                                        .scaledFont(size: 15, weight: .semibold)
                                         .foregroundColor(.primary)
 
                                     if option.isAudioOnly {
@@ -183,7 +183,7 @@ public struct StreamQualityPickerSheet: View {
 
                                     if option.isLive {
                                         Text("● LIVE")
-                                            .font(.system(size: 10, weight: .bold))
+                                            .scaledFont(size: 10, weight: .bold)
                                             .foregroundColor(.red)
                                     }
                                 }
@@ -228,11 +228,11 @@ public struct StreamQualityPickerSheet: View {
                             if viewModel.selectedQualityOption?.id == option.id {
                                 Image(systemName: "checkmark.circle.fill")
                                     .foregroundColor(.blue)
-                                    .font(.system(size: 20))
+                                    .scaledFont(size: 20)
                             } else {
                                 Image(systemName: "circle")
                                     .foregroundColor(.secondary.opacity(0.4))
-                                    .font(.system(size: 20))
+                                    .scaledFont(size: 20)
                             }
                         }
                         .contentShape(Rectangle())
@@ -249,10 +249,10 @@ public struct StreamQualityPickerSheet: View {
                     HStack {
                         Spacer()
                         Image(systemName: viewModel.selectedQualityOption?.isLive == true ? "record.circle.fill" : "arrow.down.circle.fill")
-                            .font(.system(size: 17, weight: .semibold))
+                            .scaledFont(size: 17, weight: .semibold)
                             .foregroundColor(viewModel.selectedQualityOption?.isLive == true ? .red : .blue)
                         Text(downloadButtonTitle)
-                            .font(.system(size: 16, weight: .bold))
+                            .scaledFont(size: 16, weight: .bold)
                         Spacer()
                     }
                     .padding(.vertical, 4)

@@ -146,7 +146,7 @@ public struct DownloadManagerAppView: View {
         return [
             AppTabDescriptor(
                 index: 0,
-                title: "Downloads",
+                title: L10n.tr("Downloads", comment: "Main tab title"),
                 icon: "arrow.down.circle",
                 activeIcon: "arrow.down.circle.fill",
                 badgeCount: dlBadgeCount,
@@ -154,7 +154,7 @@ public struct DownloadManagerAppView: View {
             ),
             AppTabDescriptor(
                 index: 1,
-                title: "Browser",
+                title: L10n.tr("Browser", comment: "Main tab title"),
                 icon: "safari",
                 activeIcon: "safari.fill",
                 badgeCount: 0,
@@ -162,7 +162,7 @@ public struct DownloadManagerAppView: View {
             ),
             AppTabDescriptor(
                 index: 2,
-                title: "Media",
+                title: L10n.tr("Media", comment: "Main tab title"),
                 icon: "play.rectangle",
                 activeIcon: "play.rectangle.fill",
                 badgeCount: 0,
@@ -170,7 +170,7 @@ public struct DownloadManagerAppView: View {
             ),
             AppTabDescriptor(
                 index: 3,
-                title: "Settings",
+                title: L10n.tr("Settings", comment: "Main tab title"),
                 icon: "gearshape",
                 activeIcon: "gearshape.fill",
                 badgeCount: 0,
@@ -191,13 +191,13 @@ public struct DownloadManagerAppView: View {
 
                 VStack(spacing: 3) {
                     Image(systemName: isSelected ? item.activeIcon : item.icon)
-                        .font(.system(size: 19, weight: isSelected ? .semibold : .medium))
+                        .scaledFont(size: 19, weight: isSelected ? .semibold : .medium)
                         .foregroundColor(isSelected ? .accentColor : .primary)
                         .frame(height: 22)
                         .overlay(alignment: .topTrailing) {
                             if item.badgeCount > 0 {
                                 Text(item.badgeCount > 99 ? "99+" : "\(item.badgeCount)")
-                                    .font(.system(size: 9, weight: .bold))
+                                    .scaledFont(size: 9, weight: .bold)
                                     .foregroundColor(.white)
                                     .padding(.horizontal, item.badgeCount > 9 ? 5 : 0)
                                     .frame(minWidth: 16, minHeight: 16)
@@ -207,7 +207,7 @@ public struct DownloadManagerAppView: View {
                         }
 
                     Text(item.title)
-                        .font(.system(size: 10, weight: isSelected ? .bold : .semibold))
+                        .scaledFont(size: 10, weight: isSelected ? .bold : .semibold)
                         .foregroundColor(isSelected ? .accentColor : .primary)
                         .lineLimit(1)
                 }

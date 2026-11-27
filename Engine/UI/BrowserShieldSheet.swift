@@ -185,7 +185,7 @@ public struct BrowserShieldSheet: View {
         VStack(spacing: 12) {
             if !viewModel.isAdBlockerEnabled && !viewModel.isTrackerBlockerEnabled && !viewModel.isAnnoyanceBlockerEnabled {
                 Image(systemName: "shield.slash")
-                    .font(.system(size: 42))
+                    .scaledFont(size: 42)
                     .foregroundColor(.secondary)
                 Text("Shields Disabled")
                     .font(.headline)
@@ -195,7 +195,7 @@ public struct BrowserShieldSheet: View {
                     .multilineTextAlignment(.center)
             } else if viewModel.isCurrentSiteWhitelisted {
                 Image(systemName: "shield.slash.fill")
-                    .font(.system(size: 42))
+                    .scaledFont(size: 42)
                     .foregroundColor(.orange)
                 Text("Shields Paused for This Site")
                     .font(.headline)
@@ -205,7 +205,7 @@ public struct BrowserShieldSheet: View {
                     .multilineTextAlignment(.center)
             } else {
                 Image(systemName: "shield.checkered")
-                    .font(.system(size: 42))
+                    .scaledFont(size: 42)
                     .foregroundColor(.blue)
                 Text("Shields Active")
                     .font(.headline)

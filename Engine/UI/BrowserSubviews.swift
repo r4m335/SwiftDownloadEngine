@@ -46,7 +46,7 @@ public struct BrowserHomeView: View {
                             )
                             .shadow(color: .blue.opacity(0.15), radius: 10, x: 0, y: 4)
                         Image(systemName: "globe")
-                            .font(.system(size: 36, weight: .semibold))
+                            .scaledFont(size: 36, weight: .semibold)
                             .foregroundColor(.blue)
                     }
                     .padding(.top, 18)
@@ -112,7 +112,7 @@ public struct BrowserHomeView: View {
                             .fill(viewModel.isAdBlockerEnabled ? Color.green.opacity(0.15) : Color.secondary.opacity(0.15))
                             .frame(width: 38, height: 38)
                         Image(systemName: viewModel.isAdBlockerEnabled ? "bolt.shield.fill" : "shield.slash")
-                            .font(.system(size: 19, weight: .semibold))
+                            .scaledFont(size: 19, weight: .semibold)
                             .foregroundColor(viewModel.isAdBlockerEnabled ? .green : .secondary)
                     }
                     VStack(alignment: .leading, spacing: 4) {
@@ -121,7 +121,7 @@ public struct BrowserHomeView: View {
                                 .font(.subheadline.weight(.bold))
                             if viewModel.isAdBlockerEnabled {
                                 Text("Shields On")
-                                    .font(.system(size: 9, weight: .bold))
+                                    .scaledFont(size: 9, weight: .bold)
                                     .padding(.horizontal, 6)
                                     .padding(.vertical, 2)
                                     .background(Color.green.opacity(0.16))
@@ -228,7 +228,7 @@ public struct BrowserTabSwitcherView: View {
                         VStack(spacing: 12) {
                             Spacer(minLength: 40)
                             Image(systemName: "square.on.square.dashed")
-                                .font(.system(size: 48))
+                                .scaledFont(size: 48)
                                 .foregroundColor(.secondary)
                             Text("No Open Tabs")
                                 .font(.headline)
@@ -367,7 +367,7 @@ public struct BrowserTabSwitcherView: View {
                     }
                 } label: {
                     Image(systemName: group.isCollapsed ? "chevron.right" : "chevron.down")
-                        .font(.system(size: 14, weight: .semibold))
+                        .scaledFont(size: 14, weight: .semibold)
                         .foregroundColor(.secondary)
                         .padding(4)
                 }
@@ -410,7 +410,7 @@ public struct BrowserTabSwitcherView: View {
                     }
                 } label: {
                     Image(systemName: "ellipsis.circle")
-                        .font(.system(size: 16))
+                        .scaledFont(size: 16)
                         .foregroundColor(.secondary)
                         .padding(4)
                 }
@@ -744,9 +744,9 @@ public struct BrowserTabCardView: View {
                         // Swiping right: show close indicator on the left
                         HStack(spacing: 6) {
                             Image(systemName: "xmark.circle.fill")
-                                .font(.system(size: 20, weight: .bold))
+                                .scaledFont(size: 20, weight: .bold)
                             Text("Close")
-                                .font(.system(size: 14, weight: .bold))
+                                .scaledFont(size: 14, weight: .bold)
                         }
                         .foregroundColor(.white)
                         .padding(.leading, 16)
@@ -756,9 +756,9 @@ public struct BrowserTabCardView: View {
                         Spacer()
                         HStack(spacing: 6) {
                             Text("Close")
-                                .font(.system(size: 14, weight: .bold))
+                                .scaledFont(size: 14, weight: .bold)
                             Image(systemName: "xmark.circle.fill")
-                                .font(.system(size: 20, weight: .bold))
+                                .scaledFont(size: 20, weight: .bold)
                         }
                         .foregroundColor(.white)
                         .padding(.trailing, 16)
@@ -774,22 +774,22 @@ public struct BrowserTabCardView: View {
             HStack(spacing: 6) {
                 if tab.isIncognito {
                     Image(systemName: "eyeglasses")
-                        .font(.system(size: 11, weight: .bold))
+                        .scaledFont(size: 11, weight: .bold)
                         .foregroundColor(.purple)
                 } else {
                     Image(systemName: "globe")
-                        .font(.system(size: 11))
+                        .scaledFont(size: 11)
                         .foregroundColor(.blue)
                 }
 
                 Text(tab.displayName)
-                    .font(.system(size: 12, weight: .semibold))
+                    .scaledFont(size: 12, weight: .semibold)
                     .lineLimit(1)
                     .foregroundColor(.primary)
 
                 if tab.customTitle != nil {
                     Image(systemName: "pencil")
-                        .font(.system(size: 9))
+                        .scaledFont(size: 9)
                         .foregroundColor(.secondary)
                 }
 
@@ -799,7 +799,7 @@ public struct BrowserTabCardView: View {
                 if let onRename = onRename {
                     Button(action: onRename) {
                         Image(systemName: "pencil")
-                            .font(.system(size: 13))
+                            .scaledFont(size: 13)
                             .foregroundColor(.secondary)
                             .padding(4)
                     }
@@ -815,7 +815,7 @@ public struct BrowserTabCardView: View {
                     }
                 } label: {
                     Image(systemName: "xmark.circle.fill")
-                        .font(.system(size: 18))
+                        .scaledFont(size: 18)
                         .foregroundColor(.secondary)
                         .padding(4)
                 }
@@ -861,7 +861,7 @@ public struct BrowserTabCardView: View {
             Button(action: onSelect) {
                 HStack(spacing: 4) {
                     Text(displayURL)
-                        .font(.system(size: 10))
+                        .scaledFont(size: 10)
                         .foregroundColor(.secondary)
                         .lineLimit(1)
 
@@ -869,13 +869,13 @@ public struct BrowserTabCardView: View {
 
                     if tab.isDesktopMode {
                         Image(systemName: "desktopcomputer")
-                            .font(.system(size: 10, weight: .bold))
+                            .scaledFont(size: 10, weight: .bold)
                             .foregroundColor(.blue)
                     }
 
                     if tab.isIncognito {
                         Text("Private")
-                            .font(.system(size: 8, weight: .bold))
+                            .scaledFont(size: 8, weight: .bold)
                             .foregroundColor(.purple)
                             .padding(.horizontal, 4)
                             .padding(.vertical, 1)
@@ -909,11 +909,11 @@ public struct BrowserTabCardView: View {
     var placeholderPreview: some View {
         VStack(spacing: 6) {
             Image(systemName: tab.isIncognito ? "eyeglasses" : "globe")
-                .font(.system(size: 26))
+                .scaledFont(size: 26)
                 .foregroundColor(tab.isIncognito ? .purple.opacity(0.7) : .blue.opacity(0.7))
 
             Text(tab.url?.host ?? (tab.isIncognito ? "Private Tab" : "New Tab"))
-                .font(.system(size: 11, weight: .medium))
+                .scaledFont(size: 11, weight: .medium)
                 .foregroundColor(.secondary)
                 .lineLimit(1)
                 .padding(.horizontal, 8)
@@ -937,7 +937,7 @@ public struct BrowserErrorView: View {
     public var body: some View {
         VStack(spacing: 16) {
             Image(systemName: "exclamationmark.triangle.fill")
-                .font(.system(size: 48))
+                .scaledFont(size: 48)
                 .foregroundColor(.orange)
 
             Text("Unable to Load Page")
@@ -1299,7 +1299,7 @@ public struct BrowserDownloadSheet: View {
                         HStack(alignment: .top, spacing: 10) {
                             Image(systemName: warning.statusDot == .completed ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
                                 .foregroundColor(warning.statusDot == .completed ? .blue : .orange)
-                                .font(.system(size: 18))
+                                .scaledFont(size: 18)
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(warning.statusDot == .completed ? "Already Downloaded" : (warning.statusDot == .paused ? "Paused in Downloads" : "Already Downloading"))
                                     .font(.subheadline.bold())
@@ -1322,14 +1322,14 @@ public struct BrowserDownloadSheet: View {
                             .autocapitalization(.none)
                             #endif
                             .disableAutocorrection(true)
-                            .font(.system(size: 15, weight: .medium))
+                            .scaledFont(size: 15, weight: .medium)
                             .onChange(of: baseFilename) { newBase in
                                 let cleanBase = FilenameExtensionHelper.sanitizeFilename(newBase)
                                 viewModel.downloadCandidateFilename = FilenameExtensionHelper.combine(base: cleanBase, ext: fileExtension)
                             }
 
                         Text(".")
-                            .font(.system(size: 15, weight: .bold))
+                            .scaledFont(size: 15, weight: .bold)
                             .foregroundColor(.secondary)
 
                         TextField("ext", text: $fileExtension)
@@ -1337,7 +1337,7 @@ public struct BrowserDownloadSheet: View {
                             .autocapitalization(.none)
                             #endif
                             .disableAutocorrection(true)
-                            .font(.system(size: 15, weight: .medium))
+                            .scaledFont(size: 15, weight: .medium)
                             .frame(width: 55)
                             .onChange(of: fileExtension) { newExt in
                                 let cleanExt = FilenameExtensionHelper.sanitizeFilename(newExt)
@@ -1352,7 +1352,7 @@ public struct BrowserDownloadSheet: View {
                 Section(header: Text(info.isAudio ? "AUDIO DETAILS" : (info.badge == "Video" || ["MKV", "MP4", "WEBM", "MOV"].contains(info.badge) || isPreSelectedVariant ? "MEDIA DETAILS" : "DETAILS"))) {
                     HStack(spacing: 12) {
                         Text(info.badge)
-                            .font(.system(size: 13, weight: .bold))
+                            .scaledFont(size: 13, weight: .bold)
                             .foregroundColor(.white)
                             .padding(.horizontal, 8)
                             .padding(.vertical, 4)
@@ -1361,7 +1361,7 @@ public struct BrowserDownloadSheet: View {
 
                         if let res = info.resolution {
                             Text(res)
-                                .font(.system(size: 15, weight: .semibold))
+                                .scaledFont(size: 15, weight: .semibold)
                                 .foregroundColor(.primary)
                         }
 
@@ -1474,7 +1474,7 @@ public struct BrowserDownloadSheet: View {
                                     .padding(.trailing, 8)
                             }
                             Text(isResumeMode ? "Resume" : (viewModel.existingTransferWarning?.statusDot == .completed ? "Download Again" : info.buttonTitle))
-                                .font(.system(size: 17, weight: .bold))
+                                .scaledFont(size: 17, weight: .bold)
                                 .foregroundColor(.white)
                             Spacer()
                         }

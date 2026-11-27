@@ -50,11 +50,11 @@ public struct QuickAccessShortcutIconView: View {
         let monogramLetter = monogram(for: shortcut.name)
         if !monogramLetter.isEmpty {
             Text(monogramLetter)
-                .font(.system(size: size * 0.40, weight: .bold, design: .rounded))
+                .scaledFont(size: size * 0.40, weight: .bold, design: .rounded)
                 .foregroundColor(.blue)
         } else {
             Image(systemName: "globe")
-                .font(.system(size: size * 0.42, weight: .medium))
+                .scaledFont(size: size * 0.42, weight: .medium)
                 .foregroundColor(.blue)
         }
     }
@@ -129,7 +129,7 @@ public struct QuickAccessItemView: View {
                 QuickAccessShortcutIconView(shortcut: shortcut, size: 56)
 
                 Text(shortcut.name)
-                    .font(.system(size: 11, weight: .medium))
+                    .scaledFont(size: 11, weight: .medium)
                     .foregroundColor(.primary)
                     .lineLimit(1)
                     .truncationMode(.tail)
@@ -203,12 +203,12 @@ public struct QuickAccessAddButtonCell: View {
                         )
 
                     Image(systemName: "plus")
-                        .font(.system(size: 20, weight: .semibold))
+                        .scaledFont(size: 20, weight: .semibold)
                         .foregroundColor(.blue)
                 }
 
                 Text("Add")
-                    .font(.system(size: 11, weight: .medium))
+                    .scaledFont(size: 11, weight: .medium)
                     .foregroundColor(.secondary)
                     .lineLimit(1)
                     .frame(width: 68)
