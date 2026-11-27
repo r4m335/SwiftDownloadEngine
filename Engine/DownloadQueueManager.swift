@@ -222,7 +222,7 @@ public actor DownloadQueueManager {
     private var sequenceCounter: Int64 = 0
     private var activeTasks: [String: Task<Void, Never>] = [:]
     public private(set) var maxConcurrentDownloads: Int
-    public private(set) var maxConcurrentDownloadsPerHost: Int
+    public private(set) var maxConcurrentDownloadsPerHost: Int?
     private var isProcessingQueue: Bool = false
 
     private let encoder: JSONEncoder
@@ -239,7 +239,7 @@ public actor DownloadQueueManager {
         persistenceStore: DownloadPersistenceStore,
         queueStoreURL: URL? = nil,
         maxConcurrentDownloads: Int = 3,
-        maxConcurrentDownloadsPerHost: Int = 2
+        maxConcurrentDownloadsPerHost: Int? = nil
     ) {
         self.coordinator = coordinator
         self.persistenceStore = persistenceStore
@@ -249,7 +249,7 @@ public actor DownloadQueueManager {
             self.queueStoreURL = persistenceStore.storageDirectoryURL.appendingPathComponent("queue_manifest.json")
         }
         self.maxConcurrentDownloads = max(1, maxConcurrentDownloads)
-        self.maxConcurrentDownloadsPerHost = max(1, maxConcurrentDownloadsPerHost)
+        self.maxConcurrentDownloadsPerHost = maxConcurrentDownloadsPerHost.map { max(1, $0) }
 
         let enc = JSONEncoder()
         enc.outputFormatting = [.prettyPrinted, .sortedKeys]
@@ -1170,8 +1170,9 @@ public actor DownloadQueueManager {
             }
             let pendingItems = items.values.filter { item in
                 guard item.state == .pending else { return false }
-                if let host = item.request.url.host?.lowercased(), !host.isEmpty {
-                    return activeHostCounts[host, default: 0] < maxConcurrentDownloadsPerHost
+                if let perHostCap = maxConcurrentDownloadsPerHost,
+                   let host = item.request.url.host?.lowercased(), !host.isEmpty {
+                    return activeHostCounts[host, default: 0] < perHostCap
                 }
                 return true
             }
