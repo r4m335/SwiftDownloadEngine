@@ -337,7 +337,7 @@ final class AppSettingsTests: XCTestCase {
         settings.proxyHost = "127.0.0.1"
         settings.proxyPort = 8888
         settings.defaultDownloadDirectoryBookmark = bookmarkData
-        settings.customCategoryFolders[DownloadCategory.video.rawValue] = "MyMovies"
+        settings.customCategoryFolders[DownloadCategory.videos.rawValue] = "MyMovies"
         settings.enableGlobalSpeedLimit = true
         settings.globalSpeedLimitKBps = 1024
         settings.seedingMode = .ratio
@@ -356,7 +356,7 @@ final class AppSettingsTests: XCTestCase {
         let vm = DownloadManagerViewModel(engine: engine, userDefaults: defaults)
         XCTAssertEqual(vm.downloadsDirectoryURL.standardizedFileURL.path, customDownloadsDir.standardizedFileURL.path)
 
-        let videoDir = try vm.categoryDownloadsDirectory(for: .video)
+        let videoDir = try vm.categoryDownloadsDirectory(for: .videos)
         XCTAssertEqual(videoDir.lastPathComponent, "MyMovies")
 
         try await vm.applySettings(settings)
