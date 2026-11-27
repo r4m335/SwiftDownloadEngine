@@ -345,7 +345,7 @@ public actor TorrentQueueScheduler {
                 demoted.append(candidateKey)
                 activeKeys.removeLast()
             } catch {
-                print("[TorrentQueueScheduler] Failed to persist demoted queued state for \(candidateKey): \(error.localizedDescription)")
+                PipelineLogger.shared.log("[TorrentQueueScheduler] Failed to persist demoted queued state for \(candidateKey): \(error.localizedDescription)")
                 // Demotion failed on disk: record remains in its previous active state in memory and on disk.
                 // Stop demoting to prevent an infinite loop and prevent activeKeys from diverging from records.
                 break
@@ -369,7 +369,7 @@ public actor TorrentQueueScheduler {
             for r in eligible where slotsRemaining > 0 {
                 guard !r.isExplicitlyPaused else {
                     #if DEBUG
-                    print("[TorrentQueueScheduler] Invariant guard: skipping promotion of explicitly paused torrent \(r.infoHash)")
+                    PipelineLogger.shared.log("[TorrentQueueScheduler] Invariant guard: skipping promotion of explicitly paused torrent \(r.infoHash)")
                     #endif
                     continue
                 }
@@ -383,7 +383,7 @@ public actor TorrentQueueScheduler {
                     promoted.append(key)
                     slotsRemaining -= 1
                 } catch {
-                    print("[TorrentQueueScheduler] Failed to persist promoted state for \(key): \(error.localizedDescription)")
+                    PipelineLogger.shared.log("[TorrentQueueScheduler] Failed to persist promoted state for \(key): \(error.localizedDescription)")
                     break
                 }
             }
@@ -447,7 +447,7 @@ public actor TorrentQueueScheduler {
                         try await persistenceStore.saveRecord(r)
                         records[key] = r
                     } catch {
-                        print("[TorrentQueueScheduler] Failed to persist reconciled paused state for \(key): \(error.localizedDescription)")
+                        PipelineLogger.shared.log("[TorrentQueueScheduler] Failed to persist reconciled paused state for \(key): \(error.localizedDescription)")
                     }
                 }
             } else if r.state.isActive {
@@ -457,7 +457,7 @@ public actor TorrentQueueScheduler {
                     try await persistenceStore.saveRecord(r)
                     records[key] = r
                 } catch {
-                    print("[TorrentQueueScheduler] Failed to persist reconciled queued state for \(key): \(error.localizedDescription)")
+                    PipelineLogger.shared.log("[TorrentQueueScheduler] Failed to persist reconciled queued state for \(key): \(error.localizedDescription)")
                 }
             }
         }

@@ -370,7 +370,7 @@ public final class LIDTrackManager: ObservableObject {
             let cues = try parser.parse(fileURL: url)
             self.parsedCues = cues
         } catch {
-            print("[LIDTrackManager] Failed to load external subtitle: \(error)")
+            PipelineLogger.shared.log("[LIDTrackManager] Failed to load external subtitle: \(error)")
             self.parsedCues = []
         }
     }

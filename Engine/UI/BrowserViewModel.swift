@@ -2588,7 +2588,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         customFilename: String? = nil,
         transportPolicy: HTTPTransportPolicy? = nil
     ) {
-        print("[HLS Pipeline] promptStreamingDownload invoked for resource: \(resource.url.absoluteString)")
+        PipelineLogger.shared.log("[HLS Pipeline] promptStreamingDownload invoked for resource: \(resource.url.absoluteString)")
         if let custom = customFilename?.trimmingCharacters(in: .whitespacesAndNewlines), !custom.isEmpty {
             self.activeStreamingFilename = custom
         } else if !resource.suggestedFilename.isEmpty {
@@ -2596,7 +2596,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         }
         guard resource.isStreamingManifest || resource.url.pathExtension.lowercased() == "m3u8" || resource.url.pathExtension.lowercased() == "mpd" else {
             let errorMsg = "This resource is not a recognized HLS or DASH manifest."
-            print("[HLS Pipeline] \(errorMsg)")
+            PipelineLogger.shared.log("[HLS Pipeline] \(errorMsg)")
             streamingErrorMessage = errorMsg
             blobCaptureErrorMessage = errorMsg
             return
@@ -2604,13 +2604,13 @@ public final class BrowserViewModel: NSObject, ObservableObject {
         let effectiveOrchestrator = streamingOrchestrator ?? (downloadDelegate as? DownloadManagerViewModel)?.streamingOrchestrator
         guard let orchestrator = effectiveOrchestrator else {
             let errorMsg = "Streaming downloads are unavailable: StreamingDownloadOrchestrator is nil."
-            print("[HLS Pipeline] \(errorMsg)")
+            PipelineLogger.shared.log("[HLS Pipeline] \(errorMsg)")
             streamingErrorMessage = errorMsg
             blobCaptureErrorMessage = errorMsg
             return
         }
         guard !isPreparingStreaming, !isExecutingStreaming else {
-            print("[HLS Pipeline] Streaming download is already preparing or executing.")
+            PipelineLogger.shared.log("[HLS Pipeline] Streaming download is already preparing or executing.")
             return
         }
 
@@ -2634,7 +2634,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                 #else
                 let sessionSnapshot: BrowserSessionSnapshot? = nil
                 #endif
-                print("[HLS Pipeline] Setting active BrowserViewModel as urlResolver on orchestrator...")
+                PipelineLogger.shared.log("[HLS Pipeline] Setting active BrowserViewModel as urlResolver on orchestrator...")
                 await orchestrator.setURLResolver(self)
                 var effectiveResource = resource
                 if effectiveResource.manifestText == nil || effectiveResource.manifestText?.isEmpty == true {
@@ -2697,13 +2697,13 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                             requestContext: effectiveResource.requestContext
                         )
                         if options.count > 1 {
-                            print("[HLS Pipeline] Discovered \(options.count) variants. Presenting StreamQualityPickerSheet...")
+                            PipelineLogger.shared.log("[HLS Pipeline] Discovered \(options.count) variants. Presenting StreamQualityPickerSheet...")
                             self.isPreparingStreaming = false
                             self.presentQualityPicker(for: effectiveResource, preloadedOptions: options)
                             return
                         }
                     } catch {
-                        print("[HLS Pipeline] Quality inspection note: \(error.localizedDescription). Proceeding with standard preparation.")
+                        PipelineLogger.shared.log("[HLS Pipeline] Quality inspection note: \(error.localizedDescription). Proceeding with standard preparation.")
                     }
                 }
 
@@ -2734,7 +2734,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                     return
                 }
 
-                print("[HLS Pipeline] Creating StreamingManifestCandidate and preparing proposal with orchestrator...")
+                PipelineLogger.shared.log("[HLS Pipeline] Creating StreamingManifestCandidate and preparing proposal with orchestrator...")
                 let effectivePolicy = transportPolicy ?? self.preferredStreamingTransportPolicy ?? .background
                 let candidate = try StreamingManifestCandidate(
                     resource: effectiveResource,
@@ -2742,7 +2742,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                     transportPolicy: effectivePolicy
                 )
                 let proposal = try await orchestrator.prepare(candidate: candidate)
-                print("[HLS Pipeline] Proposal prepared successfully. Automatically starting streaming download in background...")
+                PipelineLogger.shared.log("[HLS Pipeline] Proposal prepared successfully. Automatically starting streaming download in background...")
                 self.streamingProposal = proposal
                 self.isPreparingStreaming = false
                 self.downloadSuccessNotification = "Streaming download started"
@@ -2754,7 +2754,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                 } else {
                     errorMsg = "Streaming preparation failed: \(error.localizedDescription)"
                 }
-                print("[HLS Pipeline] \(errorMsg)")
+                PipelineLogger.shared.log("[HLS Pipeline] \(errorMsg)")
                 self.streamingErrorMessage = errorMsg
                 self.blobCaptureErrorMessage = errorMsg
                 self.downloadSuccessNotification = nil
@@ -2869,7 +2869,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
             } catch {
                 self?.isExecutingStreaming = false
                 let errorMsg = "Streaming download failed: \(error.localizedDescription)"
-                print("[HLS Pipeline] \(errorMsg)")
+                PipelineLogger.shared.log("[HLS Pipeline] \(errorMsg)")
                 self?.streamingErrorMessage = errorMsg
                 self?.blobCaptureErrorMessage = errorMsg
             }
@@ -2978,7 +2978,7 @@ public final class BrowserViewModel: NSObject, ObservableObject {
                 }
             } catch {
                 let errorMsg = "Streaming transfer failed: \(error.localizedDescription)"
-                print("[HLS Pipeline] \(errorMsg)")
+                PipelineLogger.shared.log("[HLS Pipeline] \(errorMsg)")
                 self.streamingErrorMessage = errorMsg
             }
         }

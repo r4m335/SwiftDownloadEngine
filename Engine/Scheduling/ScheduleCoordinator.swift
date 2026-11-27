@@ -165,7 +165,7 @@ public final class ScheduleCoordinator: ObservableObject {
                 self.rules = loaded
             }
         } catch {
-            print("[ScheduleCoordinator] Failed to load schedule rules: \(error.localizedDescription)")
+            PipelineLogger.shared.log("[ScheduleCoordinator] Failed to load schedule rules: \(error.localizedDescription)")
             self.rules = []
         }
     }
@@ -377,7 +377,7 @@ public final class ScheduleCoordinator: ObservableObject {
                                 try await engine.resumeDownload(id: downloadID)
                                 resumedIDs.append(downloadID)
                             } catch {
-                                print("[ScheduleCoordinator] Failed to resume scheduled download \(downloadID): \(error.localizedDescription)")
+                                PipelineLogger.shared.log("[ScheduleCoordinator] Failed to resume scheduled download \(downloadID): \(error.localizedDescription)")
                             }
                         }
                     }
@@ -392,7 +392,7 @@ public final class ScheduleCoordinator: ObservableObject {
                                 try await engine.pauseDownload(id: downloadID)
                                 pausedIDs.append(downloadID)
                             } catch {
-                                print("[ScheduleCoordinator] Failed to pause scheduled download \(downloadID): \(error.localizedDescription)")
+                                PipelineLogger.shared.log("[ScheduleCoordinator] Failed to pause scheduled download \(downloadID): \(error.localizedDescription)")
                             }
                         }
                     }
@@ -448,7 +448,7 @@ public final class ScheduleCoordinator: ObservableObject {
                                     networkPolicy: rule.wifiOnly ? .wifiOnly : .anyNetwork
                                 )
                             } catch {
-                                print("[ScheduleCoordinator] Failed to hand off scheduled download \(downloadID): \(error.localizedDescription)")
+                                PipelineLogger.shared.log("[ScheduleCoordinator] Failed to hand off scheduled download \(downloadID): \(error.localizedDescription)")
                             }
                         } else {
                             // Existing running background tasks cannot be made

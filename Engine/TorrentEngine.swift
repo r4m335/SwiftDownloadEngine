@@ -270,7 +270,7 @@ public actor TorrentEngine {
         if let sched = scheduler, let record = await sched.record(for: key) {
             if record.isExplicitlyPaused {
                 #if DEBUG
-                print("[TorrentEngine] Invariant enforced: Rejected resume for explicitly paused torrent: \(key) (caller: \(source))")
+                PipelineLogger.shared.log("[TorrentEngine] Invariant enforced: Rejected resume for explicitly paused torrent: \(key) (caller: \(source))")
                 #endif
                 bridge.setExplicitlyPaused(true, forTorrentWithHash: key)
                 try? bridge.pauseTorrent(withHash: key)

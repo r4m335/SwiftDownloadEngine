@@ -74,7 +74,7 @@ public final class ContinuedProcessingTaskCoordinator {
         } catch {
             // The foreground queue is already running; failure to obtain the
             // optional iOS 26 continuation must not fail the download itself.
-            print("[ContinuedProcessing] Submission unavailable: \(error.localizedDescription)")
+            PipelineLogger.shared.log("[ContinuedProcessing] Submission unavailable: \(error.localizedDescription)")
         }
     }
 
@@ -243,7 +243,7 @@ public struct SwiftDownloadEngineApp: App {
             bgManager = manager
             AppDelegate.attach(manager: manager)
         } catch {
-            print("Notice: BackgroundDownloadSessionManager initialization in AppDelegate skipped: \(error.localizedDescription)")
+            PipelineLogger.shared.log("Notice: BackgroundDownloadSessionManager initialization in AppDelegate skipped: \(error.localizedDescription)")
         }
         #endif
 
@@ -330,7 +330,7 @@ public struct SwiftDownloadEngineApp: App {
                 LIDPlaybackEngine.shared.configure(torrentEngine: te)
             }
         } catch {
-            print("Notice: TorrentEngine initialization skipped or deferred: \(error.localizedDescription)")
+            PipelineLogger.shared.log("Notice: TorrentEngine initialization skipped or deferred: \(error.localizedDescription)")
         }
 
         let hlsPersistenceStore: HLSPersistenceStore?
