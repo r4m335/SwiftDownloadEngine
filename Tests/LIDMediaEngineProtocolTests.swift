@@ -157,7 +157,7 @@ final class LIDMediaEngineProtocolTests: XCTestCase {
         let source = LIDPlayerSource.localFile(url: mediaURL, title: "Movie")
 
         let historyStore = LIDPlaybackHistoryStore(storageURL: tempDir.appendingPathComponent("history.json"))
-        await historyStore.recordProgress(
+        await historyStore.recordPosition(
             mediaIdentifier: source.mediaIdentifier,
             title: "Movie",
             positionSeconds: 75.0,
