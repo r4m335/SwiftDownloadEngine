@@ -400,7 +400,6 @@ final class ScheduleCoordinatorTests: XCTestCase {
             "com.r4m335.SwiftDownloadEngine.schedule-reconcile"
         )
         let coordinator = ScheduleCoordinator(persistenceStore: persistenceStore)
-        coordinator.registerBackgroundStopTaskIfNeeded()
         coordinator.scheduleNextStopReconciliation(now: Date())
     }
 }
