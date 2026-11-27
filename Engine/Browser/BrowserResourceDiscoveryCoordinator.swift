@@ -622,7 +622,7 @@ public final class BrowserResourceDiscoveryCoordinator: ObservableObject {
                 _ = catalog.ingest(resource: resource)
             }
             mediaCandidateCatalogs[targetTabID] = catalog
-            tabDocumentCandidateCatalogs[documentKey(for: targetTabID, documentID: observation.documentID)] = catalog
+            tabDocumentCandidateCatalogs[documentKey(for: targetTabID, documentID: resources.first?.documentID)] = catalog
         }
 
         var targetResources = (targetTabID == activeTabID)
