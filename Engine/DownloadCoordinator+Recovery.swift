@@ -274,7 +274,6 @@ extension DownloadCoordinator {
         return reconciled
     }
 }
-}
 
 
 /// Redirect delegate used by exact ranged resource transfers. It preserves the

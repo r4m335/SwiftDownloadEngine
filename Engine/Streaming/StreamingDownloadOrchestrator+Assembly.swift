@@ -1380,8 +1380,6 @@ public struct StreamingTransferResult: Sendable, Equatable {
     }
 }
 
-}
-
 final class StreamingRedirectDelegate: NSObject, URLSessionTaskDelegate {
     let originalURL: URL?
     let headers: [String: String]?
