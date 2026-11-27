@@ -156,7 +156,7 @@ final class LIDMediaEngineProtocolTests: XCTestCase {
         try Data("mock".utf8).write(to: mediaURL)
         let source = LIDPlayerSource.localFile(url: mediaURL, title: "Movie")
 
-        let historyStore = LIDPlaybackHistoryStore(storageDirectory: tempDir)
+        let historyStore = LIDPlaybackHistoryStore(storageURL: tempDir.appendingPathComponent("history.json"))
         await historyStore.recordProgress(
             mediaIdentifier: source.mediaIdentifier,
             title: "Movie",
@@ -173,7 +173,7 @@ final class LIDMediaEngineProtocolTests: XCTestCase {
         XCTAssertEqual(engine.currentPositionSeconds, 0.0, "Resume position must not seek during load before media is ready")
 
         // Once backend reports ready/playing, pending resume position is applied
-        engine.engineDidUpdateState(engine.vlcBackend, state: .playing)
+        engine.engineDidUpdateState(engine.vlcBackend, state: LIDPlaybackState.playing)
         XCTAssertNil(engine.pendingResumePositionSeconds)
         XCTAssertEqual(engine.currentPositionSeconds, 75.0)
     }
