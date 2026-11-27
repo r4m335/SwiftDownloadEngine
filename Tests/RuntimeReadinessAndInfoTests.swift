@@ -24,12 +24,18 @@ final class RuntimeReadinessAndInfoTests: XCTestCase {
             return
         }
 
-        // 1. Verify UIBackgroundModes contains audio and only justified modes
+        // 1. Verify UIBackgroundModes contains audio and fetch (actively scheduled by ScheduleCoordinator), and no unjustified processing mode
         let bgModes = plist["UIBackgroundModes"] as? [String]
         XCTAssertNotNil(bgModes, "UIBackgroundModes must be present in Info.plist")
         XCTAssertTrue(bgModes?.contains("audio") == true, "UIBackgroundModes must contain 'audio' for background playback and lock-screen routing")
-        XCTAssertFalse(bgModes?.contains("fetch") == true, "UIBackgroundModes should not contain 'fetch' unless actively scheduled")
+        XCTAssertTrue(bgModes?.contains("fetch") == true, "UIBackgroundModes must contain 'fetch' for scheduled BGAppRefreshTask reconciliation")
         XCTAssertFalse(bgModes?.contains("processing") == true, "UIBackgroundModes should not contain 'processing' unless actively scheduled")
+
+        let permittedBGTasks = plist["BGTaskSchedulerPermittedIdentifiers"] as? [String]
+        XCTAssertTrue(
+            permittedBGTasks?.contains(ScheduleCoordinator.scheduleReconcileTaskIdentifier) == true,
+            "BGTaskSchedulerPermittedIdentifiers must declare ScheduleCoordinator.scheduleReconcileTaskIdentifier"
+        )
 
         // 2. Verify Privacy Permissions for supported features
         let cameraDesc = plist["NSCameraUsageDescription"] as? String
