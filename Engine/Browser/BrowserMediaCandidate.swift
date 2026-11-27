@@ -234,7 +234,18 @@ public struct BrowserMediaCandidate: Identifiable, Codable, Sendable, Equatable,
             codecs: codecs,
             audioLanguage: audioLanguage,
             documentGeneration: documentGeneration,
-            navigationGeneration: navigationGeneration
+            navigationGeneration: navigationGeneration,
+            rawURL: rawURL,
+            finalURL: finalURL,
+            candidateKind: kind,
+            blobKind: blobKind,
+            availability: availability,
+            evidence: evidence,
+            documentID: documentID,
+            associatedManifestID: associatedManifestID,
+            associatedManifestURL: associatedManifestURL,
+            width: width,
+            height: height
         )
     }
 
@@ -735,7 +746,18 @@ public enum BrowserMediaCandidateClassifier {
             lastObserved: lastObserved,
             isLive: isLive,
             documentGeneration: documentGeneration,
-            navigationGeneration: navigationGeneration
+            navigationGeneration: navigationGeneration,
+            rawURL: rawURL,
+            finalURL: finalURL,
+            candidateKind: kind,
+            blobKind: blobKind,
+            availability: availability,
+            evidence: evidence,
+            documentID: documentID,
+            associatedManifestID: associatedManifestID,
+            associatedManifestURL: associatedManifestURL,
+            width: width,
+            height: height
         )
     }
 

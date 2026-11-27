@@ -216,6 +216,41 @@ public struct WebpageResource: Identifiable, Hashable, Sendable {
     public let container: String?
     /// Classified track type (muxed, video-only, audio-only, subtitles, document, etc.).
     public let trackType: ResourceTrackType
+    /// Raw URL string as observed before normalization (supports blob/MSE signals).
+    public let rawURL: String
+    /// Resolved final URL after redirects if known.
+    public let finalURL: URL?
+    /// Unified discovery candidate kind if originated from media observation.
+    public let candidateKind: BrowserMediaCandidateKind?
+    /// Blob/MSE classification if applicable.
+    public let blobKind: BlobKind?
+    /// Download/capture availability classification.
+    public let availability: BrowserMediaCandidateAvailability?
+    /// Diagnostic evidence tags accumulated during discovery.
+    public let evidence: [String]
+    /// Document identifier within the tab where this resource was observed.
+    public let documentID: String?
+    /// Associated streaming manifest identifier if this is a rendition/child resource.
+    public let associatedManifestID: String?
+    /// Associated streaming manifest URL if this is a rendition/child resource.
+    public let associatedManifestURL: URL?
+    /// Video pixel width if known.
+    public let width: Int?
+    /// Video pixel height if known.
+    public let height: Int?
+
+    /// Whether this resource represents a live stream, adaptive manifest, or in-memory capture that must survive rescans.
+    public var isPreservedOnRescan: Bool {
+        isLive ||
+        isStreamingManifest ||
+        isBlobResource ||
+        isMediaSourceBlob ||
+        associatedManifestURL != nil ||
+        candidateKind == .mediaSource ||
+        candidateKind == .completeBlob ||
+        candidateKind == .hlsManifest ||
+        candidateKind == .dashManifest
+    }
 
     /// Formatted duration string for display (e.g. "03:45", "1:15:20").
     public var formattedDuration: String? {
@@ -347,7 +382,18 @@ public struct WebpageResource: Identifiable, Hashable, Sendable {
         navigationGeneration: UInt64? = nil,
         bitrate: Int? = nil,
         container: String? = nil,
-        trackType: ResourceTrackType? = nil
+        trackType: ResourceTrackType? = nil,
+        rawURL: String? = nil,
+        finalURL: URL? = nil,
+        candidateKind: BrowserMediaCandidateKind? = nil,
+        blobKind: BlobKind? = nil,
+        availability: BrowserMediaCandidateAvailability? = nil,
+        evidence: [String] = [],
+        documentID: String? = nil,
+        associatedManifestID: String? = nil,
+        associatedManifestURL: URL? = nil,
+        width: Int? = nil,
+        height: Int? = nil
     ) {
         self.id = id
         self.url = url
@@ -376,6 +422,17 @@ public struct WebpageResource: Identifiable, Hashable, Sendable {
         self.documentGeneration = documentGeneration
         self.navigationGeneration = navigationGeneration
         self.bitrate = bitrate
+        self.rawURL = rawURL ?? url.absoluteString
+        self.finalURL = finalURL
+        self.candidateKind = candidateKind
+        self.blobKind = blobKind
+        self.availability = availability
+        self.evidence = evidence
+        self.documentID = documentID
+        self.associatedManifestID = associatedManifestID
+        self.associatedManifestURL = associatedManifestURL
+        self.width = width
+        self.height = height
 
         if let explicitContainer = container, !explicitContainer.isEmpty {
             self.container = explicitContainer.uppercased()

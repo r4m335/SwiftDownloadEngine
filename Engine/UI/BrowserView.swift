@@ -7414,6 +7414,7 @@ public final class BrowserWebViewCoordinator: NSObject, WKNavigationDelegate, WK
         if let host = webView.url?.host, let vm = viewModel {
             if let tabID = self.tabID {
                 guard vm.isNavigationCurrent(tabID: tabID, generation: capturedGen, url: webView.url) else { return }
+                vm.discoveryCoordinator.cancelInFlightProbes(for: tabID)
                 vm.discoveryCoordinator.setNavigationGeneration(capturedGen, for: tabID)
                 vm.discoveryCoordinator.nextDocumentGeneration(for: tabID)
             }

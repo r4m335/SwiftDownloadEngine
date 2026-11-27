@@ -53,12 +53,24 @@ public final class BrowserResourceDiscoveryCoordinator: ObservableObject {
 
     public var onStateChanged: (() -> Void)?
 
-    // Tab-scoped media grabber candidate & variant caches
+    public struct TabDocumentKey: Hashable, Sendable {
+        public let tabID: UUID
+        public let documentID: String
+
+        public init(tabID: UUID, documentID: String) {
+            self.tabID = tabID
+            self.documentID = documentID
+        }
+    }
+
+    // Tab-scoped and document-scoped media grabber candidate & variant caches
     public var tabResourceStates: [UUID: BrowserTabResourceState] = [:]
     public var tabDiscoveredResources: [UUID: [WebpageResource]] = [:]
     public var tabVariantStreamItems: [UUID: [String: HLSVariantStreamItem]] = [:]
     public var tabSelectedResourceIDs: [UUID: Set<String>] = [:]
     public var mediaCandidateCatalogs: [UUID: BrowserMediaCandidateCatalog] = [:]
+    public var tabDocumentResourceStates: [TabDocumentKey: BrowserTabResourceState] = [:]
+    public var tabDocumentCandidateCatalogs: [TabDocumentKey: BrowserMediaCandidateCatalog] = [:]
     private var activeProbeTasks: [UUID: [Task<Void, Never>]] = [:]
 
     // Document generation and navigation correlation
@@ -89,7 +101,7 @@ public final class BrowserResourceDiscoveryCoordinator: ObservableObject {
         tabDiscoveredResources[tabID] = discoveredResources
         tabVariantStreamItems[tabID] = variantStreamItems
         tabSelectedResourceIDs[tabID] = selectedResourceIDs
-        tabResourceStates[tabID] = BrowserTabResourceState(
+        let state = BrowserTabResourceState(
             discoveredResources: discoveredResources,
             variantStreamItems: variantStreamItems,
             selectedResourceIDs: selectedResourceIDs,
@@ -97,6 +109,38 @@ public final class BrowserResourceDiscoveryCoordinator: ObservableObject {
             sortDirection: sortDirection,
             groupingOption: groupingOption
         )
+        tabResourceStates[tabID] = state
+        let docKey = documentKey(for: tabID)
+        tabDocumentResourceStates[docKey] = state
+    }
+
+    public func documentKey(for tabID: UUID, documentID: String? = nil) -> TabDocumentKey {
+        let resolvedDocID = documentID ?? tabDocumentIDs[tabID] ?? "doc-gen-\(tabDocumentGenerations[tabID, default: 0])"
+        return TabDocumentKey(tabID: tabID, documentID: resolvedDocID)
+    }
+
+    public func resources(for tabID: UUID, documentID: String) -> [WebpageResource] {
+        let key = TabDocumentKey(tabID: tabID, documentID: documentID)
+        return tabDocumentResourceStates[key]?.discoveredResources ?? []
+    }
+
+    public func restoreDocumentState(for tabID: UUID, documentID: String, activeTabID: UUID?) {
+        tabDocumentIDs[tabID] = documentID
+        let key = TabDocumentKey(tabID: tabID, documentID: documentID)
+        let docState = tabDocumentResourceStates[key] ?? BrowserTabResourceState()
+        tabDiscoveredResources[tabID] = docState.discoveredResources
+        tabVariantStreamItems[tabID] = docState.variantStreamItems
+        tabSelectedResourceIDs[tabID] = docState.selectedResourceIDs
+        tabResourceStates[tabID] = docState
+        if let docCatalog = tabDocumentCandidateCatalogs[key] {
+            mediaCandidateCatalogs[tabID] = docCatalog
+        }
+        if tabID == activeTabID {
+            discoveredResources = docState.discoveredResources
+            variantStreamItems = docState.variantStreamItems
+            selectedResourceIDs = docState.selectedResourceIDs
+            publishMediaCandidates(activeTabID: activeTabID)
+        }
     }
 
     public func restoreTabState(
@@ -556,6 +600,7 @@ public final class BrowserResourceDiscoveryCoordinator: ObservableObject {
             catalog.evictedCandidatesCount = 0
 
             mediaCandidateCatalogs[targetTabID] = catalog
+            tabDocumentCandidateCatalogs[documentKey(for: targetTabID, documentID: observation.documentID)] = catalog
             telemetry.totalCandidatesCataloged = catalog.candidates.count
             if targetTabID == activeTabID { publishMediaCandidates(activeTabID: activeTabID) }
             if let resource = candidate.toWebpageResource() {
@@ -577,6 +622,7 @@ public final class BrowserResourceDiscoveryCoordinator: ObservableObject {
                 _ = catalog.ingest(resource: resource)
             }
             mediaCandidateCatalogs[targetTabID] = catalog
+            tabDocumentCandidateCatalogs[documentKey(for: targetTabID, documentID: observation.documentID)] = catalog
         }
 
         var targetResources = (targetTabID == activeTabID)
@@ -817,7 +863,7 @@ public final class BrowserResourceDiscoveryCoordinator: ObservableObject {
         }
     }
 
-    /// Cancels all in-flight media probe and manifest expansion tasks associated with a tab.
+    /// Cancels all in-flight media probe, DOM scan, and manifest expansion tasks associated with a tab.
     public func cancelInFlightProbes(for tabID: UUID) {
         if let tasks = activeProbeTasks.removeValue(forKey: tabID) {
             for task in tasks {
@@ -825,8 +871,8 @@ public final class BrowserResourceDiscoveryCoordinator: ObservableObject {
             }
             telemetry.probeTimeoutsCount += tasks.count
         }
-        tabDocumentGenerations.removeValue(forKey: tabID)
-        tabNavigationGenerations.removeValue(forKey: tabID)
+        // Bump document generation so any in-flight evaluateScript/captureContexts callbacks are dropped as stale.
+        tabDocumentGenerations[tabID] = tabDocumentGenerations[tabID, default: 0] &+ 1
         tabDocumentIDs.removeValue(forKey: tabID)
         Task { [expander = streamManifestExpander] in
             await expander.cancelInFlight(for: tabID)
@@ -847,7 +893,7 @@ public final class BrowserResourceDiscoveryCoordinator: ObservableObject {
             resetMediaCandidateCatalog(for: activeTabID, activeTabID: activeTabID)
             if let activeTabID {
                 let liveResources = (tabDiscoveredResources[activeTabID] ?? []).filter {
-                    $0.isLive || $0.isStreamingManifest || $0.isBlobResource || $0.isMediaSourceBlob
+                    $0.isPreservedOnRescan
                 }
                 let liveVariants = (tabVariantStreamItems[activeTabID] ?? [:]).filter { $1.isLive }
                 let preservedIDs = Set(liveResources.map { $0.id })
@@ -855,17 +901,20 @@ public final class BrowserResourceDiscoveryCoordinator: ObservableObject {
                 tabDiscoveredResources[activeTabID] = liveResources
                 tabVariantStreamItems[activeTabID] = liveVariants
                 tabSelectedResourceIDs[activeTabID] = selectedIDs
-                tabResourceStates[activeTabID] = BrowserTabResourceState(
+                let preservedState = BrowserTabResourceState(
                     discoveredResources: liveResources,
                     variantStreamItems: liveVariants,
                     selectedResourceIDs: selectedIDs
                 )
+                tabResourceStates[activeTabID] = preservedState
+                tabDocumentResourceStates[documentKey(for: activeTabID)] = preservedState
                 discoveredResources = liveResources
                 variantStreamItems = liveVariants
                 selectedResourceIDs = selectedIDs
             } else {
-                discoveredResources = []
-                selectedResourceIDs = []
+                discoveredResources = discoveredResources.filter { $0.isPreservedOnRescan }
+                let preservedIDs = Set(discoveredResources.map { $0.id })
+                selectedResourceIDs = selectedResourceIDs.filter { preservedIDs.contains($0) }
             }
             return
         }
@@ -879,11 +928,21 @@ public final class BrowserResourceDiscoveryCoordinator: ObservableObject {
             return
         }
 
+        let capturedTabID = activeTabID
+        let capturedDocGen = capturedTabID.map { currentDocumentGeneration(for: $0) }
+        let capturedNavGen = capturedTabID.map { currentNavigationGeneration(for: $0) }
         let jsScript = BrowserMediaDiscoveryScripts.domExtractionScript(includeNonVideo: includeNonVideo)
 
         evaluateScript(jsScript) { [weak self] result, error in
             DispatchQueue.main.async {
                 guard let self = self else { return }
+                if let capturedTabID,
+                   (capturedDocGen != self.currentDocumentGeneration(for: capturedTabID) ||
+                    capturedNavGen != self.currentNavigationGeneration(for: capturedTabID)) {
+                    self.isScanningResources = false
+                    self.telemetry.droppedStaleDocumentObservationsCount += 1
+                    return
+                }
                 self.isScanningResources = false
 
                 if let error = error {
@@ -901,6 +960,12 @@ public final class BrowserResourceDiscoveryCoordinator: ObservableObject {
                 let resources = WebpageResourceExtractor.extractFromRawCandidates(rawCandidates, baseURL: url)
                 let processContextual: ([WebpageResource]) -> Void = { [weak self] contextualResources in
                     guard let self = self else { return }
+                    if let capturedTabID,
+                       (capturedDocGen != self.currentDocumentGeneration(for: capturedTabID) ||
+                        capturedNavGen != self.currentNavigationGeneration(for: capturedTabID)) {
+                        self.telemetry.droppedStaleDocumentObservationsCount += 1
+                        return
+                    }
                     var newToInsert: [WebpageResource] = []
                     var seenURLs = Set(self.discoveredResources.map { $0.url.absoluteString.lowercased() })
                     for newRes in contextualResources {
@@ -912,21 +977,23 @@ public final class BrowserResourceDiscoveryCoordinator: ObservableObject {
                     }
                     if !newToInsert.isEmpty {
                         self.discoveredResources.insert(contentsOf: newToInsert, at: 0)
-                        if let tabID = activeTabID {
+                        if let tabID = capturedTabID {
                             self.tabDiscoveredResources[tabID] = self.discoveredResources
                             self.tabResourceStates[tabID, default: BrowserTabResourceState()].discoveredResources = self.discoveredResources
+                            self.tabDocumentResourceStates[self.documentKey(for: tabID), default: BrowserTabResourceState()].discoveredResources = self.discoveredResources
                         }
                     }
                     if self.selectedResourceIDs.isEmpty,
                        let manifest = self.discoveredResources.first(where: { $0.isStreamingManifest }) {
                         self.selectedResourceIDs.insert(manifest.id)
-                        if let tabID = activeTabID {
+                        if let tabID = capturedTabID {
                             self.tabSelectedResourceIDs[tabID] = self.selectedResourceIDs
                             self.tabResourceStates[tabID, default: BrowserTabResourceState()].selectedResourceIDs = self.selectedResourceIDs
+                            self.tabDocumentResourceStates[self.documentKey(for: tabID), default: BrowserTabResourceState()].selectedResourceIDs = self.selectedResourceIDs
                         }
                     }
-                    self.ingestMediaResources(contextualResources, tabID: activeTabID, activeTabID: activeTabID)
-                    self.expandStreamingManifests(in: contextualResources, tabID: activeTabID, activeTabID: activeTabID)
+                    self.ingestMediaResources(contextualResources, tabID: capturedTabID, activeTabID: activeTabID)
+                    self.expandStreamingManifests(in: contextualResources, tabID: capturedTabID, activeTabID: activeTabID)
                 }
 
                 if let captureContexts {

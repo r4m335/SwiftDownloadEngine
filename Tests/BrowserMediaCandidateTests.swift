@@ -1410,5 +1410,83 @@ final class BrowserMediaCandidateTests: XCTestCase {
         )
         XCTAssertFalse(binRow.isPlayable)
     }
+
+    @MainActor
+    func testUnifiedResourceModelPerDocumentStorageProbeCancellationAndRescanPreservation() {
+        let coordinator = BrowserResourceDiscoveryCoordinator()
+        let tabA = UUID()
+        let doc1 = "doc-1"
+        let doc2 = "doc-2"
+
+        // 1. Unified candidate -> WebpageResource preserves candidate fields
+        let liveCandidate = BrowserMediaCandidate(
+            id: "live-1",
+            url: URL(string: "https://example.com/live/stream.m3u8")!,
+            rawURL: "https://example.com/live/stream.m3u8",
+            kind: .hlsManifest,
+            mimeType: "application/vnd.apple.mpegurl",
+            suggestedFilename: "stream.m3u8",
+            availability: .requiresPlanning,
+            evidence: ["live", "hls"],
+            documentID: doc1,
+            isLive: true,
+            width: 1920,
+            height: 1080
+        )
+        let unified = liveCandidate.toWebpageResource()
+        XCTAssertEqual(unified?.candidateKind, .hlsManifest)
+        XCTAssertEqual(unified?.documentID, doc1)
+        XCTAssertEqual(unified?.width, 1920)
+        XCTAssertEqual(unified?.height, 1080)
+        XCTAssertEqual(unified?.isPreservedOnRescan, true)
+
+        // 2. Per-tab & per-document storage isolation
+        coordinator.restoreDocumentState(for: tabA, documentID: doc1, activeTabID: tabA)
+        coordinator.ingestMediaCandidate(liveCandidate, tabID: tabA, activeTabID: tabA)
+        coordinator.saveTabState(for: tabA)
+        XCTAssertEqual(coordinator.resources(for: tabA, documentID: doc1).count, 1)
+
+        let doc2Candidate = BrowserMediaCandidate(
+            id: "doc2-mp4",
+            url: URL(string: "https://example.com/clip.mp4")!,
+            rawURL: "https://example.com/clip.mp4",
+            kind: .directMedia,
+            mimeType: "video/mp4",
+            suggestedFilename: "clip.mp4",
+            availability: .downloadable,
+            documentID: doc2
+        )
+        coordinator.restoreDocumentState(for: tabA, documentID: doc2, activeTabID: tabA)
+        coordinator.ingestMediaCandidate(doc2Candidate, tabID: tabA, activeTabID: tabA)
+        coordinator.saveTabState(for: tabA)
+        XCTAssertEqual(coordinator.resources(for: tabA, documentID: doc2).first?.id, "doc2-mp4")
+        XCTAssertEqual(coordinator.resources(for: tabA, documentID: doc1).first?.id, "live-1")
+
+        // 3. Rescan with nil URL preserves live/manifest resources
+        coordinator.restoreDocumentState(for: tabA, documentID: doc1, activeTabID: tabA)
+        coordinator.inspectCurrentPageResources(currentURL: nil, activeTabID: tabA)
+        XCTAssertEqual(coordinator.discoveredResources.count, 1)
+        XCTAssertEqual(coordinator.discoveredResources.first?.id, "live-1")
+
+        // 4. Pending DOM probe callback is dropped if cancelInFlightProbes runs before completion
+        var capturedCompletion: ((Any?, Error?) -> Void)?
+        coordinator.inspectCurrentPageResources(
+            currentURL: URL(string: "https://example.com/page1")!,
+            activeTabID: tabA,
+            evaluateScript: { _, completion in
+                capturedCompletion = completion
+            }
+        )
+        coordinator.cancelInFlightProbes(for: tabA)
+        let staleJSON = #"[{"rawURL":"https://example.com/stale.mp4","tag":"video"}]"#
+        capturedCompletion?(staleJSON, nil)
+
+        let exp = expectation(description: "wait main queue")
+        DispatchQueue.main.async { exp.fulfill() }
+        wait(for: [exp], timeout: 1.0)
+
+        XCTAssertFalse(coordinator.discoveredResources.contains(where: { $0.url.lastPathComponent == "stale.mp4" }))
+        XCTAssertGreaterThan(coordinator.telemetry.droppedStaleDocumentObservationsCount, 0)
+    }
 }
 
