@@ -117,7 +117,12 @@ public final class ScheduleCoordinator: ObservableObject {
               NSClassFromString("XCTest") == nil else { return }
         let stopDates = rules.compactMap { rule -> Date? in
             guard rule.isEnabled, let stopTime = rule.stopTime else { return nil }
-            return nextOccurrence(of: stopTime, weekdays: rule.weekdays, after: now)
+            let startMinutes = (rule.startTime.hour ?? 0) * 60 + (rule.startTime.minute ?? 0)
+            let stopMinutes = (stopTime.hour ?? 0) * 60 + (stopTime.minute ?? 0)
+            let stopWeekdays: Set<Int> = startMinutes > stopMinutes
+                ? Set(rule.weekdays.map { $0 == 7 ? 1 : $0 + 1 })
+                : rule.weekdays
+            return nextOccurrence(after: now, matching: stopTime, weekdays: stopWeekdays)
         }
         guard let earliestStop = stopDates.min() else {
             BGTaskScheduler.shared.cancel(taskRequestWithIdentifier: Self.scheduleReconcileTaskIdentifier)
