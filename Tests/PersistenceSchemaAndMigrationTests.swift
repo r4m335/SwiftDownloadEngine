@@ -412,9 +412,9 @@ final class PersistenceSchemaAndMigrationTests: XCTestCase {
     func testLiveRecordingStoreSchemaVersionedAndQuarantine() async throws {
         let store = try LiveRecordingStore(storageDirectoryURL: tempDirectory.appendingPathComponent("LiveRecordings", isDirectory: true))
         let req = LiveRecordingRequest(
-            title: "Test Stream",
             manifestURL: URL(string: "https://example.com/live.m3u8")!,
-            destinationURL: tempDirectory.appendingPathComponent("out.mp4")
+            destinationURL: tempDirectory.appendingPathComponent("out.mp4"),
+            title: "Test Stream"
         )
         let record = LiveRecordingRecord(
             id: "rec-1",
