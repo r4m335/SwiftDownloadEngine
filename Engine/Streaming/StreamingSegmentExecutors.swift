@@ -1024,3 +1024,51 @@ public enum StreamingDownloadOrchestratorError: Error, LocalizedError, Sendable,
 /// Coordinates browser discovery, manifest loading/parsing, planning, segment
 /// submission, and supported VOD assembly handoffs. It does not own application
 /// download state.
+
+public struct StreamingTransferResult: Sendable, Equatable {
+    public let transferID: String
+    public let completedSegments: [StreamingSegmentIdentity]
+    public let localFiles: [URL]
+
+    public init(transferID: String, completedSegments: [StreamingSegmentIdentity], localFiles: [URL]) {
+        self.transferID = transferID
+        self.completedSegments = completedSegments
+        self.localFiles = localFiles
+    }
+}
+
+final class StreamingRedirectDelegate: NSObject, URLSessionTaskDelegate {
+    let originalURL: URL?
+    let headers: [String: String]?
+    let snapshot: BrowserSessionSnapshot?
+    let context: BrowserRequestContext?
+
+    init(
+        originalURL: URL? = nil,
+        headers: [String: String]? = nil,
+        snapshot: BrowserSessionSnapshot? = nil,
+        context: BrowserRequestContext? = nil
+    ) {
+        self.originalURL = originalURL
+        self.headers = headers
+        self.snapshot = snapshot
+        self.context = context
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        willPerformHTTPRedirection response: HTTPURLResponse,
+        newRequest request: URLRequest,
+        completionHandler: @escaping (URLRequest?) -> Void
+    ) {
+        let redirected = DownloadRequestEnricher.handleRedirect(
+            task: task,
+            response: response,
+            newRequest: request,
+            snapshot: snapshot,
+            context: context
+        )
+        completionHandler(redirected)
+    }
+}
