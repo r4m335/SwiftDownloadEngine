@@ -1307,7 +1307,7 @@ public actor StreamingDownloadOrchestrator {
         PipelineLogger.shared.log("[HLS Pipeline] Paused transfer: \(transferID)")
     }
 
-    private func persistDASHState(id: String, state: DASHTransferState) async {
+    private func persistDASHState(id: String, state: HLSTransferState) async {
         guard let dashStore = dashPersistenceStore else { return }
         do {
             _ = try await dashStore.updateState(id: id, state: state)
@@ -1316,7 +1316,7 @@ public actor StreamingDownloadOrchestrator {
         }
     }
 
-    private func persistDASHAssemblyState(id: String, assemblyState: DASHAssemblyState) async {
+    private func persistDASHAssemblyState(id: String, assemblyState: HLSAssemblyState) async {
         guard let dashStore = dashPersistenceStore else { return }
         do {
             _ = try await dashStore.updateAssemblyState(id: id, assemblyState: assemblyState)

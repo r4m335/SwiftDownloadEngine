@@ -1877,7 +1877,7 @@ public actor TorrentEngine {
             do {
                 try await persistenceStore.saveRecord(rec)
             } catch {
-                PipelineLogger.shared.log(stage: .persistence, message: "[TorrentEngine] Failed to save record for \(key): \(error.localizedDescription)")
+                PipelineLogger.shared.log(stage: .persistence, message: "[TorrentEngine] Failed to save record for \(rec.infoHash): \(error.localizedDescription)")
             }
         }
     }
