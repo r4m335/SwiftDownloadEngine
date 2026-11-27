@@ -424,14 +424,17 @@ public struct AppSettings: Codable, Sendable, Equatable {
             return nil
         }
         #if canImport(CFNetwork)
-        return [
+        var dict: [AnyHashable: Any] = [
             kCFNetworkProxiesHTTPEnable as AnyHashable: 1,
             kCFNetworkProxiesHTTPProxy as AnyHashable: host,
-            kCFNetworkProxiesHTTPPort as AnyHashable: proxyPort,
-            kCFNetworkProxiesHTTPSEnable as AnyHashable: 1,
-            kCFNetworkProxiesHTTPSProxy as AnyHashable: host,
-            kCFNetworkProxiesHTTPSPort as AnyHashable: proxyPort
+            kCFNetworkProxiesHTTPPort as AnyHashable: proxyPort
         ]
+        #if os(macOS)
+        dict[kCFNetworkProxiesHTTPSEnable as AnyHashable] = 1
+        dict[kCFNetworkProxiesHTTPSProxy as AnyHashable] = host
+        dict[kCFNetworkProxiesHTTPSPort as AnyHashable] = proxyPort
+        #endif
+        return dict
         #else
         return nil
         #endif
