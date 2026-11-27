@@ -22,6 +22,18 @@ public actor TorrentEngine {
     private var isRunning = false
     private var isSuspended = false
     private var periodicResumeTask: Task<Void, Never>? = nil
+    public private(set) var periodicResumeSaveIntervalSeconds: TimeInterval = 60.0
+    public private(set) var periodicResumeSaveCount: Int = 0
+    public var isPeriodicResumeSavingActive: Bool {
+        periodicResumeTask != nil && !(periodicResumeTask?.isCancelled ?? true)
+    }
+
+    public func setPeriodicResumeSaveInterval(_ seconds: TimeInterval) {
+        periodicResumeSaveIntervalSeconds = max(0.05, seconds)
+        if isRunning && !isSuspended {
+            startPeriodicFastResumeSaving()
+        }
+    }
     private var tasks: [String: TorrentTask] = [:]
 
     public init(
@@ -1052,6 +1064,15 @@ public actor TorrentEngine {
                 try? await Task.sleep(nanoseconds: 50_000_000) // 50ms
             }
         }
+        let records = await scheduler?.allRecords() ?? []
+        for rec in records {
+            do {
+                try await persistenceStore.saveRecord(rec)
+            } catch {
+                PipelineLogger.shared.log(stage: .persistence, message: "[TorrentEngine] Failed to save record for \(rec.infoHash): \(error.localizedDescription)")
+            }
+        }
+        periodicResumeSaveCount &+= 1
     }
 
     /// Prepares the torrent engine for iOS background suspension by saving fast-resume data and pausing handles.
@@ -1104,9 +1125,10 @@ public actor TorrentEngine {
 
     private func startPeriodicFastResumeSaving() {
         periodicResumeTask?.cancel()
+        let intervalNs = UInt64(max(0.05, periodicResumeSaveIntervalSeconds) * 1_000_000_000)
         periodicResumeTask = Task { [weak self] in
             while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 60_000_000_000) // 60s
+                try? await Task.sleep(nanoseconds: intervalNs)
                 guard !Task.isCancelled else { break }
                 await self?.saveFastResumeState(timeoutSeconds: 1.5)
             }
@@ -1114,7 +1136,7 @@ public actor TorrentEngine {
     }
 
     deinit {
-        // Deterministic cleanup
+        periodicResumeTask?.cancel()
     }
 }
 
@@ -1165,6 +1187,18 @@ public actor TorrentEngine {
     private var _torrentDownloadLimits: [String: Int] = [:]
     private var _torrentUploadLimits: [String: Int] = [:]
     private var periodicResumeTask: Task<Void, Never>?
+    public private(set) var periodicResumeSaveIntervalSeconds: TimeInterval = 60.0
+    public private(set) var periodicResumeSaveCount: Int = 0
+    public var isPeriodicResumeSavingActive: Bool {
+        periodicResumeTask != nil && !(periodicResumeTask?.isCancelled ?? true)
+    }
+
+    public func setPeriodicResumeSaveInterval(_ seconds: TimeInterval) {
+        periodicResumeSaveIntervalSeconds = max(0.05, seconds)
+        if isRunning && !isSuspended {
+            startPeriodicFastResumeSaving()
+        }
+    }
 
     public init(
         configuration: EngineConfiguration = .default,
@@ -1882,6 +1916,7 @@ public actor TorrentEngine {
                 PipelineLogger.shared.log(stage: .persistence, message: "[TorrentEngine] Failed to save record for \(rec.infoHash): \(error.localizedDescription)")
             }
         }
+        periodicResumeSaveCount &+= 1
     }
 
     public func suspendForBackground() async {
@@ -1913,13 +1948,18 @@ public actor TorrentEngine {
 
     private func startPeriodicFastResumeSaving() {
         periodicResumeTask?.cancel()
+        let intervalNs = UInt64(max(0.05, periodicResumeSaveIntervalSeconds) * 1_000_000_000)
         periodicResumeTask = Task { [weak self] in
             while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 60_000_000_000) // 60s
+                try? await Task.sleep(nanoseconds: intervalNs)
                 guard !Task.isCancelled else { break }
                 await self?.saveFastResumeState()
             }
         }
+    }
+
+    deinit {
+        periodicResumeTask?.cancel()
     }
 
     public static func extractInfoHash(from magnetURI: String) -> String? {

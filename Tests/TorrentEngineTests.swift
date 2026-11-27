@@ -207,5 +207,61 @@ final class TorrentEngineTests: XCTestCase {
             XCTFail("Unexpected error: \(error)")
         }
     }
+
+    func testTorrentEnginePeriodicResumeSavingRunsWhileActive() async throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("TorrentPeriodicResumeTests_\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let engine = try TorrentEngine(
+            storageDirectoryURL: tempDir,
+            portStart: 6950,
+            portEnd: 6960,
+            maxConcurrentTorrents: 2
+        )
+        try await engine.start()
+        let activeAfterStart = await engine.isPeriodicResumeSavingActive
+        XCTAssertTrue(activeAfterStart)
+
+        await engine.setPeriodicResumeSaveInterval(0.05)
+        try await Task.sleep(nanoseconds: 200_000_000)
+
+        let saveCount = await engine.periodicResumeSaveCount
+        XCTAssertGreaterThanOrEqual(saveCount, 1, "Periodic resume saver should run while engine is active")
+
+        await engine.stop(timeoutSeconds: 1.0)
+        let activeAfterStop = await engine.isPeriodicResumeSavingActive
+        XCTAssertFalse(activeAfterStop)
+    }
 }
 #endif
+
+final class TorrentEnginePeriodicResumeTests: XCTestCase {
+    func testPeriodicResumeSavingRunsWhileEngineIsRunning() async throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("TorrentPeriodicResumeUncond_\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let engine = try TorrentEngine(
+            storageDirectoryURL: tempDir,
+            portStart: 6961,
+            portEnd: 6970,
+            maxConcurrentTorrents: 2
+        )
+        try await engine.start()
+        let activeAfterStart = await engine.isPeriodicResumeSavingActive
+        XCTAssertTrue(activeAfterStart)
+
+        await engine.setPeriodicResumeSaveInterval(0.05)
+        try await Task.sleep(nanoseconds: 200_000_000)
+
+        let saveCount = await engine.periodicResumeSaveCount
+        XCTAssertGreaterThanOrEqual(saveCount, 1)
+
+        await engine.stop(timeoutSeconds: 1.0)
+        let activeAfterStop = await engine.isPeriodicResumeSavingActive
+        XCTAssertFalse(activeAfterStop)
+    }
+}
