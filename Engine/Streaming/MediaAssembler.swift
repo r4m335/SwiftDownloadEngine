@@ -473,34 +473,27 @@ public enum MediaAssembler {
     }
 
     private static func readMPEGTSFirstPTS(fileURL: URL) -> UInt64? {
-        guard let handle = try? FileHandle(forReadingFrom: fileURL) else { return nil }
-        defer {
-            do {
-                try handle.close()
-            } catch {
-                PipelineLogger.shared.log("[MediaAssembler] Failed to close handle in readMPEGTSFirstPTS: \(error)")
-            }
-        }
+        guard let handle = openFileForReadingLogged(fileURL, context: "readMPEGTSFirstPTS") else { return nil }
+        defer { closeHandleLogged(handle, context: "readMPEGTSFirstPTS") }
         let scanSize = 188 * 512
-        guard let chunk = try? handle.read(upToCount: scanSize), chunk.count >= 188 else { return nil }
-        let count = chunk.count / 188
-        for i in 0..<count {
-            if let pts = extractPTSFromPacket(chunk, offset: i * 188) {
-                return pts
+        do {
+            guard let chunk = try handle.read(upToCount: scanSize), chunk.count >= 188 else { return nil }
+            let count = chunk.count / 188
+            for i in 0..<count {
+                if let pts = extractPTSFromPacket(chunk, offset: i * 188) {
+                    return pts
+                }
             }
+            return nil
+        } catch {
+            PipelineLogger.shared.log("[MediaAssembler] Failed to read MPEG-TS first PTS (\(fileURL.lastPathComponent)): \(error)")
+            return nil
         }
-        return nil
     }
 
     private static func readMPEGTSLastPTS(fileURL: URL, fileSize: Int64) -> UInt64? {
-        guard let handle = try? FileHandle(forReadingFrom: fileURL) else { return nil }
-        defer {
-            do {
-                try handle.close()
-            } catch {
-                PipelineLogger.shared.log("[MediaAssembler] Failed to close handle in readMPEGTSLastPTS: \(error)")
-            }
-        }
+        guard let handle = openFileForReadingLogged(fileURL, context: "readMPEGTSLastPTS") else { return nil }
+        defer { closeHandleLogged(handle, context: "readMPEGTSLastPTS") }
         let scanSize = Int64(188 * 512)
         let offset = max(0, fileSize - scanSize)
         do {
@@ -1708,7 +1701,13 @@ public enum MediaAssembler {
         guard let firstInit = periods.first?.initializationSegment else { return false }
         let fileManager = FileManager.default
         let firstSize = fileManager.fileSize(atPath: firstInit.fileURL.path) ?? firstInit.actualByteCount ?? firstInit.expectedByteCount
-        guard let firstData = try? Data(contentsOf: firstInit.fileURL) else { return true }
+        let firstData: Data
+        do {
+            firstData = try Data(contentsOf: firstInit.fileURL)
+        } catch {
+            PipelineLogger.shared.log("[MediaAssembler] Failed to read first init segment (\(firstInit.fileURL.lastPathComponent)): \(error)")
+            return true
+        }
 
         for period in periods.dropFirst() {
             guard let nextInit = period.initializationSegment else { return true }
@@ -1716,7 +1715,13 @@ public enum MediaAssembler {
             if let firstSize, let nextSize, firstSize != nextSize {
                 return true
             }
-            guard let nextData = try? Data(contentsOf: nextInit.fileURL) else { return true }
+            let nextData: Data
+            do {
+                nextData = try Data(contentsOf: nextInit.fileURL)
+            } catch {
+                PipelineLogger.shared.log("[MediaAssembler] Failed to read period init segment (\(nextInit.fileURL.lastPathComponent)): \(error)")
+                return true
+            }
             if firstData != nextData {
                 return true
             }
@@ -1739,7 +1744,7 @@ public enum MediaAssembler {
             var periodPartURLs: [URL] = []
             defer {
                 for partURL in periodPartURLs {
-                    try? fileManager.removeItem(at: partURL)
+                    removeItemLogged(at: partURL, context: "period part cleanup")
                 }
             }
 
@@ -1750,9 +1755,7 @@ public enum MediaAssembler {
                     throw MediaAssemblyError.fileOperationFailed
                 }
                 let handle = try FileHandle(forWritingTo: partURL)
-                defer {
-                    try? handle.close()
-                }
+                defer { closeHandleLogged(handle, context: "period part write") }
                 if let initSeg = period.initializationSegment {
                     try copyValidatedSegment(
                         initSeg,
@@ -1804,9 +1807,7 @@ public enum MediaAssembler {
                 throw MediaAssemblyError.fileOperationFailed
             }
             let outputHandle = try FileHandle(forWritingTo: destinationURL)
-            defer {
-                try? outputHandle.close()
-            }
+            defer { closeHandleLogged(outputHandle, context: "multi-period output write") }
 
             if let initSeg = periods[0].initializationSegment {
                 try copyValidatedSegment(
@@ -1832,9 +1833,7 @@ public enum MediaAssembler {
                 throw MediaAssemblyError.fileOperationFailed
             }
             let handle = try FileHandle(forWritingTo: destinationURL)
-            defer {
-                try? handle.close()
-            }
+            defer { closeHandleLogged(handle, context: "single-period output write") }
             if let initialization = track.initializationSegment {
                 try copyValidatedSegment(
                     initialization,
@@ -1898,13 +1897,13 @@ public enum MediaAssembler {
 
         let fileManager = FileManager.default
         let stagingExport = temporaryDirectoryURL.appendingPathComponent("remux-export-\(UUID().uuidString).mp4")
-        defer {
-            try? fileManager.removeItem(at: stagingExport)
-        }
+        defer { removeItemLogged(at: stagingExport, context: "remux staging cleanup") }
 
         let presets = [AVAssetExportPresetPassthrough, AVAssetExportPresetHighestQuality]
         for preset in presets {
-            try? fileManager.removeItem(at: stagingExport)
+            if fileManager.fileExists(atPath: stagingExport.path) {
+                removeItemLogged(at: stagingExport, context: "remux staging reset")
+            }
             guard let exportSession = AVAssetExportSession(asset: composition, presetName: preset) else {
                 continue
             }
@@ -1921,7 +1920,9 @@ public enum MediaAssembler {
             if exportSession.status == .completed && fileManager.fileExists(atPath: stagingExport.path) {
                 let size = fileManager.fileSize(atPath: stagingExport.path) ?? 0
                 if size > 0 && validateOutput(stagingExport, container: .fragmentedMP4) {
-                    try? fileManager.removeItem(at: outputURL)
+                    if fileManager.fileExists(atPath: outputURL.path) {
+                        removeItemLogged(at: outputURL, context: "remux output replace")
+                    }
                     try fileManager.moveItem(at: stagingExport, to: outputURL)
                     PipelineLogger.shared.log("[MediaAssembler] Multi-period remux succeeded with preset \(preset): \(size) bytes")
                     return true
@@ -1967,16 +1968,10 @@ public enum MediaAssembler {
             break
         }
 
-        guard let input = try? FileHandle(forReadingFrom: segment.fileURL) else {
+        guard let input = openFileForReadingLogged(segment.fileURL, context: "copyValidatedSegment") else {
             throw MediaAssemblyError.fileOperationFailed
         }
-        defer {
-            do {
-                try input.close()
-            } catch {
-                PipelineLogger.shared.log("[MediaAssembler] Failed to close segment input handle: \(error)")
-            }
-        }
+        defer { closeHandleLogged(input, context: "copyValidatedSegment") }
         while true {
             let chunk = try input.read(upToCount: 1_048_576) ?? Data()
             if chunk.isEmpty { break }
@@ -2027,20 +2022,39 @@ public enum MediaAssembler {
         MediaIntegrityValidator.validateStructure(fileURL: url, container: container).isConfirmedValid
     }
 
+    private static func openFileForReadingLogged(_ url: URL, context: String) -> FileHandle? {
+        do {
+            return try FileHandle(forReadingFrom: url)
+        } catch {
+            PipelineLogger.shared.log("[MediaAssembler] Failed to open \(url.lastPathComponent) (\(context)): \(error)")
+            return nil
+        }
+    }
+
+    private static func closeHandleLogged(_ handle: FileHandle, context: String) {
+        do {
+            try handle.close()
+        } catch {
+            PipelineLogger.shared.log("[MediaAssembler] Failed to close handle (\(context)): \(error)")
+        }
+    }
+
+    private static func removeItemLogged(at url: URL, context: String) {
+        do {
+            try FileManager.default.removeItem(at: url)
+        } catch {
+            PipelineLogger.shared.log("[MediaAssembler] Failed to remove \(url.lastPathComponent) (\(context)): \(error)")
+        }
+    }
+
     private static func validateMPEGTSFile(_ url: URL) -> Bool {
         guard let size = FileManager.default.fileSize(atPath: url.path),
               size > 0,
               size % 188 == 0,
-              let handle = try? FileHandle(forReadingFrom: url) else {
+              let handle = openFileForReadingLogged(url, context: "validateMPEGTSFile") else {
             return false
         }
-        defer {
-            do {
-                try handle.close()
-            } catch {
-                PipelineLogger.shared.log("[MediaAssembler] Failed to close handle: \(error)")
-            }
-        }
+        defer { closeHandleLogged(handle, context: "validateMPEGTSFile") }
         let packetsPerBuffer = 256
         let bufferSize = 188 * packetsPerBuffer
         do {
@@ -2064,16 +2078,10 @@ public enum MediaAssembler {
     ) -> Bool {
         guard let fileSizeInt = FileManager.default.fileSize(atPath: url.path),
               fileSizeInt > 0,
-              let handle = try? FileHandle(forReadingFrom: url) else {
+              let handle = openFileForReadingLogged(url, context: "validateISOBaseMediaFile") else {
             return false
         }
-        defer {
-            do {
-                try handle.close()
-            } catch {
-                PipelineLogger.shared.log("[MediaAssembler] Failed to close handle: \(error)")
-            }
-        }
+        defer { closeHandleLogged(handle, context: "validateISOBaseMediaFile") }
 
         let fileSize = UInt64(fileSizeInt)
 

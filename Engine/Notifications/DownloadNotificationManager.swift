@@ -369,7 +369,11 @@ public enum DownloadNotificationManager {
         } else {
             baseDir = fileManager.temporaryDirectory.appendingPathComponent("SwiftDownloadEngine", isDirectory: true)
         }
-        try? fileManager.createDirectory(at: baseDir, withIntermediateDirectories: true)
+        do {
+            try fileManager.createDirectory(at: baseDir, withIntermediateDirectories: true)
+        } catch {
+            PipelineLogger.shared.log(stage: .persistence, message: "[DownloadNotificationManager] Failed to create notification directory \(baseDir.path): \(error.localizedDescription)")
+        }
         return baseDir.appendingPathComponent("notified_downloads.json")
     }
 
@@ -390,17 +394,37 @@ public enum DownloadNotificationManager {
     private static func ensureLoadedLocked() {
         guard !isInitialized else { return }
         isInitialized = true
-        if let url = persistenceFileURL,
-           let data = try? Data(contentsOf: url),
-           let array = try? JSONDecoder().decode([String].self, from: data) {
-            notifiedIDs = Set(array)
+        if let url = persistenceFileURL {
+            do {
+                if let array: [String] = try DurableStorage.load(from: url) {
+                    notifiedIDs = Set(array)
+                }
+            } catch {
+                PipelineLogger.shared.log(stage: .persistence, message: "[DownloadNotificationManager] Failed to load notified IDs from \(url.path): \(error.localizedDescription)")
+            }
         }
-        if let url = activeNotificationFileURL,
-           let data = try? Data(contentsOf: url),
-           let map = try? JSONDecoder().decode([String: TransferProgressSnapshot].self, from: data) {
-            activeTransferSnapshots = map
+        if let url = activeNotificationFileURL {
+            do {
+                if let map: [String: TransferProgressSnapshot] = try DurableStorage.load(from: url) {
+                    activeTransferSnapshots = map
+                }
+            } catch {
+                PipelineLogger.shared.log(stage: .persistence, message: "[DownloadNotificationManager] Failed to load active notification snapshots from \(url.path): \(error.localizedDescription)")
+            }
         }
     }
+
+    #if canImport(UserNotifications)
+    private static func dispatchNotification(_ request: UNNotificationRequest) {
+        Task {
+            do {
+                try await transport.addNotification(request: request)
+            } catch {
+                PipelineLogger.shared.log(stage: .persistence, message: "[DownloadNotificationManager] Failed to dispatch notification '\(request.identifier)': \(error.localizedDescription)")
+            }
+        }
+    }
+    #endif
 
     private static func savePersistedNotifiedIDsLocked() {
         guard let url = persistenceFileURL else { return }
@@ -663,9 +687,7 @@ public enum DownloadNotificationManager {
         let trigger = UNTimeIntervalNotificationTrigger(timeInterval: 0.1, repeats: false)
         let request = UNNotificationRequest(identifier: identifier, content: content, trigger: trigger)
 
-        Task {
-            try? await transport.addNotification(request: request)
-        }
+        dispatchNotification(request)
         #endif
     }
 
@@ -834,7 +856,7 @@ public enum DownloadNotificationManager {
             content: content,
             trigger: trigger
         )
-        Task { try? await transport.addNotification(request: request) }
+        dispatchNotification(request)
         #endif
     }
 
@@ -856,7 +878,7 @@ public enum DownloadNotificationManager {
             content: content,
             trigger: trigger
         )
-        Task { try? await transport.addNotification(request: request) }
+        dispatchNotification(request)
         #endif
     }
 
@@ -916,7 +938,7 @@ public enum DownloadNotificationManager {
             content: content,
             trigger: trigger
         )
-        Task { try? await transport.addNotification(request: request) }
+        dispatchNotification(request)
         #endif
     }
 
@@ -995,7 +1017,7 @@ public enum DownloadNotificationManager {
 
         let trigger = UNTimeIntervalNotificationTrigger(timeInterval: 0.1, repeats: false)
         let request = UNNotificationRequest(identifier: key, content: content, trigger: trigger)
-        Task { try? await transport.addNotification(request: request) }
+        dispatchNotification(request)
         #endif
     }
 
@@ -1035,7 +1057,7 @@ public enum DownloadNotificationManager {
 
         let trigger = UNTimeIntervalNotificationTrigger(timeInterval: 0.1, repeats: false)
         let request = UNNotificationRequest(identifier: key, content: content, trigger: trigger)
-        Task { try? await transport.addNotification(request: request) }
+        dispatchNotification(request)
         #endif
     }
 
@@ -1077,7 +1099,7 @@ public enum DownloadNotificationManager {
 
         let trigger = UNTimeIntervalNotificationTrigger(timeInterval: 0.1, repeats: false)
         let request = UNNotificationRequest(identifier: key, content: content, trigger: trigger)
-        Task { try? await transport.addNotification(request: request) }
+        dispatchNotification(request)
         #endif
     }
 
@@ -1107,7 +1129,7 @@ public enum DownloadNotificationManager {
 
         let trigger = UNTimeIntervalNotificationTrigger(timeInterval: 0.1, repeats: false)
         let request = UNNotificationRequest(identifier: "torrent-diskfull-\(infoHash.lowercased())", content: content, trigger: trigger)
-        Task { try? await transport.addNotification(request: request) }
+        dispatchNotification(request)
         #endif
     }
 
@@ -1144,7 +1166,7 @@ public enum DownloadNotificationManager {
 
         let trigger = UNTimeIntervalNotificationTrigger(timeInterval: 0.1, repeats: false)
         let request = UNNotificationRequest(identifier: "live-started-\(sessionID)", content: content, trigger: trigger)
-        Task { try? await transport.addNotification(request: request) }
+        dispatchNotification(request)
         #endif
     }
 
@@ -1170,7 +1192,7 @@ public enum DownloadNotificationManager {
 
         let trigger = UNTimeIntervalNotificationTrigger(timeInterval: 0.1, repeats: false)
         let request = UNNotificationRequest(identifier: "live-interrupted-\(sessionID)", content: content, trigger: trigger)
-        Task { try? await transport.addNotification(request: request) }
+        dispatchNotification(request)
         #endif
     }
 
@@ -1192,7 +1214,7 @@ public enum DownloadNotificationManager {
 
         let trigger = UNTimeIntervalNotificationTrigger(timeInterval: 0.1, repeats: false)
         let request = UNNotificationRequest(identifier: "live-recovered-\(sessionID)", content: content, trigger: trigger)
-        Task { try? await transport.addNotification(request: request) }
+        dispatchNotification(request)
         #endif
     }
 
@@ -1236,7 +1258,7 @@ public enum DownloadNotificationManager {
 
         let trigger = UNTimeIntervalNotificationTrigger(timeInterval: 0.1, repeats: false)
         let request = UNNotificationRequest(identifier: "live-complete-\(sessionID)", content: content, trigger: trigger)
-        Task { try? await transport.addNotification(request: request) }
+        dispatchNotification(request)
         #endif
     }
 }

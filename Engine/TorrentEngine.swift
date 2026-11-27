@@ -79,14 +79,30 @@ public actor TorrentEngine {
         )
     }
 
+    private func logBridge(_ context: String, _ operation: () throws -> Void) {
+        do {
+            try operation()
+        } catch {
+            PipelineLogger.shared.log("[TorrentEngine] \(context) failed: \(error)")
+        }
+    }
+
+    private func logAsync(_ context: String, _ operation: () async throws -> Void) async {
+        do {
+            try await operation()
+        } catch {
+            PipelineLogger.shared.log("[TorrentEngine] \(context) failed: \(error)")
+        }
+    }
+
     public func updateConfiguration(_ newConfig: EngineConfiguration) async throws {
         self.configuration = newConfig
         try await setMaxConcurrentTorrents(newConfig.maxConcurrentTorrents)
         if let dl = newConfig.torrentDownloadRateLimit {
-            try? await setSessionDownloadLimit(dl)
+            await logAsync("updateConfiguration.setSessionDownloadLimit") { try await setSessionDownloadLimit(dl) }
         }
         if let ul = newConfig.torrentUploadRateLimit {
-            try? await setSessionUploadLimit(ul)
+            await logAsync("updateConfiguration.setSessionUploadLimit") { try await setSessionUploadLimit(ul) }
         }
     }
 
@@ -137,36 +153,36 @@ public actor TorrentEngine {
 
             // 3. Preserve pause / queued status & sequential mode & custom trackers
             if record.isSequentialDownload {
-                try? bridge.setSequentialDownload(true, inTorrentWithHash: hash)
+                logBridge("start.setSequentialDownload(\(hash))") { try bridge.setSequentialDownload(true, inTorrentWithHash: hash) }
             }
             if let custom = record.customTrackers {
                 for t in custom {
-                    try? bridge.addTracker(url: t, tier: 0, toTorrentWithHash: hash)
+                    logBridge("start.addTracker(\(hash))") { try bridge.addTracker(url: t, tier: 0, toTorrentWithHash: hash) }
                 }
             }
             if record.isExplicitlyPaused {
                 bridge.setExplicitlyPaused(true, forTorrentWithHash: hash)
-                try? bridge.pauseTorrent(withHash: hash)
+                logBridge("start.pauseExplicit(\(hash))") { try bridge.pauseTorrent(withHash: hash) }
             } else if record.state == .paused || record.state == .queued {
-                try? bridge.pauseTorrent(withHash: hash)
+                logBridge("start.pauseQueued(\(hash))") { try bridge.pauseTorrent(withHash: hash) }
             }
         }
 
         // 4. Pump queue to activate admitted torrents up to concurrency limit
         let changes = await sched.pumpQueue()
         for h in changes.promoted {
-            try? await safeResumeTorrent(withHash: h, source: "start.pumpQueue")
+            await logAsync("start.pumpQueue.resume(\(h))") { try await safeResumeTorrent(withHash: h, source: "start.pumpQueue") }
         }
         for h in changes.demoted {
-            try? bridge.pauseTorrent(withHash: h)
+            logBridge("start.pumpQueue.pause(\(h))") { try bridge.pauseTorrent(withHash: h) }
         }
 
         // 5. Apply bandwidth limits if configured
         if let dl = configuration.torrentDownloadRateLimit {
-            try? bridge.setDownloadLimit(dl)
+            logBridge("start.setDownloadLimit") { try bridge.setDownloadLimit(dl) }
         }
         if let ul = configuration.torrentUploadRateLimit {
-            try? bridge.setUploadLimit(ul)
+            logBridge("start.setUploadLimit") { try bridge.setUploadLimit(ul) }
         }
 
         // 6. Start periodic fast-resume persistence
@@ -185,7 +201,7 @@ public actor TorrentEngine {
         // 1. Request fast-resume data for all valid torrents
         let currentStatuses = bridge.allTorrentStatuses()
         for s in currentStatuses {
-            try? bridge.requestResumeData(forTorrentWithHash: s.infoHash)
+            logBridge("stop.requestResumeData(\(s.infoHash))") { try bridge.requestResumeData(forTorrentWithHash: s.infoHash) }
         }
 
         // 2. Bounded wait for resume-data alerts (up to timeoutSeconds)
@@ -273,7 +289,7 @@ public actor TorrentEngine {
                 PipelineLogger.shared.log("[TorrentEngine] Invariant enforced: Rejected resume for explicitly paused torrent: \(key) (caller: \(source))")
                 #endif
                 bridge.setExplicitlyPaused(true, forTorrentWithHash: key)
-                try? bridge.pauseTorrent(withHash: key)
+                logBridge("safeResumeTorrent.enforcePause(\(key))") { try bridge.pauseTorrent(withHash: key) }
                 return
             }
         }
@@ -316,7 +332,7 @@ public actor TorrentEngine {
         let hash = try bridge.addTorrent(withMagnetURI: magnetURI, savePath: savePath)
 
         if isSequential {
-            try? bridge.setSequentialDownload(true, inTorrentWithHash: hash)
+            logBridge("addTorrent.magnet.setSequential(\(hash))") { try bridge.setSequentialDownload(true, inTorrentWithHash: hash) }
         }
 
         let displayName = name ?? Self.extractDisplayName(from: magnetURI) ?? "Magnet \(hash.prefix(8))"
@@ -334,14 +350,14 @@ public actor TorrentEngine {
 
                 if isExplicitlyPaused {
                     bridge.setExplicitlyPaused(true, forTorrentWithHash: hash)
-                    try? bridge.pauseTorrent(withHash: hash)
+                    logBridge("addTorrent.magnet.pauseExplicit(\(hash))") { try bridge.pauseTorrent(withHash: hash) }
                 } else if record.state == .downloading {
-                    try? await safeResumeTorrent(withHash: hash, source: "addTorrent.magnet")
+                    await logAsync("addTorrent.magnet.resume(\(hash))") { try await safeResumeTorrent(withHash: hash, source: "addTorrent.magnet") }
                 } else {
-                    try? bridge.pauseTorrent(withHash: hash)
+                    logBridge("addTorrent.magnet.pauseQueued(\(hash))") { try bridge.pauseTorrent(withHash: hash) }
                 }
             } catch {
-                try? bridge.removeTorrent(withHash: hash, deleteFiles: false)
+                logBridge("addTorrent.magnet.rollbackRemove(\(hash))") { try bridge.removeTorrent(withHash: hash, deleteFiles: false) }
                 throw error
             }
         }
@@ -368,17 +384,23 @@ public actor TorrentEngine {
         isSequential: Bool = false
     ) async throws -> TorrentTask {
         guard isRunning else { throw TorrentEngineError.sessionNotRunning }
-        if let fileData = try? Data(contentsOf: fileURL),
-           let parsed = Self.extractBencodedInfo(from: fileData),
-           let sched = scheduler,
-           let dup = await sched.isDuplicate(infoHash: parsed.infoHash, source: fileURL.path) {
-            throw TorrentEngineError.duplicateTorrent(dup)
+        do {
+            let fileData = try Data(contentsOf: fileURL)
+            if let parsed = Self.extractBencodedInfo(from: fileData),
+               let sched = scheduler,
+               let dup = await sched.isDuplicate(infoHash: parsed.infoHash, source: fileURL.path) {
+                throw TorrentEngineError.duplicateTorrent(dup)
+            }
+        } catch let error as TorrentEngineError {
+            throw error
+        } catch {
+            PipelineLogger.shared.log(stage: .persistence, message: "[TorrentEngine] Failed to read torrent file \(fileURL.lastPathComponent) for duplicate check: \(error)")
         }
         let savePath = saveDirectoryURL?.path ?? storageDirectoryURL.path
         let hash = try bridge.addTorrent(withFilePath: fileURL.path, savePath: savePath)
 
         if isSequential {
-            try? bridge.setSequentialDownload(true, inTorrentWithHash: hash)
+            logBridge("addTorrent.file.setSequential(\(hash))") { try bridge.setSequentialDownload(true, inTorrentWithHash: hash) }
         }
 
         let displayName = name ?? fileURL.deletingPathExtension().lastPathComponent
@@ -396,14 +418,14 @@ public actor TorrentEngine {
 
                 if isExplicitlyPaused {
                     bridge.setExplicitlyPaused(true, forTorrentWithHash: hash)
-                    try? bridge.pauseTorrent(withHash: hash)
+                    logBridge("addTorrent.file.pauseExplicit(\(hash))") { try bridge.pauseTorrent(withHash: hash) }
                 } else if record.state == .downloading {
-                    try? await safeResumeTorrent(withHash: hash, source: "addTorrent.file")
+                    await logAsync("addTorrent.file.resume(\(hash))") { try await safeResumeTorrent(withHash: hash, source: "addTorrent.file") }
                 } else {
-                    try? bridge.pauseTorrent(withHash: hash)
+                    logBridge("addTorrent.file.pauseQueued(\(hash))") { try bridge.pauseTorrent(withHash: hash) }
                 }
             } catch {
-                try? bridge.removeTorrent(withHash: hash, deleteFiles: false)
+                logBridge("addTorrent.file.rollbackRemove(\(hash))") { try bridge.removeTorrent(withHash: hash, deleteFiles: false) }
                 throw error
             }
         }
@@ -439,7 +461,7 @@ public actor TorrentEngine {
         let hash = try bridge.addTorrent(with: data, savePath: savePath)
 
         if isSequential {
-            try? bridge.setSequentialDownload(true, inTorrentWithHash: hash)
+            logBridge("addTorrent.buffer.setSequential(\(hash))") { try bridge.setSequentialDownload(true, inTorrentWithHash: hash) }
         }
 
         let displayName = name ?? "Torrent \(hash.prefix(8))"
@@ -457,14 +479,14 @@ public actor TorrentEngine {
 
                 if isExplicitlyPaused {
                     bridge.setExplicitlyPaused(true, forTorrentWithHash: hash)
-                    try? bridge.pauseTorrent(withHash: hash)
+                    logBridge("addTorrent.buffer.pauseExplicit(\(hash))") { try bridge.pauseTorrent(withHash: hash) }
                 } else if record.state == .downloading {
-                    try? await safeResumeTorrent(withHash: hash, source: "addTorrent.buffer")
+                    await logAsync("addTorrent.buffer.resume(\(hash))") { try await safeResumeTorrent(withHash: hash, source: "addTorrent.buffer") }
                 } else {
-                    try? bridge.pauseTorrent(withHash: hash)
+                    logBridge("addTorrent.buffer.pauseQueued(\(hash))") { try bridge.pauseTorrent(withHash: hash) }
                 }
             } catch {
-                try? bridge.removeTorrent(withHash: hash, deleteFiles: false)
+                logBridge("addTorrent.buffer.rollbackRemove(\(hash))") { try bridge.removeTorrent(withHash: hash, deleteFiles: false) }
                 throw error
             }
         }
@@ -486,12 +508,12 @@ public actor TorrentEngine {
         bridge.setExplicitlyPaused(true, forTorrentWithHash: key)
         try bridge.pauseTorrent(withHash: key)
 
-        try? bridge.requestResumeData(forTorrentWithHash: key)
+        logBridge("pause.requestResumeData(\(key))") { try bridge.requestResumeData(forTorrentWithHash: key) }
 
         if let sched = scheduler {
             let changes = try await sched.pause(infoHash: key)
             for h in changes.promoted {
-                try? await safeResumeTorrent(withHash: h, source: "pause.promoted")
+                await logAsync("pause.promoted.resume(\(h))") { try await safeResumeTorrent(withHash: h, source: "pause.promoted") }
             }
         }
 
@@ -510,10 +532,10 @@ public actor TorrentEngine {
         if let sched = scheduler {
             let changes = try await sched.resume(infoHash: key)
             for h in changes.promoted {
-                try? await safeResumeTorrent(withHash: h, source: "resume.promoted")
+                await logAsync("resume.promoted.resume(\(h))") { try await safeResumeTorrent(withHash: h, source: "resume.promoted") }
             }
             for h in changes.demoted {
-                try? bridge.pauseTorrent(withHash: h)
+                logBridge("resume.demoted.pause(\(h))") { try bridge.pauseTorrent(withHash: h) }
             }
             if var task = tasks[key], let rec = await sched.record(for: key) {
                 task.isExplicitlyPaused = false
@@ -540,7 +562,7 @@ public actor TorrentEngine {
         if let sched = scheduler {
             let changes = try await sched.remove(infoHash: key)
             for h in changes.promoted {
-                try? await safeResumeTorrent(withHash: h, source: "remove.promoted")
+                await logAsync("remove.promoted.resume(\(h))") { try await safeResumeTorrent(withHash: h, source: "remove.promoted") }
             }
         }
 
@@ -563,10 +585,10 @@ public actor TorrentEngine {
         guard let sched = scheduler else { return }
         let changes = try await sched.setMaxConcurrentTorrents(limit)
         for h in changes.promoted {
-            try? await safeResumeTorrent(withHash: h, source: "setMaxConcurrentTorrents.promoted")
+            await logAsync("setMaxConcurrentTorrents.promoted.resume(\(h))") { try await safeResumeTorrent(withHash: h, source: "setMaxConcurrentTorrents.promoted") }
         }
         for h in changes.demoted {
-            try? bridge.pauseTorrent(withHash: h)
+            logBridge("setMaxConcurrentTorrents.demoted.pause(\(h))") { try bridge.pauseTorrent(withHash: h) }
         }
     }
 
@@ -574,10 +596,10 @@ public actor TorrentEngine {
         guard let sched = scheduler else { return }
         let changes = try await sched.setPriority(priority, for: infoHash)
         for h in changes.promoted {
-            try? await safeResumeTorrent(withHash: h, source: "setPriority.promoted")
+            await logAsync("setPriority.promoted.resume(\(h))") { try await safeResumeTorrent(withHash: h, source: "setPriority.promoted") }
         }
         for h in changes.demoted {
-            try? bridge.pauseTorrent(withHash: h)
+            logBridge("setPriority.demoted.pause(\(h))") { try bridge.pauseTorrent(withHash: h) }
         }
     }
 
@@ -774,7 +796,7 @@ public actor TorrentEngine {
                     // Enforce native pause invariant if bridge status deviated
                     bridge.setExplicitlyPaused(true, forTorrentWithHash: key)
                     if bridgeStatus.state != .paused {
-                        try? bridge.pauseTorrent(withHash: key)
+                        logBridge("task.enforcePause(\(key))") { try bridge.pauseTorrent(withHash: key) }
                     }
                 } else if rec.state == .queued && (t.state == .paused || t.state == .downloading) {
                     t.state = .queued
@@ -794,8 +816,8 @@ public actor TorrentEngine {
                     }
 
                     if shouldStop {
-                        try? bridge.pauseTorrent(withHash: key)
-                        try? await sched.markSeedingComplete(infoHash: key)
+                        logBridge("task.seedingComplete.pause(\(key))") { try bridge.pauseTorrent(withHash: key) }
+                        await logAsync("task.markSeedingComplete(\(key))") { try await sched.markSeedingComplete(infoHash: key) }
                         t.state = .finished
                         t.isSeedingComplete = true
                         DownloadNotificationManager.postTorrentSeedingStoppedNotification(name: t.name, infoHash: key, reason: "Seeding limit reached")
@@ -824,7 +846,7 @@ public actor TorrentEngine {
                         // Enforce native pause invariant if bridge status deviated
                         bridge.setExplicitlyPaused(true, forTorrentWithHash: key)
                         if let bridgeStatus = bridge.status(forTorrentWithHash: key), bridgeStatus.state != .paused {
-                            try? bridge.pauseTorrent(withHash: key)
+                            logBridge("allTasks.enforcePause(\(key))") { try bridge.pauseTorrent(withHash: key) }
                         }
                     } else if rec.state == .queued && (task.state == .paused || task.state == .downloading) {
                         task.state = .queued
@@ -844,8 +866,8 @@ public actor TorrentEngine {
                         }
 
                         if shouldStop {
-                            try? bridge.pauseTorrent(withHash: key)
-                            try? await sched.markSeedingComplete(infoHash: key)
+                            logBridge("allTasks.seedingComplete.pause(\(key))") { try bridge.pauseTorrent(withHash: key) }
+                            await logAsync("allTasks.markSeedingComplete(\(key))") { try await sched.markSeedingComplete(infoHash: key) }
                             task.state = .finished
                             task.isSeedingComplete = true
                             DownloadNotificationManager.postTorrentSeedingStoppedNotification(name: task.name, infoHash: key, reason: "Seeding limit reached")
@@ -1028,7 +1050,7 @@ public actor TorrentEngine {
         tasks[key]?.errorMessage = nil
         let changes = await scheduler?.pumpQueue()
         for h in changes?.promoted ?? [] {
-            try? await safeResumeTorrent(withHash: h, source: "retryTorrent")
+            await logAsync("retryTorrent.resume(\(h))") { try await safeResumeTorrent(withHash: h, source: "retryTorrent") }
         }
         _ = await task(for: key)
     }
@@ -1039,7 +1061,7 @@ public actor TorrentEngine {
     public func saveFastResumeState(timeoutSeconds: TimeInterval = 2.0) async {
         let currentStatuses = bridge.allTorrentStatuses()
         for s in currentStatuses {
-            try? bridge.requestResumeData(forTorrentWithHash: s.infoHash)
+            logBridge("saveFastResumeState.requestResumeData(\(s.infoHash))") { try bridge.requestResumeData(forTorrentWithHash: s.infoHash) }
         }
         let deadline = Date().addingTimeInterval(timeoutSeconds)
         var pendingHashes = Set(currentStatuses.map { $0.infoHash.lowercased() })
@@ -1088,7 +1110,7 @@ public actor TorrentEngine {
         // 2. Pause active native handles to halt socket/network activity
         let statuses = bridge.allTorrentStatuses()
         for s in statuses where s.state == .downloading || s.state == .seeding {
-            try? bridge.pauseTorrent(withHash: s.infoHash)
+            logBridge("suspendForBackground.pause(\(s.infoHash))") { try bridge.pauseTorrent(withHash: s.infoHash) }
             tasks[s.infoHash.lowercased()]?.isSuspended = true
         }
 
@@ -1110,11 +1132,11 @@ public actor TorrentEngine {
         if let sched = scheduler {
             let changes = await sched.pumpQueue()
             for h in changes.promoted {
-                try? await safeResumeTorrent(withHash: h, source: "resumeFromBackground.promoted")
+                await logAsync("resumeFromBackground.promoted.resume(\(h))") { try await safeResumeTorrent(withHash: h, source: "resumeFromBackground.promoted") }
             }
             let records = await sched.allRecords()
             for rec in records where rec.state == .downloading && !rec.isExplicitlyPaused {
-                try? await safeResumeTorrent(withHash: rec.infoHash, source: "resumeFromBackground.active")
+                await logAsync("resumeFromBackground.active.resume(\(rec.infoHash))") { try await safeResumeTorrent(withHash: rec.infoHash, source: "resumeFromBackground.active") }
             }
         }
 
@@ -1238,14 +1260,30 @@ public actor TorrentEngine {
         )
     }
 
+    private func logBridge(_ context: String, _ operation: () throws -> Void) {
+        do {
+            try operation()
+        } catch {
+            PipelineLogger.shared.log("[TorrentEngine] \(context) failed: \(error)")
+        }
+    }
+
+    private func logAsync(_ context: String, _ operation: () async throws -> Void) async {
+        do {
+            try await operation()
+        } catch {
+            PipelineLogger.shared.log("[TorrentEngine] \(context) failed: \(error)")
+        }
+    }
+
     public func updateConfiguration(_ newConfig: EngineConfiguration) async throws {
         self.configuration = newConfig
         try await setMaxConcurrentTorrents(newConfig.maxConcurrentTorrents)
         if let dl = newConfig.torrentDownloadRateLimit {
-            try? await setSessionDownloadLimit(dl)
+            await logAsync("updateConfiguration.setSessionDownloadLimit") { try await setSessionDownloadLimit(dl) }
         }
         if let ul = newConfig.torrentUploadRateLimit {
-            try? await setSessionUploadLimit(ul)
+            await logAsync("updateConfiguration.setSessionUploadLimit") { try await setSessionUploadLimit(ul) }
         }
     }
 
@@ -1555,7 +1593,7 @@ public actor TorrentEngine {
                 }
 
                 if shouldStop {
-                    try? await scheduler?.markSeedingComplete(infoHash: hash)
+                    await logAsync("task.markSeedingComplete(\(hash))") { try await scheduler?.markSeedingComplete(infoHash: hash) }
                     task.state = .finished
                     task.isSeedingComplete = true
                     DownloadNotificationManager.postTorrentSeedingStoppedNotification(name: task.name, infoHash: hash, reason: "Seeding limit reached")
@@ -1773,7 +1811,7 @@ public actor TorrentEngine {
                     }
 
                     if shouldStop {
-                        try? await scheduler?.markSeedingComplete(infoHash: hash)
+                        await logAsync("allTasks.markSeedingComplete(\(hash))") { try await scheduler?.markSeedingComplete(infoHash: hash) }
                         t.state = .finished
                         t.isSeedingComplete = true
                         DownloadNotificationManager.postTorrentSeedingStoppedNotification(name: t.name, infoHash: hash, reason: "Seeding limit reached")

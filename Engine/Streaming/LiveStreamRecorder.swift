@@ -167,7 +167,34 @@ public final class LiveStreamRecorder: ObservableObject {
     ) {
         self.urlSession = urlSession
         self.libraryStore = libraryStore
-        self.recordingStore = recordingStore ?? (try? LiveRecordingStore())
+        if let recordingStore {
+            self.recordingStore = recordingStore
+        } else {
+            do {
+                self.recordingStore = try LiveRecordingStore()
+            } catch {
+                PipelineLogger.shared.log(stage: .persistence, message: "[LiveStreamRecorder] Failed to initialize LiveRecordingStore: \(error.localizedDescription)")
+                self.recordingStore = nil
+            }
+        }
+    }
+
+    private func deleteRecordingSession(sessionID: String) async {
+        guard let store = recordingStore else { return }
+        do {
+            try await store.delete(sessionID: sessionID)
+        } catch {
+            PipelineLogger.shared.log(stage: .persistence, message: "[LiveStreamRecorder] Failed to delete session \(sessionID): \(error.localizedDescription)")
+        }
+    }
+
+    private func removeItemLogged(at url: URL, context: String) {
+        guard FileManager.default.fileExists(atPath: url.path) else { return }
+        do {
+            try FileManager.default.removeItem(at: url)
+        } catch {
+            PipelineLogger.shared.log(stage: .persistence, message: "[LiveStreamRecorder] Failed to remove \(context) at \(url.path): \(error.localizedDescription)")
+        }
     }
 
     // MARK: - Recording Control APIs
@@ -280,7 +307,7 @@ public final class LiveStreamRecorder: ObservableObject {
 
         if let sid = currentSessionID {
             Task {
-                try? await self.recordingStore?.delete(sessionID: sid)
+                await self.deleteRecordingSession(sessionID: sid)
                 _ = await self.checkForInterruptedRecordings()
             }
         }
@@ -346,7 +373,7 @@ public final class LiveStreamRecorder: ObservableObject {
 
         let scratchDir = URL(fileURLWithPath: record.scratchDirectoryPath)
         guard FileManager.default.fileExists(atPath: scratchDir.path) else {
-            try? await store.delete(sessionID: sessionID)
+            await deleteRecordingSession(sessionID: sessionID)
             _ = await checkForInterruptedRecordings()
             throw LiveStreamRecorderError.assemblyFailed("Scratch directory for session \(sessionID) no longer exists.")
         }
@@ -421,7 +448,7 @@ public final class LiveStreamRecorder: ObservableObject {
 
         let scratchDir = URL(fileURLWithPath: record.scratchDirectoryPath)
         guard FileManager.default.fileExists(atPath: scratchDir.path) else {
-            try? await store.delete(sessionID: sessionID)
+            await deleteRecordingSession(sessionID: sessionID)
             _ = await checkForInterruptedRecordings()
             throw LiveStreamRecorderError.assemblyFailed("Scratch directory for session \(sessionID) no longer exists.")
         }
@@ -434,8 +461,8 @@ public final class LiveStreamRecorder: ObservableObject {
             scratchDir: scratchDir
         )
 
-        try? await store.delete(sessionID: sessionID)
-        try? FileManager.default.removeItem(at: scratchDir)
+        await deleteRecordingSession(sessionID: sessionID)
+        removeItemLogged(at: scratchDir, context: "scratch directory")
         _ = await checkForInterruptedRecordings()
         return finalURL
     }
@@ -445,9 +472,9 @@ public final class LiveStreamRecorder: ObservableObject {
         guard let store = recordingStore else { return }
         if let record = await store.load(sessionID: sessionID) {
             let scratchDir = URL(fileURLWithPath: record.scratchDirectoryPath)
-            try? FileManager.default.removeItem(at: scratchDir)
+            removeItemLogged(at: scratchDir, context: "scratch directory")
         }
-        try? await store.delete(sessionID: sessionID)
+        await deleteRecordingSession(sessionID: sessionID)
         _ = await checkForInterruptedRecordings()
     }
 
@@ -561,15 +588,19 @@ public final class LiveStreamRecorder: ObservableObject {
                    $0.type.uppercased() == "AUDIO" && $0.groupID == audioGroup && $0.uri != nil && $0.uri != targetMediaURL
                }),
                let audioURL = audioRendition.uri {
-                if let audioData = try? await fetchManifestData(url: audioURL, requestContext: request.requestContext),
-                   let audioText = String(data: audioData, encoding: .utf8),
-                   let audioManifest = try? HLSManifestParser.parse(audioText, baseURL: audioURL) {
-                    _ = try? await recordHLSMediaSegments(
-                        manifest: audioManifest,
-                        trackKind: "audio",
-                        request: request,
-                        scratchDir: scratchDir
-                    )
+                do {
+                    let audioData = try await fetchManifestData(url: audioURL, requestContext: request.requestContext)
+                    if let audioText = String(data: audioData, encoding: .utf8) {
+                        let audioManifest = try HLSManifestParser.parse(audioText, baseURL: audioURL)
+                        _ = try await recordHLSMediaSegments(
+                            manifest: audioManifest,
+                            trackKind: "audio",
+                            request: request,
+                            scratchDir: scratchDir
+                        )
+                    }
+                } catch {
+                    PipelineLogger.shared.log("[LiveStreamRecorder] External HLS audio rendition failed (\(audioURL.lastPathComponent)): \(error)")
                 }
             }
 
@@ -744,20 +775,23 @@ public final class LiveStreamRecorder: ObservableObject {
 
         // Download audio initialization segment if present
         if let aRep = audioRep, let aTemplate = audioTemplate, let initPattern = aTemplate.initialization, !initPattern.isEmpty {
-            if let expandedAudioInitURL = try? expandDASHPattern(
-                initPattern,
-                representation: aRep,
-                number: aTemplate.startNumber,
-                time: aTemplate.presentationTimeOffset,
-                baseURL: aRep.baseURL ?? request.manifestURL
-            ) {
-                try? await downloadInitializationSegmentIfNeeded(
+            do {
+                let expandedAudioInitURL = try expandDASHPattern(
+                    initPattern,
+                    representation: aRep,
+                    number: aTemplate.startNumber,
+                    time: aTemplate.presentationTimeOffset,
+                    baseURL: aRep.baseURL ?? request.manifestURL
+                )
+                try await downloadInitializationSegmentIfNeeded(
                     url: expandedAudioInitURL,
                     byteRange: nil,
                     trackKind: "audio",
                     scratchDir: scratchDir,
                     requestContext: request.requestContext
                 )
+            } catch {
+                PipelineLogger.shared.log("[LiveStreamRecorder] DASH audio init segment failed: \(error)")
             }
         }
 
@@ -807,16 +841,20 @@ public final class LiveStreamRecorder: ObservableObject {
                     // Download corresponding audio chunk if audio representation exists
                     if let aRep = audioRep, let aTemplate = audioTemplate, let aMediaPattern = aTemplate.media {
                         let aTime = aTemplate.presentationTimeOffset + (segTime - template.presentationTimeOffset)
-                        _ = try? await downloadDASHChunk(
-                            pattern: aMediaPattern,
-                            representation: aRep,
-                            trackKind: "audio",
-                            seqNumber: Int64(recordedSegments.count + 1),
-                            time: aTime,
-                            duration: segDuration,
-                            scratchDir: scratchDir,
-                            request: request
-                        )
+                        do {
+                            _ = try await downloadDASHChunk(
+                                pattern: aMediaPattern,
+                                representation: aRep,
+                                trackKind: "audio",
+                                seqNumber: Int64(recordedSegments.count + 1),
+                                time: aTime,
+                                duration: segDuration,
+                                scratchDir: scratchDir,
+                                request: request
+                            )
+                        } catch {
+                            PipelineLogger.shared.log("[LiveStreamRecorder] DASH timeline audio chunk failed (time=\(aTime)): \(error)")
+                        }
                     }
                 }
                 runningTime += Int64(repeatCount + 1) * duration
@@ -859,16 +897,20 @@ public final class LiveStreamRecorder: ObservableObject {
                     let aBase = aTemplate.startNumber > 0 ? aTemplate.startNumber : 1
                     let aSegNum = aBase + (segNumber - baseNumber)
                     let aTime = aTemplate.presentationTimeOffset + (aSegNum - aBase) * (aTemplate.duration ?? segDurationUnits)
-                    _ = try? await downloadDASHChunk(
-                        pattern: aMediaPattern,
-                        representation: aRep,
-                        trackKind: "audio",
-                        seqNumber: aSegNum,
-                        time: aTime,
-                        duration: segDuration,
-                        scratchDir: scratchDir,
-                        request: request
-                    )
+                    do {
+                        _ = try await downloadDASHChunk(
+                            pattern: aMediaPattern,
+                            representation: aRep,
+                            trackKind: "audio",
+                            seqNumber: aSegNum,
+                            time: aTime,
+                            duration: segDuration,
+                            scratchDir: scratchDir,
+                            request: request
+                        )
+                    } catch {
+                        PipelineLogger.shared.log("[LiveStreamRecorder] DASH duration audio chunk failed (seq=\(aSegNum)): \(error)")
+                    }
                 }
             }
         } else {
@@ -981,7 +1023,7 @@ public final class LiveStreamRecorder: ObservableObject {
         )
 
         if let sid = currentSessionID {
-            try? await recordingStore?.delete(sessionID: sid)
+            await deleteRecordingSession(sessionID: sid)
         }
 
         do {
@@ -1090,7 +1132,7 @@ public final class LiveStreamRecorder: ObservableObject {
 
             do {
                 let assemblyOutput = try await MediaAssembler.assemble(assemblyReq)
-                let finalBytes = (try? FileManager.default.attributesOfItem(atPath: assemblyOutput.destinationURL.path)[.size] as? Int64) ?? bytesWritten
+                let finalBytes = FileManager.default.fileSize(atPath: assemblyOutput.destinationURL.path) ?? bytesWritten
                 self.bytesWritten = finalBytes
                 _ = await (libraryStore ?? .shared).scanLibrary(in: destDir)
                 return assemblyOutput.destinationURL
@@ -1101,56 +1143,65 @@ public final class LiveStreamRecorder: ObservableObject {
 
         // Single-track or fallback ordered assembly
         let stagingOutputURL = scratchDir.appendingPathComponent("assembled_live_output.\(targetURL.pathExtension)")
-        if FileManager.default.fileExists(atPath: stagingOutputURL.path) {
-            try? FileManager.default.removeItem(at: stagingOutputURL)
-        }
+        removeItemLogged(at: stagingOutputURL, context: "staging output")
         FileManager.default.createFile(atPath: stagingOutputURL.path, contents: nil)
 
-        guard let outHandle = try? FileHandle(forWritingTo: stagingOutputURL) else {
-            throw LiveStreamRecorderError.assemblyFailed("Could not open handle for staging file at \(stagingOutputURL.path)")
+        let outHandle: FileHandle
+        do {
+            outHandle = try FileHandle(forWritingTo: stagingOutputURL)
+        } catch {
+            throw LiveStreamRecorderError.assemblyFailed("Could not open handle for staging file at \(stagingOutputURL.path): \(error.localizedDescription)")
         }
-        defer { try? outHandle.close() }
+        defer {
+            do {
+                try outHandle.close()
+            } catch {
+                PipelineLogger.shared.log(stage: .persistence, message: "[LiveStreamRecorder] Failed to close staging handle: \(error.localizedDescription)")
+            }
+        }
 
         // 1. Write initialization segment(s) FIRST (essential for fMP4 and DASH)
         for initURL in initializationSegments {
-            guard FileManager.default.fileExists(atPath: initURL.path) else { continue }
-            if let inHandle = try? FileHandle(forReadingFrom: initURL) {
-                defer { try? inHandle.close() }
-                let bufferSize = 64 * 1024
-                while true {
-                    let chunk = inHandle.readData(ofLength: bufferSize)
-                    if chunk.isEmpty { break }
-                    outHandle.write(chunk)
-                }
-            }
+            appendFile(from: initURL, to: outHandle)
         }
 
         // 2. Write media segments in sequential recorded order
         for seg in segments {
-            guard FileManager.default.fileExists(atPath: seg.localFileURL.path) else { continue }
-            if let inHandle = try? FileHandle(forReadingFrom: seg.localFileURL) {
-                defer { try? inHandle.close() }
-                let bufferSize = 64 * 1024
-                while true {
-                    let chunk = inHandle.readData(ofLength: bufferSize)
-                    if chunk.isEmpty { break }
-                    outHandle.write(chunk)
-                }
-            }
+            appendFile(from: seg.localFileURL, to: outHandle)
         }
         try outHandle.synchronize()
 
         // 3. Move staging file to final target destination
-        if FileManager.default.fileExists(atPath: targetURL.path) {
-            try? FileManager.default.removeItem(at: targetURL)
-        }
+        removeItemLogged(at: targetURL, context: "existing target file")
         try FileManager.default.moveItem(at: stagingOutputURL, to: targetURL)
 
-        let finalBytes = (try? FileManager.default.attributesOfItem(atPath: targetURL.path)[.size] as? Int64) ?? bytesWritten
+        let finalBytes = FileManager.default.fileSize(atPath: targetURL.path) ?? bytesWritten
         self.bytesWritten = finalBytes
 
         _ = await (libraryStore ?? .shared).scanLibrary(in: destDir)
         return targetURL
+    }
+
+    private func appendFile(from sourceURL: URL, to outHandle: FileHandle) {
+        guard FileManager.default.fileExists(atPath: sourceURL.path) else { return }
+        do {
+            let inHandle = try FileHandle(forReadingFrom: sourceURL)
+            defer {
+                do {
+                    try inHandle.close()
+                } catch {
+                    PipelineLogger.shared.log(stage: .persistence, message: "[LiveStreamRecorder] Failed to close input handle \(sourceURL.path): \(error.localizedDescription)")
+                }
+            }
+            let bufferSize = 64 * 1024
+            while true {
+                let chunk = inHandle.readData(ofLength: bufferSize)
+                if chunk.isEmpty { break }
+                outHandle.write(chunk)
+            }
+        } catch {
+            PipelineLogger.shared.log(stage: .persistence, message: "[LiveStreamRecorder] Failed to read segment \(sourceURL.path): \(error.localizedDescription)")
+        }
     }
 
     // MARK: - Segment & Key Helpers
